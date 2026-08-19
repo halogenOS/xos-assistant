@@ -38,6 +38,6 @@ refactor until the change fits naturally, then make it.
 - This repository is public-ready: no secrets, no personal data, no deployment internals in
   any tracked file or commit.
 
-## Open decisions
+## Decisions
 
-- Implementation language: to be settled with the maintainer before the first line of code.
+- Implementation language: Rust, decided 2026-08-19 — see `docs/decisions`.
