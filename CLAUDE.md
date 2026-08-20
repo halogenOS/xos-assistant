@@ -40,4 +40,15 @@ refactor until the change fits naturally, then make it.
 
 ## Decisions
 
-- Implementation language: Rust, decided 2026-08-19 — see `docs/decisions`.
+Each one is recorded in `docs/decisions` with its date and the alternatives it beat.
+
+- Implementation language: Rust, decided 2026-08-19.
+- Storage and orchestration: the block ledger architecture adopted from ronna-lightspeed —
+  blocks are the only content unit, storage is append-only, conversation state is derived
+  from the blocks, and behavior lives on the block kind instead of in the machinery.
+  Decided 2026-08-20.
+- Personal data lives in tables of its own, separate from the ledger, so erasure never
+  breaks the append-only rule. Message history is kept without a retention timer. Decided
+  2026-08-20.
+- License: GNU General Public License v3.0, following the adopted code. Decided
+  2026-08-20.
