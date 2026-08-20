@@ -27,3 +27,9 @@ Cargo runs inside the Nix development shell, which provides the toolchain:
 
 The architecture rules that bind every change, including the two invariants that separate
 the core from the adapters, are written down in `CLAUDE.md`.
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE). The storage and orchestration
+subsystems are adopted from [ronna-lightspeed](https://github.com/xdevs23/ronna-lightspeed),
+which carries the same license.
