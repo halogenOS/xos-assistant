@@ -82,6 +82,27 @@ spec when they start; the list below is the order and the reason, not their cont
   Rejected: erasure of identity rows alone (leaves a personal identifier in the
   mapping); the caller supplying channel keys to unmap (pushes a data-protection
   obligation onto every caller and makes the one operation two).
+- **Erasure reaches the prose — reconciled with decision 0003, 2026-08-21.** This
+  spec's first revision scoped erasure to identity rows and mappings and left the
+  message text in place; the unit's correctness review flagged that against decision
+  0003, which requires the text itself to be erasable, and 0003 wins. The
+  reconciliation: under the framework's block model the kind's content table is
+  exactly 0003's separate personal-data table referenced by key — the block header
+  row is the immutable ledger entry, the content row carries the personal payload.
+  The personal columns — the text, the origin reference and the platform send
+  time — are therefore nullable; erasure nulls them for the erased principal in
+  every conversation, an erased message projects nothing to the model, and a
+  direct conversation of the erased principal is removed entirely, since
+  conversation-level removal of a two-party chat leaves no holes and strands no
+  references — the two failure modes 0003's rejected block deletion was rejected
+  for — and an erased skeleton's remaining metadata would itself be the person's
+  data. Rejected: an out-of-row prose table (the framework's projection reads
+  descriptor fields only; a second-table load path does not exist, and inventing
+  one would duplicate the content table's own mechanism); keeping direct
+  conversations as erased skeletons (metadata that serves nobody and still
+  identifies the person). OPEN, recorded in the decision record: a group
+  conversation's derived title may have been shaped by since-erased prose; title
+  regeneration on erasure is later work.
 
 ## The unit's contract
 
@@ -119,9 +140,14 @@ kind, created on first message. The mapping is the only place a channel key is s
 
 ### Erasure
 
-A public core operation, separate from the adapter edges: given a principal id, it
-deletes that principal's identity rows and the direct-channel mappings tied to the
-principal per the erasure decision, in one call, touching no block. This is the
+A public core operation, separate from the adapter edges: given a principal id, one
+call runs three idempotent steps — the personal columns of the principal's
+messages (text, origin reference, platform send time) are nulled in every
+conversation, the principal's direct conversations and their mappings are removed
+entirely, and the identity rows are deleted. No block header row is ever mutated;
+the text lives in the kind's content table, which is the separate personal-data
+table of decision 0003. An erased message projects nothing to the model. Erasing an
+unknown principal reports that plainly instead of succeeding idly. This is the
 operation AC3 exercises; wiring it to an operator surface is a later unit's work.
 
 ### Core assembly
@@ -177,10 +203,15 @@ rate protection, no framework changes. The adapter crate keeps its skeleton.
 - **AC2** The composed kind opens: the store opens with the descriptor and the domain
   migrations, validation passes, and a reopened file-backed store proves the durable
   registry path.
-- **AC3** The erasure test: after a direct and a group conversation with recorded
-  messages, erasing one principal succeeds in one call; every block still loads, the
-  ledger's block count is unchanged, the identity rows are gone, the direct mapping is
-  gone, and the group mapping remains.
+- **AC3** The erasure test (amended 2026-08-21 with the 0003 reconciliation): a group
+  conversation carries messages from two principals, and each principal has a direct
+  conversation. Erasing one principal succeeds in one call; the erased principal's
+  identity rows, direct conversation and direct mapping are gone while the other
+  principal's remain; the group conversation's block count is unchanged and every
+  block still loads; the erased principal's group messages carry no stored text,
+  origin reference or send time and project nothing to the model; the other
+  principal's messages are untouched.
+  Erasing a principal id that matches nothing returns the not-found outcome.
 - **AC4** The end-to-end test: an inbound message through the public entry point wakes
   the runtime, the scripted provider streams an answer, and the outbound edge yields
   that answer bound to the correct channel key — asserted on the resulting ledger

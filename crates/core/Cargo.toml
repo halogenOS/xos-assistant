@@ -6,3 +6,22 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+# The framework is a sibling checkout, not a registry crate: it has no public
+# home yet, so the path names the expected layout (see the README). No provider
+# feature is enabled — this unit's provider is scripted, and choosing a vendor
+# is the live-model unit's decision.
+[dependencies]
+agent-ledger = { path = "../../../agent-ledger/crates/agent-ledger" }
+chrono = "0.4"
+# The framework's consumer seam hands closures a `rusqlite::Connection` without
+# re-exporting the crate; the direct dependency stays on the framework's major
+# version so the two name one type.
+rusqlite = "0.40"
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

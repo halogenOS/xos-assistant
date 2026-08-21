@@ -1,0 +1,24 @@
+# Platform vocabulary that must not appear in the core crate.
+#
+# The core contains no platform vocabulary — this list makes that invariant
+# checkable instead of aspirational. A test greps every source file of
+# crates/core against these terms, case-insensitively, as whole words: a word
+# is one run of letters and digits, so a compound identifier is scanned part
+# by part and still trips on the platform name it contains, while neutral
+# prose that merely embeds a term inside a longer word does not.
+#
+# Maintaining it:
+#   - Each adapter adds its platform's name and its SDK crate names when the
+#     adapter is written; this file is the one adapters grow.
+#   - A term is one word of letters and digits, exactly as the scan splits
+#     source lines.
+#
+# Blank lines and lines beginning with # are ignored by the check.
+
+telegram
+teloxide
+frankenstein
+tgbot
+grammers
+matrix
+ruma
