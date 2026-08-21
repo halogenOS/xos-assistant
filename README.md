@@ -7,9 +7,11 @@ platform-neutral core and one thin adapter per platform.
 
 **Status: pre-alpha.** The core spine stands: the platform-neutral core consumes the
 ledger framework, records inbound messages as ledger blocks, takes turns against a
-registered provider, and yields replies on a subscription edge. The adapters are still
-skeletons, and the registered provider is a scripted one — the live model arrives with a
-later unit.
+registered provider, and yields replies on a subscription edge. The Telegram adapter
+speaks the Bot API directly — long polling in, plain sends out — with its update offset
+persisted in a state file the embedder names (decisions 0013–0019). The registered
+provider is still a scripted one, and no runnable binary embeds the pieces yet — the
+live model and the embedding arrive with later units.
 
 ## The framework checkout
 

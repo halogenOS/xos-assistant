@@ -33,3 +33,25 @@ All six registry crates resolved to the current latest at the time of the check.
 macro attribute and the multi-threaded runtime flavour the tests need. Cargo unifies
 features across a dependency graph, so a feature enabled in the library section would be
 compiled into every dependent tree whether it wanted it or not.
+
+## 2026-08-21 — the first platform adapter
+
+The adapter speaks the platform's HTTP API directly, so its manifest names two crates
+this repository's manifests had not named before. Current versions from the crates.io
+API, advisories from the OSV API, both queried on the day of this entry. The other
+crates the adapter's manifest names — chrono, serde_json, thiserror, tokio, tracing and
+the framework itself — are already reviewed in the core-spine entry above and are not
+re-recorded.
+
+| Crate | Version | Latest at check | Advisories | Why it is here |
+|---|---|---|---|---|
+| reqwest | 0.13.4 | 0.13.4 | none | The HTTP client the adapter's wire runs over; the framework already depends on this version, and its review names the transitive stack (hyper, rustls, aws-lc-sys). Only the `json` feature is named; the crate's own default supplies TLS with a vendored provider, the same reasoning the framework's review records. |
+| serde | 1.0.229 | 1.0.229 | none | The adapter's minimal update model derives its decoding; the framework already depends on this version. |
+
+Both resolved to the current latest at the time of the check.
+
+**The test-only additions.** The adapter's development section adds tokio's `macros`,
+`rt-multi-thread`, `net` and `io-util` features — the scripted platform server in the
+test suite is a plain listener on the loopback interface, written against tokio's own
+networking, so the suite adds no new crate. Cargo unifies features across a dependency
+graph, so these stay in the development section for the same reason the core's do.

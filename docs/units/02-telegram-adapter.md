@@ -29,7 +29,7 @@ here.
   acknowledges by offset; the state file holds the next offset to send (the highest
   acknowledged update id plus one) at a path the embedder supplies, written after the
   batch's messages are ingested — so a crash between ingest and write redelivers (and
-  duplicates) rather than drops. An absent, empty or malformed state file is treated
+  duplicates) instead of dropping. An absent, empty or malformed state file is treated
   as absent, logged, and the redelivered updates are the accepted duplicates.
   Rejected: offset only in memory (the wire itself confirms on the next poll, so the
   loss window is a crash between ingest and that poll — similar in size, but implicit;
@@ -65,6 +65,14 @@ here.
   newest message, which is wrong in a busy group. Rejected: extending the outbound
   edge in this unit (a core change the adapter invariant says an adapter must never
   need).
+  Amended 2026-08-21, after review: the platform caps one message's text, and a
+  finalized answer carries no length bound, so "plainly" is refined — a reply longer
+  than the cap goes out as consecutive in-order chunks, and a chunk that fails ends
+  the reply at the last delivered chunk, and no tail is sent past a lost
+  middle. This is translation of a documented wire constraint, not behavior: the
+  adapter decides nothing about the text, it fits the platform's message unit.
+  Decision record 0019 carries the rule and the rejected alternatives (dropping the
+  whole over-cap reply; truncation; language-aware split points).
 
 ## The unit's contract
 
@@ -88,8 +96,10 @@ error text. HTTP details — timeouts, the long-poll timeout parameter, the rate
 retry — live here and nowhere else, with the retry wait taken through an injectable
 sleep so tests pin it without waiting it out. A send answered with the rate-limit
 reply honors the stated wait and retries up to three attempts, then logs and drops;
-the outbound consumer is sequential, so a retry wait holds later replies back —
-accepted at this unit's traffic.
+a stated wait past a named ceiling fails the send at once, because the outbound
+consumer is sequential and a flood wait would park every later reply behind it. The
+poll and the administrator fetch park no queue and honor stated waits in full —
+re-asking a limiter early amplifies the load being limited.
 
 ### The loop
 

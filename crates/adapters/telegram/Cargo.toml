@@ -1,3 +1,7 @@
+# The adapter speaks the Bot API directly over the HTTP client the framework
+# already uses (decision 0013); only the `json` feature is named, and the
+# client's own default supplies TLS with a vendored provider. Every crate here
+# is recorded in docs/dependency-review.md before this manifest named it.
 [package]
 name = "assistant-adapter-telegram"
 version.workspace = true
@@ -6,3 +10,28 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+assistant-core = { path = "../../core" }
+chrono = "0.4"
+reqwest = { version = "0.13", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "sync", "time"] }
+tracing = "0.1"
+
+# Test-only. The scripted Bot API server in the test suite is a plain listener
+# on the loopback interface written against tokio's own networking, so the
+# suite needs `net` and `io-util` but no new crate. Cargo unifies features
+# across a dependency graph, so these stay out of the library section.
+[dev-dependencies]
+agent-ledger = { path = "../../../../agent-ledger/crates/agent-ledger" }
+tokio = { version = "1", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
