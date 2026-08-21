@@ -1,0 +1,111 @@
+//! The assistant's own storage schema: the content table the block kind
+//! declares, and the two domain tables that hold what never enters the ledger.
+//!
+//! The identity table holds personal data on its own separate footing, so
+//! erasure deletes rows here and touches no block header. The content table's
+//! `text` column is the other personal-data surface (decision 0012): nullable,
+//! nulled by erasure, NOT NULL everywhere else it matters. The channel table
+//! is the one place a channel key is stored.
+//!
+//! Table and column names come from the modules that own them — the kind
+//! module for the content table, this module for the domain tables — and the
+//! CHECK constraints quote the closed vocabularies straight from their enums,
+//! so neither the names nor the vocabularies exist twice.
+
+use std::sync::LazyLock;
+
+use agent_ledger::{DomainMigrations, FromBlock, StoreConfig};
+
+use crate::kind::{
+    AssistantKind, CHAT_MESSAGE_TABLE, COLUMN_AUTHORITY, COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID,
+    COLUMN_ROLE, COLUMN_SENT_AT, COLUMN_TEXT,
+};
+use crate::message::{Authority, ChannelKind};
+
+/// The domain the assistant's tables live under.
+///
+/// Every read and write of these tables goes through
+/// [`agent_ledger::store::domain_run`] with this name, sharing the store's
+/// single writer.
+pub const DOMAIN: &str = "assistant";
+
+/// A closed vocabulary as a CHECK constraint's quoted list: `'a','b','c'`.
+fn quoted_list<'a>(values: impl Iterator<Item = &'a str>) -> String {
+    values
+        .map(|value| format!("'{value}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// The block kind's content table, in the shape its descriptor declares.
+/// `text` is nullable on purpose: NULL means erased (decision 0012), and the
+/// kind reads it back as the typed absence. Everything identifying the
+/// message's provenance is NOT NULL, with the authority vocabulary closed by
+/// the same enum the code parses with.
+static CHAT_MESSAGE_SCHEMA: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {CHAT_MESSAGE_TABLE} (
+            block_id             INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {COLUMN_ROLE}         TEXT,
+            {COLUMN_TEXT}         TEXT,
+            {COLUMN_PRINCIPAL_ID} INTEGER NOT NULL,
+            {COLUMN_AUTHORITY}    TEXT NOT NULL CHECK ({COLUMN_AUTHORITY} IN ({authorities})),
+            {COLUMN_ORIGIN}       TEXT,
+            {COLUMN_SENT_AT}      TEXT
+        );",
+        authorities = quoted_list(Authority::ALL.iter().map(|a| a.as_str())),
+    )
+});
+
+/// Sender identity, keyed by principal id — the only place personal identity
+/// lives. A principal is scoped to one adapter: the same external id on two
+/// adapters is two people until proven otherwise.
+///
+/// The id column is AUTOINCREMENT because erasure hard-deletes rows here
+/// while ledger blocks keep their principal id forever: a bare rowid key
+/// would reissue the newest erased id to the next new sender, and the erased
+/// person's retained blocks would then resolve to a living stranger.
+const PRINCIPALS_SCHEMA: &str = "
+    CREATE TABLE principals (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        adapter      TEXT NOT NULL,
+        external_id  TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        username     TEXT,
+        UNIQUE (adapter, external_id)
+    );";
+
+/// The channel-to-conversation mapping, with the channel's kind recorded at
+/// creation and its vocabulary closed by the same enum the code parses with.
+/// `conversation_id` is unique because the mapping is read both ways: a
+/// channel key finds its conversation on ingestion, a conversation finds its
+/// channel key on the outbound edge.
+static CHANNELS_SCHEMA: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE channels (
+            adapter         TEXT NOT NULL,
+            channel         TEXT NOT NULL,
+            kind            TEXT NOT NULL CHECK (kind IN ({kinds})),
+            conversation_id INTEGER NOT NULL UNIQUE,
+            PRIMARY KEY (adapter, channel)
+        );",
+        kinds = quoted_list(ChannelKind::ALL.iter().map(|k| k.as_str())),
+    )
+});
+
+/// The store configuration the assistant opens with: the composed kind's
+/// descriptors and the domain migrations that create the tables above.
+#[must_use]
+pub fn store_config() -> StoreConfig {
+    StoreConfig {
+        descriptors: AssistantKind::DESCRIPTORS,
+        domain_migrations: vec![DomainMigrations {
+            domain: DOMAIN,
+            sqls: vec![
+                CHAT_MESSAGE_SCHEMA.as_str(),
+                PRINCIPALS_SCHEMA,
+                CHANNELS_SCHEMA.as_str(),
+            ],
+        }],
+    }
+}
