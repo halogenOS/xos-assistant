@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use agent_ledger::providers::ProviderRequest;
-use agent_ledger::{CoreEvent, EventBus, ProviderModule, Store, ToolRegistry};
+use agent_ledger::{CoreEvent, EventBus, ProviderModule, Store};
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::schema::store_config;
 use assistant_core::{Assistant, ChannelKind, FAILURE_NOTICE, ReplyKind};
@@ -206,7 +206,7 @@ async fn the_stamp_propagates_an_unanswered_debt_at_the_write() {
         store.clone(),
         Arc::new(EventBus::new()),
         support::registry_of(silent_provider()),
-        Arc::new(ToolRegistry::new()),
+        assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
         assistant_core::ProtectionConfig::default(),
@@ -261,7 +261,7 @@ async fn an_erased_tail_propagates_no_debt() {
         store.clone(),
         Arc::new(EventBus::new()),
         support::registry_of(silent_provider()),
-        Arc::new(ToolRegistry::new()),
+        assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
         assistant_core::ProtectionConfig::default(),
@@ -343,7 +343,7 @@ async fn a_paid_debt_does_not_propagate() {
         &fixture.store,
         receipt.conversation_id,
         "the answered turn",
-        3,
+        4,
     )
     .await;
 

@@ -169,7 +169,7 @@ async fn a_really_erased_group_ledger_projects_alternating() {
         .await
         .expect("A's message ingests");
     recv_reply(&mut replies).await;
-    support::settle(&fixture.store, receipt_a.conversation_id, "A's turn", 3).await;
+    support::settle(&fixture.store, receipt_a.conversation_id, "A's turn", 4).await;
     fixture
         .assistant
         .ingest(inbound(&key, ChannelKind::Group, "B", "B's later ask"))
@@ -177,7 +177,7 @@ async fn a_really_erased_group_ledger_projects_alternating() {
         .expect("B's message ingests");
     recv_reply(&mut replies).await;
     let conv = receipt_a.conversation_id;
-    support::settle(&fixture.store, conv, "B's turn", 5).await;
+    support::settle(&fixture.store, conv, "B's turn", 6).await;
 
     assert_eq!(
         fixture
@@ -198,10 +198,10 @@ async fn a_really_erased_group_ledger_projects_alternating() {
     let messages = blocks_to_messages::<AssistantKind>(&blocks);
     assert_alternation_holds(&messages, "the really erased group ledger");
     // The positive anchors first, so the clauses above cannot pass over a
-    // projection that dropped everything: the five stored blocks project as
+    // projection that dropped everything: the six stored blocks project as
     // five messages — the prompt, A's erased opening as the marker, the
-    // first answer, B's surviving ask, the second answer — and B's text is
-    // in a user-voice message.
+    // first answer, B's surviving ask, the second answer, with the palette
+    // block contributing nothing — and B's text is in a user-voice message.
     assert_eq!(
         messages.len(),
         5,

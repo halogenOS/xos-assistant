@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 use agent_ledger::providers::{ProviderRequest, Usage};
 use agent_ledger::{
     Block, CoreEvent, EventBus, ProviderModule, ProviderResponse, Role, StopReason, Store,
-    StreamEvent, ToolRegistry,
+    StreamEvent,
 };
 use assistant_core::kind::{CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage, Stamp};
 use assistant_core::schema::{PRINCIPAL_ADDRESSED_INDEX, store_config};
@@ -81,7 +81,7 @@ async fn silent_assistant(
         store.clone(),
         Arc::clone(&bus),
         support::registry_of(silent_provider()),
-        Arc::new(ToolRegistry::new()),
+        assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
         protection,
@@ -127,19 +127,20 @@ async fn the_appended_migration_adds_the_columns_and_the_index() {
     assert_eq!(index_count, 1, "the principal count's index exists");
 }
 
-/// The appended step on an existing store — the deployed upgrade path,
+/// The appended steps on an existing store — the deployed upgrade path,
 /// which the fresh-store pin above cannot see: there, all steps run at one
 /// open, so folding the stamp columns into the CREATE TABLE and deleting
-/// the appended step would keep that test green while stranding every
+/// the appended steps would keep that test green while stranding every
 /// store the earlier binary wrote. Here a file store is rewound to the
 /// shape that binary left behind — an owing chat row on disk, neither
-/// stamp column, no index, the domain's version at three — and reopened
-/// with the shipped configuration. The appended step must run alone (a
-/// rerun creating step would fail the open on the existing tables), add
-/// the columns and the index, advance the version, and leave the
-/// pre-existing row reading the typed absence in both stamp columns.
+/// stamp column, no index, no palette table, the domain's version at three
+/// — and reopened with the shipped configuration. The appended steps must
+/// run alone (a rerun creating step would fail the open on the existing
+/// tables), add the columns, the index and the palette table, advance the
+/// version, and leave the pre-existing row reading the typed absence in
+/// both stamp columns.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_version_three_store_upgrades_through_the_appended_step_alone() {
+async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     let db = support::TempDb::new("v3-upgrade");
     let conversation;
     {
@@ -175,7 +176,7 @@ async fn a_version_three_store_upgrades_through_the_appended_step_alone() {
             )
             .await
             .expect("the pre-upgrade row appends");
-        // The rewind: drop exactly what the appended step adds and set the
+        // The rewind: drop exactly what the appended steps add and set the
         // domain's version back, so the disk holds what the pre-protection
         // binary's store held. The dropped columns take their column-level
         // CHECK constraints with them. The version rewind goes through the
@@ -184,8 +185,10 @@ async fn a_version_three_store_upgrades_through_the_appended_step_alone() {
             conn.execute_batch(&format!(
                 "DROP INDEX {index};
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN limited;
-                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN debt_authority;",
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN debt_authority;
+                 DROP TABLE {palette};",
                 index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
+                palette = assistant_core::tools::palette::TOOL_PALETTE_TABLE,
             ))?;
             Ok(())
         })
@@ -204,8 +207,8 @@ async fn a_version_three_store_upgrades_through_the_appended_step_alone() {
     assert_eq!(index_count, 1, "the appended step created the index");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        4,
-        "the appended step advanced the domain's version"
+        5,
+        "the appended steps advanced the domain's version"
     );
 
     let rows = messages(&reopened, conversation).await;
@@ -249,14 +252,14 @@ async fn the_principal_budget_refuses_the_next_debt_and_the_window_releases_it()
         .expect("the first ask ingests");
     let conv = receipt.conversation_id;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Answer);
-    support::settle(&fixture.store, conv, "the first answer", 3).await;
+    support::settle(&fixture.store, conv, "the first answer", 4).await;
     fixture
         .assistant
         .ingest(inbound(&key, ChannelKind::Direct, "A", "the second ask"))
         .await
         .expect("the second ask ingests");
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Answer);
-    support::settle(&fixture.store, conv, "the second answer", 5).await;
+    support::settle(&fixture.store, conv, "the second answer", 6).await;
 
     // The third ask crosses the budget: recorded, addressed, limited by the
     // principal budget, owing nothing — and silent, no answer and no notice.
@@ -323,14 +326,14 @@ async fn the_channel_budget_spares_other_channels_and_the_direct_chat() {
         .expect("the first ask ingests");
     let conv = receipt.conversation_id;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Answer);
-    support::settle(&fixture.store, conv, "the first answer", 3).await;
+    support::settle(&fixture.store, conv, "the first answer", 4).await;
     fixture
         .assistant
         .ingest(inbound(&room, ChannelKind::Group, "B", "the second ask"))
         .await
         .expect("the second ask ingests");
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Answer);
-    support::settle(&fixture.store, conv, "the second answer", 5).await;
+    support::settle(&fixture.store, conv, "the second answer", 6).await;
 
     // The two principals exhausted the channel together: B's next ask is
     // limited with the channel fact.
@@ -423,7 +426,7 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
         store.clone(),
         Arc::clone(&bus),
         support::registry_of(held_provider(Arc::clone(&release))),
-        Arc::new(ToolRegistry::new()),
+        assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
         budgets(None, Some((1, 600))),
@@ -816,7 +819,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
             store.clone(),
             Arc::new(EventBus::new()),
             support::registry_of(silent_provider()),
-            Arc::new(ToolRegistry::new()),
+            assistant_core::tools::ToolSet::new(),
             support::binding(),
             support::SYSTEM_PROMPT.into(),
             protection.clone(),
@@ -838,7 +841,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
             store.clone(),
             Arc::clone(&bus),
             support::registry_of(silent_provider()),
-            Arc::new(ToolRegistry::new()),
+            assistant_core::tools::ToolSet::new(),
             support::binding(),
             support::SYSTEM_PROMPT.into(),
             protection,

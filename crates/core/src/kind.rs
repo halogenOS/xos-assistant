@@ -554,6 +554,9 @@ pub enum AssistantKind {
     Core(BlockKind),
     /// The assistant's recorded channel message.
     ChatMessage(ChatMessage),
+    /// The conversation's tool admission record (the tools module owns the
+    /// kind; it composes here so one parse path reads every block).
+    ToolPalette(crate::tools::palette::ToolPalette),
 }
 
 /// A text field read by column name from a loaded block's fields, absent when

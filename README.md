@@ -16,9 +16,13 @@ mention, a reply to the assistant), a failed turn tells the chat once, and the
 `assistant` binary embeds the pieces into a runnable process (decisions 0020–0028).
 Flood protection is in: two configurable answering budgets — per sender and per chat —
 limit what the assistant answers, never what it records, and every message carries the
-authority of the debt it opens or propagates, the fact the coming tool unit's admission
-reads (decisions 0029–0036). The feature tools with admission and spam reporting arrive
-with the next unit.
+authority of the debt it opens or propagates (decisions 0029–0036). The tools are in:
+two project lookups — a commit lookup against the project's canonical forge, a release
+lookup against the builds repository on the mirror — behind a per-conversation tool
+palette that fails closed; tool authority is enforced structurally, with registration
+refusing any tool that requires more than member authority until the framework records
+the turn's summoning frontier onto tool calls (decisions 0037–0045). Spam detection
+and reporting arrive with the next unit.
 
 ## The framework checkout
 
@@ -55,12 +59,30 @@ file path per secret — and never appear in the file itself:
     [secrets.openrouter_key]
     file = "openrouter.key"
 
+    # Optional: a mirror API token for the release lookup. Absent, the
+    # lookup runs unauthenticated at the mirror's lower rate limit.
+    #[secrets.mirror_token]
+    #env = "ASSISTANT_MIRROR_TOKEN"
+
     # Optional; the values shown are the defaults.
     [protection]
     principal_answers = 6
     principal_window_seconds = 600
     channel_answers = 20
     channel_window_seconds = 600
+
+The `[endpoints]` table can override any of the four hosts the process talks to —
+`telegram`, `openrouter`, `forge` (the commit lookup's canonical forge, default
+`https://git.halogenos.org`) and `mirror` (the release lookup's API host, default
+`https://api.github.com`); omitted entries keep the real hosts, and the overrides
+exist for the test suites' loopback servers.
+
+The two lookup tools answer community questions from the project's own sources: a
+commit by repository and reference from the canonical forge, and a release — the
+latest, or one by tag — from the builds repository. Every conversation records a
+tool palette at creation naming exactly the registered tools; a conversation
+without a palette admits none, and a call outside the palette is declined with a
+recorded error the model reads.
 
 The protection table sets the two answering budgets: how many messages one sender is
 answered per window (counted across every chat, direct and group alike) and how many
@@ -86,8 +108,8 @@ Cargo runs inside the Nix development shell, which provides the toolchain:
 
 ## Layout
 
-- `crates/core` — the platform-neutral core: conversation handling, knowledge lookup,
-  command semantics, rate and abuse protection.
+- `crates/core` — the platform-neutral core: conversation handling, the lookup tools
+  with their palette and admission, rate and abuse protection.
 - `crates/adapters/telegram` — the Telegram adapter: translation between the Telegram Bot
   API and the core's message model.
 - `crates/assistant` — the runnable process: configuration, secret indirection, logging,

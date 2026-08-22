@@ -28,6 +28,9 @@
 //!   kinds through the derive.
 //! - [`schema`] — the store configuration and the domain tables; identity
 //!   lives apart from the ledger so erasure never touches a block.
+//! - [`tools`] — the project lookups, the palette kind that gates their
+//!   admission, and the admission wrapper; the assembly takes its
+//!   [`tools::ToolSet`] and registers every tool behind the one check.
 //! - `provider` (behind the `openrouter` feature) — the framework's
 //!   `OpenRouter` module wrapped around an in-memory configuration, so the
 //!   API key never enters the store.
@@ -44,6 +47,7 @@ mod outbound;
 pub mod provider;
 pub mod schema;
 mod streams;
+pub mod tools;
 
 pub use assembly::{Assistant, Budget, IngestReceipt, ModelBinding, ProtectionConfig};
 pub use erasure::ErasureOutcome;

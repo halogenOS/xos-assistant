@@ -31,8 +31,17 @@ pub const TOKEN: &str = "0000000000:FAKE-PROCESS-TEST-TOKEN";
 /// string.
 pub const KEY: &str = "sk-or-FAKE-PROCESS-TEST-KEY";
 
+/// The fake mirror token. Nothing real; the scans look for this exact
+/// string.
+pub const MIRROR_TOKEN: &str = "ghp-FAKE-PROCESS-TEST-MIRROR-TOKEN";
+
 /// The one answer the scripted completions server streams.
 pub const ANSWER: &str = "The scripted process answer.";
+
+/// A loopback address nothing listens on: what a configuration names for a
+/// lookup host its run never calls, so an accidental call fails fast on the
+/// loopback instead of reaching a real host.
+pub const UNROUTABLE: &str = "http://127.0.0.1:1";
 
 /// A unique directory in the temp location, removed with its content on
 /// drop, so parallel tests never share files and no run leaves litter.
@@ -244,9 +253,13 @@ async fn get_updates(state: &Arc<TelegramState>, body: &Value) -> Value {
     json!({ "ok": true, "result": [] })
 }
 
-/// The scripted completions server: every POST answers one server-sent text
-/// delta, a finish chunk and the end marker, recording the request's decoded
-/// body — what lets a test join the prompt files to the wire.
+/// The scripted completions server: every POST answers with server-sent
+/// events and the end marker, recording the request's decoded body — what
+/// lets a test join the prompt files to the wire. In the default mode every
+/// turn streams [`ANSWER`]; with a tool script, the opening turn streams
+/// one tool call and the turn whose request carries the tool's answer
+/// streams [`ANSWER`] — scripted by request content, like the suites' other
+/// scripted providers.
 pub struct CompletionsServer {
     base: String,
     requests: Arc<Mutex<Vec<Value>>>,
@@ -259,8 +272,45 @@ impl Drop for CompletionsServer {
     }
 }
 
+/// What one scripted completion answers: the text delta stream, or one tool
+/// call with the given name and arguments JSON.
+fn completion_events(tool_script: Option<&(String, String)>, body: &Value) -> String {
+    if let Some((tool, arguments)) = tool_script {
+        let request = body.to_string();
+        // A request already carrying a tool-voiced message is the closing
+        // turn; anything else — the title derivation included, which never
+        // acts on tools — gets the scripted call.
+        if !request.contains("\"role\":\"tool\"") {
+            let call = serde_json::json!({
+                "choices": [{ "delta": { "tool_calls": [{
+                    "index": 0,
+                    "id": "call-1",
+                    "type": "function",
+                    "function": { "name": tool, "arguments": arguments }
+                }]}}]
+            });
+            return format!(
+                "data: {call}\n\n\
+                 data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
+                 data: [DONE]\n\n"
+            );
+        }
+    }
+    format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{ANSWER}\"}}}}]}}\n\n\
+         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n\
+         data: [DONE]\n\n"
+    )
+}
+
 impl CompletionsServer {
     pub async fn start() -> Self {
+        Self::start_scripted(None).await
+    }
+
+    /// Start with an optional tool script: the tool's registered name and
+    /// its arguments JSON, sent as one scripted call on every opening turn.
+    pub async fn start_scripted(tool_script: Option<(String, String)>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("a loopback listener binds");
@@ -268,26 +318,24 @@ impl CompletionsServer {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let accept_requests = Arc::clone(&requests);
         let accept_task = tokio::spawn(async move {
+            let tool_script = tool_script;
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     break;
                 };
                 let requests = Arc::clone(&accept_requests);
+                let tool_script = tool_script.clone();
                 tokio::spawn(async move {
                     let mut buffered = Vec::new();
                     let Some((_, body, _)) = read_request(&mut stream, &mut buffered).await else {
                         return;
                     };
+                    let events = completion_events(tool_script.as_ref(), &body);
                     requests.lock().expect("the request log locks").push(body);
-                    let body = format!(
-                        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{ANSWER}\"}}}}]}}\n\n\
-                         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n\
-                         data: [DONE]\n\n"
-                    );
                     let response = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{events}",
+                        events.len()
                     );
                     let _ = stream.write_all(response.as_bytes()).await;
                     let _ = stream.shutdown().await;
@@ -312,6 +360,118 @@ impl CompletionsServer {
     /// Every completion request's decoded body, in arrival order.
     pub fn requests(&self) -> Vec<Value> {
         self.requests.lock().expect("the request log locks").clone()
+    }
+}
+
+/// One request a scripted lookup endpoint recorded: its path and its
+/// authorization header, if one was sent — what the token pins read.
+#[derive(Debug, Clone)]
+pub struct LookupRequest {
+    pub path: String,
+    pub authorization: Option<String>,
+}
+
+/// A scripted lookup endpoint — the forge or the mirror: answers every GET
+/// with the one JSON body it was started with, recording each request's
+/// path and authorization header.
+pub struct LookupServer {
+    base: String,
+    requests: Arc<Mutex<Vec<LookupRequest>>>,
+    accept_task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for LookupServer {
+    fn drop(&mut self) {
+        self.accept_task.abort();
+    }
+}
+
+impl LookupServer {
+    pub async fn start(body: Value) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback listener binds");
+        let addr = listener.local_addr().expect("the bound address reads");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let accept_requests = Arc::clone(&requests);
+        let accept_task = tokio::spawn(async move {
+            let body = body.to_string();
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let requests = Arc::clone(&accept_requests);
+                let body = body.clone();
+                tokio::spawn(async move {
+                    let mut buffered: Vec<u8> = Vec::new();
+                    let header_end = loop {
+                        if let Some(position) =
+                            buffered.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            break position;
+                        }
+                        if read_more(&mut stream, &mut buffered).await.is_none() {
+                            return;
+                        }
+                    };
+                    let head = String::from_utf8_lossy(&buffered[..header_end]).into_owned();
+                    let path = head
+                        .lines()
+                        .next()
+                        .and_then(|line| line.split(' ').nth(1))
+                        .unwrap_or_default()
+                        .to_owned();
+                    let authorization = head.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("authorization")
+                            .then(|| value.trim().to_owned())
+                    });
+                    requests
+                        .lock()
+                        .expect("the request log locks")
+                        .push(LookupRequest {
+                            path,
+                            authorization,
+                        });
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        Self {
+            base: format!("http://{addr}"),
+            requests,
+            accept_task,
+        }
+    }
+
+    pub fn base(&self) -> String {
+        self.base.clone()
+    }
+
+    pub fn requests(&self) -> Vec<LookupRequest> {
+        self.requests.lock().expect("the request log locks").clone()
+    }
+
+    pub async fn await_requests(&self, count: usize) -> Vec<LookupRequest> {
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            let recorded = self.requests();
+            if recorded.len() >= count {
+                return recorded;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out awaiting {count} lookup requests; have {}",
+                recorded.len()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 }
 

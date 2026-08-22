@@ -95,7 +95,7 @@ impl FileDestination {
     }
 }
 
-/// The endpoint overrides. Both default to the real hosts; tests point them
+/// The endpoint overrides. All default to the real hosts; tests point them
 /// at loopback servers.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,6 +104,10 @@ pub struct Endpoints {
     pub telegram: Option<String>,
     /// The `OpenRouter` base URL.
     pub openrouter: Option<String>,
+    /// The canonical forge's base URL — the commit lookup's host.
+    pub forge: Option<String>,
+    /// The mirror API's base URL — the release lookup's host.
+    pub mirror: Option<String>,
 }
 
 /// The protection table: the answering budgets, four fields with per-field
@@ -202,6 +206,10 @@ pub struct Secrets {
     pub bot_token: SecretRef,
     /// The `OpenRouter` API key.
     pub openrouter_key: SecretRef,
+    /// The mirror API token the release lookup sends as its authorization
+    /// header. Optional: absent, the lookup runs unauthenticated at the
+    /// mirror's lower rate limit and sends no header.
+    pub mirror_token: Option<SecretRef>,
 }
 
 /// One secret's indirection: an environment variable name or a file path,

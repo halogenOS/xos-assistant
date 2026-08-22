@@ -8,9 +8,11 @@
 
 mod support;
 
+use serde_json::json;
 use support::{
-    ANSWER, BinaryRun, CompletionsServer, DEADLINE, KEY, STOP_BOUND, Scratch, TOKEN,
-    TelegramServer, assert_absent, assert_absent_if_present, private_update,
+    ANSWER, BinaryRun, CompletionsServer, DEADLINE, KEY, LookupServer, MIRROR_TOKEN, STOP_BOUND,
+    Scratch, TOKEN, TelegramServer, UNROUTABLE, assert_absent, assert_absent_if_present,
+    private_update,
 };
 
 /// The fixture prompt the loader reads; the run story's real prompt files
@@ -23,6 +25,15 @@ struct ConfigOptions {
     /// The log destination as its raw TOML value, so a caller can spell the
     /// bare console word or the file table.
     log_destination: String,
+    /// The forge endpoint, for the tool run against the scripted forge;
+    /// absent points it at the unroutable loopback address, so no run ever
+    /// registers a lookup against a real host.
+    forge_root: Option<String>,
+    /// The mirror endpoint, under the same rule.
+    mirror_root: Option<String>,
+    /// Whether the file names the optional mirror-token secret, behind the
+    /// suite's environment variable.
+    mirror_token: bool,
     /// Raw TOML appended after the named tables — the budget test's
     /// protection table.
     extra_tables: String,
@@ -32,6 +43,9 @@ impl Default for ConfigOptions {
     fn default() -> Self {
         Self {
             log_destination: "\"stderr\"".into(),
+            forge_root: None,
+            mirror_root: None,
+            mirror_token: false,
             extra_tables: String::new(),
         }
     }
@@ -51,10 +65,26 @@ fn configuration(
 ) -> std::path::PathBuf {
     let ConfigOptions {
         log_destination,
+        forge_root,
+        mirror_root,
+        mirror_token,
         extra_tables,
     } = options;
     scratch.write("prompts/assistant.md", PROMPT);
     let key_file = scratch.write("provider-key", &format!("{KEY}\n"));
+    let forge_endpoint = format!(
+        "forge = {:?}\n",
+        forge_root.as_deref().unwrap_or(UNROUTABLE)
+    );
+    let mirror_endpoint = format!(
+        "mirror = {:?}\n",
+        mirror_root.as_deref().unwrap_or(UNROUTABLE)
+    );
+    let mirror_secret = if *mirror_token {
+        "[secrets.mirror_token]\nenv = \"PROCESS_TEST_MIRROR_TOKEN\"\n\n"
+    } else {
+        ""
+    };
     scratch.write(
         "assistant.toml",
         &format!(
@@ -65,11 +95,14 @@ fn configuration(
              model = \"test-vendor/test-model\"\n\n\
              [endpoints]\n\
              telegram = {telegram_root:?}\n\
-             openrouter = {completions_base:?}\n\n\
+             openrouter = {completions_base:?}\n\
+             {forge_endpoint}\
+             {mirror_endpoint}\n\
              [secrets.bot_token]\n\
              env = \"PROCESS_TEST_BOT_TOKEN\"\n\n\
              [secrets.openrouter_key]\n\
              file = {:?}\n\n\
+             {mirror_secret}\
              {extra_tables}",
             scratch.path("store.db"),
             scratch.path("telegram.offset"),
@@ -160,6 +193,138 @@ async fn the_process_answers_and_no_secret_reaches_the_store_or_a_log() {
             assert_absent_if_present(&scratch.path(&format!("store.db{suffix}")), secret, what);
         }
     }
+}
+
+/// The mirror token, driven through the binary (AC7): the scripted
+/// completions server makes the process's model call the release lookup,
+/// the scripted mirror receives the request WITH the token as its
+/// authorization header — so the run provably used the secret — and the
+/// token still appears nowhere: not in the store file, not in the log file,
+/// not on stderr.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_mirror_token_reaches_the_wire_and_no_artifact() {
+    let telegram = TelegramServer::start().await;
+    let completions =
+        CompletionsServer::start_scripted(Some(("lookup_release".into(), "{\"tag\":null}".into())))
+            .await;
+    let mirror = LookupServer::start(json!({
+        "tag_name": "20260707.2230.36-rb",
+        "name": "[release build] for the process suite",
+        "published_at": "2026-07-07T20:43:15Z",
+        "html_url": "https://example.invalid/releases/latest",
+        "assets": [{ "name": "boot.img", "size": 4096 }]
+    }))
+    .await;
+    let scratch = Scratch::new("mirror-token");
+    let log_file = scratch.path("assistant.log");
+    let config = configuration(
+        &scratch,
+        &telegram.root(),
+        &completions.base(),
+        &ConfigOptions {
+            log_destination: format!(
+                "{{ file = {:?} }}",
+                log_file.to_str().expect("the scratch path is unicode")
+            ),
+            mirror_root: Some(mirror.base()),
+            mirror_token: true,
+            ..ConfigOptions::default()
+        },
+    );
+
+    telegram.push_update(private_update(1, 42, "what is the latest build?"));
+    let mut run = BinaryRun::spawn(
+        &[&config],
+        &[
+            ("PROCESS_TEST_BOT_TOKEN", TOKEN),
+            ("PROCESS_TEST_MIRROR_TOKEN", MIRROR_TOKEN),
+        ],
+        &scratch.path("stderr.txt"),
+    );
+
+    // The whole tool turn: the model called the lookup, the mirror answered
+    // under the token, and the closing prose reached the chat.
+    let requests = mirror.await_requests(1).await;
+    assert_eq!(requests[0].path, "/repos/halogenOS/builds/releases/latest");
+    assert_eq!(
+        requests[0].authorization.as_deref(),
+        Some(&*format!("Bearer {MIRROR_TOKEN}")),
+        "the configured token flows to the mirror's authorization header"
+    );
+    let sends = telegram.await_recorded("sendMessage", 1).await;
+    assert_eq!(sends[0].body["text"].as_str(), Some(ANSWER));
+
+    run.terminate();
+    let status = run.wait_exit(STOP_BOUND).await;
+    assert!(status.success(), "SIGTERM ends the process cleanly");
+
+    // The scan: the token the run provably used reaches no artifact.
+    for name in ["assistant.log", "stderr.txt", "store.db"] {
+        assert_absent(&scratch.path(name), MIRROR_TOKEN, "the mirror token");
+    }
+    for suffix in ["-wal", "-shm"] {
+        assert_absent_if_present(
+            &scratch.path(&format!("store.db{suffix}")),
+            MIRROR_TOKEN,
+            "the mirror token",
+        );
+    }
+}
+
+/// The forge endpoint, driven through the binary (AC7): the `forge` key in
+/// the configuration's endpoints table parses and reaches the commit lookup
+/// — the scripted completions server makes the process's model call it, and
+/// the scripted forge receives the request at the Forgejo path, with no
+/// authorization header, before the closing prose reaches the chat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_forge_endpoint_reaches_the_commit_lookup() {
+    let telegram = TelegramServer::start().await;
+    let completions = CompletionsServer::start_scripted(Some((
+        "lookup_commit".into(),
+        "{\"repository\":\"android_manifest\",\"reference\":\"deadbeef\"}".into(),
+    )))
+    .await;
+    let forge = LookupServer::start(json!({
+        "sha": "deadbeef00112233445566778899aabbccddeeff",
+        "html_url": "https://example.invalid/commit/deadbeef",
+        "commit": {
+            "message": "Track the manifest",
+            "author": { "name": "A. Committer", "date": "2026-08-17T01:23:26+02:00" }
+        }
+    }))
+    .await;
+    let scratch = Scratch::new("forge");
+    let config = configuration(
+        &scratch,
+        &telegram.root(),
+        &completions.base(),
+        &ConfigOptions {
+            forge_root: Some(forge.base()),
+            ..ConfigOptions::default()
+        },
+    );
+
+    telegram.push_update(private_update(1, 42, "what changed?"));
+    let mut run = BinaryRun::spawn(
+        &[&config],
+        &[("PROCESS_TEST_BOT_TOKEN", TOKEN)],
+        &scratch.path("stderr.txt"),
+    );
+
+    let requests = forge.await_requests(1).await;
+    assert_eq!(
+        requests[0].path, "/api/v1/repos/halogenOS/android_manifest/git/commits/deadbeef",
+        "the configured forge endpoint reaches the commit lookup's dialect path"
+    );
+    assert_eq!(
+        requests[0].authorization, None,
+        "the forge is asked unauthenticated"
+    );
+    let sends = telegram.await_recorded("sendMessage", 1).await;
+    assert_eq!(sends[0].body["text"].as_str(), Some(ANSWER));
+
+    run.terminate();
+    assert!(run.wait_exit(STOP_BOUND).await.success());
 }
 
 /// The protection budget, driven through the binary (AC8): with the

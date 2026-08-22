@@ -10,7 +10,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use agent_ledger::{EventBus, ProviderRegistry, Store, ToolRegistry};
+use agent_ledger::{EventBus, ProviderRegistry, Store};
 use assistant_core::provider::MemoryConfiguredProvider;
 use assistant_core::schema::store_config;
 use assistant_core::{Assistant, ChannelKind, ModelBinding, ReplyKind};
@@ -142,7 +142,7 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
             store.clone(),
             Arc::new(EventBus::new()),
             Arc::new(providers),
-            Arc::new(ToolRegistry::new()),
+            assistant_core::tools::ToolSet::new(),
             ModelBinding {
                 provider_instance: "openrouter-1".into(),
                 provider_display_name: "OpenRouter".into(),

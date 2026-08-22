@@ -174,15 +174,16 @@ mechanisms above. The adapter is untouched.
   no tool call (declined, recorded, the turn completes); a created conversation's
   palette block names exactly the two tools; direct and group conversations get
   the same palette — pinned.
-- **AC5** Admission: a member-provenance call is admitted for a member-level
-  tool; a call whose provenance is below a raised requirement (a test-registered
-  admin-level tool) is declined as a recorded error whose text names the rule and
-  the reading, and the tool body provably never runs — pinned.
-- **AC6** The provenance walk: a member-summoned turn with an admin message
-  absorbed mid-turn still reads member (no escalation); an admin-summoned turn
-  with a member message absorbed reads member (the minimum, over-decline
-  accepted and asserted as the documented direction); a pre-migration-shaped
-  null-stamp message folds to its sender authority — pinned.
+- **AC5** (amended 2026-08-22, after the second verification refuted the
+  ledger-shape walk) Admission enforces the palette; authority enforcement is
+  structural: tool registration refuses any tool whose required authority is
+  above member, pinned by a test that attempts to register an admin-level tool
+  and asserts the refusal names the floor and decision 0043's closure. The
+  refused registration provably never reaches the registry.
+- **AC6** (amended likewise) The interim provenance walk is REMOVED, not
+  fenced: no walk code remains, the stamp keeps unit 4's tail-only read, and
+  the unit-4 protection suite passes unchanged. The framework's dispatch
+  anchor is recorded as the mechanism that lifts the floor.
 - **AC7** Configuration: base URLs default to the real hosts and override for
   tests; the optional token flows to the mirror requests' authorization header
   (absent token sends no header) and joins the secret scans including the

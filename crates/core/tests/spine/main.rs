@@ -8,17 +8,21 @@
 //! registry), addressing (the answer-due stamp, the notice, re-engagement),
 //! protection (the budgets, the limited stamp, the debt authority),
 //! projection (role alternation under erasure), erasure with its stream
-//! ordering, the end-to-end turn, and — behind the openrouter feature — the
-//! real `OpenRouter` module against a loopback server.
+//! ordering, the end-to-end turn, tools (the lookups against the scripted
+//! forge and mirror in `lookup_wire`, the palette, admission over the
+//! registration floor), and — behind the openrouter feature — the real
+//! `OpenRouter` module against a loopback server.
 
 mod addressing;
 mod assembly;
 mod end_to_end;
 mod erasure;
 mod erasure_streams;
+mod lookup_wire;
 #[cfg(feature = "openrouter")]
 mod openrouter;
 mod projection;
 mod protection;
 mod storage;
 mod support;
+mod tools;

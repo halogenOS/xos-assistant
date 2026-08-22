@@ -81,8 +81,8 @@ async fn an_erased_principal_id_is_never_reissued() {
         .expect("the group message from B ingests");
     // Every turn settles before the erasure, so no stream is open while the
     // direct conversation under it goes away.
-    support::settle(store, receipt_b.conversation_id, "B's direct turn", 3).await;
-    support::settle(store, receipt_group.conversation_id, "B's group turn", 3).await;
+    support::settle(store, receipt_b.conversation_id, "B's direct turn", 4).await;
+    support::settle(store, receipt_group.conversation_id, "B's group turn", 4).await;
 
     assert_eq!(
         assistant
@@ -143,7 +143,7 @@ async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
         store,
         receipt_a.conversation_id,
         "A's answered direct turn",
-        3,
+        4,
     )
     .await;
 
@@ -170,10 +170,10 @@ async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
         store,
         receipt_b.conversation_id,
         "B's answered direct turn",
-        3,
+        4,
     )
     .await;
-    support::settle(store, conv_group, "the first group turn", 3).await;
+    support::settle(store, conv_group, "the first group turn", 4).await;
     assistant
         .ingest(support::inbound(
             &group,
@@ -183,7 +183,7 @@ async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
         ))
         .await
         .expect("the group message from B ingests");
-    support::settle(store, conv_group, "the second group turn", 5).await;
+    support::settle(store, conv_group, "the second group turn", 6).await;
 
     Staged {
         principal_a: receipt_a.principal_id,
@@ -262,7 +262,7 @@ async fn erasing_one_principal_reaches_its_prose_and_nothing_else() {
     let b_blocks = store.list_blocks(conv_b).await.expect("B's ledger reads");
     assert_eq!(
         b_blocks.len(),
-        3,
+        4,
         "B's direct conversation keeps its blocks"
     );
 

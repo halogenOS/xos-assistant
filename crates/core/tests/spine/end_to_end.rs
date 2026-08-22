@@ -96,22 +96,23 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
     assert_eq!(reply.channel, key);
     assert_eq!(reply.text, answer);
 
-    // The ledger, block by block: the recorded prompt, the recorded message,
-    // then the answer.
+    // The ledger, block by block: the recorded prompt, the palette, the
+    // recorded message, then the answer.
     let blocks = await_ledger(&fixture.store, conv, "the answered turn", |blocks| {
-        blocks.len() == 3
+        blocks.len() == 4
             && blocks
                 .last()
                 .is_some_and(|b| b.block_type == "text" && b.fields["content"] == json!(answer))
     })
     .await;
     assert_eq!(blocks[0].block_type, "system_prompt");
-    assert_eq!(blocks[1].block_type, CHAT_MESSAGE_KIND);
-    assert_eq!(blocks[1].role, Some(Role::User));
-    assert_eq!(blocks[1].fields["text"], json!("What is the plan?"));
-    assert_eq!(blocks[1].fields["authority"], json!("member"));
-    assert_eq!(blocks[1].fields["origin"], json!("origin-7"));
-    match AssistantKind::from_block(&blocks[1]) {
+    assert_eq!(blocks[1].block_type, "tool_palette");
+    assert_eq!(blocks[2].block_type, CHAT_MESSAGE_KIND);
+    assert_eq!(blocks[2].role, Some(Role::User));
+    assert_eq!(blocks[2].fields["text"], json!("What is the plan?"));
+    assert_eq!(blocks[2].fields["authority"], json!("member"));
+    assert_eq!(blocks[2].fields["origin"], json!("origin-7"));
+    match AssistantKind::from_block(&blocks[2]) {
         AssistantKind::ChatMessage(recorded) => {
             assert_eq!(recorded.text.as_deref(), Some("What is the plan?"));
             assert_eq!(recorded.authority, Some(Authority::Member));
@@ -126,9 +127,11 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
                 "the ledger records the platform's send time, not its own clock"
             );
         }
-        AssistantKind::Core(_) => panic!("the stored row resolved through the delegate"),
+        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) => {
+            panic!("the stored row resolved through the delegate")
+        }
     }
-    assert_eq!(blocks[2].role, Some(Role::Assistant));
+    assert_eq!(blocks[3].role, Some(Role::Assistant));
 
     // One owed turn, one request, and the projection carried the message's
     // text to the provider.
@@ -182,7 +185,7 @@ async fn assert_title_derived_and_off_the_edge(
         .expect("the ledger reads");
     assert_eq!(
         blocks.len(),
-        3,
+        4,
         "the title lives outside the conversation ledger"
     );
     assert!(
@@ -264,19 +267,19 @@ async fn two_channels_stay_two_conversations() {
         .expect("the conversation list reads");
     assert_eq!(conversations.len(), 2);
     for conversation in &conversations {
-        let blocks = support::settle(&fixture.store, conversation.id, "an answered turn", 3).await;
-        let text = support::block_text(&blocks[1], "text");
+        let blocks = support::settle(&fixture.store, conversation.id, "an answered turn", 4).await;
+        let text = support::block_text(&blocks[2], "text");
         let other = if text == "the first channel's question" {
-            assert_eq!(blocks[1].fields["authority"], json!("member"));
+            assert_eq!(blocks[2].fields["authority"], json!("member"));
             "the second channel's question"
         } else {
             assert_eq!(text, "the second channel's question");
-            assert_eq!(blocks[1].fields["authority"], json!("admin"));
+            assert_eq!(blocks[2].fields["authority"], json!("admin"));
             "the first channel's question"
         };
-        assert_eq!(support::block_text(&blocks[2], "content"), answer_to(&text));
+        assert_eq!(support::block_text(&blocks[3], "content"), answer_to(&text));
         assert!(
-            !support::block_text(&blocks[2], "content").contains(other),
+            !support::block_text(&blocks[3], "content").contains(other),
             "an answer never carries the other channel's text"
         );
     }
@@ -368,11 +371,11 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
 
     // The ledger settles with the absorbed message BEFORE the answer that
     // streamed over it, and no second turn fires for it.
-    let blocks = support::settle(&fixture.store, conv, "the settled first turn", 4).await;
-    assert_eq!(support::block_text(&blocks[1], "text"), "message one");
-    assert_eq!(support::block_text(&blocks[2], "text"), "message two");
+    let blocks = support::settle(&fixture.store, conv, "the settled first turn", 5).await;
+    assert_eq!(support::block_text(&blocks[2], "text"), "message one");
+    assert_eq!(support::block_text(&blocks[3], "text"), "message two");
     assert_eq!(
-        support::block_text(&blocks[3], "content"),
+        support::block_text(&blocks[4], "content"),
         answer_to("message one")
     );
     assert_eq!(
@@ -394,12 +397,13 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.text, answer_to("message three"));
 
-    let blocks = support::settle(&fixture.store, conv, "the settled second turn", 6).await;
+    let blocks = support::settle(&fixture.store, conv, "the settled second turn", 7).await;
     let shape: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
     assert_eq!(
         shape,
         vec![
             "system_prompt",
+            "tool_palette",
             CHAT_MESSAGE_KIND,
             CHAT_MESSAGE_KIND,
             "text",
@@ -511,6 +515,7 @@ fn a_restarted_process_answers_a_known_channel() {
             shape,
             vec![
                 "system_prompt",
+                "tool_palette",
                 CHAT_MESSAGE_KIND,
                 "text",
                 CHAT_MESSAGE_KIND,

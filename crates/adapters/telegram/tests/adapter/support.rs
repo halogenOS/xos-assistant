@@ -16,7 +16,7 @@ use agent_ledger::providers::{
 };
 use agent_ledger::{
     Block, EventBus, LlmError, ProviderModule, ProviderRegistry, ProviderRequest, ProviderResponse,
-    StopReason, Store, StoreError, StreamEvent, ToolRegistry,
+    StopReason, Store, StoreError, StreamEvent,
 };
 use assistant_adapter_telegram::{Config, Sleep, TelegramAdapter};
 use assistant_core::schema::store_config;
@@ -93,12 +93,36 @@ impl Drop for TempStateFile {
     }
 }
 
+/// One tool-call script for the tool round-trip tests: the opening turn
+/// calls the tool with this input — after the optional narration — and the
+/// turn whose request carries the answered call closes with
+/// [`TOOL_CLOSING_ANSWER`]. Patterned on the framework's tool-call event
+/// shapes and their production order — the message end first, then the
+/// drained tool lifecycle — written here per decision 0009: this unit's own
+/// scripted provider, not an import.
+#[derive(Clone)]
+pub struct ToolScript {
+    /// The registered tool name the opening turn calls.
+    pub tool: String,
+    /// The call's input JSON, non-empty by the script's contract.
+    pub input: String,
+    /// Prose streamed before the call, for the narration variant.
+    pub narration: Option<String>,
+}
+
+/// The closing prose a tool-scripted turn streams once its request carries
+/// the answered call — the cue itself is the proof the result reached the
+/// model's second request.
+pub const TOOL_CLOSING_ANSWER: &str = "The scripted closing answer.";
+
 /// The scripted provider: answers every turn with [`answer_to`] the newest
 /// projected message's text and every title derivation with [`TITLE`],
 /// deterministically. A scripted failure count makes the next turns fail
-/// with a stream error instead.
+/// with a stream error instead; a tool script replaces the prose turns with
+/// the call-then-close shape.
 struct ScriptedChat {
     failures: Arc<AtomicUsize>,
+    tool_script: Option<ToolScript>,
 }
 
 impl ProviderModule for ScriptedChat {
@@ -140,7 +164,9 @@ impl ProviderModule for ScriptedChat {
         let (request_tx, mut requests) = mpsc::unbounded_channel();
         let (response_tx, responses) = mpsc::unbounded_channel();
         let failures = Arc::clone(&self.failures);
+        let tool_script = self.tool_script.clone();
         tokio::spawn(async move {
+            let mut calls = 0_usize;
             while let Some(request) = requests.recv().await {
                 let ProviderRequest::Stream { messages, .. } = request else {
                     continue;
@@ -162,6 +188,50 @@ impl ProviderModule for ScriptedChat {
                         response_tx.send(ProviderResponse::Error("scripted stream failure".into()));
                     continue;
                 }
+                if let Some(script) = &tool_script {
+                    // Scripted by ledger content: a request already carrying
+                    // an answered call closes with the fixed prose, the
+                    // opening turn narrates (when scripted) and calls.
+                    if messages.iter().any(carries_tool_result) {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: TOOL_CLOSING_ANSWER.into(),
+                        }));
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: StopReason::EndTurn,
+                            }));
+                        continue;
+                    }
+                    if let Some(narration) = &script.narration {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: narration.clone(),
+                        }));
+                    }
+                    calls += 1;
+                    // The production order: every provider emits its tool
+                    // lifecycle AFTER `MessageEnd`, which finalizes any
+                    // narration first — so the ledger holds the narration
+                    // text before the tool-call block.
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                        usage: agent_ledger::providers::Usage::default(),
+                        stop_reason: StopReason::ToolUse,
+                    }));
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
+                        id: format!("call-{calls}"),
+                        name: script.tool.clone(),
+                    }));
+                    let _ =
+                        response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseInputDelta {
+                            json: script.input.clone(),
+                        }));
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                    continue;
+                }
                 let answer = answer_to(&messages.last().map(message_text).unwrap_or_default());
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
@@ -175,6 +245,13 @@ impl ProviderModule for ScriptedChat {
         });
         (request_tx, responses)
     }
+}
+
+/// Whether one projected message carries a tool-result part — the scripted
+/// ledger-content cue for the closing prose.
+fn carries_tool_result(message: &Message) -> bool {
+    matches!(&message.content, MessageContent::Parts(parts)
+        if parts.iter().any(|part| matches!(part, WirePart::ToolResult { .. })))
 }
 
 /// Whether one projected message carries this text, in either content mode.
@@ -212,20 +289,41 @@ pub struct Fixture {
     pub failures: Arc<AtomicUsize>,
 }
 
+/// A loopback address nothing listens on: a tool constructed over it can be
+/// registered — and its palette entry recorded — without any test traffic
+/// ever succeeding against it.
+pub const UNROUTABLE: &str = "http://127.0.0.1:1";
+
 /// Assemble a running assistant over a fresh in-memory store with the
-/// scripted provider registered.
+/// scripted provider registered, under the suites' one shared default tool
+/// set: the core's production lookups, pointed at the unroutable loopback
+/// address — the same answer the core suite's default fixture gives.
 pub async fn start_assistant() -> Fixture {
+    start_assistant_with_tools(
+        None,
+        assistant_core::tools::ToolSet::production_lookups(UNROUTABLE, UNROUTABLE, None),
+    )
+    .await
+}
+
+/// Assemble a running assistant with the given tool script and tool set —
+/// the seam the tool round-trip tests use.
+pub async fn start_assistant_with_tools(
+    tool_script: Option<ToolScript>,
+    tools: assistant_core::tools::ToolSet,
+) -> Fixture {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let failures = Arc::new(AtomicUsize::new(0));
     let mut providers = ProviderRegistry::new();
     providers.register(Box::new(ScriptedChat {
         failures: Arc::clone(&failures),
+        tool_script,
     }));
     let assistant = Assistant::start(
         store.clone(),
         Arc::new(EventBus::new()),
         Arc::new(providers),
-        Arc::new(ToolRegistry::new()),
+        tools,
         ModelBinding {
             provider_instance: "scripted-1".into(),
             provider_display_name: "Scripted".into(),

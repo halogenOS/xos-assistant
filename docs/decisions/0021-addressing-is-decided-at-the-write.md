@@ -25,6 +25,17 @@ recorded once at insert, in the access-model tradition of provenance stamps; it 
 not a derivable-fact column, because the per-block hook that consumes it cannot fold
 history. Both columns are structure, not personal data — erasure leaves them.
 
+Refined 2026-08-22 and closed the same day: a machinery-walking tail read was
+implemented so absorbed addressed messages would chain the summoner's debt for
+tool provenance, and was then refuted by the unit's second verification —
+stored shape cannot tell a turn's narration from a turn boundary, and the
+walk's cap invented debts for bystanders. The stamp keeps the tail-only read:
+an addressed message absorbed mid-turn opens a fresh debt at its own
+authority, which is correct for ANSWERING (it is answered by the next turn)
+and is no longer load-bearing for provenance, since tool registration floors
+required authority at member until the framework's dispatch anchor ships
+(decision 0043's closure).
+
 The stamp's reading is shared with the awaiting hook, and an erased tail owes
 nothing: a message whose text was erased (decision 0012) carries no debt to
 propagate, so erasure cancels a pending answer instead of summoning a turn over an
