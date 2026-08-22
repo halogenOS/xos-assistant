@@ -85,3 +85,21 @@ the runtime — and its development section adds `net` and `io-util` for the
 process-level tests' scripted servers —
 features of a crate reviewed above, staying in the sections that need them because
 Cargo unifies features across a dependency graph.
+
+## 2026-08-22 — the tools
+
+The two lookup tools perform bounded HTTP GETs from the core, which gives the core its
+first network dependency. Current version from the crates.io API, advisory check from the
+OSV API, both queried on the day of this entry — before the manifest named the crate.
+
+| Crate | Version | Latest at check | Advisories | Why it is here |
+|---|---|---|---|---|
+| reqwest | 0.13.4 | 0.13.4 | none | The lookup tools' HTTP client — the same crate, at the same major version, that the framework and the adapter already run their wires over, so the workspace keeps one HTTP stack and one TLS story. Only the `json` feature is named; the crate's own default supplies TLS with a vendored provider, per the adapter entry's reasoning. |
+
+Resolved to the current latest at the time of the check; the OSV query for the exact
+version returned no advisory.
+
+**The test-only additions.** The suites' scripted forge and mirror servers are plain
+listeners on the loopback interface written against tokio's own networking, which the
+core's and the binary's development sections already enable — no new crate and no new
+feature arrives for them.

@@ -11,9 +11,10 @@ use agent_ledger::providers::{
 };
 use agent_ledger::{
     Block, CoreEvent, EventBus, LlmError, ProviderModule, ProviderRegistry, ProviderRequest,
-    ProviderResponse, StopReason, Store, StoreError, StreamEvent, ToolRegistry,
+    ProviderResponse, StopReason, Store, StoreError, StreamEvent,
 };
 use assistant_core::schema::store_config;
+use assistant_core::tools::ToolSet;
 use assistant_core::{
     Assistant, Authority, Budget, ChannelKey, ChannelKind, InboundMessage, ModelBinding,
     OutboundReply, ProtectionConfig, SenderIdentity,
@@ -120,7 +121,7 @@ impl TurnHold {
 }
 
 /// What a test observes of the scripted provider: turn count, every turn
-/// request's projected messages, and the failure script.
+/// request's projected messages, the failure script, and the echo count.
 #[derive(Clone)]
 pub struct ScriptHandle {
     pub turns: Arc<AtomicUsize>,
@@ -128,9 +129,24 @@ pub struct ScriptHandle {
     /// How many upcoming turns fail with a scripted stream error before the
     /// script answers normally again.
     pub failures: Arc<AtomicUsize>,
+    /// How many requests the tool providers answered as redelivery echoes —
+    /// the framework's duplicate-turn redispatch, observed. The ignored
+    /// canary asserts this stays zero; while the framework defect stands it
+    /// does not.
+    pub echoes: Arc<AtomicUsize>,
 }
 
 impl ScriptHandle {
+    /// A fresh handle, all observations at zero.
+    fn fresh() -> Self {
+        Self {
+            turns: Arc::new(AtomicUsize::new(0)),
+            seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+            failures: Arc::new(AtomicUsize::new(0)),
+            echoes: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
     /// Script the next `count` turns to fail with a stream error.
     pub fn fail_next_turns(&self, count: usize) {
         self.failures.store(count, Ordering::SeqCst);
@@ -211,11 +227,7 @@ where
 /// text, every title derivation with [`TITLE`], deterministically, so
 /// turn-count and block-by-block assertions stay exact.
 pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule>, ScriptHandle) {
-    let handle = ScriptHandle {
-        turns: Arc::new(AtomicUsize::new(0)),
-        seen: Arc::new(std::sync::Mutex::new(Vec::new())),
-        failures: Arc::new(AtomicUsize::new(0)),
-    };
+    let handle = ScriptHandle::fresh();
     let script = handle.clone();
     let provider = provider_stub("Scripted", "answers from a script", move || {
         let (request_tx, mut requests) = mpsc::unbounded_channel();
@@ -283,6 +295,315 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
         (request_tx, responses)
     });
     (provider, handle)
+}
+
+/// One tool-call script: what the opening turn calls, with what input, and
+/// whether prose narrates before the call. Patterned on the framework's own
+/// tool-call event shapes and their production order: the message end with
+/// the tool-use stop reason comes first, then the drained tool lifecycle —
+/// the input as streamed deltas closed by the terminal end.
+#[derive(Clone)]
+pub struct ToolScript {
+    /// The registered tool name the opening turn calls.
+    pub tool: String,
+    /// The call's input JSON, non-empty by the script's contract.
+    pub input: String,
+    /// Prose streamed before the call, for the narration variant.
+    pub narration: Option<String>,
+}
+
+/// The closing prose the tool script streams once a request carries an
+/// answered call.
+pub const CLOSING_ANSWER: &str = "The scripted closing answer.";
+
+/// Build the tool-scripted provider: the opening turn answers with one tool
+/// call carrying the script's input, and every request already carrying an
+/// answered call — a result or a recorded decline alike, both projecting as
+/// tool-result parts — answers with [`CLOSING_ANSWER`]. Scripted by ledger
+/// content, not arrival order, so reruns and absorbed turns stay exact.
+/// With a hold, the opening turn announces itself after its narration and
+/// before the call events, which is what lets a test absorb a message
+/// mid-turn, provably before the call block exists.
+///
+/// The call round plays once. A request repeating an already-played call
+/// round is the framework's duplicate-turn redispatch — a defect, filed on
+/// the framework improvements list: a stale owed-turn signal fires between
+/// the call round's stream end and its call-block insert and dispatches a
+/// second model turn over the mid-turn ledger. The tolerance here answers
+/// that echo as an empty turn, recorded nowhere and counted on the
+/// handle's `echoes`, so it can neither double the scripted call nor skew
+/// a test's request count; the ignored canary in the tools suite flips
+/// when the framework fix ships.
+pub fn tool_scripted_provider(
+    script: ToolScript,
+    hold: Option<Arc<TurnHold>>,
+) -> (Box<dyn ProviderModule>, ScriptHandle) {
+    let handle = ScriptHandle::fresh();
+    let observed = handle.clone();
+    let provider = provider_stub(
+        "Scripted tools",
+        "calls one tool from a script",
+        move || {
+            let (request_tx, mut requests) = mpsc::unbounded_channel();
+            let (response_tx, responses) = mpsc::unbounded_channel();
+            let turns = Arc::clone(&observed.turns);
+            let seen = Arc::clone(&observed.seen);
+            let echoes = Arc::clone(&observed.echoes);
+            let script = script.clone();
+            let hold = hold.clone();
+            tokio::spawn(async move {
+                let mut call_round_played = false;
+                while let Some(request) = requests.recv().await {
+                    let ProviderRequest::Stream { messages, .. } = request else {
+                        continue;
+                    };
+                    if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: TITLE.into(),
+                        }));
+                        let _ = response_tx.send(ProviderResponse::Done);
+                        continue;
+                    }
+                    let answered = messages.iter().any(carries_tool_result);
+                    if !answered && call_round_played {
+                        // The framework's duplicate-turn redispatch (the
+                        // improvements-list item): tolerated as an empty
+                        // turn, recorded nowhere, counted for the canary.
+                        echoes.fetch_add(1, Ordering::SeqCst);
+                        send_empty_turn(&response_tx);
+                        continue;
+                    }
+                    let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
+                    seen.lock().unwrap().push(messages);
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
+                    if answered {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: CLOSING_ANSWER.into(),
+                        }));
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: StopReason::EndTurn,
+                            }));
+                        continue;
+                    }
+                    call_round_played = true;
+                    if let Some(narration) = &script.narration {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: narration.clone(),
+                        }));
+                    }
+                    if let Some(hold) = &hold {
+                        let _ = hold.started_tx.send(turn);
+                        match hold.permits.acquire().await {
+                            Ok(permit) => permit.forget(),
+                            // The hold closed with the test; end the task.
+                            Err(_) => break,
+                        }
+                    }
+                    // The production order: every provider emits its tool
+                    // lifecycle AFTER `MessageEnd`, which finalizes any
+                    // narration first — so the ledger holds the narration
+                    // text before the tool-call block.
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                        usage: agent_ledger::providers::Usage::default(),
+                        stop_reason: StopReason::ToolUse,
+                    }));
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
+                        id: format!("call-{turn}"),
+                        name: script.tool.clone(),
+                    }));
+                    let _ =
+                        response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseInputDelta {
+                            json: script.input.clone(),
+                        }));
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                }
+            });
+            (request_tx, responses)
+        },
+    );
+    (provider, handle)
+}
+
+/// Whether one projected message carries a tool-result part — the scripted
+/// ledger-content cue for the closing prose. A recorded decline projects
+/// the same part shape, so a declined call closes a turn the same way.
+pub fn carries_tool_result(message: &Message) -> bool {
+    matches!(&message.content, MessageContent::Parts(parts)
+        if parts.iter().any(|part| matches!(part, WirePart::ToolResult { .. })))
+}
+
+/// One scripted round of the multi-round tool provider: what the round
+/// narrates, whether it holds for the test, and which tool it calls.
+#[derive(Clone, Copy)]
+pub struct Round {
+    /// Prose streamed before the round's action, finalized by the message
+    /// end ahead of any tool events, per the production order.
+    pub narration: Option<&'static str>,
+    /// Whether the round announces on the hold and waits for one release
+    /// in the window between the message end that finalized its narration
+    /// and its tool events — where the ledger's tail is the finalized
+    /// narration text, and where the redispatch canary absorbs a message.
+    pub hold_after_finalize: bool,
+    /// The registered tool the round calls with a fixed probe input.
+    /// `None` closes the turn with [`CLOSING_ANSWER`]; a closing round
+    /// names no narration.
+    pub call: Option<&'static str>,
+}
+
+/// Build a provider playing one scripted round per model request, indexed
+/// by how many resolved calls the projected request already carries —
+/// scripted by ledger content, like [`tool_scripted_provider`], so reruns
+/// stay exact. Every hold announces its round on the shared [`TurnHold`]
+/// and waits for one release, in round order, so a test absorbs messages
+/// at exactly the scripted windows.
+///
+/// Each round plays once. A repeated request for an already-played round
+/// is the framework's duplicate-turn redispatch — the same defect
+/// [`tool_scripted_provider`] tolerates, filed on the framework
+/// improvements list: a message absorbed between a narration's finalize
+/// and the call's insert re-signals an owed turn against the mid-turn
+/// ledger. The repeat is answered as an empty turn that streams nothing
+/// and writes nothing, counted on the handle's `echoes`, so a replay can
+/// neither wedge a hold nor disturb the ledger under test; the ignored
+/// canary in the tools suite flips when the framework fix ships.
+pub fn round_scripted_provider(
+    rounds: Vec<Round>,
+    hold: Arc<TurnHold>,
+) -> (Box<dyn ProviderModule>, ScriptHandle) {
+    let handle = ScriptHandle::fresh();
+    let observed = handle.clone();
+    let rounds = Arc::new(rounds);
+    let provider = provider_stub(
+        "Scripted rounds",
+        "plays one scripted round per request",
+        move || {
+            let (request_tx, mut requests) = mpsc::unbounded_channel();
+            let (response_tx, responses) = mpsc::unbounded_channel();
+            let turns = Arc::clone(&observed.turns);
+            let seen = Arc::clone(&observed.seen);
+            let echoes = Arc::clone(&observed.echoes);
+            let rounds = Arc::clone(&rounds);
+            let hold = Arc::clone(&hold);
+            tokio::spawn(async move {
+                let mut played = std::collections::HashSet::new();
+                while let Some(request) = requests.recv().await {
+                    let ProviderRequest::Stream { messages, .. } = request else {
+                        continue;
+                    };
+                    if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: TITLE.into(),
+                        }));
+                        let _ = response_tx.send(ProviderResponse::Done);
+                        continue;
+                    }
+                    let resolved = tool_result_parts(&messages);
+                    if !played.insert(resolved) {
+                        // The framework's duplicate-turn redispatch (the
+                        // improvements-list item): this round already
+                        // played, so the repeat is tolerated as an empty
+                        // turn, recorded nowhere, counted for the canary.
+                        echoes.fetch_add(1, Ordering::SeqCst);
+                        send_empty_turn(&response_tx);
+                        continue;
+                    }
+                    let round = rounds[resolved.min(rounds.len() - 1)];
+                    turns.fetch_add(1, Ordering::SeqCst);
+                    seen.lock().unwrap().push(messages);
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
+                    if let Some(narration) = round.narration {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: narration.into(),
+                        }));
+                    }
+                    if let Some(tool) = round.call {
+                        // The production order: the message end finalizes
+                        // any narration before the tool lifecycle streams.
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: StopReason::ToolUse,
+                            }));
+                        if round.hold_after_finalize && !pause(&hold, resolved).await {
+                            break;
+                        }
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
+                                id: format!("call-{resolved}"),
+                                name: tool.into(),
+                            }));
+                        let _ = response_tx.send(ProviderResponse::Event(
+                            StreamEvent::ToolUseInputDelta {
+                                json: r#"{"ask":"run"}"#.into(),
+                            },
+                        ));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                    } else {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: CLOSING_ANSWER.into(),
+                        }));
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: StopReason::EndTurn,
+                            }));
+                    }
+                }
+            });
+            (request_tx, responses)
+        },
+    );
+    (provider, handle)
+}
+
+/// Answer one request as an empty turn: connected, then an immediate end
+/// with no content — the shape a redelivery echo gets, writing nothing to
+/// the ledger.
+fn send_empty_turn(response_tx: &mpsc::UnboundedSender<ProviderResponse>) {
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+        usage: agent_ledger::providers::Usage::default(),
+        stop_reason: StopReason::EndTurn,
+    }));
+}
+
+/// Announce the round on the hold and wait for the test's release; false
+/// when the hold closed with the test, which ends the provider task.
+async fn pause(hold: &TurnHold, round: usize) -> bool {
+    let _ = hold.started_tx.send(round);
+    match hold.permits.acquire().await {
+        Ok(permit) => {
+            permit.forget();
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// How many resolved calls a projected request carries: its tool-result
+/// parts, counted across every message — a recorded decline projects the
+/// same part shape, so a declined round counts like an answered one.
+fn tool_result_parts(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .map(|message| match &message.content {
+            MessageContent::Parts(parts) => parts
+                .iter()
+                .filter(|part| matches!(part, WirePart::ToolResult { .. }))
+                .count(),
+            MessageContent::Text(_) => 0,
+        })
+        .sum()
 }
 
 /// Whether one projected message carries this text, in either content mode —
@@ -354,13 +675,26 @@ pub async fn start_assistant_configured(
     hold: Option<Arc<TurnHold>>,
     protection: ProtectionConfig,
 ) -> Fixture {
-    let bus: Arc<EventBus<CoreEvent>> = Arc::new(EventBus::new());
     let (provider, script) = scripted_provider(hold);
+    start_assistant_full(store, provider, script, production_toolset(), protection).await
+}
+
+/// Assemble a running assistant over the given provider and tool set — the
+/// full seam the tool tests use, and what every narrower helper delegates
+/// to.
+pub async fn start_assistant_full(
+    store: Store,
+    provider: Box<dyn ProviderModule>,
+    script: ScriptHandle,
+    tools: ToolSet,
+    protection: ProtectionConfig,
+) -> Fixture {
+    let bus: Arc<EventBus<CoreEvent>> = Arc::new(EventBus::new());
     let assistant = Assistant::start(
         store.clone(),
         Arc::clone(&bus),
         registry_of(provider),
-        Arc::new(ToolRegistry::new()),
+        tools,
         binding(),
         SYSTEM_PROMPT.into(),
         protection,
@@ -373,6 +707,20 @@ pub async fn start_assistant_configured(
         store,
         bus,
     }
+}
+
+/// A loopback address nothing listens on: a tool constructed over it can be
+/// registered — and its palette entry recorded — without any test traffic
+/// ever succeeding against it.
+pub const UNROUTABLE: &str = "http://127.0.0.1:1";
+
+/// The production tool set, exactly as the binary assembles it — the one
+/// shared default the core defines — with the network pointed at the
+/// unroutable loopback address, so a suite that never calls a tool cannot
+/// generate traffic. Tests that execute a tool build their own set against
+/// a scripted server.
+pub fn production_toolset() -> ToolSet {
+    ToolSet::production_lookups(UNROUTABLE, UNROUTABLE, None)
 }
 
 /// A protection configuration from two optional `(answers, window seconds)`

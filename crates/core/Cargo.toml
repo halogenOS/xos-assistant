@@ -19,6 +19,10 @@ openrouter = ["agent-ledger/openrouter"]
 [dependencies]
 agent-ledger = { path = "../../../agent-ledger/crates/agent-ledger" }
 chrono = "0.4"
+# The lookup tools' HTTP client — the framework's own major version, so the
+# workspace keeps one HTTP stack and one TLS story. Recorded in
+# docs/dependency-review.md before this manifest named it.
+reqwest = { version = "0.13", features = ["json"] }
 # The framework's consumer seam hands closures a `rusqlite::Connection` without
 # re-exporting the crate; the direct dependency stays on the framework's major
 # version so the two name one type.

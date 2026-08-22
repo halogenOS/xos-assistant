@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use agent_ledger::store::domain_run;
-use agent_ledger::{CoreEvent, EventBus, ProviderModule, Store, StreamEvent, ToolRegistry};
+use agent_ledger::{CoreEvent, EventBus, ProviderModule, Store, StreamEvent};
 use assistant_core::schema::store_config;
 use assistant_core::{Assistant, ChannelKind, CoreError, ErasureOutcome, schema};
 use serde_json::json;
@@ -110,7 +110,7 @@ async fn an_idle_erasure_pays_no_wait() {
         &fixture.store,
         receipt.conversation_id,
         "the settled turn",
-        3,
+        4,
     )
     .await;
 
@@ -180,7 +180,7 @@ async fn a_stream_that_never_settles_fails_the_erasure_loudly_deleting_nothing()
         store.clone(),
         Arc::new(EventBus::new()),
         support::registry_of(deaf_provider()),
-        Arc::new(ToolRegistry::new()),
+        assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
         assistant_core::ProtectionConfig::default(),
@@ -273,7 +273,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
             store.clone(),
             Arc::new(EventBus::new()),
             support::registry_of(deaf_provider()),
-            Arc::new(ToolRegistry::new()),
+            assistant_core::tools::ToolSet::new(),
             support::binding(),
             support::SYSTEM_PROMPT.into(),
             assistant_core::ProtectionConfig::default(),
@@ -301,7 +301,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
         store.clone(),
         Arc::new(EventBus::new()),
         support::registry_of(deaf_provider()),
-        Arc::new(ToolRegistry::new()),
+        assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
         assistant_core::ProtectionConfig::default(),

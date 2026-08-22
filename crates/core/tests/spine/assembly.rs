@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use agent_ledger::{CoreEvent, EventBus, Store, ToolRegistry};
+use agent_ledger::{CoreEvent, EventBus, Store};
 use assistant_core::schema::store_config;
 use assistant_core::{Assistant, ChannelKind, CoreError};
 
@@ -25,7 +25,7 @@ async fn a_binding_with_an_unregistered_vendor_is_refused_at_start() {
         store,
         bus,
         support::registry_of(provider),
-        Arc::new(ToolRegistry::new()),
+        assistant_core::tools::ToolSet::new(),
         binding,
         support::SYSTEM_PROMPT.into(),
         assistant_core::ProtectionConfig::default(),
@@ -53,7 +53,7 @@ async fn a_store_opened_without_the_configuration_is_refused_at_start() {
         store,
         bus,
         support::registry_of(provider),
-        Arc::new(ToolRegistry::new()),
+        assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
         assistant_core::ProtectionConfig::default(),

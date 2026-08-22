@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use agent_ledger::store::ProviderInstance;
 use agent_ledger::{
-    CoreEvent, EventBus, ProviderRegistry, Role, RuntimeContext, Store, ToolRegistry, spawn_reactor,
+    CoreEvent, EventBus, ProviderRegistry, Role, RuntimeContext, Store, spawn_reactor,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 
@@ -24,6 +24,7 @@ use crate::error::CoreError;
 use crate::kind::{self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage};
 use crate::message::{ChannelKey, ChannelKind, InboundMessage, OutboundReply};
 use crate::streams::StreamObserver;
+use crate::tools::{ToolSet, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
 use crate::{identity, mapping, outbound, streams};
 
 /// The model every new conversation is created under: one provider instance
@@ -133,6 +134,13 @@ pub struct Assistant {
     /// conversation's prompt exactly once, so an edited prompt reaches new
     /// conversations only.
     system_prompt: String,
+    /// The tool names every new conversation's palette block records —
+    /// exactly the set the assembly registered, derived from the one
+    /// [`ToolSet`] so the palette and the registry cannot name different
+    /// tools. Written at creation beside the system prompt; a conversation
+    /// created before the palette existed carries no block and admits
+    /// nothing.
+    palette: Vec<String>,
     /// The streaming state the erasure ordering reads; the observation's
     /// contract and its lossy edges are stated on the streams module.
     streams: Arc<StreamObserver>,
@@ -182,7 +190,7 @@ impl Assistant {
         store: Store,
         bus: Arc<EventBus<CoreEvent>>,
         providers: Arc<ProviderRegistry>,
-        tools: Arc<ToolRegistry<CoreEvent>>,
+        tools: ToolSet,
         binding: ModelBinding,
         system_prompt: String,
         protection: ProtectionConfig,
@@ -197,8 +205,12 @@ impl Assistant {
                 vendor: binding.vendor,
             });
         }
+        // One source for what tools exist: the registry the runtime resolves
+        // calls against and the palette every new conversation records are
+        // both derived from the set right here.
+        let (registry, palette) = tools.into_registry();
         let ctx: RuntimeContext<AssistantKind, CoreEvent> =
-            RuntimeContext::new(store, bus, providers, tools);
+            RuntimeContext::new(store, bus, providers, Arc::new(registry));
         ctx.store()
             .save_provider_instance(ProviderInstance {
                 id: binding.provider_instance.clone(),
@@ -212,6 +224,7 @@ impl Assistant {
             ctx,
             binding,
             system_prompt,
+            palette,
             streams,
             protection,
             stamp_lock: Mutex::new(()),
@@ -401,14 +414,16 @@ impl Assistant {
     }
 
     /// First message on a channel: create the conversation under the
-    /// assembly's binding, record the system prompt as its first block, and
-    /// claim the mapping.
+    /// assembly's binding, record the system prompt and the tool palette as
+    /// its first blocks, and claim the mapping. Direct and group channels
+    /// take the identical path, so both get the same palette.
     ///
     /// Two ingestions can race here; the mapping's claim decides, and the
-    /// loser's conversation is deleted — its prompt block with it — before
-    /// anything referenced it. Recording the prompt before the claim is what
-    /// makes it the winner's first block: the losing racer's message arrives
-    /// in the winning conversation only after the winner's prompt is in.
+    /// loser's conversation is deleted — its prompt and palette blocks with
+    /// it — before anything referenced it. Recording both before the claim
+    /// is what makes them the winner's first blocks: the losing racer's
+    /// message arrives in the winning conversation only after the winner's
+    /// records are in.
     async fn map_new_channel(
         &self,
         channel: &ChannelKey,
@@ -426,6 +441,15 @@ impl Assistant {
         store
             .insert_system_prompt(created, self.system_prompt.clone())
             .await?;
+        store
+            .append_consumer_block(
+                created,
+                None,
+                TOOL_PALETTE_KIND,
+                ToolPalette::stored_fields(&self.palette),
+                None,
+            )
+            .await?;
         let winner = mapping::claim(&store.tx(), channel, kind, created).await?;
         if winner != created {
             store.delete_conversation(created).await?;
@@ -440,7 +464,11 @@ impl Assistant {
     /// cancels, propagates nothing here either. The tail carrying the debt
     /// IS it being unanswered: an answer, a streaming tail or any later
     /// block would be the tail instead, and mid-turn absorption keeps its
-    /// own semantics for those. An owing tail hands over the authority its
+    /// own semantics for those — an addressed message absorbed mid-turn
+    /// opens a fresh debt at its own authority, correct for answering (the
+    /// next turn pays it) and consulted by nothing else, since tool
+    /// registration floors required authority at member (decisions 0021 and
+    /// 0043, closed 2026-08-22). An owing tail hands over the authority its
     /// debt carries, folded through the kind's pre-migration rule.
     async fn owing_tail_debt(
         &self,
@@ -454,7 +482,9 @@ impl Assistant {
             AssistantKind::ChatMessage(message) if message.owes_answer() => Some(kind::TailDebt {
                 authority: message.carried_debt_authority(),
             }),
-            AssistantKind::ChatMessage(_) | AssistantKind::Core(_) => None,
+            AssistantKind::ChatMessage(_)
+            | AssistantKind::Core(_)
+            | AssistantKind::ToolPalette(_) => None,
         })
     }
 

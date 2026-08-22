@@ -111,8 +111,9 @@ pub static PRINCIPAL_ADDRESSED_INDEX: LazyLock<String> =
 /// 0026's discipline: the shipped CREATE TABLE above stays as it was written
 /// and every schema change from the live-model unit on is a new entry here.
 /// The framework counts entry `i` of the domain's list as version `i + 1`,
-/// so a store created before this step holds version 3 and runs exactly
-/// this one at open, while a fresh store runs all four in order.
+/// so a store created before this step holds version 3 and runs the two
+/// appended steps — this one, then the palette step below — at open, while
+/// a fresh store runs all five in order.
 ///
 /// The step adds the two protection columns — both nullable, so every
 /// pre-existing row reads NULL in both, with their vocabularies closed by
@@ -134,6 +135,23 @@ static PROTECTION_STAMP_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The tool palette's content table — the appended migration step of the
+/// tools unit, per decision 0026's discipline. The table shape is the
+/// palette kind's descriptor contract: the block header row is the ledger
+/// entry, this row carries the admitted-names list. Structure, not personal
+/// data: erasure leaves it, and a direct conversation's deletion removes it
+/// through the block cascade like every content row.
+static TOOL_PALETTE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {table} (
+            block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {tools}  TEXT NOT NULL
+        );",
+        table = crate::tools::palette::TOOL_PALETTE_TABLE,
+        tools = crate::tools::palette::COLUMN_TOOLS,
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -148,6 +166,7 @@ pub fn store_config() -> StoreConfig {
                 PRINCIPALS_SCHEMA,
                 CHANNELS_SCHEMA.as_str(),
                 PROTECTION_STAMP_MIGRATION.as_str(),
+                TOOL_PALETTE_MIGRATION.as_str(),
             ],
         }],
     }

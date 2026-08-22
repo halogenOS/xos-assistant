@@ -18,10 +18,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use agent_ledger::{EventBus, ProviderModule, ProviderRegistry, Store, ToolRegistry};
+use agent_ledger::{EventBus, ProviderModule, ProviderRegistry, Store};
 use assistant_adapter_telegram::{AdapterError, TelegramAdapter};
 use assistant_core::provider::MemoryConfiguredProvider;
 use assistant_core::schema::store_config;
+use assistant_core::tools::ToolSet;
+use assistant_core::tools::commit;
+use assistant_core::tools::release;
 use assistant_core::{Assistant, CoreError, ModelBinding};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -136,6 +139,14 @@ fn run() -> Result<(), StartError> {
         .secrets
         .openrouter_key
         .resolve("openrouter_key")?;
+    // Optional by policy, not by leniency: a mirror_token entry that IS
+    // configured but cannot be read still refuses the start.
+    let mirror_token = configuration
+        .secrets
+        .mirror_token
+        .as_ref()
+        .map(|reference| reference.resolve("mirror_token"))
+        .transpose()?;
     let system_prompt = prompt::load(&configuration.prompt_dir)?;
     init_logging(&configuration.log)?;
     tokio::runtime::Builder::new_multi_thread()
@@ -147,6 +158,7 @@ fn run() -> Result<(), StartError> {
             protection,
             bot_token,
             openrouter_key,
+            mirror_token,
             system_prompt,
         ))
 }
@@ -187,6 +199,7 @@ async fn serve(
     protection: assistant_core::ProtectionConfig,
     bot_token: String,
     openrouter_key: String,
+    mirror_token: Option<String>,
     system_prompt: String,
 ) -> Result<(), StartError> {
     let store = Store::open_with(&configuration.store_path, store_config())?;
@@ -206,11 +219,27 @@ async fn serve(
     };
     let mut providers = ProviderRegistry::new();
     providers.register(Box::new(provider));
+    // The production lookups, at their real hosts unless the configuration
+    // overrides them; the palette every new conversation records names
+    // exactly this set.
+    let tools = ToolSet::production_lookups(
+        configuration
+            .endpoints
+            .forge
+            .clone()
+            .unwrap_or_else(|| commit::DEFAULT_BASE_URL.into()),
+        configuration
+            .endpoints
+            .mirror
+            .clone()
+            .unwrap_or_else(|| release::DEFAULT_BASE_URL.into()),
+        mirror_token,
+    );
     let assistant = Assistant::start(
         store,
         Arc::new(EventBus::new()),
         Arc::new(providers),
-        Arc::new(ToolRegistry::new()),
+        tools,
         binding,
         system_prompt,
         protection,
@@ -239,6 +268,16 @@ async fn serve(
         openrouter_endpoint = %configuration
             .endpoints
             .openrouter
+            .as_deref()
+            .unwrap_or("the real host"),
+        forge_endpoint = %configuration
+            .endpoints
+            .forge
+            .as_deref()
+            .unwrap_or("the real host"),
+        mirror_endpoint = %configuration
+            .endpoints
+            .mirror
             .as_deref()
             .unwrap_or("the real host"),
         "the assistant is up"

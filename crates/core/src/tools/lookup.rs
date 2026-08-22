@@ -1,0 +1,166 @@
+//! What the two lookups share: the project organization, the one-bounded-GET
+//! contract with the client that enforces it, the decode helpers, and the
+//! path-safety checks.
+
+use std::time::Duration;
+
+use serde_json::Value;
+
+/// The project organization both lookups address — one org on each host,
+/// same name on both.
+pub(crate) const ORGANIZATION: &str = "halogenOS";
+
+/// The largest answer body a lookup reads before refusing, in bytes. Both
+/// dialects answer one object; a body past this bound is not an answer this
+/// unit has a reading for.
+pub(crate) const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+/// The client every lookup performs its one bounded GET with: the given
+/// request timeout, and no redirect following — one GET means one, so a
+/// redirect answer surfaces as the tool error [`bounded_get`] names instead
+/// of becoming a second request to wherever the host points.
+///
+/// # Panics
+///
+/// If the HTTP client cannot be built — a broken TLS stack at construction,
+/// not a runtime condition.
+#[must_use]
+pub(crate) fn lookup_client(timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("the HTTP client builds")
+}
+
+/// One bounded GET: send, check the status, read the body up to
+/// [`MAX_BODY_BYTES`], decode JSON. Every failure is a plain sentence naming
+/// `who` — never a raw transport error, whose rendering is not this module's
+/// to bound, and never any header value.
+pub(crate) async fn bounded_get(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &[(&str, String)],
+    who: &str,
+) -> Result<Value, String> {
+    let mut request = client.get(url);
+    for (name, value) in headers {
+        request = request.header(*name, value);
+    }
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) if error.is_timeout() => {
+            return Err(format!("{who} did not answer within the time bound"));
+        }
+        Err(_) => return Err(format!("{who} could not be reached")),
+    };
+    let status = response.status();
+    if status.is_redirection() {
+        return Err(format!(
+            "{who} answered with a redirect, which this lookup does not follow"
+        ));
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!(
+            "{who} answered: not found — check the name and the reference"
+        ));
+    }
+    if !status.is_success() {
+        return Err(format!("{who} answered HTTP {}", status.as_u16()));
+    }
+    let mut body: Vec<u8> = Vec::new();
+    let mut response = response;
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if body.len() + chunk.len() > MAX_BODY_BYTES {
+                    return Err(format!("{who} answered more than the size bound"));
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(error) if error.is_timeout() => {
+                return Err(format!("{who} did not answer within the time bound"));
+            }
+            Err(_) => return Err(format!("the answer from {who} ended mid-body")),
+        }
+    }
+    serde_json::from_slice(&body).map_err(|_| format!("{who} answered something that is not JSON"))
+}
+
+/// One required string field out of a decoded answer, by JSON pointer. A
+/// missing or non-string field is the named refusal the decoders report.
+pub(crate) fn read_string(answer: &Value, pointer: &str, who: &str) -> Result<String, String> {
+    answer
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            format!(
+                "{who} answered without `{}`",
+                pointer.trim_start_matches('/').replace('/', ".")
+            )
+        })
+}
+
+/// A field bounded to `limit` characters, an ellipsis marking the cut.
+pub(crate) fn truncated(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_owned();
+    }
+    let mut bounded: String = text.chars().take(limit).collect();
+    bounded.push('…');
+    bounded
+}
+
+/// A repository name safe to place as one URL path segment: letters, digits,
+/// dot, dash and underscore, no dot-only segment, non-empty.
+pub(crate) fn valid_repository(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// A git reference safe to place in a URL path: the repository characters
+/// plus the slash a branch name may carry, with no empty or dot-only
+/// segment — which is what keeps a traversal out of the path.
+pub(crate) fn valid_reference(reference: &str) -> bool {
+    !reference.is_empty() && reference.split('/').all(valid_repository)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repository_names_reject_separators_and_traversal() {
+        assert!(valid_repository("android_manifest"));
+        assert!(valid_repository("device-oneplus.sdm845"));
+        assert!(!valid_repository(""));
+        assert!(!valid_repository("a/b"));
+        assert!(!valid_repository(".."));
+        assert!(!valid_repository("a b"));
+        assert!(!valid_repository("a?b=c"));
+    }
+
+    #[test]
+    fn references_allow_branch_slashes_but_never_traversal() {
+        assert!(valid_reference("9b6526c3663f"));
+        assert!(valid_reference("XOS-16.2"));
+        assert!(valid_reference("feature/lookup"));
+        assert!(!valid_reference("feature//lookup"));
+        assert!(!valid_reference("../../../etc"));
+        assert!(!valid_reference("a/.."));
+        assert!(!valid_reference(""));
+    }
+
+    #[test]
+    fn truncation_bounds_by_characters_and_marks_the_cut() {
+        assert_eq!(truncated("short", 10), "short");
+        assert_eq!(truncated("exactly-10", 10), "exactly-10");
+        assert_eq!(truncated("longer than ten", 10), "longer tha…");
+    }
+}
