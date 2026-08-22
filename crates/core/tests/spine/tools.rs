@@ -1023,6 +1023,18 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
         "one tool call in total — the limited message summoned no tools"
     );
     assert_eq!(forge.requests().len(), 1, "no further forge request");
+    assert_one_turn_and_no_echo(&fixture);
+    let extra = replies.try_recv();
+    assert!(
+        extra.is_err(),
+        "the limited ask draws no reply; got {extra:?}"
+    );
+}
+
+/// One counted turn and zero tolerated echoes: a wrongly dispatched turn
+/// for the limited message would land as an echo, not a counted turn, so
+/// the zero is what keeps the no-turn claim falsifiable.
+fn assert_one_turn_and_no_echo(fixture: &support::Fixture) {
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
         2,
@@ -1031,13 +1043,6 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
     assert_eq!(
         fixture.script.echoes.load(Ordering::SeqCst),
         0,
-        "a wrongly dispatched turn for the limited message would land here \
-         as a tolerated echo, not a counted turn — zero makes the no-turn \
-         claim falsifiable"
-    );
-    let extra = replies.try_recv();
-    assert!(
-        extra.is_err(),
-        "the limited ask draws no reply; got {extra:?}"
+        "no tolerated echo turn hides behind the counted one"
     );
 }
