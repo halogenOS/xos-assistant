@@ -10,6 +10,7 @@
 //! registries it passed in; the adapter edges below are the only surface an
 //! adapter touches.
 
+use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
 
 use agent_ledger::store::ProviderInstance;
@@ -20,7 +21,7 @@ use tokio::sync::{Mutex, RwLock, mpsc};
 
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
-use crate::kind::{AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage};
+use crate::kind::{self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage};
 use crate::message::{ChannelKey, ChannelKind, InboundMessage, OutboundReply};
 use crate::streams::StreamObserver;
 use crate::{identity, mapping, outbound, streams};
@@ -40,6 +41,74 @@ pub struct ModelBinding {
     pub model: String,
     /// The name a human reads for the model.
     pub model_display_name: String,
+}
+
+/// The answering budgets the entry point enforces at the write — the flood
+/// protection of decision 0030. Protection limits answering, never
+/// recording: an over-limit addressed message is still recorded, with the
+/// refusing budget named in its limited fact, and only the debt the message
+/// itself would open is refused — a propagated debt passes unchanged.
+///
+/// A disabled budget (`None`) admits every debt. The defaults are the
+/// stated product knobs of decision 0035; the embedder's configuration file
+/// overrides them.
+#[derive(Debug, Clone)]
+pub struct ProtectionConfig {
+    /// The per-sender budget, counted globally across conversations — spend
+    /// is global, so heavy direct-chat use and group use share one budget.
+    pub principal: Option<Budget>,
+    /// The per-conversation budget, counted across that conversation's
+    /// senders.
+    pub channel: Option<Budget>,
+}
+
+impl ProtectionConfig {
+    /// The default principal budget: answers per window.
+    pub const DEFAULT_PRINCIPAL_ANSWERS: u32 = 6;
+    /// The default principal window, in seconds.
+    pub const DEFAULT_PRINCIPAL_WINDOW_SECONDS: u64 = 600;
+    /// The default channel budget: answers per window.
+    pub const DEFAULT_CHANNEL_ANSWERS: u32 = 20;
+    /// The default channel window, in seconds.
+    pub const DEFAULT_CHANNEL_WINDOW_SECONDS: u64 = 600;
+}
+
+impl Default for ProtectionConfig {
+    fn default() -> Self {
+        Self {
+            principal: Some(Budget {
+                answers: NonZeroU32::new(Self::DEFAULT_PRINCIPAL_ANSWERS)
+                    .expect("the stated default is nonzero"),
+                window_seconds: NonZeroU64::new(Self::DEFAULT_PRINCIPAL_WINDOW_SECONDS)
+                    .expect("the stated default is nonzero"),
+            }),
+            channel: Some(Budget {
+                answers: NonZeroU32::new(Self::DEFAULT_CHANNEL_ANSWERS)
+                    .expect("the stated default is nonzero"),
+                window_seconds: NonZeroU64::new(Self::DEFAULT_CHANNEL_WINDOW_SECONDS)
+                    .expect("the stated default is nonzero"),
+            }),
+        }
+    }
+}
+
+/// One budget: how many debts may open per window. The answer count is
+/// nonzero by type — an assistant configured to answer no one is a
+/// misconfiguration the embedder's parse refuses, and this type makes the
+/// refusal structural. Disabling a budget is the enclosing `Option`, never
+/// a zero.
+#[derive(Debug, Clone, Copy)]
+pub struct Budget {
+    /// How many debts may open inside one window.
+    pub answers: NonZeroU32,
+    /// How far back the count looks, by receipt time, in whole seconds —
+    /// the window's one unit end to end, decided with this unit: the
+    /// configuration file speaks seconds, this field stores them, and the
+    /// count's SQL cutoff subtracts exactly them, so a sub-second window
+    /// is unrepresentable and nothing is silently truncated. Nonzero by
+    /// type: disabling a budget is the enclosing `Option`, never a zero
+    /// here.
+    pub window_seconds: NonZeroU64,
 }
 
 /// What one accepted ingestion reports back: the ids the core resolved on
@@ -67,6 +136,10 @@ pub struct Assistant {
     /// The streaming state the erasure ordering reads; the observation's
     /// contract and its lossy edges are stated on the streams module.
     streams: Arc<StreamObserver>,
+    /// The answering budgets the stamp consults for addressed messages.
+    /// Read-only after start; the limits themselves are derived from the
+    /// ledger at every write, never tallied here.
+    protection: ProtectionConfig,
     /// Serializes the answer-due stamp against other ingestions: the tail
     /// read and the append it feeds are a read-then-write, and two
     /// concurrent ingestions into one conversation could both observe the
@@ -112,6 +185,7 @@ impl Assistant {
         tools: Arc<ToolRegistry<CoreEvent>>,
         binding: ModelBinding,
         system_prompt: String,
+        protection: ProtectionConfig,
     ) -> Result<Self, CoreError> {
         if !store.content_tables().contains(&CHAT_MESSAGE_TABLE) {
             return Err(CoreError::MissingContentTable {
@@ -139,6 +213,7 @@ impl Assistant {
             binding,
             system_prompt,
             streams,
+            protection,
             stamp_lock: Mutex::new(()),
             erasure_fence: RwLock::new(()),
         })
@@ -150,13 +225,24 @@ impl Assistant {
     /// Resolves or creates the sender's principal, maps the channel —
     /// creating the conversation under the assembly's binding, with the
     /// assembly's system prompt recorded first, on first message — stamps
-    /// the message's answer-due fact from the addressed fact and the tail
-    /// block, and appends the message block through the framework's consumer
-    /// write path. An addressed message then emits the unlatch intent,
+    /// the message, and appends the message block through the framework's
+    /// consumer write path. The stamp order is fixed: addressing first;
+    /// budgets consulted only for addressed messages, principal before
+    /// channel, the first refusing budget naming the limited fact; then
+    /// answer-due by the composition rule — due when the message's own debt
+    /// was taken (addressed, not limited) or when the tail owes, so a
+    /// refused sender's message can be denied its own answer but can never
+    /// cancel a debt it merely propagates; then the debt authority by the
+    /// minimum rule. Nothing here ever drops a message: protection limits
+    /// answering, never recording.
+    ///
+    /// A message whose own debt was taken then emits the unlatch intent,
     /// always: a person addressing the assistant IS the deliberate
     /// re-engagement, the intent is idempotent, and the same emission
     /// releases a fresh conversation's boot latch and a stream error's
-    /// re-latch alike. An unaddressed message never unlatches.
+    /// re-latch alike. An unaddressed message never unlatches, and neither
+    /// does a limited one — a refused debt is not re-engagement, so a
+    /// limited flood cannot wake an error-latched conversation.
     ///
     /// # Errors
     ///
@@ -191,20 +277,29 @@ impl Assistant {
             }
         };
 
-        // Held from the tail read through the append: the stamp is decided
-        // against the tail this write is appended behind, so no concurrent
-        // ingestion may slide a block in between — the lock's contract is on
-        // its field.
+        // Held from the tail read and the budget counts through the append:
+        // the stamp is decided against the tail this write is appended
+        // behind, and the counts must see every earlier taken debt — so no
+        // concurrent ingestion may slide a block in between, and two racing
+        // messages cannot both take the last budget slot. The lock's
+        // contract is on its field.
         let _one_stamp_at_a_time = self.stamp_lock.lock().await;
-        let answer_due = message.addressed || self.tail_owes_answer(conversation_id).await?;
+        let owing_tail = self.owing_tail_debt(conversation_id).await?;
+        let limited = if message.addressed {
+            self.refusing_budget(principal_id, conversation_id).await?
+        } else {
+            None
+        };
+        // The composition rule and the minimum rule live on the kind, as
+        // one pure composition beside the stamp's readers.
+        let stamp = kind::Stamp::compose(message.addressed, message.authority, limited, owing_tail);
         let fields = ChatMessage::stored_fields(
             &message.text,
             principal_id,
             message.authority,
             message.origin.as_deref(),
             &message.timestamp.to_rfc3339(),
-            message.addressed,
-            answer_due,
+            stamp,
         );
         self.ctx
             .store()
@@ -216,7 +311,7 @@ impl Assistant {
                 None,
             )
             .await?;
-        if message.addressed {
+        if stamp.own_debt_taken() {
             self.ctx
                 .bus()
                 .emit(CoreEvent::UnlatchRequested { conversation_id });
@@ -338,22 +433,58 @@ impl Assistant {
         Ok(winner)
     }
 
-    /// Whether the conversation's tail block still owes the model a turn —
-    /// the one-block read behind the write-time stamp, deciding through the
-    /// kind's own [`ChatMessage::owes_answer`] so this read and the awaiting
-    /// hook can never disagree about one stamp: an erased tail, whose debt
-    /// the hook cancels, propagates nothing here either. The tail carrying
-    /// the debt IS it being unanswered: an answer, a streaming tail or any
-    /// later block would be the tail instead, and mid-turn absorption keeps
-    /// its own semantics for those.
-    async fn tail_owes_answer(&self, conversation_id: i64) -> Result<bool, CoreError> {
+    /// The conversation's owing tail, if any — the one-block read behind the
+    /// write-time stamp, deciding through the kind's own
+    /// [`ChatMessage::owes_answer`] so this read and the awaiting hook can
+    /// never disagree about one stamp: an erased tail, whose debt the hook
+    /// cancels, propagates nothing here either. The tail carrying the debt
+    /// IS it being unanswered: an answer, a streaming tail or any later
+    /// block would be the tail instead, and mid-turn absorption keeps its
+    /// own semantics for those. An owing tail hands over the authority its
+    /// debt carries, folded through the kind's pre-migration rule.
+    async fn owing_tail_debt(
+        &self,
+        conversation_id: i64,
+    ) -> Result<Option<kind::TailDebt>, CoreError> {
         use agent_ledger::FromBlock;
         let Some(tail) = self.ctx.store().latest_block(conversation_id).await? else {
-            return Ok(false);
+            return Ok(None);
         };
         Ok(match AssistantKind::from_block(&tail) {
-            AssistantKind::ChatMessage(message) => message.owes_answer(),
-            AssistantKind::Core(_) => false,
+            AssistantKind::ChatMessage(message) if message.owes_answer() => Some(kind::TailDebt {
+                authority: message.carried_debt_authority(),
+            }),
+            AssistantKind::ChatMessage(_) | AssistantKind::Core(_) => None,
         })
+    }
+
+    /// The first budget refusing this message's own debt, principal before
+    /// channel, or `None` when every enabled budget admits it. Consulted for
+    /// addressed messages only, inside the stamp serialization; each count
+    /// is derived from the ledger at this write — no counter table, no
+    /// in-memory tally — so the budget's whole state is the recent recorded
+    /// history itself.
+    async fn refusing_budget(
+        &self,
+        principal_id: i64,
+        conversation_id: i64,
+    ) -> Result<Option<kind::LimitedBy>, CoreError> {
+        let tx = self.ctx.store().tx();
+        if let Some(budget) = &self.protection.principal {
+            let opened =
+                kind::opened_debts_by_principal(&tx, principal_id, budget.window_seconds).await?;
+            if opened >= i64::from(budget.answers.get()) {
+                return Ok(Some(kind::LimitedBy::Principal));
+            }
+        }
+        if let Some(budget) = &self.protection.channel {
+            let opened =
+                kind::opened_debts_in_conversation(&tx, conversation_id, budget.window_seconds)
+                    .await?;
+            if opened >= i64::from(budget.answers.get()) {
+                return Ok(Some(kind::LimitedBy::Channel));
+            }
+        }
+        Ok(None)
     }
 }

@@ -183,6 +183,7 @@ async fn a_stream_that_never_settles_fails_the_erasure_loudly_deleting_nothing()
         Arc::new(ToolRegistry::new()),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
+        assistant_core::ProtectionConfig::default(),
     )
     .await
     .expect("the assembly starts");
@@ -275,6 +276,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
             Arc::new(ToolRegistry::new()),
             support::binding(),
             support::SYSTEM_PROMPT.into(),
+            assistant_core::ProtectionConfig::default(),
         )
         .await
         .expect("the first assembly starts");
@@ -302,6 +304,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
         Arc::new(ToolRegistry::new()),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
+        assistant_core::ProtectionConfig::default(),
     )
     .await
     .expect("the second assembly starts");

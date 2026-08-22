@@ -15,8 +15,8 @@ use agent_ledger::{
 };
 use assistant_core::schema::store_config;
 use assistant_core::{
-    Assistant, Authority, ChannelKey, ChannelKind, InboundMessage, ModelBinding, OutboundReply,
-    SenderIdentity,
+    Assistant, Authority, Budget, ChannelKey, ChannelKind, InboundMessage, ModelBinding,
+    OutboundReply, ProtectionConfig, SenderIdentity,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc};
@@ -333,15 +333,27 @@ pub struct Fixture {
     pub bus: Arc<EventBus<CoreEvent>>,
 }
 
-/// Assemble a running assistant over a fresh in-memory store.
+/// Assemble a running assistant over a fresh in-memory store, under the
+/// default budgets — which is also the standing proof that the defaults do
+/// not limit the suite's ordinary traffic.
 pub async fn start_assistant(hold: Option<Arc<TurnHold>>) -> Fixture {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     start_assistant_on(store, hold).await
 }
 
 /// Assemble a running assistant over the given store — a file-backed one
-/// when a test proves the durable path.
+/// when a test proves the durable path — under the default budgets.
 pub async fn start_assistant_on(store: Store, hold: Option<Arc<TurnHold>>) -> Fixture {
+    start_assistant_configured(store, hold, ProtectionConfig::default()).await
+}
+
+/// Assemble a running assistant over the given store with the given
+/// budgets, for the protection tests that pin a small window.
+pub async fn start_assistant_configured(
+    store: Store,
+    hold: Option<Arc<TurnHold>>,
+    protection: ProtectionConfig,
+) -> Fixture {
     let bus: Arc<EventBus<CoreEvent>> = Arc::new(EventBus::new());
     let (provider, script) = scripted_provider(hold);
     let assistant = Assistant::start(
@@ -351,6 +363,7 @@ pub async fn start_assistant_on(store: Store, hold: Option<Arc<TurnHold>>) -> Fi
         Arc::new(ToolRegistry::new()),
         binding(),
         SYSTEM_PROMPT.into(),
+        protection,
     )
     .await
     .expect("the assembly starts");
@@ -360,6 +373,99 @@ pub async fn start_assistant_on(store: Store, hold: Option<Arc<TurnHold>>) -> Fi
         store,
         bus,
     }
+}
+
+/// A protection configuration from two optional `(answers, window seconds)`
+/// pairs, `None` disabling that budget.
+pub fn budgets(principal: Option<(u32, u64)>, channel: Option<(u32, u64)>) -> ProtectionConfig {
+    let budget = |pair: Option<(u32, u64)>| {
+        pair.map(|(answers, window_seconds)| Budget {
+            answers: answers.try_into().expect("a test budget is nonzero"),
+            window_seconds: window_seconds.try_into().expect("a test window is nonzero"),
+        })
+    };
+    ProtectionConfig {
+        principal: budget(principal),
+        channel: budget(channel),
+    }
+}
+
+/// The receipt-time test seam (AC7): age every recorded block by rewriting
+/// the header's creation time backwards, through the same domain seam the
+/// counts read it with. The budgets anchor at the count's own wall clock,
+/// so backdating the receipt times is how a test crosses a window without
+/// the production path carrying a clock parameter nothing real supplies.
+pub async fn age_receipts(store: &Store, seconds: i64) {
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
+        // The store writes `created_at` as fixed-width RFC 3339 —
+        // twenty-three wall-clock characters with milliseconds, then a
+        // six-character offset. Aging shifts the wall-clock part and
+        // reattaches the same offset, so every aged row keeps the exact
+        // encoding production writes: the release pins must observe the
+        // window over the real stored shape, not over a seam artefact in
+        // SQLite's own `datetime()` form.
+        conn.execute(
+            "UPDATE blocks SET created_at = \
+             strftime('%Y-%m-%dT%H:%M:%f', substr(created_at, 1, 23), ?1) \
+             || substr(created_at, 24)",
+            [format!("-{seconds} seconds")],
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("the receipt times age");
+}
+
+/// The seam's other encoding move: re-express every stored receipt time at
+/// UTC-05:00 while denoting the same instant. `SQLite` normalizes the stored
+/// offset to UTC before applying the '-5 hours' shift, so the rewritten
+/// wall clock plus the appended offset names exactly the time each row
+/// already held — only the encoding changes. This lives beside
+/// [`age_receipts`] so the header's time encoding has one writer to
+/// re-point when the framework's stored shape changes.
+pub async fn reencode_receipts_at_utc_minus_five(store: &Store) {
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
+        conn.execute(
+            "UPDATE blocks SET created_at = \
+             strftime('%Y-%m-%dT%H:%M:%f', created_at, '-5 hours') || '-05:00'",
+            [],
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("the receipt times re-encode");
+}
+
+/// The framework's recorded migration version for the assistant's domain.
+/// This helper and its rewind below live beside [`age_receipts`] on
+/// purpose: the suite's knowledge of the framework's schema — the `blocks`
+/// header table the aging seam rewrites and the `domain_migrations` ledger
+/// named here — has this module as its one owner, so a framework rename
+/// lands in one place.
+pub async fn domain_migration_version(store: &Store) -> i64 {
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
+        Ok(conn.query_row(
+            "SELECT version FROM domain_migrations WHERE domain = ?1",
+            [assistant_core::schema::DOMAIN],
+            |row| row.get(0),
+        )?)
+    })
+    .await
+    .expect("the migration version reads")
+}
+
+/// The seam's write half: set the domain's recorded version back, as the
+/// upgrade pin's rewind to the disk shape an earlier binary left behind.
+pub async fn rewind_domain_migration_version(store: &Store, version: i64) {
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
+        conn.execute(
+            "UPDATE domain_migrations SET version = ?1 WHERE domain = ?2",
+            (version, assistant_core::schema::DOMAIN),
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("the migration version rewinds");
 }
 
 /// A provider registry holding exactly the given module.

@@ -209,6 +209,7 @@ async fn the_stamp_propagates_an_unanswered_debt_at_the_write() {
         Arc::new(ToolRegistry::new()),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
+        assistant_core::ProtectionConfig::default(),
     )
     .await
     .expect("the assembly starts");
@@ -263,6 +264,7 @@ async fn an_erased_tail_propagates_no_debt() {
         Arc::new(ToolRegistry::new()),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
+        assistant_core::ProtectionConfig::default(),
     )
     .await
     .expect("the assembly starts");
@@ -311,6 +313,10 @@ async fn an_erased_tail_propagates_no_debt() {
         aside.fields["answer_due"],
         json!(false),
         "an erased tail's cancelled debt does not resurface on the aside"
+    );
+    assert!(
+        aside.fields.get("debt_authority").is_none(),
+        "an erased tail owes nothing, so no debt authority is carried either"
     );
 }
 

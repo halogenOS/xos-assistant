@@ -15,6 +15,9 @@
 //! that write is part of the kind's own contract, it lives here too, as the
 //! crate-private `erase_principal_content` the erasure operation composes.
 
+use std::num::NonZeroU64;
+use std::sync::LazyLock;
+
 use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{
     Agency, Awaiting, Block, BlockKind, Column, ColumnType, ContentDescriptor, ContentPart,
@@ -49,13 +52,31 @@ pub const COLUMN_SENT_AT: &str = "sent_at";
 /// Structure, not personal data: erasure leaves it.
 pub const COLUMN_ADDRESSED: &str = "addressed";
 /// Whether the message owes the model a turn — the write-time stamp the
-/// entry point decides once at insert: true when the message is addressed,
-/// or when the block behind it carries an unanswered answer-due, so a
-/// message arriving on the heels of an addressed one propagates the debt
-/// instead of cancelling it. Structure, not personal data: erasure leaves
-/// it. A decision recorded at the write, not a derivable-fact column — the
-/// per-block hook that consumes it cannot fold history.
+/// entry point decides once at insert: true when the message is addressed
+/// and no budget refused it, or when the block behind it carries an
+/// unanswered answer-due, so a message arriving on the heels of an
+/// addressed one propagates the debt instead of cancelling it. Structure,
+/// not personal data: erasure leaves it. A decision recorded at the write,
+/// not a derivable-fact column — the per-block hook that consumes it cannot
+/// fold history.
 pub const COLUMN_ANSWER_DUE: &str = "answer_due";
+/// Which budget refused this message's own debt, in the closed [`LimitedBy`]
+/// vocabulary; NULL when no budget refused — every unaddressed message, and
+/// every addressed one the budgets admitted. Structure, not personal data:
+/// erasure leaves it. Added by the protection migration step, so
+/// pre-migration rows read NULL.
+pub const COLUMN_LIMITED: &str = "limited";
+/// The authority of the debt this message carries, in the [`Authority`]
+/// vocabulary; NULL when the message carries no debt. Stamped at the write
+/// by the minimum rule: a fresh debt opens at its sender's own authority,
+/// and a carried debt takes the minimum of the tail's debt authority and
+/// the incoming sender's — the lowest authority that contributed to
+/// summoning the turn, recorded before the turn exists. Structure, not
+/// personal data: erasure leaves it. Added by the protection migration
+/// step, so a pre-migration owing tail reads NULL here and the fold in
+/// [`ChatMessage::carried_debt_authority`] answers with the row's own
+/// stored sender authority instead.
+pub const COLUMN_DEBT_AUTHORITY: &str = "debt_authority";
 
 /// What an erased message contributes to a projected request in place of its
 /// nulled prose. Non-empty on purpose: the live vendors whose strict
@@ -64,6 +85,119 @@ pub const COLUMN_ANSWER_DUE: &str = "answer_due";
 /// message built from these contributions alone. A fixed marker carries none
 /// of the person's words, so the erasure's promise holds.
 pub const ERASED_MARKER: &str = "[message erased]";
+
+/// Which budget refused a message's own debt — the stored vocabulary of the
+/// limited stamp. The fact reads as "this message's own debt was refused";
+/// a true answer-due beside it is a propagated debt, not a contradiction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitedBy {
+    /// The sender's own budget refused, counted globally across
+    /// conversations.
+    Principal,
+    /// The conversation's budget refused.
+    Channel,
+}
+
+impl LimitedBy {
+    /// Every variant, in stored-encoding order — what closes the vocabulary
+    /// in the migration's CHECK constraint, so the constraint and this enum
+    /// cannot drift apart.
+    pub const ALL: [Self; 2] = [Self::Principal, Self::Channel];
+
+    /// The stored encoding, a closed vocabulary.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Principal => "principal",
+            Self::Channel => "channel",
+        }
+    }
+
+    /// Parse the stored encoding back, `None` for anything outside the
+    /// vocabulary.
+    #[must_use]
+    pub fn parse(stored: &str) -> Option<Self> {
+        match stored {
+            "principal" => Some(Self::Principal),
+            "channel" => Some(Self::Channel),
+            _ => None,
+        }
+    }
+}
+
+/// The debt an owing tail hands the next message's stamp: the authority its
+/// unanswered answer-due carries, already folded through the pre-migration
+/// rule by [`ChatMessage::carried_debt_authority`]. `authority` is absent
+/// only for a tail block the store did not produce — a stored owing tail
+/// always folds to some authority — and such a tail contributes nothing to
+/// the minimum rule.
+#[derive(Debug, Clone, Copy)]
+pub struct TailDebt {
+    /// The carried debt's authority, folded.
+    pub authority: Option<Authority>,
+}
+
+/// The write-time stamp: the four facts the entry point decides once at the
+/// insert, composed here so the composition rule and the minimum rule live
+/// beside their readers ([`ChatMessage::owes_answer`],
+/// [`ChatMessage::carried_debt_authority`]) as one pure value a test can
+/// call directly.
+#[derive(Debug, Clone, Copy)]
+pub struct Stamp {
+    /// Whether the message addressed the assistant.
+    pub addressed: bool,
+    /// Which budget refused the message's own debt, if any.
+    pub limited: Option<LimitedBy>,
+    /// Whether the message owes the model a turn — the composition rule:
+    /// its own debt was taken, or a tail's debt propagates through it.
+    pub answer_due: bool,
+    /// The authority of the debt the message carries, absent when it
+    /// carries none.
+    pub debt_authority: Option<Authority>,
+}
+
+impl Stamp {
+    /// Compose the stamp from the write's inputs: the message's addressed
+    /// fact, its sender's authority, the first refusing budget (already
+    /// `None` for unaddressed messages — budgets are consulted for
+    /// addressed ones only), and the owing tail's debt if the conversation
+    /// carries one.
+    ///
+    /// The composition rule: answer-due = (addressed and not limited) or
+    /// tail-owes — a refused own debt never cancels a propagated one. The
+    /// minimum rule (decision 0036): a carried debt takes the lowest
+    /// authority that contributed to summoning the turn — the tail's debt
+    /// authority against the incoming sender's, regardless of the incoming
+    /// message's own addressed fact — and a fresh taken debt opens at its
+    /// sender's own authority.
+    #[must_use]
+    pub fn compose(
+        addressed: bool,
+        sender: Authority,
+        limited: Option<LimitedBy>,
+        owing_tail: Option<TailDebt>,
+    ) -> Self {
+        let own_debt_taken = addressed && limited.is_none();
+        Self {
+            addressed,
+            limited,
+            answer_due: own_debt_taken || owing_tail.is_some(),
+            debt_authority: match owing_tail {
+                Some(tail) => Some(tail.authority.map_or(sender, |carried| carried.min(sender))),
+                None => own_debt_taken.then_some(sender),
+            },
+        }
+    }
+
+    /// Whether this message's own debt was taken — addressed and no budget
+    /// refused. The same conjunction [`Self::compose`] feeds the
+    /// composition rule; restated here for readers of a composed stamp,
+    /// like the unlatch emission: only a taken debt is re-engagement.
+    #[must_use]
+    pub fn own_debt_taken(&self) -> bool {
+        self.addressed && self.limited.is_none()
+    }
+}
 
 /// One recorded channel message: who said it (by principal id only), with what
 /// standing, and what was said.
@@ -111,6 +245,14 @@ pub struct ChatMessage {
     /// `None` only for a block the store did not produce; the awaiting hook
     /// treats that absence as owing nothing.
     pub answer_due: Option<bool>,
+    /// Which budget refused this message's own debt. `None` is the stored
+    /// meaning: no budget refused — pre-migration rows included.
+    pub limited: Option<LimitedBy>,
+    /// The authority of the debt this message carries. `None` when the
+    /// message carries no debt, and on every pre-migration row; an owing
+    /// pre-migration tail is folded to its stored sender authority by
+    /// [`Self::carried_debt_authority`].
+    pub debt_authority: Option<Authority>,
 }
 
 impl ChatMessage {
@@ -118,7 +260,8 @@ impl ChatMessage {
     /// append carries, named by the same columns [`LeafKind::parse`] reads
     /// back — both sides of the kind's encoding live in this module, so a
     /// column rename cannot split them. The role travels as the append's own
-    /// argument, never as a field.
+    /// argument, never as a field; the four decided facts travel together as
+    /// the composed [`Stamp`].
     #[must_use]
     pub fn stored_fields(
         text: &str,
@@ -126,8 +269,7 @@ impl ChatMessage {
         authority: Authority,
         origin: Option<&str>,
         sent_at: &str,
-        addressed: bool,
-        answer_due: bool,
+        stamp: Stamp,
     ) -> serde_json::Map<String, Value> {
         let mut fields = serde_json::Map::new();
         fields.insert(COLUMN_TEXT.into(), json!(text));
@@ -137,8 +279,14 @@ impl ChatMessage {
             fields.insert(COLUMN_ORIGIN.into(), json!(origin));
         }
         fields.insert(COLUMN_SENT_AT.into(), json!(sent_at));
-        fields.insert(COLUMN_ADDRESSED.into(), json!(addressed));
-        fields.insert(COLUMN_ANSWER_DUE.into(), json!(answer_due));
+        fields.insert(COLUMN_ADDRESSED.into(), json!(stamp.addressed));
+        fields.insert(COLUMN_ANSWER_DUE.into(), json!(stamp.answer_due));
+        if let Some(limited) = stamp.limited {
+            fields.insert(COLUMN_LIMITED.into(), json!(limited.as_str()));
+        }
+        if let Some(debt_authority) = stamp.debt_authority {
+            fields.insert(COLUMN_DEBT_AUTHORITY.into(), json!(debt_authority.as_str()));
+        }
         fields
     }
 
@@ -152,6 +300,18 @@ impl ChatMessage {
     #[must_use]
     pub fn owes_answer(&self) -> bool {
         self.role == Some(Role::User) && self.text.is_some() && self.answer_due == Some(true)
+    }
+
+    /// The authority of the debt an owing tail hands the next message — the
+    /// stored debt authority, with the pre-migration fold: a row written
+    /// before the protection migration carries NULL there while every
+    /// pre-migration row does carry its sender's authority, so that stored
+    /// standing answers for the missing stamp. Meaningful only on a tail
+    /// [`Self::owes_answer`] affirms; a debt-free row's absent stamp folds
+    /// to its sender's authority too, which no caller reads.
+    #[must_use]
+    pub fn carried_debt_authority(&self) -> Option<Authority> {
+        self.debt_authority.or(self.authority)
     }
 
     /// The message's projected contribution: its text, or [`ERASED_MARKER`]
@@ -181,6 +341,8 @@ impl LeafKind for ChatMessage {
             Column::new(COLUMN_SENT_AT, ColumnType::Text),
             Column::new(COLUMN_ADDRESSED, ColumnType::Boolean),
             Column::new(COLUMN_ANSWER_DUE, ColumnType::Boolean),
+            Column::new(COLUMN_LIMITED, ColumnType::Text),
+            Column::new(COLUMN_DEBT_AUTHORITY, ColumnType::Text),
         ],
         reference_columns: &[],
         ephemeral: false,
@@ -203,6 +365,16 @@ impl LeafKind for ChatMessage {
             sent_at: string_field(block, COLUMN_SENT_AT),
             addressed: block.fields.get(COLUMN_ADDRESSED).and_then(Value::as_bool),
             answer_due: block.fields.get(COLUMN_ANSWER_DUE).and_then(Value::as_bool),
+            limited: block
+                .fields
+                .get(COLUMN_LIMITED)
+                .and_then(Value::as_str)
+                .and_then(LimitedBy::parse),
+            debt_authority: block
+                .fields
+                .get(COLUMN_DEBT_AUTHORITY)
+                .and_then(Value::as_str)
+                .and_then(Authority::parse),
         }
     }
 }
@@ -270,6 +442,107 @@ pub(crate) async fn erase_principal_content(
         Ok(())
     })
     .await
+}
+
+// ─── The budget counts ───────────────────────────────────────────────────
+//
+// Two bounded counts over the kind's own table, each joined by name to two
+// of the framework's tables: `blocks` for the receipt time (the header's
+// creation time, assigned by the store at the write, unforgeable and never
+// null) and `conversation_blocks` for the conversation id. Neither fact
+// lives in the content table, and duplicating either there would be a
+// second record of a framework-owned fact. The framework does not contract
+// these names — the coupling is deliberate, recorded with its risk in
+// decision 0032, and surfaced to the framework's improvements list.
+//
+// The counted predicate is opened debts: addressed, not limited. A refused
+// debt consumed no spend, so it never consumes budget either; a propagated
+// debt is the same debt carried forward, not a second spend intent. The
+// window anchors at `datetime('now')` evaluated inside the count — the
+// stamp's own wall clock, since both counts run inside the entry point's
+// stamp serialization. The header's `created_at` is not one encoding: the
+// store's insert writes RFC 3339 with milliseconds and a local offset,
+// while the column's schema default is `datetime('now')`'s space-separated
+// UTC form — so the stored value goes through `datetime()` before the
+// comparison. Comparing the raw text instead would order the two encodings
+// by their differing tenth byte and degrade the window into a
+// calendar-date test.
+
+/// The counted-debt predicate both budget counts share, over the message
+/// alias `m` and the block-header alias `b`: an opened debt — addressed,
+/// not limited — younger than the window, whose modifier arrives as the
+/// query's second parameter. One fragment on purpose: what consumes budget
+/// is one definition, and two spellings of it could drift apart.
+static COUNTED_DEBT_SQL: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "m.{COLUMN_ADDRESSED} = 1 AND m.{COLUMN_LIMITED} IS NULL \
+         AND datetime(b.created_at) > datetime('now', ?2)"
+    )
+});
+
+/// How many debts this principal opened younger than the window, across
+/// every conversation — spend is global, so heavy direct-chat use and group
+/// use share one budget. Runs on the (principal id, addressed) index the
+/// protection migration adds.
+///
+/// # Errors
+///
+/// [`StoreError`] if the count fails or the store's actor has stopped.
+pub(crate) async fn opened_debts_by_principal(
+    tx: &StoreTx,
+    principal_id: i64,
+    window_seconds: NonZeroU64,
+) -> Result<i64, StoreError> {
+    let cutoff = window_modifier(window_seconds);
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        Ok(conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM {CHAT_MESSAGE_TABLE} m \
+                 JOIN blocks b ON b.id = m.block_id \
+                 WHERE m.{COLUMN_PRINCIPAL_ID} = ?1 AND {counted}",
+                counted = COUNTED_DEBT_SQL.as_str(),
+            ),
+            (principal_id, cutoff),
+            |row| row.get(0),
+        )?)
+    })
+    .await
+}
+
+/// How many debts were opened in this conversation younger than the window,
+/// by any sender. Rides the framework's existing junction index on the
+/// conversation id.
+///
+/// # Errors
+///
+/// [`StoreError`] if the count fails or the store's actor has stopped.
+pub(crate) async fn opened_debts_in_conversation(
+    tx: &StoreTx,
+    conversation_id: i64,
+    window_seconds: NonZeroU64,
+) -> Result<i64, StoreError> {
+    let cutoff = window_modifier(window_seconds);
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        Ok(conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM conversation_blocks cb \
+                 JOIN {CHAT_MESSAGE_TABLE} m ON m.block_id = cb.block_id \
+                 JOIN blocks b ON b.id = m.block_id \
+                 WHERE cb.conversation_id = ?1 AND {counted}",
+                counted = COUNTED_DEBT_SQL.as_str(),
+            ),
+            (conversation_id, cutoff),
+            |row| row.get(0),
+        )?)
+    })
+    .await
+}
+
+/// The window as a `datetime` modifier: `-N seconds`, subtracted from the
+/// count's own `datetime('now')` anchor. Whole seconds by the budget
+/// type's own contract, so no finer value exists to lose here.
+fn window_modifier(window_seconds: NonZeroU64) -> String {
+    format!("-{window_seconds} seconds")
 }
 
 /// The composed kind set the runtime is instantiated over: the framework's

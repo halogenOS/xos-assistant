@@ -14,7 +14,11 @@ in: the assistant answers through the OpenRouter provider with its key held in m
 never stored, addressing decides which messages are answered (a direct message, a
 mention, a reply to the assistant), a failed turn tells the chat once, and the
 `assistant` binary embeds the pieces into a runnable process (decisions 0020–0028).
-Rate and abuse protection arrive with the next unit.
+Flood protection is in: two configurable answering budgets — per sender and per chat —
+limit what the assistant answers, never what it records, and every message carries the
+authority of the debt it opens or propagates, the fact the coming tool unit's admission
+reads (decisions 0029–0036). The feature tools with admission and spam reporting arrive
+with the next unit.
 
 ## The framework checkout
 
@@ -50,6 +54,23 @@ file path per secret — and never appear in the file itself:
 
     [secrets.openrouter_key]
     file = "openrouter.key"
+
+    # Optional; the values shown are the defaults.
+    [protection]
+    principal_answers = 6
+    principal_window_seconds = 600
+    channel_answers = 20
+    channel_window_seconds = 600
+
+The protection table sets the two answering budgets: how many messages one sender is
+answered per window (counted across every chat, direct and group alike) and how many
+messages one chat is answered per window. The table and each of its fields may be
+omitted — absent fields keep the defaults shown. A window of zero disables that
+budget; an answer count of zero is refused at start, since disabling is the window's
+job. Budgets limit answering only, never recording: an over-limit message is still
+recorded with the refusing budget named on it, draws no reply and no notice — a
+refusal notice would hand a flooder the assistant's voice — and cannot cancel an
+answer someone else is still owed.
 
 The process logs its startup facts — never a secret — and stops cleanly on SIGTERM.
 Deployment wiring, including the group-privacy platform setting the record-all

@@ -151,6 +151,7 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
                 model_display_name: "Test Model".into(),
             },
             support::SYSTEM_PROMPT.into(),
+            assistant_core::ProtectionConfig::default(),
         )
         .await
         .expect("the assembly starts over the real module");
