@@ -1,0 +1,47 @@
+# The runnable process: reads one TOML configuration file, resolves the two
+# secrets indirectly, and assembles the core, the OpenRouter provider and the
+# Telegram adapter into a single binary. Every crate here is recorded in
+# docs/dependency-review.md before this manifest named it.
+[package]
+name = "assistant"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+agent-ledger = { path = "../../../agent-ledger/crates/agent-ledger" }
+assistant-adapter-telegram = { path = "../adapters/telegram" }
+assistant-core = { path = "../core", features = ["openrouter"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+# `signal` is the SIGTERM stop, `time` is the driver behind the adapter's
+# waits — the binary builds the runtime, so the drivers are named here.
+tokio = { version = "1", features = ["rt-multi-thread", "signal", "time"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "env-filter",
+    "fmt",
+] }
+
+# Test-only. The process-level suite runs the compiled binary against scripted
+# loopback servers written with tokio's own networking, so it needs `net` and
+# `io-util` and no new crate. Cargo unifies features across a dependency
+# graph, so these stay out of the library section.
+[dev-dependencies]
+serde_json = "1"
+tokio = { version = "1", features = [
+    "io-util",
+    "macros",
+    "net",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+
+[[test]]
+name = "process"
+path = "tests/process/main.rs"

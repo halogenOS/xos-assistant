@@ -117,6 +117,16 @@ pub(crate) struct Incoming {
     pub text: Option<String>,
     /// A media message's caption, the fallback text per decision 0017.
     pub caption: Option<String>,
+    /// The message this one replies to, reduced to the author the
+    /// reply-to-self addressing check reads.
+    pub reply_to_message: Option<RepliedTo>,
+}
+
+/// The replied-to message, reduced to its author: addressing only asks
+/// whether that author is the bot itself.
+#[derive(Debug, Deserialize)]
+pub(crate) struct RepliedTo {
+    pub from: Option<User>,
 }
 
 /// The chat a message lives in: its id and its platform type string.
@@ -133,6 +143,19 @@ pub(crate) struct User {
     pub id: i64,
     pub first_name: String,
     pub last_name: Option<String>,
+    pub username: Option<String>,
+}
+
+/// The bot's own identity, from `getMe`: what mention and reply-to-self
+/// resolution compare against. Fetched before the first poll; no message is
+/// translated without it.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct BotIdentity {
+    /// The bot's own user id — what a reply's author is compared to.
+    pub id: i64,
+    /// The bot's username — what a mention names. The platform requires one
+    /// for every bot, but the decoder keeps it optional so a malformed
+    /// answer degrades to mention-blindness instead of refusing to decode.
     pub username: Option<String>,
 }
 
@@ -196,6 +219,12 @@ impl BotClient {
             token: token.to_owned(),
             sleep,
         }
+    }
+
+    /// The bot's own identity, from `getMe`.
+    pub(crate) async fn get_me(&self) -> Result<BotIdentity, ClientError> {
+        let response = self.request("getMe", &serde_json::json!({}), None).await?;
+        self.decode(response).await
     }
 
     /// One long poll: every update at or past the offset, or an empty batch

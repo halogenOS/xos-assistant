@@ -17,8 +17,8 @@ use std::sync::LazyLock;
 use agent_ledger::{DomainMigrations, FromBlock, StoreConfig};
 
 use crate::kind::{
-    AssistantKind, CHAT_MESSAGE_TABLE, COLUMN_AUTHORITY, COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID,
-    COLUMN_ROLE, COLUMN_SENT_AT, COLUMN_TEXT,
+    AssistantKind, CHAT_MESSAGE_TABLE, COLUMN_ADDRESSED, COLUMN_ANSWER_DUE, COLUMN_AUTHORITY,
+    COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID, COLUMN_ROLE, COLUMN_SENT_AT, COLUMN_TEXT,
 };
 use crate::message::{Authority, ChannelKind};
 
@@ -41,7 +41,12 @@ fn quoted_list<'a>(values: impl Iterator<Item = &'a str>) -> String {
 /// `text` is nullable on purpose: NULL means erased (decision 0012), and the
 /// kind reads it back as the typed absence. Everything identifying the
 /// message's provenance is NOT NULL, with the authority vocabulary closed by
-/// the same enum the code parses with.
+/// the same enum the code parses with. The two addressing columns are
+/// structure, not personal data, stamped at the write and left by erasure.
+///
+/// This CREATE TABLE received its last in-place edit with the live-model
+/// unit, which shipped the first deployable process; every schema change
+/// from here on is an appended, versioned migration step.
 static CHAT_MESSAGE_SCHEMA: LazyLock<String> = LazyLock::new(|| {
     format!(
         "CREATE TABLE {CHAT_MESSAGE_TABLE} (
@@ -51,7 +56,9 @@ static CHAT_MESSAGE_SCHEMA: LazyLock<String> = LazyLock::new(|| {
             {COLUMN_PRINCIPAL_ID} INTEGER NOT NULL,
             {COLUMN_AUTHORITY}    TEXT NOT NULL CHECK ({COLUMN_AUTHORITY} IN ({authorities})),
             {COLUMN_ORIGIN}       TEXT,
-            {COLUMN_SENT_AT}      TEXT
+            {COLUMN_SENT_AT}      TEXT,
+            {COLUMN_ADDRESSED}    INTEGER NOT NULL CHECK ({COLUMN_ADDRESSED} IN (0, 1)),
+            {COLUMN_ANSWER_DUE}   INTEGER NOT NULL CHECK ({COLUMN_ANSWER_DUE} IN (0, 1))
         );",
         authorities = quoted_list(Authority::ALL.iter().map(|a| a.as_str())),
     )

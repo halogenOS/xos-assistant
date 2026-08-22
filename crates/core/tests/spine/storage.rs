@@ -2,14 +2,28 @@
 //! validation passes, and a reopened file-backed store proves the durable
 //! registry path.
 
-use agent_ledger::{Agency, Awaiting, Block, BlockKind, FromBlock, Projection, Role, Store};
+use agent_ledger::{
+    Agency, Awaiting, Block, BlockKind, ContentPart, FromBlock, Projection, Role, Store,
+};
 use assistant_core::Authority;
-use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE};
+use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ERASED_MARKER};
 use assistant_core::schema::store_config;
 use serde_json::json;
 
 use crate::support;
 use crate::support::TempDb;
+
+/// One stored chat-message block with the given content fields — the shared
+/// shape of the runtime-free parse pins below.
+fn chat_block(fields: serde_json::Map<String, serde_json::Value>) -> Block {
+    Block {
+        id: 7,
+        role: Some(Role::User),
+        block_type: CHAT_MESSAGE_KIND.into(),
+        created_at: String::new(),
+        fields,
+    }
+}
 
 /// The derive's composition, pinned without a runtime: the assistant's kind
 /// parses through its own parse, a framework kind resolves through the
@@ -17,21 +31,17 @@ use crate::support::TempDb;
 /// declaration.
 #[test]
 fn the_composed_kind_parses_and_declares_one_descriptor() {
-    let stored = Block {
-        id: 7,
-        role: Some(Role::User),
-        block_type: CHAT_MESSAGE_KIND.into(),
-        created_at: String::new(),
-        fields: {
-            let mut fields = serde_json::Map::new();
-            fields.insert("text".into(), json!("hello there"));
-            fields.insert("principal_id".into(), json!(3));
-            fields.insert("authority".into(), json!("moderator"));
-            fields.insert("origin".into(), json!("m-1"));
-            fields.insert("sent_at".into(), json!("2026-08-21T00:00:00+00:00"));
-            fields
-        },
-    };
+    let stored = chat_block({
+        let mut fields = serde_json::Map::new();
+        fields.insert("text".into(), json!("hello there"));
+        fields.insert("principal_id".into(), json!(3));
+        fields.insert("authority".into(), json!("moderator"));
+        fields.insert("origin".into(), json!("m-1"));
+        fields.insert("sent_at".into(), json!("2026-08-21T00:00:00+00:00"));
+        fields.insert("addressed".into(), json!(true));
+        fields.insert("answer_due".into(), json!(true));
+        fields
+    });
     match AssistantKind::from_block(&stored) {
         AssistantKind::ChatMessage(message) => {
             assert_eq!(message.text.as_deref(), Some("hello there"));
@@ -42,36 +52,11 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
                 message.sent_at.as_deref(),
                 Some("2026-08-21T00:00:00+00:00")
             );
+            assert_eq!(message.addressed, Some(true));
+            assert_eq!(message.answer_due, Some(true));
             assert_eq!(message.awaiting(), Some(Awaiting::Model));
         }
         AssistantKind::Core(_) => panic!("the assistant's kind resolved through the delegate"),
-    }
-
-    // A block with no stored text is an erased message: it awaits nothing
-    // and projects nothing, while its provenance fields still parse.
-    let erased = Block {
-        fields: {
-            let mut fields = serde_json::Map::new();
-            fields.insert("principal_id".into(), json!(3));
-            fields.insert("authority".into(), json!("moderator"));
-            fields.insert("sent_at".into(), json!("2026-08-21T00:00:00+00:00"));
-            fields
-        },
-        ..stored.clone()
-    };
-    match AssistantKind::from_block(&erased) {
-        AssistantKind::ChatMessage(message) => {
-            assert_eq!(message.text, None);
-            assert_eq!(
-                message.awaiting(),
-                None,
-                "an erased message summons no turn"
-            );
-            assert_eq!(message.group_role(), None);
-            assert_eq!(message.llm_parts(), None);
-            assert_eq!(message.llm_text(), None);
-        }
-        AssistantKind::Core(_) => panic!("the erased row resolved through the delegate"),
     }
 
     let framework_kind = Block {
@@ -90,6 +75,77 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
     assert_eq!(AssistantKind::DESCRIPTORS[0].table, CHAT_MESSAGE_TABLE);
     agent_ledger::agency::check_descriptor_durability::<AssistantKind>(AssistantKind::DESCRIPTORS)
         .expect("durable() and the descriptor's ephemerality are one fact");
+}
+
+/// The two non-awaiting shapes, pinned without a runtime: a resting message
+/// projects but summons no turn, and an erased message summons nothing and
+/// projects only the fixed marker while keeping its stored voice for the
+/// grouping pass.
+#[test]
+fn resting_and_erased_messages_summon_no_turn() {
+    // A recorded message whose stamp owes no answer rests: it awaits
+    // nothing, while still projecting its text into the context.
+    let resting = chat_block({
+        let mut fields = serde_json::Map::new();
+        fields.insert("text".into(), json!("a resting group message"));
+        fields.insert("principal_id".into(), json!(3));
+        fields.insert("authority".into(), json!("member"));
+        fields.insert("sent_at".into(), json!("2026-08-21T00:00:00+00:00"));
+        fields.insert("addressed".into(), json!(false));
+        fields.insert("answer_due".into(), json!(false));
+        fields
+    });
+    match AssistantKind::from_block(&resting) {
+        AssistantKind::ChatMessage(message) => {
+            assert_eq!(
+                message.awaiting(),
+                None,
+                "a resting message summons no turn"
+            );
+            assert!(
+                message.llm_text().is_some(),
+                "a resting message still projects"
+            );
+        }
+        AssistantKind::Core(_) => panic!("the resting row resolved through the delegate"),
+    }
+
+    // A block with no stored text is an erased message: it awaits nothing
+    // and projects only the fixed marker — none of the prose — while its
+    // provenance fields still parse.
+    let erased = chat_block({
+        let mut fields = serde_json::Map::new();
+        fields.insert("principal_id".into(), json!(3));
+        fields.insert("authority".into(), json!("moderator"));
+        fields.insert("addressed".into(), json!(true));
+        fields.insert("answer_due".into(), json!(true));
+        fields
+    });
+    match AssistantKind::from_block(&erased) {
+        AssistantKind::ChatMessage(message) => {
+            assert_eq!(message.text, None);
+            assert_eq!(
+                message.awaiting(),
+                None,
+                "an erased message summons no turn"
+            );
+            assert_eq!(
+                message.group_role(),
+                Some(Role::User),
+                "an erased message keeps its stored voice in the grouping pass"
+            );
+            assert_eq!(
+                message.llm_text().as_deref(),
+                Some(ERASED_MARKER),
+                "an erased message projects the fixed marker, never prose"
+            );
+            match message.llm_parts().as_deref() {
+                Some([ContentPart::Text { text }]) => assert_eq!(text, ERASED_MARKER),
+                other => panic!("the erased parts carry one marker part, got {other:?}"),
+            }
+        }
+        AssistantKind::Core(_) => panic!("the erased row resolved through the delegate"),
+    }
 }
 
 /// AC2: the store opens with the descriptor and the domain migrations,
@@ -122,6 +178,8 @@ async fn a_file_backed_store_reopens_and_loads_the_stored_kind() {
         fields.insert("principal_id".into(), json!(1));
         fields.insert("authority".into(), json!("member"));
         fields.insert("sent_at".into(), json!("2026-08-21T00:00:00+00:00"));
+        fields.insert("addressed".into(), json!(true));
+        fields.insert("answer_due".into(), json!(true));
         appended = store
             .append_consumer_block(
                 conversation,

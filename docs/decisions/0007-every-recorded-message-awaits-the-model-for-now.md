@@ -2,6 +2,10 @@
 
 Date: 2026-08-21
 
+Replaced 2026-08-22 by decision 0021: the acting policy is now record all, answer
+some, with the adapter resolving the addressed fact and the entry point stamping
+answer-due at the write.
+
 ## Context
 
 The planned acting policy is: record every group message, answer the addressed ones.

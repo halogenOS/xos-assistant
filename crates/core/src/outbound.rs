@@ -31,9 +31,11 @@
 //! write path ever backfilled an older block id into a newer junction slot,
 //! the seed would mark too little as history and re-deliver, never lose.
 //!
-//! On a stream error the edge yields nothing for that turn. The title
-//! derivation the metadata worker runs never finalizes an answer block in
-//! the conversation ledger, so it never appears here.
+//! On a stream error the edge yields the failure notice for that turn —
+//! marked [`ReplyKind::Notice`], derived from the lossy bus event and
+//! therefore at most once. The title derivation the metadata worker runs
+//! never finalizes an answer block in the conversation ledger, so it never
+//! appears here.
 
 use std::collections::HashMap;
 
@@ -43,7 +45,16 @@ use tokio::sync::mpsc;
 
 use crate::kind::AssistantKind;
 use crate::mapping;
-use crate::message::OutboundReply;
+use crate::message::{OutboundReply, ReplyKind};
+
+/// The one failure notice a failed turn yields, uniform across failure
+/// causes: the wire flattens a provider's refusal to prose before the core
+/// sees it, so wording distinctions would rest on string-matching text
+/// nobody owns. The latch already stops further spending, which is the
+/// substance; this line only makes the silence explicit. The next message
+/// that addresses the assistant re-engages it.
+pub const FAILURE_NOTICE: &str =
+    "I could not finish that answer. Mention me or message me again and I will retry.";
 
 /// The highest block id already accounted for, per conversation. Replies are
 /// read from the ledger, so the cursor is what keeps a re-read from
@@ -87,6 +98,21 @@ pub(crate) async fn spawn_edge(
                             .await
                     {
                         tracing::error!(conversation_id, %error, "outbound delivery failed");
+                    }
+                }
+                // A failed turn tells the chat once. The notice derives from
+                // this event alone and the bus is lossy, so it is at most
+                // once by construction: a lagged edge may drop it, a late
+                // error from a torn-down predecessor stream may produce a
+                // spurious one — both accepted for a courtesy line. The
+                // durable record of failed turns is framework work.
+                Ok(CoreEvent::StreamError {
+                    conversation_id, ..
+                }) => {
+                    if let Err(error) =
+                        deliver_notice(&ctx, &adapter, conversation_id, &replies).await
+                    {
+                        tracing::error!(conversation_id, %error, "the failure notice did not deliver");
                     }
                 }
                 Ok(_) => {}
@@ -164,6 +190,7 @@ async fn deliver_new_answers(
             let reply = OutboundReply {
                 channel: channel.clone(),
                 text,
+                kind: ReplyKind::Answer,
             };
             if replies.send(reply).is_err() {
                 return Ok(());
@@ -171,6 +198,34 @@ async fn deliver_new_answers(
             *cursor = block.id;
         }
     }
+    Ok(())
+}
+
+/// Yield the one failure notice for a failed turn on this adapter's channel.
+/// A conversation that is not mapped, or is mapped for another adapter, is
+/// none of this edge's business — same as an answer's delivery.
+///
+/// # Errors
+///
+/// [`StoreError`] if the mapping read fails.
+async fn deliver_notice(
+    ctx: &RuntimeContext<AssistantKind, CoreEvent>,
+    adapter: &str,
+    conversation_id: i64,
+    replies: &mpsc::UnboundedSender<OutboundReply>,
+) -> Result<(), StoreError> {
+    let tx = ctx.store().tx();
+    let Some(channel) = mapping::channel_for_conversation(&tx, conversation_id).await? else {
+        return Ok(());
+    };
+    if channel.adapter != adapter {
+        return Ok(());
+    }
+    let _ = replies.send(OutboundReply {
+        channel,
+        text: FAILURE_NOTICE.into(),
+        kind: ReplyKind::Notice,
+    });
     Ok(())
 }
 

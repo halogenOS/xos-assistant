@@ -55,3 +55,33 @@ Both resolved to the current latest at the time of the check.
 test suite is a plain listener on the loopback interface, written against tokio's own
 networking, so the suite adds no new crate. Cargo unifies features across a dependency
 graph, so these stay in the development section for the same reason the core's do.
+
+## 2026-08-22 — the live model
+
+The runnable process reads a TOML configuration file and writes structured logs, so the
+binary crate's manifest names two crates this repository's manifests had not named before.
+Current versions from the crates.io API, advisories from the OSV API, both queried on the
+day of this entry. The other crates the binary names — the workspace's own two, the
+framework, serde, thiserror, tokio, tracing — are already reviewed above and are not
+re-recorded.
+
+| Crate | Version | Latest at check | Advisories | Why it is here |
+|---|---|---|---|---|
+| toml | 1.1.4 | 1.1.4 | none | The configuration file's format; serde-decoded into the binary's own typed configuration. |
+| tracing-subscriber | 0.3.23 | 0.3.23 | none | The process's log writer: the whole tree already speaks tracing, and this is that project's own subscriber crate. Only the `fmt` and `env-filter` features are named. |
+
+Both resolved to the current latest at the time of the check.
+
+**The openrouter feature's transitive additions.** Enabling the framework's openrouter feature
+pulls `eventsource-stream` (with `nom` and `minimal-lexical` under it) into the lock file.
+These arrive through the framework, whose own dependency review records them; per the
+core-spine entry's rule, the transitive tree behind the framework is not re-reviewed here.
+
+**The feature-only additions to reviewed crates.** The core's development section adds
+tokio's `net` and `io-util` for the scripted completions server; the binary names
+tokio's `rt-multi-thread`, `signal` and `time` — its runtime, its stop, and the timer
+driver behind the adapter's waits, which the binary enables because it is what builds
+the runtime — and its development section adds `net` and `io-util` for the
+process-level tests' scripted servers —
+features of a crate reviewed above, staying in the sections that need them because
+Cargo unifies features across a dependency graph.

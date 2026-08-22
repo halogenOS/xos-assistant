@@ -39,6 +39,10 @@ pub const TITLE_INSTRUCTION_MARK: &str = "Generate a concise title";
 /// stall.
 pub const DEADLINE: Duration = Duration::from_secs(10);
 
+/// The system prompt every test assembly is started with — a fixed fixture
+/// string the prompt-recording assertions match against.
+pub const SYSTEM_PROMPT: &str = "You are the suite's scripted assistant fixture.";
+
 /// The answer the script streams for a turn whose newest projected message
 /// carries this text. Deriving the answer from the request is what lets a
 /// test pin a reply's text and channel key together: two channels' answers
@@ -115,47 +119,63 @@ impl TurnHold {
     }
 }
 
-/// What a test observes of the scripted provider: turn count and every turn
-/// request's projected messages.
+/// What a test observes of the scripted provider: turn count, every turn
+/// request's projected messages, and the failure script.
 #[derive(Clone)]
 pub struct ScriptHandle {
     pub turns: Arc<AtomicUsize>,
     pub seen: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+    /// How many upcoming turns fail with a scripted stream error before the
+    /// script answers normally again.
+    pub failures: Arc<AtomicUsize>,
 }
 
-/// The scripted provider: answers every turn with [`answer_to`] the newest
-/// projected message's text, every title derivation with [`TITLE`],
-/// deterministically, so turn-count and block-by-block assertions stay
-/// exact.
-struct ScriptedChat {
-    turns: Arc<AtomicUsize>,
-    seen: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
-    hold: Option<Arc<TurnHold>>,
+impl ScriptHandle {
+    /// Script the next `count` turns to fail with a stream error.
+    pub fn fail_next_turns(&self, count: usize) {
+        self.failures.store(count, Ordering::SeqCst);
+    }
 }
 
-/// Build the provider and the handle a test observes it through.
-pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule>, ScriptHandle) {
-    let handle = ScriptHandle {
-        turns: Arc::new(AtomicUsize::new(0)),
-        seen: Arc::new(std::sync::Mutex::new(Vec::new())),
-    };
-    let provider = ScriptedChat {
-        turns: Arc::clone(&handle.turns),
-        seen: Arc::clone(&handle.seen),
-        hold,
-    };
-    (Box::new(provider), handle)
+/// A provider module whose whole behavior is its bind. The trait's
+/// configuration and catalog surface is inert scaffolding every scripted
+/// stub shares; a test module supplies only the stream shape it actually
+/// varies, so a provider-trait change is absorbed here once.
+struct StubProvider<F> {
+    display_name: &'static str,
+    description: &'static str,
+    bind: F,
 }
 
-impl ProviderModule for ScriptedChat {
+/// Build a boxed provider stub under the suite's [`VENDOR`] type id, with
+/// the given bind called once per conversation binding.
+pub fn provider_stub<F>(
+    display_name: &'static str,
+    description: &'static str,
+    bind: F,
+) -> Box<dyn ProviderModule>
+where
+    F: Fn() -> (ProviderTx, ProviderRx) + Send + Sync + 'static,
+{
+    Box::new(StubProvider {
+        display_name,
+        description,
+        bind,
+    })
+}
+
+impl<F> ProviderModule for StubProvider<F>
+where
+    F: Fn() -> (ProviderTx, ProviderRx) + Send + Sync,
+{
     fn type_id(&self) -> &'static str {
         VENDOR
     }
     fn display_name(&self) -> &'static str {
-        "Scripted"
+        self.display_name
     }
     fn description(&self) -> &'static str {
-        "answers from a script"
+        self.description
     }
     fn get_config(&self, _provider_id: String) -> BoxFuture<'_, Result<Option<Value>, StoreError>> {
         Box::pin(async { Ok(Some(json!({}))) })
@@ -176,18 +196,34 @@ impl ProviderModule for ScriptedChat {
     fn list_models(&self, _config: Value) -> BoxFuture<'_, Result<Vec<ModelInfo>, LlmError>> {
         Box::pin(async { Ok(Vec::new()) })
     }
-
     fn bind(
         &self,
         _conversation_id: i64,
         _provider_id: String,
         _config: Value,
     ) -> (ProviderTx, ProviderRx) {
+        (self.bind)()
+    }
+}
+
+/// Build the scripted provider and the handle a test observes it through:
+/// every turn answers with [`answer_to`] the newest projected message's
+/// text, every title derivation with [`TITLE`], deterministically, so
+/// turn-count and block-by-block assertions stay exact.
+pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule>, ScriptHandle) {
+    let handle = ScriptHandle {
+        turns: Arc::new(AtomicUsize::new(0)),
+        seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+        failures: Arc::new(AtomicUsize::new(0)),
+    };
+    let script = handle.clone();
+    let provider = provider_stub("Scripted", "answers from a script", move || {
         let (request_tx, mut requests) = mpsc::unbounded_channel();
         let (response_tx, responses) = mpsc::unbounded_channel();
-        let turns = Arc::clone(&self.turns);
-        let seen = Arc::clone(&self.seen);
-        let hold = self.hold.clone();
+        let turns = Arc::clone(&script.turns);
+        let seen = Arc::clone(&script.seen);
+        let failures = Arc::clone(&script.failures);
+        let hold = hold.clone();
         tokio::spawn(async move {
             while let Some(request) = requests.recv().await {
                 let ProviderRequest::Stream { messages, .. } = request else {
@@ -200,6 +236,20 @@ impl ProviderModule for ScriptedChat {
                     let _ = response_tx.send(ProviderResponse::Done);
                     continue;
                 }
+                // Connected mirrors the real wire's first stream event; the
+                // runtime surfaces it as stream status, which is what the
+                // assembly's stream observer keys on.
+                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
+                if failures
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    let _ =
+                        response_tx.send(ProviderResponse::Error("scripted stream failure".into()));
+                    continue;
+                }
                 let answer = answer_to(&messages.last().map(message_text).unwrap_or_default());
                 let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                 seen.lock().unwrap().push(messages);
@@ -209,11 +259,20 @@ impl ProviderModule for ScriptedChat {
                 }));
                 if let Some(hold) = &hold {
                     let _ = hold.started_tx.send(turn);
-                    hold.permits
-                        .acquire()
-                        .await
-                        .expect("the hold outlives the test")
-                        .forget();
+                    // The hold ends on the test's release or on the turn's
+                    // teardown: an interrupt drops the request sender, and a
+                    // scripted provider that kept the stream open past that
+                    // would hold the settle protocol under test hostage.
+                    tokio::select! {
+                        permit = hold.permits.acquire() => {
+                            permit.expect("the hold outlives the test").forget();
+                        }
+                        _ = requests.recv() => {
+                            // An interrupt or a closed channel: end the turn
+                            // without a message end, as a torn-down wire does.
+                            break;
+                        }
+                    }
                 }
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
                     usage: agent_ledger::providers::Usage::default(),
@@ -222,7 +281,8 @@ impl ProviderModule for ScriptedChat {
             }
         });
         (request_tx, responses)
-    }
+    });
+    (provider, handle)
 }
 
 /// Whether one projected message carries this text, in either content mode —
@@ -290,6 +350,7 @@ pub async fn start_assistant_on(store: Store, hold: Option<Arc<TurnHold>>) -> Fi
         registry_of(provider),
         Arc::new(ToolRegistry::new()),
         binding(),
+        SYSTEM_PROMPT.into(),
     )
     .await
     .expect("the assembly starts");
@@ -312,7 +373,9 @@ pub fn registry_of(provider: Box<dyn ProviderModule>) -> Arc<ProviderRegistry> {
 /// [`Assistant::replies`] to take the edge that serves these channels.
 pub const ADAPTER: &str = "test-adapter";
 
-/// One inbound message, member authority, built from a channel and a sender.
+/// One addressed inbound message, member authority, built from a channel and
+/// a sender. Addressed is the suite's default because most tests want the
+/// message answered; the addressing tests use [`inbound_unaddressed`].
 pub fn inbound(
     channel: &ChannelKey,
     kind: ChannelKind,
@@ -322,8 +385,8 @@ pub fn inbound(
     inbound_as(channel, kind, sender_external_id, Authority::Member, text)
 }
 
-/// One inbound message with the sender's standing spelled out, for the tests
-/// that pin the stored authority per message.
+/// One addressed inbound message with the sender's standing spelled out, for
+/// the tests that pin the stored authority per message.
 pub fn inbound_as(
     channel: &ChannelKey,
     kind: ChannelKind,
@@ -340,6 +403,7 @@ pub fn inbound_as(
             username: None,
         },
         authority,
+        addressed: true,
         text: text.into(),
         origin: Some(format!(
             "origin-{sender_external_id}-{text_len}",
@@ -347,6 +411,18 @@ pub fn inbound_as(
         )),
         timestamp: chrono::Utc::now(),
     }
+}
+
+/// One unaddressed inbound message — recorded, resting, never unlatching.
+pub fn inbound_unaddressed(
+    channel: &ChannelKey,
+    kind: ChannelKind,
+    sender_external_id: &str,
+    text: &str,
+) -> InboundMessage {
+    let mut message = inbound(channel, kind, sender_external_id, text);
+    message.addressed = false;
+    message
 }
 
 /// A channel key on the test adapter.

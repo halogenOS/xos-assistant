@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use agent_ledger::store::domain_run;
 use agent_ledger::{FromBlock, Projection};
-use assistant_core::kind::AssistantKind;
+use assistant_core::kind::{AssistantKind, ERASED_MARKER};
 use assistant_core::{ChannelKind, ErasureOutcome, schema};
 
 use crate::support;
@@ -81,8 +81,8 @@ async fn an_erased_principal_id_is_never_reissued() {
         .expect("the group message from B ingests");
     // Every turn settles before the erasure, so no stream is open while the
     // direct conversation under it goes away.
-    support::settle(store, receipt_b.conversation_id, "B's direct turn", 2).await;
-    support::settle(store, receipt_group.conversation_id, "B's group turn", 2).await;
+    support::settle(store, receipt_b.conversation_id, "B's direct turn", 3).await;
+    support::settle(store, receipt_group.conversation_id, "B's group turn", 3).await;
 
     assert_eq!(
         assistant
@@ -143,7 +143,7 @@ async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
         store,
         receipt_a.conversation_id,
         "A's answered direct turn",
-        2,
+        3,
     )
     .await;
 
@@ -170,10 +170,10 @@ async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
         store,
         receipt_b.conversation_id,
         "B's answered direct turn",
-        2,
+        3,
     )
     .await;
-    support::settle(store, conv_group, "the first group turn", 2).await;
+    support::settle(store, conv_group, "the first group turn", 3).await;
     assistant
         .ingest(support::inbound(
             &group,
@@ -183,7 +183,7 @@ async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
         ))
         .await
         .expect("the group message from B ingests");
-    support::settle(store, conv_group, "the second group turn", 4).await;
+    support::settle(store, conv_group, "the second group turn", 5).await;
 
     Staged {
         principal_a: receipt_a.principal_id,
@@ -262,7 +262,7 @@ async fn erasing_one_principal_reaches_its_prose_and_nothing_else() {
     let b_blocks = store.list_blocks(conv_b).await.expect("B's ledger reads");
     assert_eq!(
         b_blocks.len(),
-        2,
+        3,
         "B's direct conversation keeps its blocks"
     );
 
@@ -342,18 +342,15 @@ async fn assert_group_prose_reached_exactly(
             );
             assert_eq!(
                 message.group_role(),
-                None,
-                "an erased message opens no group"
+                block.role,
+                "an erased message keeps its stored voice in the grouping \
+                 pass — the run-continuity shape that closes 0012's \
+                 alternation OPEN — while contributing only the marker"
             );
             assert_eq!(
-                message.llm_parts(),
-                None,
-                "an erased message projects no parts"
-            );
-            assert_eq!(
-                message.llm_text(),
-                None,
-                "an erased message projects no text"
+                message.llm_text().as_deref(),
+                Some(ERASED_MARKER),
+                "an erased message projects the fixed marker, none of its prose"
             );
         } else {
             assert_eq!(message.principal_id, Some(other));

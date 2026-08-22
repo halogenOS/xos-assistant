@@ -3,26 +3,27 @@
 //!
 //! The assembly is constructed with its runtime wiring — the store opened on
 //! the assistant's configuration, the event bus, the provider and tool
-//! registries — and the model binding under which first-message conversation
-//! creation happens. The entry point draws the binding from here, never from
-//! a message. The constructor's caller owns the store, the bus and the
+//! registries — the model binding under which first-message conversation
+//! creation happens, and the system prompt every new conversation is created
+//! with. The entry point draws the binding and the prompt from here, never
+//! from a message. The constructor's caller owns the store, the bus and the
 //! registries it passed in; the adapter edges below are the only surface an
 //! adapter touches.
 
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use agent_ledger::store::ProviderInstance;
 use agent_ledger::{
     CoreEvent, EventBus, ProviderRegistry, Role, RuntimeContext, Store, ToolRegistry, spawn_reactor,
 };
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
 use crate::kind::{AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage};
 use crate::message::{ChannelKey, ChannelKind, InboundMessage, OutboundReply};
-use crate::{identity, mapping, outbound};
+use crate::streams::StreamObserver;
+use crate::{identity, mapping, outbound, streams};
 
 /// The model every new conversation is created under: one provider instance
 /// and one model, named by the assembly and never by a message.
@@ -58,12 +59,27 @@ pub struct IngestReceipt {
 pub struct Assistant {
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
     binding: ModelBinding,
-    /// The conversations whose boot latch this process has already released.
-    /// The latch is per process, so a durable store's conversations return
-    /// latched after a restart; the first successful ingestion into each one
-    /// releases it, exactly once — a conversation a stream error re-latched
-    /// is already in this set and stays latched.
-    unlatched: Mutex<HashSet<i64>>,
+    /// The system prompt recorded into every conversation at its creation,
+    /// through the framework's system-prompt kind. The framework records a
+    /// conversation's prompt exactly once, so an edited prompt reaches new
+    /// conversations only.
+    system_prompt: String,
+    /// The streaming state the erasure ordering reads; the observation's
+    /// contract and its lossy edges are stated on the streams module.
+    streams: Arc<StreamObserver>,
+    /// Serializes the answer-due stamp against other ingestions: the tail
+    /// read and the append it feeds are a read-then-write, and two
+    /// concurrent ingestions into one conversation could both observe the
+    /// pre-append tail — the later, unaddressed write would then be stamped
+    /// false, cancelling exactly the owed answer decision 0021 exists to
+    /// protect. Ingestion against ingestion is all this lock orders: the
+    /// runtime commits its answer blocks outside it, so a tail read can see
+    /// an answer-due tail whose answer commits a moment later, and the
+    /// stamp then summons one extra turn over an already-answered tail —
+    /// never a lost answer. One lock across all conversations, because
+    /// ingestion runs at chat scale and a per-conversation lock map would
+    /// buy contention nobody has.
+    stamp_lock: Mutex<()>,
     /// Orders erasure against ingestion. An erasure reads, nulls and deletes
     /// in several store operations, and an ingestion interleaved between
     /// them could record a new message or map a new direct channel for the
@@ -95,6 +111,7 @@ impl Assistant {
         providers: Arc<ProviderRegistry>,
         tools: Arc<ToolRegistry<CoreEvent>>,
         binding: ModelBinding,
+        system_prompt: String,
     ) -> Result<Self, CoreError> {
         if !store.content_tables().contains(&CHAT_MESSAGE_TABLE) {
             return Err(CoreError::MissingContentTable {
@@ -115,11 +132,14 @@ impl Assistant {
                 name: binding.provider_display_name.clone(),
             })
             .await?;
+        let streams = streams::spawn_observer(ctx.bus());
         spawn_reactor(ctx.clone());
         Ok(Self {
             ctx,
             binding,
-            unlatched: Mutex::new(HashSet::new()),
+            system_prompt,
+            streams,
+            stamp_lock: Mutex::new(()),
             erasure_fence: RwLock::new(()),
         })
     }
@@ -128,17 +148,15 @@ impl Assistant {
     /// resolved to.
     ///
     /// Resolves or creates the sender's principal, maps the channel —
-    /// creating the conversation under the assembly's binding on first
-    /// message — appends the message block through the framework's consumer
-    /// write path, and only then releases the conversation's boot latch, on
-    /// this process's first successful ingestion into it. The append is what
-    /// wakes the runtime; the unlatch is what lets the woken conversation
-    /// take a turn at all.
-    ///
-    /// A conversation that an earlier stream error re-latched stays latched:
-    /// this process already released its boot latch once, and failure
-    /// behavior on the outbound side is the live-model unit's decision, so
-    /// no second unlatch fires here.
+    /// creating the conversation under the assembly's binding, with the
+    /// assembly's system prompt recorded first, on first message — stamps
+    /// the message's answer-due fact from the addressed fact and the tail
+    /// block, and appends the message block through the framework's consumer
+    /// write path. An addressed message then emits the unlatch intent,
+    /// always: a person addressing the assistant IS the deliberate
+    /// re-engagement, the intent is idempotent, and the same emission
+    /// releases a fresh conversation's boot latch and a stream error's
+    /// re-latch alike. An unaddressed message never unlatches.
     ///
     /// # Errors
     ///
@@ -173,12 +191,20 @@ impl Assistant {
             }
         };
 
+        // Held from the tail read through the append: the stamp is decided
+        // against the tail this write is appended behind, so no concurrent
+        // ingestion may slide a block in between — the lock's contract is on
+        // its field.
+        let _one_stamp_at_a_time = self.stamp_lock.lock().await;
+        let answer_due = message.addressed || self.tail_owes_answer(conversation_id).await?;
         let fields = ChatMessage::stored_fields(
             &message.text,
             principal_id,
             message.authority,
             message.origin.as_deref(),
             &message.timestamp.to_rfc3339(),
+            message.addressed,
+            answer_due,
         );
         self.ctx
             .store()
@@ -190,7 +216,11 @@ impl Assistant {
                 None,
             )
             .await?;
-        self.release_boot_latch(conversation_id);
+        if message.addressed {
+            self.ctx
+                .bus()
+                .emit(CoreEvent::UnlatchRequested { conversation_id });
+        }
         Ok(IngestReceipt {
             principal_id,
             conversation_id,
@@ -203,7 +233,8 @@ impl Assistant {
     /// sees another adapter's replies. Answers already stored when the
     /// subscription is taken are history and stay off it; every answer
     /// stored afterwards is delivered at least once, re-read from the ledger
-    /// — the outbound module's doc states the exact delivery contract.
+    /// — the outbound module's doc states the exact delivery contract,
+    /// including the failure notice's at-most-once nature.
     ///
     /// # Errors
     ///
@@ -220,10 +251,20 @@ impl Assistant {
     /// columns of the principal's messages — text, origin reference and
     /// platform send time — are nulled in every conversation (the block
     /// headers keep their positions and references, and an erased message
-    /// projects nothing to the model), the principal's direct conversations are
-    /// removed entirely with their channel mappings, and the identity rows
-    /// are deleted. Reports [`ErasureOutcome::NotFound`] — touching nothing
-    /// — when no identity row matches, a completed earlier erasure included.
+    /// projects none of its prose to the model), the principal's direct
+    /// conversations are removed entirely with their channel mappings, and
+    /// the identity rows are deleted. Reports [`ErasureOutcome::NotFound`]
+    /// — touching nothing — when no identity row matches, a completed
+    /// earlier erasure included.
+    ///
+    /// A direct conversation showing an open stream — observed on the bus,
+    /// or holding a stored streaming tail a gone runtime left behind — is
+    /// settled first, per the streams module's protocol: the interrupt goes
+    /// out and a bounded stored-state re-read confirms the interrupt's
+    /// ledger writes have finished before anything is deleted, so the
+    /// stream's appends cannot race the deletion. Past the bound the erasure
+    /// fails loudly with [`CoreError::ErasureUnsettled`], deleting nothing.
+    /// An idle principal pays no wait.
     ///
     /// Not covered, recorded OPEN in decision 0012: a group conversation's
     /// derived title may have been shaped by since-erased prose and is not
@@ -234,35 +275,45 @@ impl Assistant {
     ///
     /// # Errors
     ///
-    /// [`CoreError::Store`] if a read, a write or a deletion fails.
+    /// [`CoreError::ErasureUnsettled`] if an open stream did not settle
+    /// before the bound; [`CoreError::Store`] if a read, a write or a
+    /// deletion fails.
     pub async fn erase_principal(&self, principal_id: i64) -> Result<ErasureOutcome, CoreError> {
         let _no_ingestion_mid_erasure = self.erasure_fence.write().await;
-        let outcome = erasure::erase_principal(self.ctx.store(), principal_id).await?;
+        let store = self.ctx.store();
+        let Some(plan) = erasure::plan(store, principal_id).await? else {
+            return Ok(ErasureOutcome::NotFound);
+        };
+        // The plan's conversations are exactly the deletion set, so settling
+        // them is settling everything the execute step will remove.
+        for &conversation_id in plan.direct_conversations() {
+            streams::settle_for_deletion(store, self.ctx.bus(), &self.streams, conversation_id)
+                .await?;
+        }
+        let outcome = erasure::execute(store, plan).await?;
         if let ErasureOutcome::Erased {
             deleted_conversations,
         } = &outcome
         {
-            // The store reissues a deleted conversation's id; a stale entry
-            // here would suppress the reissued conversation's unlatch.
-            // A poisoned lock is recoverable here: the set holds plain ids
-            // and every holder only inserts or removes.
-            let mut unlatched = self
-                .unlatched
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for id in deleted_conversations {
-                unlatched.remove(id);
+            // The store reissues conversation ids: a deleted conversation's
+            // stream observation must not survive to shadow the id's next
+            // holder.
+            for &deleted in deleted_conversations {
+                self.streams.forget(deleted);
             }
         }
         Ok(outcome)
     }
 
     /// First message on a channel: create the conversation under the
-    /// assembly's binding and claim the mapping. The winner's boot latch is
-    /// released by the caller, like every mapped conversation's.
+    /// assembly's binding, record the system prompt as its first block, and
+    /// claim the mapping.
     ///
     /// Two ingestions can race here; the mapping's claim decides, and the
-    /// loser's conversation is deleted before anything referenced it.
+    /// loser's conversation is deleted — its prompt block with it — before
+    /// anything referenced it. Recording the prompt before the claim is what
+    /// makes it the winner's first block: the losing racer's message arrives
+    /// in the winning conversation only after the winner's prompt is in.
     async fn map_new_channel(
         &self,
         channel: &ChannelKey,
@@ -277,6 +328,9 @@ impl Assistant {
                 self.binding.vendor.clone(),
             )
             .await?;
+        store
+            .insert_system_prompt(created, self.system_prompt.clone())
+            .await?;
         let winner = mapping::claim(&store.tx(), channel, kind, created).await?;
         if winner != created {
             store.delete_conversation(created).await?;
@@ -284,20 +338,22 @@ impl Assistant {
         Ok(winner)
     }
 
-    /// Release a conversation's boot latch with the explicit unlatch intent
-    /// — without it no turn ever fires — the first time this process ingests
-    /// into the conversation, and never again: the set remembers, so an
-    /// in-process stream error's re-latch is not undone here.
-    fn release_boot_latch(&self, conversation_id: i64) {
-        let first = self
-            .unlatched
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(conversation_id);
-        if first {
-            self.ctx
-                .bus()
-                .emit(CoreEvent::UnlatchRequested { conversation_id });
-        }
+    /// Whether the conversation's tail block still owes the model a turn —
+    /// the one-block read behind the write-time stamp, deciding through the
+    /// kind's own [`ChatMessage::owes_answer`] so this read and the awaiting
+    /// hook can never disagree about one stamp: an erased tail, whose debt
+    /// the hook cancels, propagates nothing here either. The tail carrying
+    /// the debt IS it being unanswered: an answer, a streaming tail or any
+    /// later block would be the tail instead, and mid-turn absorption keeps
+    /// its own semantics for those.
+    async fn tail_owes_answer(&self, conversation_id: i64) -> Result<bool, CoreError> {
+        use agent_ledger::FromBlock;
+        let Some(tail) = self.ctx.store().latest_block(conversation_id).await? else {
+            return Ok(false);
+        };
+        Ok(match AssistantKind::from_block(&tail) {
+            AssistantKind::ChatMessage(message) => message.owes_answer(),
+            AssistantKind::Core(_) => false,
+        })
     }
 }

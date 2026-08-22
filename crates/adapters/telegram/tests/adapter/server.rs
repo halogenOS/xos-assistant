@@ -57,6 +57,9 @@ enum AdminScript {
 
 #[derive(Default)]
 struct ServerState {
+    /// The bot identity `getMe` answers, `(id, username)`. `None` scripts
+    /// the identity fetch to fail until one is set.
+    me: Mutex<Option<(i64, String)>>,
     /// Every unconfirmed update, in push order.
     updates: Mutex<Vec<Value>>,
     /// Wakes a long-polling request when an update is pushed.
@@ -82,8 +85,18 @@ impl Drop for BotApiServer {
 }
 
 impl BotApiServer {
-    /// Bind a fresh loopback port and start serving.
+    /// Bind a fresh loopback port and start serving, with the suite's
+    /// default bot identity scripted for `getMe`.
     pub async fn start() -> Self {
+        let server = Self::start_without_identity().await;
+        server.set_me(crate::support::BOT_ID, crate::support::BOT_USERNAME);
+        server
+    }
+
+    /// Bind a fresh loopback port with `getMe` scripted to fail until
+    /// [`Self::set_me`] is called — the fixture for the identity-first
+    /// contract.
+    pub async fn start_without_identity() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("a loopback listener binds");
@@ -109,6 +122,11 @@ impl BotApiServer {
     /// The API root the adapter's configuration points at.
     pub fn root(&self) -> String {
         self.root.clone()
+    }
+
+    /// Script the bot identity `getMe` answers from here on.
+    pub fn set_me(&self, id: i64, username: &str) {
+        *self.state.me.lock().expect("the identity script locks") = Some((id, username.to_owned()));
     }
 
     /// Push one update; a hanging poll wakes and serves it.
@@ -305,6 +323,24 @@ async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16
             body: body.clone(),
         });
     match method.as_str() {
+        "getMe" => {
+            let me = state.me.lock().expect("the identity script locks").clone();
+            match me {
+                Some((id, username)) => (
+                    200,
+                    json!({ "ok": true, "result": {
+                        "id": id,
+                        "is_bot": true,
+                        "first_name": "Fixture",
+                        "username": username,
+                    } }),
+                ),
+                None => (
+                    500,
+                    json!({ "ok": false, "description": "scripted identity failure" }),
+                ),
+            }
+        }
         "getUpdates" => {
             let script = state
                 .poll_scripts

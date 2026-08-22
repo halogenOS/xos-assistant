@@ -9,8 +9,8 @@ use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    TempStateFile, await_chat_messages, await_conversations, await_state_file, group_update,
-    private_update, recording_sleep, spawn_adapter, start_assistant,
+    DEADLINE, TempStateFile, await_chat_messages, await_conversations, await_state_file,
+    group_update, private_update, recording_sleep, spawn_adapter, start_assistant,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -121,6 +121,78 @@ async fn a_midway_failure_persists_up_to_the_last_success_and_redelivers() {
         messages[0].fields["text"],
         json!("held back by the failure")
     );
+}
+
+/// AC7's transient half through the core itself: a storage failure inside
+/// ingest classifies transient by the core's own statement, so the batch
+/// halts, backs off and redelivers once storage answers again — where the
+/// terminal refusal pinned in the translation module is acknowledged past
+/// forever. The failure is scripted by hiding the core's identity table, so
+/// the refusal provably crosses the adapter boundary as a `CoreError` read
+/// through `failure_kind`, not as a failed platform fetch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transient_ingest_failure_halts_the_batch_and_redelivers() {
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    let state = TempStateFile::new("transient-core");
+    server.push_update(private_update(50, 7, "recorded while storage answers"));
+
+    let (sleep, waits) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+    let conversation = await_conversations(&fixture.store, 1).await[0];
+    await_chat_messages(&fixture.store, conversation, 1).await;
+    await_state_file(state.path(), 51).await;
+
+    // Hide the identity table: every ingest now fails inside the core with
+    // a storage error, the transient class.
+    fixture
+        .store
+        .run(|conn| {
+            conn.execute("ALTER TABLE principals RENAME TO principals_hidden", [])?;
+            Ok(())
+        })
+        .await
+        .expect("the identity table hides");
+    let waits_before = waits.lock().expect("the wait log locks").len();
+    server.push_update(private_update(51, 7, "held back by the storage failure"));
+
+    // The halted batch backs off — the only waits this loop takes are the
+    // poll failure's and the halt's, and the poll keeps succeeding — while
+    // neither the offset nor the ledger moves past the failed update.
+    let deadline = std::time::Instant::now() + DEADLINE;
+    while waits.lock().expect("the wait log locks").len() < waits_before + 3 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting the halted batch's backoff"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        std::fs::read_to_string(state.path())
+            .expect("the state file reads")
+            .trim(),
+        "51",
+        "the offset does not advance past the transient failure"
+    );
+    let messages = await_chat_messages(&fixture.store, conversation, 1).await;
+    assert_eq!(messages.len(), 1, "the held update is not recorded yet");
+
+    // Storage answers again: the held update redelivers and is recorded —
+    // the proof it was halted transiently, not acknowledged past.
+    fixture
+        .store
+        .run(|conn| {
+            conn.execute("ALTER TABLE principals_hidden RENAME TO principals", [])?;
+            Ok(())
+        })
+        .await
+        .expect("the identity table returns");
+    let messages = await_chat_messages(&fixture.store, conversation, 2).await;
+    assert_eq!(
+        messages[1].fields["text"],
+        json!("held back by the storage failure")
+    );
+    await_state_file(state.path(), 52).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
