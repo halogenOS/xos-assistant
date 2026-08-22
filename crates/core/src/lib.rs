@@ -16,8 +16,9 @@
 //! - [`InboundMessage`] and [`OutboundReply`] with their parts — the core's
 //!   own vocabulary, which adapters translate into and out of.
 //! - [`Assistant`] — the assembly: runtime wiring, the ingestion entry point
-//!   (answering with an [`IngestReceipt`]), the per-adapter outbound
-//!   subscription, and erasure with its [`ErasureOutcome`].
+//!   (answering with an [`IngestReceipt`], its stamp bounded by the
+//!   [`ProtectionConfig`] budgets), the per-adapter outbound subscription,
+//!   and erasure with its [`ErasureOutcome`].
 //! - [`CoreError`] — what a core operation fails with.
 //!
 //! The public modules stay addressable by path, because their items read by
@@ -44,7 +45,7 @@ pub mod provider;
 pub mod schema;
 mod streams;
 
-pub use assembly::{Assistant, IngestReceipt, ModelBinding};
+pub use assembly::{Assistant, Budget, IngestReceipt, ModelBinding, ProtectionConfig};
 pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
 pub use message::{

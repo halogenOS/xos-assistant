@@ -234,6 +234,7 @@ pub async fn start_assistant() -> Fixture {
             model_display_name: "Script Model".into(),
         },
         "You are the adapter suite's scripted assistant fixture.".into(),
+        assistant_core::ProtectionConfig::default(),
     )
     .await
     .expect("the assembly starts");

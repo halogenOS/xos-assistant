@@ -9,19 +9,37 @@
 mod support;
 
 use support::{
-    ANSWER, BinaryRun, CompletionsServer, KEY, STOP_BOUND, Scratch, TOKEN, TelegramServer,
-    assert_absent, assert_absent_if_present, private_update,
+    ANSWER, BinaryRun, CompletionsServer, DEADLINE, KEY, STOP_BOUND, Scratch, TOKEN,
+    TelegramServer, assert_absent, assert_absent_if_present, private_update,
 };
 
 /// The fixture prompt the loader reads; the run story's real prompt files
 /// live in the repository and are not this suite's concern.
 const PROMPT: &str = "You are the process suite's scripted assistant fixture.";
 
+/// What one test varies about its configuration file; the defaults are what
+/// most runs want, so a caller names only the knob its story turns.
+struct ConfigOptions {
+    /// The log destination as its raw TOML value, so a caller can spell the
+    /// bare console word or the file table.
+    log_destination: String,
+    /// Raw TOML appended after the named tables — the budget test's
+    /// protection table.
+    extra_tables: String,
+}
+
+impl Default for ConfigOptions {
+    fn default() -> Self {
+        Self {
+            log_destination: "\"stderr\"".into(),
+            extra_tables: String::new(),
+        }
+    }
+}
+
 /// One configuration file pointing every endpoint at the scripted servers,
 /// with the token behind an environment variable and the key behind a file —
-/// one of each indirection, so both are exercised. The log destination is
-/// taken as its raw TOML value, so a caller can spell the bare console word
-/// or the file table.
+/// one of each indirection, so both are exercised.
 // Debug formatting is deliberate: it quotes and escapes each value exactly
 // as a TOML string literal needs.
 #[allow(clippy::unnecessary_debug_formatting)]
@@ -29,8 +47,12 @@ fn configuration(
     scratch: &Scratch,
     telegram_root: &str,
     completions_base: &str,
-    log_destination: &str,
+    options: &ConfigOptions,
 ) -> std::path::PathBuf {
+    let ConfigOptions {
+        log_destination,
+        extra_tables,
+    } = options;
     scratch.write("prompts/assistant.md", PROMPT);
     let key_file = scratch.write("provider-key", &format!("{KEY}\n"));
     scratch.write(
@@ -47,7 +69,8 @@ fn configuration(
              [secrets.bot_token]\n\
              env = \"PROCESS_TEST_BOT_TOKEN\"\n\n\
              [secrets.openrouter_key]\n\
-             file = {:?}\n",
+             file = {:?}\n\n\
+             {extra_tables}",
             scratch.path("store.db"),
             scratch.path("telegram.offset"),
             scratch.path("prompts"),
@@ -73,10 +96,13 @@ async fn the_process_answers_and_no_secret_reaches_the_store_or_a_log() {
         &scratch,
         &telegram.root(),
         &completions.base(),
-        &format!(
-            "{{ file = {:?} }}",
-            log_file.to_str().expect("the scratch path is unicode")
-        ),
+        &ConfigOptions {
+            log_destination: format!(
+                "{{ file = {:?} }}",
+                log_file.to_str().expect("the scratch path is unicode")
+            ),
+            ..ConfigOptions::default()
+        },
     );
 
     telegram.push_update(private_update(1, 42, "hello assistant"));
@@ -134,6 +160,83 @@ async fn the_process_answers_and_no_secret_reaches_the_store_or_a_log() {
             assert_absent_if_present(&scratch.path(&format!("store.db{suffix}")), secret, what);
         }
     }
+}
+
+/// The protection budget, driven through the binary (AC8): with the
+/// configuration file's protection table granting one answer, the first
+/// direct ask is answered and the second — provably processed, its update
+/// confirmed by a later poll's offset — draws no send and no completion
+/// request. Over-limit is silent in the chat by design; the limited fact in
+/// the store is the audit trail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_configured_budget_limits_answers_through_the_binary() {
+    let telegram = TelegramServer::start().await;
+    let completions = CompletionsServer::start().await;
+    let scratch = Scratch::new("budget");
+    let config = configuration(
+        &scratch,
+        &telegram.root(),
+        &completions.base(),
+        &ConfigOptions {
+            extra_tables: "[protection]\nprincipal_answers = 1\n".into(),
+            ..ConfigOptions::default()
+        },
+    );
+
+    telegram.push_update(private_update(1, 42, "the first ask"));
+    let run = BinaryRun::spawn(
+        &[&config],
+        &[("PROCESS_TEST_BOT_TOKEN", TOKEN)],
+        &scratch.path("stderr.txt"),
+    );
+    let sends = telegram.await_recorded("sendMessage", 1).await;
+    assert_eq!(sends[0].body["text"].as_str(), Some(ANSWER));
+
+    // The second ask from the same person crosses the one-answer budget.
+    // Its processing is proven by the poll cycle: the poller confirms an
+    // update only after handling it, so a getUpdates asking from offset 3
+    // means the second update went through the whole path.
+    telegram.push_update(private_update(2, 42, "the second ask"));
+    let deadline = std::time::Instant::now() + DEADLINE;
+    loop {
+        let confirmed = telegram
+            .recorded("getUpdates")
+            .iter()
+            .any(|poll| poll.body["offset"].as_i64() == Some(3));
+        if confirmed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting the poll that confirms the second update"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // A grace period so a wrongly spawned answer would surface as a send.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(
+        telegram.recorded("sendMessage").len(),
+        1,
+        "the over-limit ask draws no answer and no notice"
+    );
+    // The wire also carries the framework's title derivation, told apart by
+    // its appended instruction — the same discriminator the core suite
+    // uses. A changed instruction wording would count the derivation as a
+    // turn and fail this assertion loudly, never pass it silently.
+    let turns = completions
+        .requests()
+        .iter()
+        .filter(|body| {
+            !serde_json::to_string(body)
+                .expect("the recorded body serializes")
+                .contains("Generate a concise title")
+        })
+        .count();
+    assert_eq!(
+        turns, 1,
+        "the refused debt never reaches the model — the spend the limit exists to save"
+    );
+    drop(run);
 }
 
 /// A configuration the process cannot read exits nonzero before anything
@@ -211,7 +314,7 @@ async fn a_missing_secret_source_refuses_the_start() {
         &scratch,
         "http://127.0.0.1:9",
         "http://127.0.0.1:9",
-        "\"stderr\"",
+        &ConfigOptions::default(),
     );
 
     // The token's environment variable is deliberately not passed.
@@ -236,7 +339,7 @@ async fn sigterm_ends_the_process_cleanly_within_the_stated_bound() {
         &scratch,
         &telegram.root(),
         &completions.base(),
-        "\"stderr\"",
+        &ConfigOptions::default(),
     );
 
     let mut run = BinaryRun::spawn(

@@ -49,6 +49,22 @@ enum StartError {
     #[error("the configuration file {path} does not decode, {location}")]
     ConfigurationInvalid { path: PathBuf, location: String },
 
+    /// A protection field configures zero answers — an assistant that
+    /// answers no one. Disabling a budget is a zero window, not a zero
+    /// count.
+    #[error(
+        "the protection field `{field}` must be at least 1; set the budget's \
+         window to 0 to disable it instead"
+    )]
+    ProtectionAnswersZero { field: &'static str },
+    /// A protection window is longer than the supported year. Far past it,
+    /// the database's date arithmetic would return null and silently admit
+    /// everything — the bound keeps the failure at the parse, loudly.
+    #[error(
+        "the protection field `{field}` must be at most one year          (31536000 seconds); longer windows are refused"
+    )]
+    ProtectionWindowOverBound { field: &'static str },
+
     /// A secret reference names both sources or neither.
     #[error("the secret `{key}` must name exactly one of `env` or `file`")]
     SecretRef { key: &'static str },
@@ -112,6 +128,9 @@ fn run() -> Result<(), StartError> {
         return Err(StartError::Usage);
     };
     let configuration = Configuration::load(config_path.as_ref())?;
+    // Resolved right behind the decode: a zero answer count refuses the
+    // start here, before any secret is read or a connection is opened.
+    let protection = configuration.protection.resolve()?;
     let bot_token = configuration.secrets.bot_token.resolve("bot_token")?;
     let openrouter_key = configuration
         .secrets
@@ -125,6 +144,7 @@ fn run() -> Result<(), StartError> {
         .map_err(StartError::Runtime)?
         .block_on(serve(
             configuration,
+            protection,
             bot_token,
             openrouter_key,
             system_prompt,
@@ -164,6 +184,7 @@ fn init_logging(destination: &LogDestination) -> Result<(), StartError> {
 /// Assemble and serve until SIGTERM or an adapter start refusal.
 async fn serve(
     configuration: Configuration,
+    protection: assistant_core::ProtectionConfig,
     bot_token: String,
     openrouter_key: String,
     system_prompt: String,
@@ -192,6 +213,7 @@ async fn serve(
         Arc::new(ToolRegistry::new()),
         binding,
         system_prompt,
+        protection,
     )
     .await?;
 

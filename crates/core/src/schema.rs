@@ -18,7 +18,8 @@ use agent_ledger::{DomainMigrations, FromBlock, StoreConfig};
 
 use crate::kind::{
     AssistantKind, CHAT_MESSAGE_TABLE, COLUMN_ADDRESSED, COLUMN_ANSWER_DUE, COLUMN_AUTHORITY,
-    COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID, COLUMN_ROLE, COLUMN_SENT_AT, COLUMN_TEXT,
+    COLUMN_DEBT_AUTHORITY, COLUMN_LIMITED, COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID, COLUMN_ROLE,
+    COLUMN_SENT_AT, COLUMN_TEXT, LimitedBy,
 };
 use crate::message::{Authority, ChannelKind};
 
@@ -100,8 +101,42 @@ static CHANNELS_SCHEMA: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The principal count's index, named once: the appended migration step
+/// below creates it, and the suite's schema pins read it back under this
+/// name — three call sites, one spelling.
+pub static PRINCIPAL_ADDRESSED_INDEX: LazyLock<String> =
+    LazyLock::new(|| format!("idx_{CHAT_MESSAGE_TABLE}_principal_addressed"));
+
+/// The protection stamp — the first appended migration step, per decision
+/// 0026's discipline: the shipped CREATE TABLE above stays as it was written
+/// and every schema change from the live-model unit on is a new entry here.
+/// The framework counts entry `i` of the domain's list as version `i + 1`,
+/// so a store created before this step holds version 3 and runs exactly
+/// this one at open, while a fresh store runs all four in order.
+///
+/// The step adds the two protection columns — both nullable, so every
+/// pre-existing row reads NULL in both, with their vocabularies closed by
+/// the same enums the code parses with — and the index the principal budget
+/// count runs on. Both columns are structure, not personal data: erasure
+/// leaves them.
+static PROTECTION_STAMP_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "ALTER TABLE {CHAT_MESSAGE_TABLE}
+             ADD COLUMN {COLUMN_LIMITED} TEXT CHECK ({COLUMN_LIMITED} IN ({limits}));
+         ALTER TABLE {CHAT_MESSAGE_TABLE}
+             ADD COLUMN {COLUMN_DEBT_AUTHORITY} TEXT
+                 CHECK ({COLUMN_DEBT_AUTHORITY} IN ({authorities}));
+         CREATE INDEX {index}
+             ON {CHAT_MESSAGE_TABLE}({COLUMN_PRINCIPAL_ID}, {COLUMN_ADDRESSED});",
+        index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
+        limits = quoted_list(LimitedBy::ALL.iter().map(|l| l.as_str())),
+        authorities = quoted_list(Authority::ALL.iter().map(|a| a.as_str())),
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
-/// descriptors and the domain migrations that create the tables above.
+/// descriptors and the domain migrations — the three creating steps, then
+/// every appended step in order.
 #[must_use]
 pub fn store_config() -> StoreConfig {
     StoreConfig {
@@ -112,6 +147,7 @@ pub fn store_config() -> StoreConfig {
                 CHAT_MESSAGE_SCHEMA.as_str(),
                 PRINCIPALS_SCHEMA,
                 CHANNELS_SCHEMA.as_str(),
+                PROTECTION_STAMP_MIGRATION.as_str(),
             ],
         }],
     }

@@ -28,6 +28,7 @@ async fn a_binding_with_an_unregistered_vendor_is_refused_at_start() {
         Arc::new(ToolRegistry::new()),
         binding,
         support::SYSTEM_PROMPT.into(),
+        assistant_core::ProtectionConfig::default(),
     )
     .await
     else {
@@ -55,6 +56,7 @@ async fn a_store_opened_without_the_configuration_is_refused_at_start() {
         Arc::new(ToolRegistry::new()),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
+        assistant_core::ProtectionConfig::default(),
     )
     .await
     else {
