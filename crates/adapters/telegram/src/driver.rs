@@ -14,11 +14,11 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use assistant_core::{Assistant, CoreError, InboundMessage, OutboundReply};
+use assistant_core::{Assistant, FailureKind, InboundMessage, OutboundReply};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::authority::AdminCache;
-use crate::client::{BotClient, Update};
+use crate::client::{BotClient, BotIdentity, Update};
 use crate::translate::{self, Translation};
 use crate::{ADAPTER_NAME, AdapterError, Config, Sleep, state};
 
@@ -55,7 +55,12 @@ pub(crate) async fn run(
 /// Long-poll and ingest until the future is dropped. Never returns on its
 /// own: a network error backs off and re-polls, a halted batch backs off
 /// and redelivers.
+///
+/// The bot's own identity comes first, with the poll's own backoff: mention
+/// and reply-to-self resolution compare against it, so no message is
+/// translated before it is known.
 async fn poll_loop(client: &BotClient, state_file: &Path, sleep: &Sleep, assistant: &Assistant) {
+    let me = fetch_identity(client, sleep).await;
     let mut next_offset = state::read(state_file);
     let mut admins = AdminCache::new();
     loop {
@@ -70,7 +75,7 @@ async fn poll_loop(client: &BotClient, state_file: &Path, sleep: &Sleep, assista
         let mut halted = false;
         let offset_before = next_offset;
         for update in &updates {
-            match process(update, client, &mut admins, assistant).await {
+            match process(update, &me, client, &mut admins, assistant).await {
                 Step::Acknowledged => next_offset = Some(update.id + 1),
                 Step::Halted => {
                     halted = true;
@@ -92,14 +97,30 @@ async fn poll_loop(client: &BotClient, state_file: &Path, sleep: &Sleep, assista
     }
 }
 
+/// The bot's identity from `getMe`, retried on the poll backoff until it
+/// answers: without it addressing cannot be resolved, and translating
+/// blind would record wrong facts into a durable ledger.
+async fn fetch_identity(client: &BotClient, sleep: &Sleep) -> BotIdentity {
+    loop {
+        match client.get_me().await {
+            Ok(me) => return me,
+            Err(error) => {
+                tracing::warn!(%error, "the identity fetch failed; backing off");
+                sleep(POLL_BACKOFF).await;
+            }
+        }
+    }
+}
+
 /// One update: translate, resolve authority where a group owes it, ingest.
 async fn process(
     update: &Update,
+    me: &BotIdentity,
     client: &BotClient,
     admins: &mut AdminCache,
     assistant: &Assistant,
 ) -> Step {
-    let pending = match translate::translate(update) {
+    let pending = match translate::translate(update, me) {
         Translation::Skip(reason) => {
             tracing::debug!(update_id = update.id, %reason, "update skipped");
             return Step::Acknowledged;
@@ -126,13 +147,17 @@ async fn process(
         channel_kind: pending.channel_kind,
         sender: pending.sender,
         authority,
+        addressed: pending.addressed,
         text: pending.text,
         origin: Some(pending.origin),
         timestamp: pending.sent_at,
     };
     match assistant.ingest(message).await {
         Ok(_) => Step::Acknowledged,
-        Err(refusal @ CoreError::ChannelKindMismatch { .. }) => {
+        // The batch discipline reads the core's own terminal-or-transient
+        // statement, never its variant names: the vocabulary of what can go
+        // wrong is the core's to grow.
+        Err(refusal) if refusal.failure_kind() == FailureKind::Terminal => {
             // Deterministic: retrying forever would wedge every later
             // message in the chat behind this one, so it is acknowledged
             // past — the spec's stated data-loss rule.

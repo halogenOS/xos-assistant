@@ -7,6 +7,7 @@
 //! metadata worker's title-derivation request deterministically.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,6 +41,11 @@ pub const TITLE_INSTRUCTION_MARK: &str = "Generate a concise title";
 /// How long a poll or an awaited condition may take before the test names a
 /// stall.
 pub const DEADLINE: Duration = Duration::from_secs(10);
+
+/// The scripted server's bot identity: what `getMe` answers, and what the
+/// addressed builders mention and reply to.
+pub const BOT_ID: i64 = 999_000;
+pub const BOT_USERNAME: &str = "assistant_fixture_bot";
 
 /// A fake token for the scripted server. Nothing real: the tests only ever
 /// talk to the loopback listener, and the token check (AC6) asserts this
@@ -89,8 +95,11 @@ impl Drop for TempStateFile {
 
 /// The scripted provider: answers every turn with [`answer_to`] the newest
 /// projected message's text and every title derivation with [`TITLE`],
-/// deterministically.
-struct ScriptedChat;
+/// deterministically. A scripted failure count makes the next turns fail
+/// with a stream error instead.
+struct ScriptedChat {
+    failures: Arc<AtomicUsize>,
+}
 
 impl ProviderModule for ScriptedChat {
     fn type_id(&self) -> &'static str {
@@ -130,6 +139,7 @@ impl ProviderModule for ScriptedChat {
     ) -> (ProviderTx, ProviderRx) {
         let (request_tx, mut requests) = mpsc::unbounded_channel();
         let (response_tx, responses) = mpsc::unbounded_channel();
+        let failures = Arc::clone(&self.failures);
         tokio::spawn(async move {
             while let Some(request) = requests.recv().await {
                 let ProviderRequest::Stream { messages, .. } = request else {
@@ -140,6 +150,16 @@ impl ProviderModule for ScriptedChat {
                         text: TITLE.into(),
                     }));
                     let _ = response_tx.send(ProviderResponse::Done);
+                    continue;
+                }
+                if failures
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                        left.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    let _ =
+                        response_tx.send(ProviderResponse::Error("scripted stream failure".into()));
                     continue;
                 }
                 let answer = answer_to(&messages.last().map(message_text).unwrap_or_default());
@@ -183,18 +203,24 @@ fn message_text(message: &Message) -> String {
 }
 
 /// One test's assembled core: the running assistant, shared for the adapter,
-/// and the store handle the test reads the ledger through.
+/// the store handle the test reads the ledger through, and the provider's
+/// failure script.
 pub struct Fixture {
     pub assistant: Arc<Assistant>,
     pub store: Store,
+    /// How many upcoming turns fail with a scripted stream error.
+    pub failures: Arc<AtomicUsize>,
 }
 
 /// Assemble a running assistant over a fresh in-memory store with the
 /// scripted provider registered.
 pub async fn start_assistant() -> Fixture {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let failures = Arc::new(AtomicUsize::new(0));
     let mut providers = ProviderRegistry::new();
-    providers.register(Box::new(ScriptedChat));
+    providers.register(Box::new(ScriptedChat {
+        failures: Arc::clone(&failures),
+    }));
     let assistant = Assistant::start(
         store.clone(),
         Arc::new(EventBus::new()),
@@ -207,12 +233,14 @@ pub async fn start_assistant() -> Fixture {
             model: "script-model".into(),
             model_display_name: "Script Model".into(),
         },
+        "You are the adapter suite's scripted assistant fixture.".into(),
     )
     .await
     .expect("the assembly starts");
     Fixture {
         assistant: Arc::new(assistant),
         store,
+        failures,
     }
 }
 
@@ -299,10 +327,38 @@ pub fn private_update(update_id: i64, user_id: i64, text: &str) -> Value {
     message_update(update_id, "private", user_id, user_id, text)
 }
 
-/// A group message.
+/// A group message. Unaddressed unless the text itself mentions the bot:
+/// recorded, resting, not answered.
 #[must_use]
 pub fn group_update(update_id: i64, chat_id: i64, user_id: i64, text: &str) -> Value {
     message_update(update_id, "group", chat_id, user_id, text)
+}
+
+/// A group message mentioning the bot — addressed through the mention rule.
+#[must_use]
+pub fn mention_update(update_id: i64, chat_id: i64, user_id: i64, text: &str) -> Value {
+    message_update(
+        update_id,
+        "group",
+        chat_id,
+        user_id,
+        &format!("@{BOT_USERNAME} {text}"),
+    )
+}
+
+/// A group message replying to one of the bot's own messages — addressed
+/// through the reply rule.
+#[must_use]
+pub fn reply_to_bot_update(update_id: i64, chat_id: i64, user_id: i64, text: &str) -> Value {
+    let mut update = message_update(update_id, "group", chat_id, user_id, text);
+    update["message"]["reply_to_message"] = json!({
+        "message_id": message_id_of(update_id) - 1,
+        "date": date_of(update_id) - 1,
+        "chat": { "id": chat_id, "type": "group" },
+        "from": { "id": BOT_ID, "is_bot": true, "first_name": "Fixture", "username": BOT_USERNAME },
+        "text": "an earlier answer",
+    });
+    update
 }
 
 /// Await the recorded chat-message blocks of one conversation reaching the

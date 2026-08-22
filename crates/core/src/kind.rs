@@ -2,17 +2,18 @@
 //!
 //! One consumer kind exists in this unit: [`ChatMessage`], a recorded channel
 //! message. Its descriptor declares the content table, its projection renders
-//! the message for the model, and its agency hook makes an appended message
-//! await a turn — every recorded message awaits the model until the acting
-//! policy arrives with the live-model unit.
+//! the message for the model, and its agency hook makes a message await a
+//! turn exactly when its stored answer-due stamp says one is owed — the
+//! acting policy is record all, answer some, and the stamp is decided once by
+//! the entry point at the write.
 //!
 //! The content table is also the personal-data table of decision 0003: the
 //! block header row is the immutable ledger entry, the content row carries the
 //! personal payload. The `text` column is nullable for exactly one reason —
 //! erasure nulls it — so a message without stored text is an erased message,
-//! projects nothing to the model, and awaits nothing. Because that write is
-//! part of the kind's own contract, it lives here too, as the crate-private
-//! `erase_principal_content` the erasure operation composes.
+//! projects only the fixed marker to the model, and awaits nothing. Because
+//! that write is part of the kind's own contract, it lives here too, as the
+//! crate-private `erase_principal_content` the erasure operation composes.
 
 use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{
@@ -44,6 +45,25 @@ pub const COLUMN_ORIGIN: &str = "origin";
 /// own `created_at` is the store's insertion time, so the ledger keeps both:
 /// the platform's send time here, the store's receipt time on the header.
 pub const COLUMN_SENT_AT: &str = "sent_at";
+/// Whether the message addressed the assistant, as the adapter resolved it.
+/// Structure, not personal data: erasure leaves it.
+pub const COLUMN_ADDRESSED: &str = "addressed";
+/// Whether the message owes the model a turn — the write-time stamp the
+/// entry point decides once at insert: true when the message is addressed,
+/// or when the block behind it carries an unanswered answer-due, so a
+/// message arriving on the heels of an addressed one propagates the debt
+/// instead of cancelling it. Structure, not personal data: erasure leaves
+/// it. A decision recorded at the write, not a derivable-fact column — the
+/// per-block hook that consumes it cannot fold history.
+pub const COLUMN_ANSWER_DUE: &str = "answer_due";
+
+/// What an erased message contributes to a projected request in place of its
+/// nulled prose. Non-empty on purpose: the live vendors whose strict
+/// alternation decision 0027 protects also reject a message whose content is
+/// empty, and a run in which every message is erased projects exactly one
+/// message built from these contributions alone. A fixed marker carries none
+/// of the person's words, so the erasure's promise holds.
+pub const ERASED_MARKER: &str = "[message erased]";
 
 /// One recorded channel message: who said it (by principal id only), with what
 /// standing, and what was said.
@@ -68,7 +88,8 @@ pub struct ChatMessage {
     /// The block's voice, read back from the stored row.
     pub role: Option<Role>,
     /// What was said. `None` is an erased message: the stored text was nulled
-    /// by erasure, and the message projects nothing to the model.
+    /// by erasure, and the message projects [`ERASED_MARKER`] to the model,
+    /// never the prose.
     pub text: Option<String>,
     /// The sender's principal id in the identity tables. `None` only for a
     /// block the store did not produce (the schema stores it NOT NULL);
@@ -83,6 +104,13 @@ pub struct ChatMessage {
     /// on the block header. `None` only for a block the store did not
     /// produce.
     pub sent_at: Option<String>,
+    /// Whether the message addressed the assistant. `None` only for a block
+    /// the store did not produce (the schema stores it NOT NULL).
+    pub addressed: Option<bool>,
+    /// Whether the message owes the model a turn, stamped at the write.
+    /// `None` only for a block the store did not produce; the awaiting hook
+    /// treats that absence as owing nothing.
+    pub answer_due: Option<bool>,
 }
 
 impl ChatMessage {
@@ -98,6 +126,8 @@ impl ChatMessage {
         authority: Authority,
         origin: Option<&str>,
         sent_at: &str,
+        addressed: bool,
+        answer_due: bool,
     ) -> serde_json::Map<String, Value> {
         let mut fields = serde_json::Map::new();
         fields.insert(COLUMN_TEXT.into(), json!(text));
@@ -107,7 +137,31 @@ impl ChatMessage {
             fields.insert(COLUMN_ORIGIN.into(), json!(origin));
         }
         fields.insert(COLUMN_SENT_AT.into(), json!(sent_at));
+        fields.insert(COLUMN_ADDRESSED.into(), json!(addressed));
+        fields.insert(COLUMN_ANSWER_DUE.into(), json!(answer_due));
         fields
+    }
+
+    /// Whether this message still owes the model a turn — the one reading of
+    /// the write-time stamp, shared by the awaiting hook and the entry
+    /// point's tail read so the stamp's two consumers cannot disagree. A
+    /// message owes a turn when it spoke in the user's voice, was stamped
+    /// answer-due at the write, and still has its text: an erased message
+    /// has nothing left to answer, so erasure cancels the debt for the hook
+    /// and the tail read alike — the stamp itself stays, being structure.
+    #[must_use]
+    pub fn owes_answer(&self) -> bool {
+        self.role == Some(Role::User) && self.text.is_some() && self.answer_due == Some(true)
+    }
+
+    /// The message's projected contribution: its text, or [`ERASED_MARKER`]
+    /// when erasure nulled it. Only erasure produces the absent text — the
+    /// adapter never records an empty message and the schema stores the
+    /// column NOT NULL — so the marker speaks exactly for erased messages.
+    fn projected_text(&self) -> String {
+        self.text
+            .clone()
+            .unwrap_or_else(|| ERASED_MARKER.to_owned())
     }
 }
 
@@ -125,6 +179,8 @@ impl LeafKind for ChatMessage {
             Column::new(COLUMN_AUTHORITY, ColumnType::Text),
             Column::new(COLUMN_ORIGIN, ColumnType::Text),
             Column::new(COLUMN_SENT_AT, ColumnType::Text),
+            Column::new(COLUMN_ADDRESSED, ColumnType::Boolean),
+            Column::new(COLUMN_ANSWER_DUE, ColumnType::Boolean),
         ],
         reference_columns: &[],
         ephemeral: false,
@@ -145,36 +201,45 @@ impl LeafKind for ChatMessage {
                 .and_then(Authority::parse),
             origin: string_field(block, COLUMN_ORIGIN),
             sent_at: string_field(block, COLUMN_SENT_AT),
+            addressed: block.fields.get(COLUMN_ADDRESSED).and_then(Value::as_bool),
+            answer_due: block.fields.get(COLUMN_ANSWER_DUE).and_then(Value::as_bool),
         }
     }
 }
 
 impl Agency for ChatMessage {
     fn awaiting(&self) -> Option<Awaiting> {
-        // Every recorded message awaits the model in this unit; the acting
-        // policy — record all, answer some — arrives with the live-model
-        // unit, where the addressing rules exist to express it. An erased
-        // message is the exception: with its text gone it has nothing to be
-        // answered, so it must not summon a turn either.
-        (self.role == Some(Role::User) && self.text.is_some()).then_some(Awaiting::Model)
+        // The acting policy — record all, answer some — reads the write-time
+        // stamp through the one shared predicate: only a message that still
+        // owes an answer summons a turn. The framework owes a turn from the
+        // newest block alone, which is why the stamp propagates debt at the
+        // write instead of this hook folding history.
+        self.owes_answer().then_some(Awaiting::Model)
     }
 }
 
 impl Projection for ChatMessage {
     fn group_role(&self) -> Option<Role> {
-        // An erased message is boundary-invisible: it opens no message group,
-        // so the model never learns the erased row existed.
-        self.text.as_ref().and(self.role)
+        // The stored role, erased or not — the role-alternation shape that
+        // closes decision 0012's first OPEN. An erased message keeps its
+        // place in the grouping pass under its own voice while contributing
+        // only the fixed marker, so the contiguous run of its role survives
+        // the erasure: no two same-role messages split apart, and a request
+        // never opens with the assistant's voice. Where an erased run stands
+        // alone between two other-role neighbours it projects one marker-only
+        // message — the non-empty separator that keeps strict alternation
+        // intact; the prose itself stays gone.
+        self.role
     }
 
     fn llm_parts(&self) -> Option<Vec<ContentPart>> {
-        self.text
-            .as_ref()
-            .map(|text| vec![ContentPart::Text { text: text.clone() }])
+        Some(vec![ContentPart::Text {
+            text: self.projected_text(),
+        }])
     }
 
     fn llm_text(&self) -> Option<String> {
-        self.text.clone()
+        Some(self.projected_text())
     }
 }
 

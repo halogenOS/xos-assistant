@@ -131,6 +131,11 @@ pub struct InboundMessage {
     pub sender: SenderIdentity,
     /// The sender's standing in the channel at receipt.
     pub authority: Authority,
+    /// Whether the message addresses the assistant. What "addressed" means on
+    /// a platform — a direct chat, a mention of the assistant, a reply to one
+    /// of its messages — is platform knowledge the adapter resolves; the core
+    /// receives only the neutral fact and stores it on the message block.
+    pub addressed: bool,
     /// What was said.
     pub text: String,
     /// The platform's own id for the message, opaque, kept for later reply
@@ -142,6 +147,20 @@ pub struct InboundMessage {
     pub timestamp: DateTime<Utc>,
 }
 
+/// What one outbound item is: the assistant's own prose, or the core's
+/// notice that a turn failed. The marker exists so an adapter can present
+/// the two differently without reading the text; the core still supplies the
+/// text for both, because the wording is behavior and behavior stays out of
+/// adapters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyKind {
+    /// A finalized answer from the model.
+    Answer,
+    /// The failure notice: the turn did not produce an answer, said once,
+    /// with no model prose.
+    Notice,
+}
+
 /// One reply on its way out of the core, bound to the channel it answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboundReply {
@@ -149,6 +168,8 @@ pub struct OutboundReply {
     pub channel: ChannelKey,
     /// What the assistant says.
     pub text: String,
+    /// Whether this is the assistant's answer or the core's failure notice.
+    pub kind: ReplyKind,
 }
 
 #[cfg(test)]

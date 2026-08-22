@@ -7,6 +7,8 @@
 //! The token scan (AC6) lives in its own test target, `token_scan`, because
 //! it owns the process-wide subscriber; see its module doc.
 
+mod addressing;
+mod classification;
 mod end_to_end;
 mod offset;
 mod sending;

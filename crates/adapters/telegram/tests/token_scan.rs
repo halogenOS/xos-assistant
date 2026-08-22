@@ -85,7 +85,9 @@ async fn the_token_reaches_no_log_line_and_no_error_string() {
 
     let lines = lines.lock().expect("the line log locks");
     assert!(
-        lines.iter().any(|line| line.contains("poll failed")),
+        lines
+            .iter()
+            .any(|line| line.contains("identity fetch failed")),
         "the transport-failure path logged"
     );
     assert!(
@@ -104,12 +106,14 @@ async fn the_token_reaches_no_log_line_and_no_error_string() {
     assert!(leaks.is_empty(), "the token leaked into output: {leaks:?}");
 }
 
-/// Poll a root nothing listens on: the connection is refused on loopback,
-/// the raw transport error is born carrying the token-bearing URL, and the
-/// logged form must not. The sleep parks forever, so exactly one failure is
-/// forced before the timeout ends the run. The state file is never written
-/// here — every poll fails — but it still comes from the suite's helper, so
-/// no run names a path outside the temp directory.
+/// Run against a root nothing listens on: the connection is refused on
+/// loopback, the raw transport error is born carrying the token-bearing URL,
+/// and the logged form must not. The first request the loop makes is the
+/// identity fetch, so that is the line the failure surfaces on; the sleep
+/// parks forever, so exactly one failure is forced before the timeout ends
+/// the run. The state file is never written here — nothing gets that far —
+/// but it still comes from the suite's helper, so no run names a path
+/// outside the temp directory.
 async fn force_a_transport_failure() {
     let fixture = start_assistant().await;
     let state = TempStateFile::new("token-scan-transport");

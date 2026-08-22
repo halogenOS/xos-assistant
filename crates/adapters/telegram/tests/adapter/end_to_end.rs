@@ -17,9 +17,11 @@ async fn a_group_message_round_trips_to_a_send() {
     let fixture = start_assistant().await;
     let server = BotApiServer::start().await;
     let chat = -100_200_300;
-    let asked = "What is the release cadence?";
+    // The mention is what addresses the assistant in a group; the recorded
+    // text keeps the mention, so the scripted answer derives from it too.
+    let asked = format!("@{} What is the release cadence?", support::BOT_USERNAME);
     server.set_admins(chat, &[]);
-    server.push_update(group_update(1, chat, 7, asked));
+    server.push_update(group_update(1, chat, 7, &asked));
 
     let state = TempStateFile::new("e2e");
     let (sleep, _) = recording_sleep();
@@ -28,12 +30,12 @@ async fn a_group_message_round_trips_to_a_send() {
     // The reply reaches the scripted server, bound to the chat it answers.
     let sends = server.await_recorded("sendMessage", 1).await;
     assert_eq!(sends[0].body["chat_id"], json!(chat));
-    assert_eq!(sends[0].body["text"], json!(answer_to(asked)));
+    assert_eq!(sends[0].body["text"], json!(answer_to(&asked)));
 
     // The ledger holds the recorded message with the translated fields.
     let conversation = await_conversations(&fixture.store, 1).await[0];
     let messages = await_chat_messages(&fixture.store, conversation, 1).await;
-    assert_eq!(messages[0].fields["text"], json!(asked));
+    assert_eq!(messages[0].fields["text"], json!(asked.clone()));
     assert_eq!(messages[0].fields["authority"], json!("member"));
     assert_eq!(
         messages[0].fields["origin"],
@@ -61,7 +63,7 @@ async fn a_group_message_round_trips_to_a_send() {
             .await
             .expect("the ledger reads");
         if blocks.iter().any(|block| {
-            block.block_type == "text" && block.fields["content"] == json!(answer_to(asked))
+            block.block_type == "text" && block.fields["content"] == json!(answer_to(&asked))
         }) {
             break;
         }

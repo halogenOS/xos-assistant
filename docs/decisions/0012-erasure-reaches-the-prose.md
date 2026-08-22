@@ -23,7 +23,9 @@ Erasing a principal is one call running three idempotent steps:
 
 1. The principal's message text is set to null in every conversation. The block header
    is never touched; positions, references and conversation order all keep their shape.
-   An erased message projects nothing to the model.
+   An erased message projects nothing to the model. (Refined 2026-08-22 by decision
+   0027: it projects a bare erasure marker in its original voice, so the conversation's
+   role structure survives erasure; the prose itself still projects nowhere.)
 2. The principal's direct conversations are removed entirely, mappings included. A
    two-party chat that lost its human is metadata that still identifies the person —
    title, timestamps, its very existence — and serves nobody. Conversation-level
@@ -49,12 +51,18 @@ middle can project two same-role messages in a row, and one erased at the front 
 open with the model's own voice. Live providers that demand strict alternation reject
 such requests; the live-model unit must either normalize the shape at its encoder or
 settle it in the framework's fold before it ships.
+CLOSED 2026-08-22 by decision 0027: the kind's projection keeps the stored role in
+the grouping pass, so an erased message holds its run contributing only a fixed
+marker, never its prose; pinned by the projection tests.
 
 OPEN (2026-08-21, from the closing verification): erasure is ordered against
 ingestion by the assembly's fence but not against a conversation's open stream; a
 direct conversation could be deleted mid-stream. The observed failure direction is a
 loud error on the stream's finalizing write, not silent retention. Settling the
 ordering belongs with the unit that first runs live streams.
+CLOSED 2026-08-22 by decision 0028: erasure interrupts an open stream, awaits the
+stream's end, confirms settle with a bounded re-read before deleting, and fails
+loudly past the bound deleting nothing; pinned by the erasure-versus-stream tests.
 
 ## Rejected alternatives
 

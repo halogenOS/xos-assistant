@@ -20,13 +20,16 @@
 //!   subscription, and erasure with its [`ErasureOutcome`].
 //! - [`CoreError`] — what a core operation fails with.
 //!
-//! Two modules stay addressable by path, because their items read by their
-//! module's name:
+//! The public modules stay addressable by path, because their items read by
+//! their module's name:
 //!
 //! - [`kind`] — the assistant's block kind, composed with the framework's
 //!   kinds through the derive.
 //! - [`schema`] — the store configuration and the domain tables; identity
 //!   lives apart from the ledger so erasure never touches a block.
+//! - `provider` (behind the `openrouter` feature) — the framework's
+//!   `OpenRouter` module wrapped around an in-memory configuration, so the
+//!   API key never enters the store.
 
 mod assembly;
 mod erasure;
@@ -36,11 +39,15 @@ pub mod kind;
 mod mapping;
 mod message;
 mod outbound;
+#[cfg(feature = "openrouter")]
+pub mod provider;
 pub mod schema;
+mod streams;
 
 pub use assembly::{Assistant, IngestReceipt, ModelBinding};
 pub use erasure::ErasureOutcome;
-pub use error::CoreError;
+pub use error::{CoreError, FailureKind};
 pub use message::{
-    Authority, ChannelKey, ChannelKind, InboundMessage, OutboundReply, SenderIdentity,
+    Authority, ChannelKey, ChannelKind, InboundMessage, OutboundReply, ReplyKind, SenderIdentity,
 };
+pub use outbound::FAILURE_NOTICE;
