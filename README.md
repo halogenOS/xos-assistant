@@ -192,6 +192,12 @@ the core from the adapters, are written down in `CLAUDE.md`.
 
 ## License
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE). The storage and orchestration
-subsystems are adopted from [ronna-lightspeed](https://github.com/xdevs23/ronna-lightspeed),
-which carries the same license.
+Copyright (C) 2026 Simão Gomes Viana
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, version 3. See [LICENSE](LICENSE).
+
+The storage and orchestration subsystems are adopted from
+[ronna-lightspeed](https://github.com/xdevs23/ronna-lightspeed) by the same
+author, which carries the GNU General Public License v3.0.
