@@ -149,10 +149,15 @@ controller, and anything the project does outside the assistant.
 - **Derived state.** Conversation membership, the answering counters, the tool palette,
   the group authorization row.
 - **Special categories, incidentally.** Free text in a technical community can still
-  reveal health, belief, political opinion or sexual orientation in passing. The
-  assistant does not seek such data and cannot detect it. Posting in an open group does
-  not by itself make that data manifestly public under Article 9(2)(e), so this is
-  treated as a real exposure and answered in section 6.
+  reveal health, belief, political opinion or sexual orientation in passing. The assistant
+  does not seek such data and cannot detect it. Restated 2026-08-23 on a fact the operator
+  settled, that the groups are readable by anyone on the platform without joining or
+  approval: content a person posts about themselves in such a group is data they
+  manifestly made public by their own deliberate act, and Article 9(2)(e) is claimed for
+  it. Content one member reveals about another is not covered by any condition in
+  Article 9(2), because the person concerned published nothing. That narrower residual is
+  what R2 now carries, and the legitimate-interest assessment sets out both parts with the
+  narrow-reading risk attached to the claim.
 
 ### 3.3 Collection
 
@@ -333,7 +338,7 @@ says so loudly and immediately, and that signal is treated as the consultation.
 | # | Risk | Severity before mitigation | Likelihood |
 |---|------|---------------------------|------------|
 | R1 | Everything said in the group is kept without an end date, so a remark made in passing stays available years later | Medium | Certain by design |
-| R2 | Special-category content appears in ordinary conversation and is stored and transmitted with the rest | High | Occasional |
+| R2 | Special-category content about a person other than the poster appears in ordinary conversation and is stored and transmitted with the rest | Medium | Occasional |
 | R3 | Conversation text, together with each speaker's public username, is exposed to an external processor and its sub-processor | Medium | Every answer |
 | R4 | What crosses to the processor is attributable to a named account, so it is pseudonymous at best and not anonymous | Medium | Every answer |
 | R5 | Whoever holds the group's pin right steers the assistant's system voice, possibly against a member | Medium | Rare |
@@ -353,14 +358,26 @@ disappears. The notice states the absence of a timer plainly instead of hiding i
 vague "as long as necessary". Storage never leaves the project's own server; there is no
 search interface, no export, no analysis over the history.
 
-**R2, special categories.** Nothing detects such content, so the mitigation is structural:
-the processor stores nothing (zero data retention), so an accidental disclosure leaves no
-record at that layer once the answer is returned, though a model provider behind it can
-keep the request under the terms of the chosen model, the assistant builds no profile of
-anybody, and deletion on request
-reaches the prose completely and fast. A person who realizes they revealed something can
-have it gone within the month, in practice within days. Residual exposure is accepted and
-named.
+**R2, special categories.** Re-scoped and re-rated 2026-08-23, when the operator settled
+that the groups are readable by anyone on the platform without joining or approval. What a
+person posts about themselves in such a group is data they manifestly made public, and
+Article 9(2)(e) covers it, so the risk that remains is the narrower one in the table: what
+one member reveals about another, which no condition in Article 9(2) reaches. Severity
+therefore drops from high to medium, and the drop is scope and not comfort, because the
+covered part left the risk instead of being mitigated inside it.
+
+For the part that remains, the mitigation is structural, since nothing detects such
+content. The exposure is incidental, unsought and undetectable, and it enters through a
+third party's own act: publishing another person's special-category data into a public
+group is that poster's processing and, where it is unlawful, that poster's wrong. The
+assistant neither invites it nor benefits from it. What the controller owes is reactive and
+is honored: the processor stores nothing, so a disclosure leaves no record at that layer
+once the answer is returned, though a model provider behind it can keep the request under
+the terms of the chosen model; no profile is built from any of it; erasure on request
+reaches everything of the requesting person's own by mechanism, within the month and in
+practice within days; a request about somebody else's message is answered by a person on
+the same rights; and an objection is honored the same way today and by machine once the
+self-service unit ships. The residual is minimised, not resolved, and it is named as such.
 
 **R3, provider exposure.** The mitigation is contractual and territorial, not technical: an
 Article 28 agreement with standard contractual clauses, the European entry point, storage
@@ -431,7 +448,7 @@ cannot be borrowed by a flooder (0030, 0034).
 | # | Residual | Reasoning |
 |---|----------|-----------|
 | R1 | Low to medium | The absence of a timer is real and stays real; it is answered by deletion on request, announced transparency, and the absence of any secondary use. |
-| R2 | Medium | Accepted. No mechanism can detect what a person reveals in passing, and since 2026-08-23 such a disclosure travels with the speaker's handle attached. Zero data retention at the processor and fast erasure are what is available; the model provider's own terms decide the rest. |
+| R2 | Low to medium | Re-rated 2026-08-23 with the narrower scope: self-posted content is covered by Article 9(2)(e), leaving what one member reveals about another. No mechanism can detect that, and since 2026-08-23 such a disclosure travels with the speaker's handle attached. Zero data retention at the processor, reactive remedies and fast erasure are what is available, and the model provider's own terms decide the rest. Rises again if the groups ever stop being publicly readable. |
 | R3 | Low to medium | Contract, EU territory, zero retention, no training. Raised from low on 2026-08-23: the transmitted set now includes a public identifier. |
 | R4 | Medium | Accepted by the operator on 2026-08-23 for the mention capability. Not solvable while the capability exists. Bounded by the processor retaining nothing, by the terms of the chosen model at the provider layer, and by the identifier being the one the group already sees. |
 | R5 | Low | Bounded surface, no action capability. |
@@ -505,6 +522,9 @@ Any one of these triggers a review, and none of them is optional:
 - Any new path that sends message content off the machine, including a new tool, and any
   change to which identifiers travel with a request.
 - A change to what is collected: media, edits, reactions, membership events.
+- Any change to the groups' readability. A group that becomes closed, approval-only or
+  invite-only voids the Article 9(2)(e) claim recorded for self-posted content, because
+  posting into it stops being publication to the public. Added 2026-08-23 with that claim.
 - Any moderation capability shipping, in particular the held-out warn, report and ban
   lines.
 - A change to retention, or the introduction of any secondary use of the history.

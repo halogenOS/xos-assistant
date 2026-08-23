@@ -33,15 +33,11 @@ the group. A rules text can name a person.
 When the assistant looks something up in the project's public sources to answer, the query
 it sent and the result it received are stored with the conversation.
 
-Free text carries things Article 9 GDPR treats as special: a health remark, a belief,
-something about a person's private life, dropped into a technical conversation. The
-assistant does not look for such content and cannot recognise it, so it is stored and sent
-on like any other text. Legitimate interest is a basis under Article 6. Article 9 asks for a
-condition of its own, and none of the conditions in Article 9(2) fits a remark of that kind:
-posting in an open group does not make it manifestly public in that sense. We say so plainly
-instead of claiming a condition we do not have. What stands in its place is the rest of the
-structure: nothing of the kind is sought, detected or singled out, no profile is built from
-it, and deletion on request reaches the text.
+The assistant does not look for sensitive content and cannot recognise it; whatever a
+message carries is stored and sent on like any other text. If a message says something
+about you that you want gone, whether you wrote it or somebody else did, ask and it is
+taken up by a person: your own messages go on request, and a message of somebody else's
+that names you is reviewed and acted on the same way.
 
 _Purpose:_ answering questions in the group and in a direct chat, reading enough of the
 conversation to answer in context, keeping the assistant available by limiting how much it
@@ -96,9 +92,7 @@ direct chat is sent the same way, and nobody but you and the assistant ever saw 
 Once per new conversation, a short piece of it also goes to a smaller model, which returns a
 few words naming that conversation.
 
-The special content described under Messages travels with the rest, under the same basis and
-with the same open point: Article 6(1)(f) covers the sending, and Article 9 has no condition
-we can name for it.
+The special content described under Messages travels with the rest, on the same footing:
 
 _Purpose:_ producing an answer that fits the conversation and can address people by name,
 and naming the conversation.

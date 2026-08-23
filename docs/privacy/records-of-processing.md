@@ -63,7 +63,7 @@ erasure path are written to that standard.
 | D3 | Circumstance | Arrival time, platform send time, reply reference, whether the message was addressed to the assistant, the authority held in that chat at that moment | Content table of the message block kind |
 | D4 | Group facts | Channel title, pinned rules text, stored as context notes | Note table |
 | D5 | Derived state | Conversation membership and order, answering counters, tool palette, group authorization | Ledger and its side tables |
-| D6 | Special categories, incidentally | Free text can reveal health, belief, political opinion or sexual orientation in passing. Not sought, not detected, not used. | Inside D1 |
+| D6 | Special categories, incidentally | Free text can reveal health, belief, political opinion or sexual orientation in passing. Not sought, not detected, not used. Aligned 2026-08-23: the groups are readable by anyone on the platform without joining or approval, so content a person posts about themselves is covered by Article 9(2)(e), and what one member reveals about another is the residual the impact assessment carries under R2. | Inside D1 |
 | D7 | Report record (added 2026-08-23) | The reported message's platform identifier, the reported sender's internal identifier, and the fixed report command line. Written only when a member replies to a message and asks for a report. | Content table of the report block kind |
 | D8 | Reply reference (added 2026-08-23) | The platform identifier of the message a message replies to, kept for reply threading and the report's target. | Content table of the message block kind, beside D3 |
 

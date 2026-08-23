@@ -119,7 +119,7 @@ someone's back, and not data enriched from other sources. Direct chats with the 
 are the more sensitive part of the set, and they are the part deletion removes whole.
 
 Free text can still carry special-category content by accident. That case is addressed
-separately in section 5, because legitimate interest does not answer it.
+separately in section 5, because Article 6 alone does not answer it.
 
 ### 4.2 What members can reasonably expect
 
@@ -192,19 +192,48 @@ absence of a timer instead of dressing it as "as long as necessary".
 
 **Result: the interests are not overridden. The basis holds.**
 
-## 5. The point this basis does not cover
+## 5. Article 9: the condition claimed, and the part it does not reach
 
-Legitimate interest is a basis under Article 6. Special-category data under Article 9
-needs an exception of its own, and none applies cleanly to a health remark someone drops
-into a technical conversation: posting in an open group does not by itself make data
-manifestly public in the sense of Article 9(2)(e). This assessment does not pretend
-otherwise. What answers it, imperfectly and knowingly, is the structure around it: no
-detection and therefore no targeting of such content, a processor that retains nothing and
-builds no profile, with the provider layer bound only by the terms of the chosen model, and deletion that reaches the text quickly on request. Since 2026-08-23
-such a remark travels to the processor with the speaker's handle beside it, which makes it
-attributable for the life of the request and no longer. That is a real increase in the
-exposure and it is recorded as such: accepted residual risk in the impact assessment, not
-a solved problem.
+Legitimate interest is a basis under Article 6. Special-category data under Article 9 needs
+a condition of its own. Rewritten 2026-08-23 on a fact the operator settled: the community
+groups are public in the strong sense. Anyone on the platform can open them and read every
+message without joining, without approval and without anybody's permission. Posting can
+require passing the group's entry check; reading never does. On that fact the question
+splits in two, and only one part is claimed.
+
+**What a person posts about themselves: Article 9(2)(e).** Someone who writes about their
+own health, belief, politics or private life into a venue the general public can read has
+manifestly made that data public by their own deliberate act, which is what Article 9(2)(e)
+asks for. The condition is claimed for that content, and the processing described in this
+assessment rests on it together with Article 6(1)(f).
+
+*The narrow-reading risk, named.* The Court of Justice reads the exception restrictively in
+C-252/21 and looks for a deliberate act of making public, not merely for data that ended up
+visible. The claim here stands on one verified fact and nothing else: these groups are
+readable by the general public. If a group is ever closed, made approval-only or
+invite-only, the act of posting into it stops being publication to the public and the claim
+falls with it. That change is on the review-trigger list of the impact assessment, and this
+section is re-taken with it.
+
+**What one person writes about another: the residual.** Member A posts something sensitive
+about member B. B published nothing, so Article 9(2)(e) cannot reach it, and no other
+condition in Article 9(2) fits either. The position is stated carefully, because it is easy
+to state badly. Publishing another person's special-category data into a public group is
+A's own act and A's own processing, and where it is unlawful it is A's wrong. The assistant
+does not invite it, does not ask for it, cannot recognise it and gains nothing from it: the
+exposure is incidental, unsought and undetectable, and it is introduced by a third party's
+act into a conversation the assistant only reads.
+
+What the controller owes for it is reactive, and it is honored. An erasure request reaches
+everything of the requesting person's own, immediately and by mechanism. A request about
+somebody else's message is answered by a person inside the month, on the same rights. An
+objection under Article 21 is honored the same way today, and by machine once the
+self-service unit ships. Since 2026-08-23 such content also travels to the processor with
+the speaker's handle beside it, attributable for the life of the request and no longer.
+
+The result is a residual that is minimised, not a condition that is claimed. It is
+carried as accepted residual risk in the impact assessment, at the narrower scope this
+section now gives it.
 
 ## 6. Why not consent
 
