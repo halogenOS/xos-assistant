@@ -13,7 +13,12 @@
 //! first-interaction-disclosure unit's AC4 pins: the prompt's honest-answer
 //! teaching, the operator's disclosure copy verbatim, the AI Act compliance
 //! record's role conclusion, obligations map, marking position and notes,
-//! the DPIA's dated role correction, and the unit's four decision records.
+//! the DPIA's dated role correction, and the unit's four decision records
+//! — and the deletion-mirror unit's AC5 pins: the policy's
+//! administrator-deletion sentence with its reply-route scope, the DPIA's
+//! mirror paragraph with the in-flight-turn window, the operator
+//! reference's piggyback section with its reply-only and bare-token
+//! bounds, and the unit's five decision records.
 //! Each pin reads the
 //! committed file the way the repository ships it, so a drifted edit fails
 //! loudly here.
@@ -611,4 +616,98 @@ fn the_dpia_role_correction_is_dated_and_the_units_decisions_are_recorded() {
             "{record} carries its rejected alternatives"
         );
     }
+}
+
+// ─── The deletion-mirror unit's pins (AC5, 2026-08-23) ───────────────────
+
+#[test]
+fn the_deletion_mirror_ships_its_three_document_updates() {
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains(
+            "One exception: when the group's administrators delete a message through \
+             the moderation bot's reply command, that message is removed from our \
+             store as well."
+        ),
+        "the policy's deletion section carries the administrator-deletion sentence"
+    );
+    assert!(
+        policy.contains("Only that reply form reaches us")
+            && policy.contains("asking remains the way to clear those from the store"),
+        "the policy scopes the exception to the reply route and names what stays outside it"
+    );
+
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    assert!(
+        dpia.contains("Added 2026-08-23, with the deletion-mirror unit."),
+        "the DPIA's mirror paragraph is dated"
+    );
+    assert!(
+        dpia.contains("reactive bookkeeping of an administrator's own act"),
+        "the mirror is assessed as bookkeeping, not a capability"
+    );
+    assert!(
+        dpia.contains("removes stored personal data instead of creating or disclosing any"),
+        "the assessment names the mirror's direction"
+    );
+    assert!(
+        dpia.contains("can fold the pre-erasure prose of the deleted message into a public answer"),
+        "the assessment names the in-flight-turn window honestly"
+    );
+
+    let contract = flattened(&repo_file("docs/reference/group-operator-contract.md"));
+    assert!(
+        contract.contains("## The deletion mirror"),
+        "the operator reference gains the mirror section"
+    );
+    assert!(
+        contract.contains("the assistant must SEE the command")
+            && contract.contains("only deletions issued as a reply `/del` reach it"),
+        "the reference states the piggyback's constraint"
+    );
+    assert!(
+        contract.contains("the assistant strips only its own handle from a command"),
+        "the reference states the handle-suffix bound: a `/del` aimed at the \
+         moderation bot by name mirrors nothing"
+    );
+    assert!(
+        !contract.contains("always on"),
+        "the reference claims no unconditional availability the bounds contradict"
+    );
+    assert!(
+        contract.contains("bulk purges") && contract.contains("leave the stored copy in place"),
+        "the reference names the forms outside the bound plainly"
+    );
+    assert!(
+        contract.contains("the person-wide deletion commands of the privacy route remain"),
+        "the reference points at the remaining route"
+    );
+}
+
+#[test]
+fn the_deletion_mirrors_decisions_are_recorded_with_dates_and_rejected_alternatives() {
+    for record in [
+        "docs/decisions/0082-the-deletion-mirror-rides-the-moderation-bots-command.md",
+        "docs/decisions/0083-non-administrators-deletion-commands-mirror-nothing.md",
+        "docs/decisions/0084-the-mirror-runs-inline-under-the-fence-with-the-command-stamp.md",
+        "docs/decisions/0085-the-mirror-scrubs-reply-references-the-command-row-keeps-its-own.md",
+        "docs/decisions/0086-the-owing-tail-walk-reads-through-erased-rows.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-23"),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+    assert!(
+        flattened(&repo_file(
+            "docs/decisions/0082-the-deletion-mirror-rides-the-moderation-bots-command.md"
+        ))
+        .contains("SILENT: no reply, no acknowledgment."),
+        "the mirror's silence is recorded as decided"
+    );
 }

@@ -15,9 +15,10 @@
 //! ordering, the end-to-end turn, tools (the lookups against the scripted
 //! forge and mirror in `lookup_wire`, the palette, the anchor gate over
 //! the turn's provenance), `privacy_rights` (the suppression drop, the
-//! self-service commands, the spawned deletion and the privacy tool), and —
-//! behind the openrouter feature — the real `OpenRouter` module against a
-//! loopback server.
+//! self-service commands, the spawned deletion and the privacy tool),
+//! `mirror` (the deletion mirror riding the moderation bot's reply
+//! command), and — behind the openrouter feature — the real `OpenRouter`
+//! module against a loopback server.
 
 mod addressing;
 mod assembly;
@@ -28,6 +29,7 @@ mod erasure;
 mod erasure_streams;
 mod group_context;
 mod lookup_wire;
+mod mirror;
 #[cfg(feature = "openrouter")]
 mod openrouter;
 mod privacy_rights;

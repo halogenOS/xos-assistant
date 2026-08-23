@@ -23,6 +23,7 @@ use agent_ledger::{
     Agency, Awaiting, Block, BlockKind, Column, ColumnType, ContentDescriptor, ContentPart,
     LeafKind, Projection, Role, StoreError,
 };
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 
 use crate::message::Authority;
@@ -113,7 +114,9 @@ pub fn storable_speaker(handle: &str) -> bool {
 /// identifier — so erasure reaches it from both ends: the author-keyed
 /// pass nulls it with the rest of the row, and the crate-private
 /// target-keyed pass `erase_reply_targets_naming` nulls it when the
-/// replied-to person is erased. The target-keyed reach is exactly as wide
+/// replied-to person is erased; the deletion mirror's own pass nulls it
+/// across the conversation when the named message is erased (decision
+/// 0085). The target-keyed reach is exactly as wide
 /// as its join: a stored value matching none of the erased person's
 /// recorded origins — a reply recorded after their erasure completed,
 /// one recorded inside a failed erasure's retry window, or one naming a
@@ -407,6 +410,16 @@ impl ChatMessage {
         self.role == Some(Role::User) && self.text.is_some() && self.answer_due == Some(true)
     }
 
+    /// Whether erasure emptied this message: the text is the one column
+    /// whose absence only erasure produces — the adapter never records an
+    /// empty message — so its null speaks for the whole row. The owing-tail
+    /// walk reads through rows this affirms (decision 0086); the row's own
+    /// cancelled debt stays cancelled through [`Self::owes_answer`].
+    #[must_use]
+    pub fn erased(&self) -> bool {
+        self.text.is_none()
+    }
+
     /// The authority of the debt an owing tail hands the next message — the
     /// stored debt authority, with the pre-migration fold: a row written
     /// before the protection migration carries NULL there while every
@@ -589,6 +602,85 @@ pub(crate) async fn erase_principal_content(
     .await
 }
 
+/// The deletion mirror's nulls, counted for the trace: the named target
+/// row, and the reply references in the conversation that pointed at it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MirrorNulls {
+    /// Target rows whose five personal columns were nulled — zero for a
+    /// target the store never held, or holds no longer.
+    pub target_rows: usize,
+    /// Rows whose reply reference named the target and was nulled with it.
+    pub reply_references: usize,
+}
+
+/// Null what a deletion mirror names (2026-08-23, the deletion mirror):
+/// first the ONE target row — text, origin, send time, reply reference and
+/// speaker, the five nulls [`erase_principal_content`] applies to a
+/// person's own rows, scoped to the row whose stored origin matches within
+/// the conversation — and then, exactly when that row was present, the
+/// reply reference of every other row in the conversation that named the
+/// target (decision 0085). Without the second pass each replier would keep
+/// a verbatim copy of the deleted message's identifier that no later
+/// erasure could reach, because [`erase_reply_targets_naming`] joins on
+/// the very origin the first pass nulls. Both passes key on the origin the
+/// caller hands in, not the target row's column, so their order carries no
+/// join hazard; the target runs first only so its row count can withhold
+/// the reply pass from a target the store never held — the unknown-target
+/// command stays a full no-op. The command row requesting the deletion
+/// appends after this runs and keeps its own reply reference, the
+/// request's lawful record (decision 0085).
+///
+/// Platform message ids are opaque and unique only per channel, so every
+/// match runs through the conversation junction and never reaches a
+/// stranger conversation's row; the framework-table name it joins carries
+/// the deliberate coupling decision 0032 records. The block header keeps
+/// its place, the placeholder projects the erased marker, and nothing else
+/// moves. Idempotent twice over: nulling already-null columns is a no-op,
+/// and an already-erased row's origin is NULL and matches nothing, which
+/// also skips the reply pass its first run already applied.
+pub(crate) async fn erase_message_named(
+    tx: &StoreTx,
+    conversation_id: i64,
+    origin: &str,
+) -> Result<MirrorNulls, StoreError> {
+    let origin = origin.to_owned();
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        let target_rows = conn.execute(
+            &format!(
+                "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_TEXT} = NULL, \
+                 {COLUMN_ORIGIN} = NULL, {COLUMN_SENT_AT} = NULL, \
+                 {COLUMN_REPLY_TARGET} = NULL, {COLUMN_SPEAKER} = NULL \
+                 WHERE {COLUMN_ORIGIN} = ?1 AND EXISTS (\
+                   SELECT 1 FROM conversation_blocks cb \
+                   WHERE cb.block_id = {CHAT_MESSAGE_TABLE}.block_id \
+                   AND cb.conversation_id = ?2\
+                 )"
+            ),
+            (&origin, conversation_id),
+        )?;
+        let reply_references = if target_rows > 0 {
+            conn.execute(
+                &format!(
+                    "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_REPLY_TARGET} = NULL \
+                     WHERE {COLUMN_REPLY_TARGET} = ?1 AND EXISTS (\
+                       SELECT 1 FROM conversation_blocks cb \
+                       WHERE cb.block_id = {CHAT_MESSAGE_TABLE}.block_id \
+                       AND cb.conversation_id = ?2\
+                     )"
+                ),
+                (&origin, conversation_id),
+            )?
+        } else {
+            0
+        };
+        Ok(MirrorNulls {
+            target_rows,
+            reply_references,
+        })
+    })
+    .await
+}
+
 /// Null the reply-target reference of every message that replies to one of
 /// this principal's messages — the target-keyed half of the reply-target
 /// erasure (2026-08-23): the stored
@@ -624,6 +716,62 @@ pub(crate) async fn erase_reply_targets_naming(
             [principal_id],
         )?;
         Ok(())
+    })
+    .await
+}
+
+/// The newest block of one conversation that can settle the owing-tail
+/// walk: outside the caller's read-through kinds, and past every erased
+/// chat row (2026-08-23, the deletion mirror; decision 0086). Erasure
+/// nulls a chat row's text but leaves its kind and its place, so a kind
+/// list alone cannot skip it — and a live debt a third party's row still
+/// owes behind an erased run must reach the next message's stamp instead
+/// of dying with someone else's deletion. One bounded query answers the
+/// whole run; a row-by-row walk would stretch with the run's length into a
+/// conversation hydration on ingestion's hot path. The query lives on the
+/// kind because only the kind knows an erased row's shape; the
+/// framework-table names it joins carry the deliberate coupling decision
+/// 0032 records, and the placeholder list is built from the slice, so a
+/// widened kind set is a data change at the caller. An empty slice reads
+/// past erased rows alone.
+///
+/// # Errors
+///
+/// [`StoreError`] if the query fails or the store's actor has stopped.
+pub(crate) async fn newest_block_id_past_erased(
+    tx: &StoreTx,
+    conversation_id: i64,
+    read_through: &'static [&'static str],
+) -> Result<Option<i64>, StoreError> {
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        let exclusion = if read_through.is_empty() {
+            String::new()
+        } else {
+            let placeholders: Vec<String> = (0..read_through.len())
+                .map(|index| format!("?{}", index + 2))
+                .collect();
+            format!("AND b.block_type NOT IN ({}) ", placeholders.join(", "))
+        };
+        let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&conversation_id];
+        parameters.extend(read_through.iter().map(|kind| kind as &dyn rusqlite::ToSql));
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT cb.block_id FROM conversation_blocks cb \
+                     JOIN blocks b ON b.id = cb.block_id \
+                     WHERE cb.conversation_id = ?1 \
+                     {exclusion}\
+                     AND NOT EXISTS (\
+                       SELECT 1 FROM {CHAT_MESSAGE_TABLE} m \
+                       WHERE m.block_id = cb.block_id \
+                       AND m.{COLUMN_TEXT} IS NULL\
+                     ) \
+                     ORDER BY cb.id DESC LIMIT 1"
+                ),
+                parameters.as_slice(),
+                |row| row.get(0),
+            )
+            .optional()?)
     })
     .await
 }
@@ -787,4 +935,90 @@ fn string_field(block: &Block, name: &str) -> Option<String> {
         .get(name)
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_ledger::Store;
+
+    use super::*;
+    use crate::note::{CONTEXT_NOTE_KIND, ContextNote, NoteTopic};
+
+    /// A tail that is a run of read-through kinds and erased chat rows
+    /// answers the block behind the whole run in one query; an empty kind
+    /// list still reads past erased rows alone, and an empty conversation
+    /// answers nothing.
+    #[tokio::test]
+    async fn the_read_answers_past_kind_runs_and_erased_rows_alike() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let tx = store.tx();
+        assert_eq!(
+            newest_block_id_past_erased(&tx, conversation, &[CONTEXT_NOTE_KIND])
+                .await
+                .expect("the empty read runs"),
+            None,
+            "an empty conversation holds nothing to answer"
+        );
+
+        let behind = store
+            .insert_text_block(conversation, Role::User, "the block behind".into())
+            .await
+            .expect("the text block appends");
+        store
+            .append_consumer_block(
+                conversation,
+                Some(Role::User),
+                CHAT_MESSAGE_KIND,
+                ChatMessage::stored_fields(
+                    "soon deleted",
+                    RecordedSender {
+                        principal_id: 7,
+                        authority: Authority::Member,
+                        speaker: None,
+                    },
+                    Some("gone-1"),
+                    None,
+                    "2026-08-23T00:00:00Z",
+                    Stamp::compose(false, Authority::Member, None, None),
+                ),
+                None,
+            )
+            .await
+            .expect("the chat row appends");
+        let nulls = erase_message_named(&tx, conversation, "gone-1")
+            .await
+            .expect("the mirror pass runs");
+        assert_eq!(nulls.target_rows, 1, "the named row is erased");
+        store
+            .append_consumer_block(
+                conversation,
+                None,
+                CONTEXT_NOTE_KIND,
+                ContextNote::stored_fields(NoteTopic::Rules, "the newest note"),
+                None,
+            )
+            .await
+            .expect("the note appends");
+
+        assert_eq!(
+            newest_block_id_past_erased(&tx, conversation, &[CONTEXT_NOTE_KIND])
+                .await
+                .expect("the read-through runs"),
+            Some(behind),
+            "the note and the erased row are one transparent run"
+        );
+        let newest = newest_block_id_past_erased(&tx, conversation, &[])
+            .await
+            .expect("the plain read runs")
+            .expect("the conversation has an answerable block");
+        assert!(
+            newest > behind,
+            "an empty kind list reads past erased rows alone: the note answers"
+        );
+    }
 }

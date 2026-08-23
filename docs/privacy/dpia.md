@@ -624,6 +624,24 @@ anybody.
   same channel it appeared in. Residual risk low, and it joins R7 instead of
   standing alone.
 
+**The deletion mirror.** Added 2026-08-23, with the deletion-mirror unit. When a
+group administrator deletes a message by replying to it with the moderation bot's
+own deletion command, the assistant — which reads the same group — sees that reply
+and erases its stored copy of the named message: the same per-row nulls a person's
+own deletion applies, scoped to the one message, silently. This is reactive
+bookkeeping of an administrator's own act, not a moderation capability: no model
+sits anywhere in the path, the assistant judges nothing and answers nothing, and
+the step removes stored personal data instead of creating or disclosing any.
+Deletions that do not arrive as that reply — the moderation bot's bulk purges and
+its direct removals — produce nothing the assistant can read and leave the stored
+copy in place; the person-wide deletion routes remain for those, and the operator
+reference states the bound plainly. One timing window is named for honesty: an
+answer the assistant is already producing when the mirror runs was assembled from
+the conversation as it stood before the command arrived, so it can fold the
+pre-erasure prose of the deleted message into a public answer. The store is nulled
+mid-turn all the same, and every later reading sees only the erased marker — the
+same deletion-timing window every erasure route carries, not a new exposure.
+
 **The wiki fetch.** A wiki question makes the assistant fetch one page of the
 project's public wiki. The request carries a page name and nothing about any person;
 responses are cached in memory for five minutes. This is the same shape as the

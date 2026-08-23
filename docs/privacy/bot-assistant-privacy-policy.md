@@ -107,7 +107,11 @@ assistant serves the group, each replaced by the next; answer counters until the
 out of their window; a report with its message reference emptied when the reported person is
 deleted; lookup records with no time limit. Deleting a message in your chat app does not
 reach us, and neither your leaving a group nor the assistant leaving it deletes anything:
-ask, and it goes. If the service stops for good, we delete the store with it.
+ask, and it goes. One exception: when the group's administrators delete a message through
+the moderation bot's reply command, that message is removed from our store as well. Only
+that reply form reaches us: the moderation bot's bulk purges, its direct removals, and any
+deletion made without that reply stay under the rule above, and asking remains the way to
+clear those from the store. If the service stops for good, we delete the store with it.
 
 We delete on request the text of every message you wrote, its send time and reply reference,
 and your identity data. What remains in a

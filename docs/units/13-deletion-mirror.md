@@ -59,13 +59,17 @@ change, no new table, no configuration.
 
 - **AC1** Workspace suite green both modes; clippy, fmt, doc denied
   warnings; vocabulary and secret scans clean; no new dependency.
-- **AC2** An admin's reply `/del` nulls exactly the target row (text,
-  origin, send time, reply reference, speaker), the placeholder projects
-  erased, no reply is sent, the command row is recorded — pinned block by
-  block and over the wire.
+- **AC2** An admin's reply `/del` nulls the target row (text, origin, send
+  time, reply reference, speaker) AND, when the target was present, scrubs
+  the reply references naming its origin on every other row in the
+  conversation (decision 0085, so erasure stays reachable) while the `/del`
+  command row keeps its own reference; the placeholder projects erased, no
+  reply is sent, the command row is recorded — pinned block by block and
+  over the wire.
 - **AC3** The silent no-ops pinned: non-admin sender, no reply target,
-  unknown target, already-erased target — nothing nulled beyond the
-  standing state, nothing sent.
+  unknown target, already-erased target — the reply-reference pass is
+  withheld when the target was not freshly present, so nothing is nulled
+  beyond the standing state and nothing is sent.
 - **AC4** Interactions pinned: the mirror inside a turn's absorption window
   does not disturb the turn; a mirrored message that carried an unanswered
   debt leaves the conversation liveness intact (the walk's read-through

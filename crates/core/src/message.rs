@@ -154,7 +154,8 @@ impl InvokedCommand {
 /// platform carries no usable id for translates to no target at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplyTarget {
-    /// A reply to another person's message, named by that message's origin.
+    /// A reply to a message that is not the assistant's own — any person's,
+    /// the sender's included — named by that message's origin.
     Message {
         /// The platform's own id for the replied-to message, opaque.
         origin: String,
