@@ -17,8 +17,8 @@ use assistant_core::note::{CONTEXT_NOTE_KIND, ContextNote, NoteTopic};
 use assistant_core::schema::store_config;
 use assistant_core::{
     ACKNOWLEDGMENT_WINDOW, Assistant, Authority, ChannelKey, ChannelKind, CoreError, DeliveryItem,
-    FailureKind, IngestOutcome, NOTE_TOPIC_APPEND_CAP, Observation, ObserveOutcome, ObservedFact,
-    OperatorConfig, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
+    FailureKind, IngestOutcome, Observation, ObserveOutcome, ObservedFact, OperatorConfig,
+    PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
 };
 use serde_json::json;
 
@@ -439,13 +439,15 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
 // ─── AC2: notes on the ledger, the acknowledgment, the projection ────────
 
 /// The whole rules flow at the core edge: a rules-prefixed announcement
-/// appends one note and returns exactly one acknowledgment; the same text
+/// appends one note and returns its acknowledgment; the same text
 /// re-observed appends and acknowledges nothing; a changed text appends
-/// again, silently inside the acknowledgment window — and the next turn
-/// projects the notes to the model in the system voice, newest wording
-/// authoritative.
+/// and acknowledges again immediately — the on-delta comparison is the
+/// only admission check (the operator decided, 2026-08-23), there is no rate window on the
+/// rules path — and the next turn projects the notes to the model in the
+/// system voice, newest wording authoritative.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_rules_change_appends_on_delta_acknowledges_once_and_projects_in_the_system_voice() {
+async fn a_rules_change_appends_on_delta_acknowledges_each_delta_and_projects_in_the_system_voice()
+{
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
@@ -497,8 +499,12 @@ async fn a_rules_change_appends_on_delta_acknowledges_once_and_projects_in_the_s
         .expect("the changed pin is judged");
     assert_eq!(
         changed,
-        ObserveOutcome::Observed { deliver: None },
-        "a further delta inside the acknowledgment window appends silently"
+        ObserveOutcome::Observed {
+            deliver: Some(DeliveryItem::Acknowledgment(
+                RULES_ACKNOWLEDGMENT.to_owned()
+            ))
+        },
+        "a further real delta acknowledges again, whatever the interval"
     );
 
     let conversation = only_conversation(&fixture.store).await;
@@ -1090,55 +1096,51 @@ async fn repeated_privacy_commands_in_a_quiet_channel_are_bounded() {
     );
 }
 
-/// Both windows have an expiry side, pinned under paused time: past the
-/// window a fresh rules delta is acknowledged again, and the privacy
-/// command is answered again — the bound is a window, not a one-time
-/// grant.
+/// The two paths' bounds, pinned side by side under paused time. The rules
+/// acknowledgment carries no window (the operator decided, 2026-08-23): every
+/// real delta — back to back included — acknowledges and records, and only
+/// the identical re-pin is silence. The privacy command's answer window is
+/// untouched: one answer per channel per window, answered again past its
+/// expiry.
 #[tokio::test(start_paused = true)]
-async fn the_acknowledgment_and_the_command_answer_return_past_the_window() {
+async fn every_rules_delta_acknowledges_and_the_command_answer_returns_past_the_window() {
     let fixture = support::start_assistant(None).await;
     let key = channel("group-window-expiry");
     authorize(&fixture.assistant, &key).await;
 
     let rules = |text: &str| observed(&key, ObservedFact::PinnedAnnouncement(text.to_owned()));
+    let acknowledged = |outcome: &ObserveOutcome| {
+        matches!(
+            outcome,
+            ObserveOutcome::Observed {
+                deliver: Some(DeliveryItem::Acknowledgment(_))
+            }
+        )
+    };
     let first = fixture
         .assistant
         .observe(rules("Rules:\nThe first wording."))
         .await
         .expect("the first rules pin is judged");
-    assert!(
-        matches!(
-            first,
-            ObserveOutcome::Observed {
-                deliver: Some(DeliveryItem::Acknowledgment(_))
-            }
-        ),
-        "the fresh window acknowledges"
-    );
-    let within = fixture
+    assert!(acknowledged(&first), "the first rules pin acknowledges");
+    let second = fixture
         .assistant
         .observe(rules("Rules:\nThe second wording."))
         .await
         .expect("the second rules pin is judged");
-    assert_eq!(
-        within,
-        ObserveOutcome::Observed { deliver: None },
-        "a delta within the window appends silently"
-    );
-    tokio::time::advance(ACKNOWLEDGMENT_WINDOW + std::time::Duration::from_secs(1)).await;
-    let past = fixture
-        .assistant
-        .observe(rules("Rules:\nThe third wording."))
-        .await
-        .expect("the post-window rules pin is judged");
     assert!(
-        matches!(
-            past,
-            ObserveOutcome::Observed {
-                deliver: Some(DeliveryItem::Acknowledgment(_))
-            }
-        ),
-        "the expired window acknowledges again"
+        acknowledged(&second),
+        "an immediate second real change acknowledges too — no rate window"
+    );
+    let identical = fixture
+        .assistant
+        .observe(rules("Rules:\nThe second wording."))
+        .await
+        .expect("the identical re-pin is judged");
+    assert_eq!(
+        identical,
+        ObserveOutcome::Observed { deliver: None },
+        "the identical re-pin appends nothing and says nothing"
     );
 
     let command = || {
@@ -1237,13 +1239,13 @@ async fn a_transient_append_failure_does_not_spend_the_command_answer_window() {
     );
 }
 
-/// A transient note-append failure spends neither the topic's cap slot nor
-/// the acknowledgment: both are recorded only after the append stands.
-/// With the slot spent before the append, a whole cap's worth of failed
-/// attempts would cap the topic, and the healed redelivery would land
-/// nothing.
+/// A transient note-append failure delivers no acknowledgment and lands no
+/// note; the healed redelivery lands exactly one note with its
+/// acknowledgment. A burst of failures costs nothing later — with no cap
+/// and no window on the rules path there is nothing a failure could spend,
+/// and the acknowledgment travels only with an append that stood.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_transient_note_append_failure_spends_neither_cap_nor_acknowledgment() {
+async fn a_transient_note_append_failure_lands_nothing_and_the_redelivery_lands_once() {
     let fixture = support::start_assistant(None).await;
     let key = support::authorized_group(&fixture.assistant, "group-note-redelivery").await;
     let pin = || {
@@ -1254,7 +1256,7 @@ async fn a_transient_note_append_failure_spends_neither_cap_nor_acknowledgment()
     };
 
     support::sabotage_appends(&fixture.store, assistant_core::note::CONTEXT_NOTE_TABLE).await;
-    for _ in 0..NOTE_TOPIC_APPEND_CAP {
+    for _ in 0..3 {
         let failed = fixture
             .assistant
             .observe(pin())
@@ -1280,7 +1282,7 @@ async fn a_transient_note_append_failure_spends_neither_cap_nor_acknowledgment()
                 RULES_ACKNOWLEDGMENT.to_owned()
             ))
         },
-        "the failed attempts spent no cap slot and no acknowledgment"
+        "the redelivered note lands with its acknowledgment"
     );
     let conversation = only_conversation(&fixture.store).await;
     let stored = notes(&fixture.store, conversation).await;
@@ -1288,12 +1290,13 @@ async fn a_transient_note_append_failure_spends_neither_cap_nor_acknowledgment()
     assert_eq!(stored[0].fields["text"], json!("Be kind."));
 }
 
-/// A pin-toggle burst appends at most the cap (refined 2026-08-23): one
-/// window admits [`NOTE_TOPIC_APPEND_CAP`] notes of one topic, the rest of
-/// the burst appends nothing — and the capped delta is not lost, it lands
-/// on the next observation after the window through the on-delta rule.
+/// A burst of real rules changes records and acknowledges every one
+/// (the operator decided, 2026-08-23): pinning is an administrator-only right,
+/// so there is no cap and no window on the path — six alternating pins
+/// land six notes with six acknowledgments, and the identical re-pin after
+/// the burst is the only silence.
 #[tokio::test(start_paused = true)]
-async fn a_pin_toggle_burst_appends_at_most_the_cap_and_the_delta_lands_after_the_window() {
+async fn every_real_change_in_a_pin_burst_appends_and_acknowledges() {
     let fixture = support::start_assistant(None).await;
     let key = channel("group-pin-toggle");
     authorize(&fixture.assistant, &key).await;
@@ -1304,7 +1307,7 @@ async fn a_pin_toggle_burst_appends_at_most_the_cap_and_the_delta_lands_after_th
         } else {
             "Rules:\nThe second pin."
         };
-        fixture
+        let outcome = fixture
             .assistant
             .observe(observed(
                 &key,
@@ -1312,34 +1315,39 @@ async fn a_pin_toggle_burst_appends_at_most_the_cap_and_the_delta_lands_after_th
             ))
             .await
             .expect("the toggled pin is judged");
+        assert_eq!(
+            outcome,
+            ObserveOutcome::Observed {
+                deliver: Some(DeliveryItem::Acknowledgment(
+                    RULES_ACKNOWLEDGMENT.to_owned()
+                ))
+            },
+            "every real change in the burst acknowledges"
+        );
     }
     let conversation = only_conversation(&fixture.store).await;
     let stored = notes(&fixture.store, conversation).await;
+    assert_eq!(stored.len(), 6, "every real change in the burst recorded");
     assert_eq!(
-        stored.len(),
-        NOTE_TOPIC_APPEND_CAP as usize,
-        "the burst appended exactly the cap"
+        stored.last().expect("a newest note").fields["text"],
+        json!("The second pin.")
     );
 
-    tokio::time::advance(ACKNOWLEDGMENT_WINDOW + std::time::Duration::from_secs(1)).await;
-    fixture
+    let identical = fixture
         .assistant
         .observe(observed(
             &key,
-            ObservedFact::PinnedAnnouncement("Rules:\nThe standing pin.".into()),
+            ObservedFact::PinnedAnnouncement("Rules:\nThe second pin.".into()),
         ))
         .await
-        .expect("the post-window pin is judged");
+        .expect("the identical re-pin is judged");
+    assert_eq!(
+        identical,
+        ObserveOutcome::Observed { deliver: None },
+        "the identical re-pin appends nothing and says nothing"
+    );
     let stored = notes(&fixture.store, conversation).await;
-    assert_eq!(
-        stored.len(),
-        NOTE_TOPIC_APPEND_CAP as usize + 1,
-        "the still-standing delta lands on the next observation after the window"
-    );
-    assert_eq!(
-        stored.last().expect("a newest note").fields["text"],
-        json!("The standing pin.")
-    );
+    assert_eq!(stored.len(), 6, "the identical re-pin recorded nothing");
 }
 
 /// The failed-turn tail keeps its pre-unit meaning (refined 2026-08-23):

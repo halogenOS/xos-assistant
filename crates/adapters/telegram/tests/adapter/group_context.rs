@@ -1,8 +1,9 @@
 //! The group-context unit over the public wire: the explicit update
 //! selection, the membership-driven admission with the scripted leave call
-//! (AC5), the pin events' notes with the single acknowledgment (AC2), and
-//! the privacy command's suffix forms (AC6) — driven through the scripted
-//! Bot API server and asserted on its recorded requests and the ledger.
+//! (AC5), the pin events' notes with their per-delta acknowledgments
+//! (AC2), and the privacy command's suffix forms (AC6) — driven through
+//! the scripted Bot API server and asserted on its recorded requests and
+//! the ledger.
 
 use std::sync::Arc;
 
@@ -504,13 +505,14 @@ async fn a_pin_event_outranks_the_lookups_stale_pin() {
     assert_eq!(title.fields["text"], json!("The kernel room"));
 }
 
-/// AC2 end to end: a pin event carrying a rules-prefixed text appends one
-/// rules note and delivers exactly one acknowledgment; the same text
-/// re-observed appends and acknowledges nothing; a changed text appends
-/// again, silently inside the acknowledgment window — pinned block by block
-/// on the ledger.
+/// AC2 end to end, under the operator's 2026-08-23 decision: a pin event carrying a
+/// rules-prefixed text appends one rules note and delivers its
+/// acknowledgment; the same text re-observed appends and acknowledges
+/// nothing; a changed text appends and is acknowledged again — every real
+/// delta confirms, only the identical re-pin is silence — pinned block by
+/// block on the ledger.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_rules_pin_appends_on_delta_and_acknowledges_once_over_the_wire() {
+async fn a_rules_pin_appends_on_delta_and_acknowledges_each_delta_over_the_wire() {
     let fixture = start_assistant().await;
     let server = BotApiServer::start().await;
     let chat = -603;
@@ -531,12 +533,18 @@ async fn a_rules_pin_appends_on_delta_and_acknowledges_once_over_the_wire() {
 
     support::await_state_file(state.path(), 4).await;
     let sends = server.recorded("sendMessage");
-    assert_eq!(sends.len(), 1, "exactly one acknowledgment went out");
-    assert_eq!(sends[0].body["chat_id"], json!(chat));
     assert_eq!(
-        sends[0].body["text"],
-        json!(assistant_core::RULES_ACKNOWLEDGMENT)
+        sends.len(),
+        2,
+        "one acknowledgment per real delta; the identical re-pin drew none"
     );
+    for send in &sends {
+        assert_eq!(send.body["chat_id"], json!(chat));
+        assert_eq!(
+            send.body["text"],
+            json!(assistant_core::RULES_ACKNOWLEDGMENT)
+        );
+    }
 
     let conversation = await_conversations(&fixture.store, 1).await[0];
     let blocks = fixture
@@ -569,7 +577,7 @@ async fn a_rules_pin_appends_on_delta_and_acknowledges_once_over_the_wire() {
     // answered, and its request carried the newest rules as a system line.
     server.set_admins(chat, &[]);
     server.push_update(support::mention_update(4, chat, 9, "what are the rules?"));
-    server.await_recorded("sendMessage", 2).await;
+    server.await_recorded("sendMessage", 3).await;
     let seen = fixture.seen.lock().expect("the request log locks");
     let request = seen.last().expect("the turn's request was recorded");
     assert!(

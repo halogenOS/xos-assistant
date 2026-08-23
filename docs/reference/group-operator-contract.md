@@ -46,9 +46,9 @@ this exact contract:
 
 When the assistant picks up new or changed rules, it says so in the chat
 with one fixed line: "Rules noted. The assistant follows the pinned rules
-of this group." At most one such line goes out per group within the
-acknowledgment window; further changes inside the window are picked up
-silently.
+of this group." Every real change is confirmed this way, however quickly
+the changes follow each other; re-pinning the same text says nothing,
+because nothing changed.
 
 ## First setup: post fresh, then pin
 

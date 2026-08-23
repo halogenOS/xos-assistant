@@ -330,3 +330,22 @@ mechanisms above; the build closes them under these refinements:
    next observation after the window opens. The full-history hot-path reads
    are gone with it: the newest-note lookup and the owing-tail read are
    bounded queries, never a full conversation hydration.
+
+## Refined 2026-08-23, by the operator's decision
+
+The acknowledgment window on the rules line and refinement 7's note append
+cap are removed. Both defended against a pin-toggling spammer who cannot
+exist: pinning is an administrator-only right on the platform, so the only
+people the bounds ever touched were admins making legitimate rules edits —
+a second real correction within the window was picked up without its
+confirmation, and a burst of real edits past the cap did not reach the
+ledger until the window passed. The on-delta comparison stays as the whole
+admission check: every real rules change appends its note and carries the fixed
+acknowledgment, whatever the interval; an identical re-pin appends nothing
+and says nothing. Refinement 7's bounded hot-path reads (the newest-note
+lookup, the owing-tail read) are unrelated to the cap and stand. The
+notice-answer window of refinement 2 is untouched: a flood of
+notice-drawing triggers is a vector anyone in the chat can cause, so that
+bound protects against something real. AC2's "a second change inside the
+acknowledgment window appends silently" is superseded by this decision; the
+pins now assert that a second real change acknowledges and records.

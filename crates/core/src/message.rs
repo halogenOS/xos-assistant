@@ -250,8 +250,8 @@ pub enum ObservedFact {
 /// adapters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryItem {
-    /// The rules acknowledgment: a rules note was appended outside the
-    /// acknowledgment window.
+    /// The rules acknowledgment: a rules note was appended — every real
+    /// delta carries one (the operator decided, 2026-08-23).
     Acknowledgment(String),
     /// A command's fixed answer — the privacy command's, in this unit.
     CommandAnswer(String),
@@ -274,8 +274,8 @@ pub enum ObserveOutcome {
     /// appended its note, an unchanged fact appended nothing.
     Observed {
         /// The item the adapter delivers on the channel — the rules
-        /// acknowledgment, when a rules note was appended outside the
-        /// acknowledgment window. `None` says nothing.
+        /// acknowledgment, when a rules note was appended. `None` says
+        /// nothing.
         deliver: Option<DeliveryItem>,
     },
     /// Refused fail-closed: the channel is a group the operator never
