@@ -69,3 +69,22 @@ no adapter change, no new table.
 - **AC4** The prompt teaching ships; the compliance page exists with the
   role conclusion, the obligations map, the marking position and the two
   notes; the DPIA correction is dated — pinned in the docs test.
+
+## Settled with the operator, 2026-08-23
+
+Two amendments from the operator's own design review, binding over the letter
+above:
+
+1. **The line's copy is the operator's, verbatim:** `Hi, I'm Xenia, the
+   halogenOS Assistant Bot, an AI system, made to assist members of the
+   community.` It replaces the earlier draft copy; the fallibility note lives
+   in the bio and the policy, and the line's one job is the disclosure.
+2. **The line is stored, not added at delivery:** it is prepended into the
+   final answer block itself, so the ledger carries what the chat saw and the
+   model sees in history that this person was already introduced. The
+   guarantee stays mechanical — the prepend happens where the answer
+   finalizes, never by model judgment; the natural-conversation side stays
+   with the prompt's honest self-identification teaching. The operator's
+   second variant (a system nudge making the model weave the intro) was
+   REJECTED for the duty itself: a disclosure that depends on model obedience
+   is advice, not a mechanism — the human-decides rule's own reasoning.

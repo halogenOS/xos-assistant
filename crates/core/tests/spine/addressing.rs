@@ -13,7 +13,7 @@ use assistant_core::{Assistant, ChannelKind, FAILURE_NOTICE, ReplyKind};
 use serde_json::json;
 
 use crate::support::{
-    self, answer_to, await_ledger, carries, channel, inbound, inbound_unaddressed, recv_reply,
+    self, await_ledger, carries, channel, first_answer_to, inbound, inbound_unaddressed, recv_reply,
 };
 
 /// An unaddressed group message is recorded with both addressing columns
@@ -65,7 +65,11 @@ async fn an_unaddressed_message_rests_and_joins_the_next_context() {
     )
     .await;
     let reply = recv_reply(&mut replies).await;
-    assert_eq!(reply.text, answer_to("a resting remark\n\nthe question"));
+    assert_eq!(
+        reply.text,
+        first_answer_to("a resting remark\n\nthe question"),
+        "the asker's first answer opens with the disclosure line"
+    );
     assert_eq!(reply.kind, ReplyKind::Answer);
     assert_eq!(fixture.script.turns.load(Ordering::SeqCst), 1);
     let requests = fixture.script.seen.lock().unwrap();
@@ -167,7 +171,12 @@ async fn a_failed_turn_yields_one_notice_and_the_next_addressed_message_reengage
     .await;
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.kind, ReplyKind::Answer);
-    assert_eq!(reply.text, answer_to("the failing ask\n\nasking again"));
+    // The failed turn stored no answer, so this is still the person's
+    // first one and carries the line.
+    assert_eq!(
+        reply.text,
+        first_answer_to("the failing ask\n\nasking again")
+    );
 }
 
 /// The quiet rule: a payment-class refusal fails the turn like any other,
@@ -229,7 +238,7 @@ async fn a_payment_class_failure_stays_quiet_and_a_plain_failure_still_speaks() 
     );
     assert_eq!(
         reply.text,
-        answer_to("the ask with no balance\n\nasking again")
+        first_answer_to("the ask with no balance\n\nasking again")
     );
 
     // An ordinary failure on the same channel still speaks.

@@ -17,8 +17,9 @@ use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    self, TempStateFile, answer_to, authorize_group, await_chat_messages, await_conversations,
-    group_update, mention_update, private_update, recording_sleep, spawn_adapter, start_assistant,
+    self, TempStateFile, authorize_group, await_chat_messages, await_conversations,
+    first_answer_to, group_update, mention_update, private_update, recording_sleep, spawn_adapter,
+    start_assistant,
 };
 
 /// The stop pins' watch window: longer than two of the adapter's
@@ -64,7 +65,7 @@ async fn a_model_turn_shows_typing_before_the_answer_and_none_after() {
     let sends = server.await_recorded("sendMessage", 1).await;
     assert_eq!(sends[0].body["chat_id"], json!(chat));
     let mention = format!("@{} {asked}", support::BOT_USERNAME);
-    assert_eq!(sends[0].body["text"], json!(answer_to(&mention)));
+    assert_eq!(sends[0].body["text"], json!(first_answer_to(&mention)));
 
     // The barrier: an unaddressed message is recorded through the whole
     // pipeline, so everything the answer's turn was going to send has been
@@ -274,5 +275,5 @@ async fn a_failing_typing_action_leaves_the_answer_untouched() {
     let sends = server.await_recorded("sendMessage", 1).await;
     assert_eq!(sends[0].body["chat_id"], json!(chat));
     let mention = format!("@{} {asked}", support::BOT_USERNAME);
-    assert_eq!(sends[0].body["text"], json!(answer_to(&mention)));
+    assert_eq!(sends[0].body["text"], json!(first_answer_to(&mention)));
 }

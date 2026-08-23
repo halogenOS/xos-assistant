@@ -22,6 +22,14 @@ what resolving it takes. Resolved items move into a decision record.
   — already on its improvements list — would compact the superseded ones
   out of the projection.
 
+- **The Article 50(2) due-diligence check awaits the first live turn**
+  (first-interaction disclosure, 2026-08-23). The compliance record relies
+  on the upstream model provider's text marking and records the presence
+  check as OPEN until live output exists to inspect. Resolving it means
+  running the public industry-standard detector over a real first turn's
+  output and writing the result into the compliance record's marking
+  section.
+
 - **Unit 7 close, 2026-08-23 — the provider module still speaks its first
   gateway's name.** The configuration key, the endpoint override and the
   provider crate are named for OpenRouter while the deployed gateway is any

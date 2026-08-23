@@ -64,6 +64,13 @@ pub fn answer_to(text: &str) -> String {
     format!("The scripted answer to: {text}")
 }
 
+/// The first answer a person is sent, as the core stores and delivers it:
+/// the disclosure line, a blank line, then the scripted answer.
+#[must_use]
+pub fn first_answer_to(text: &str) -> String {
+    assistant_core::disclosed(&answer_to(text))
+}
+
 /// A unique path in the temp directory, removed on drop with the offset
 /// write's sidecar, so parallel tests never share a state file and no run
 /// leaves litter.

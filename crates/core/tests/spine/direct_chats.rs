@@ -11,7 +11,7 @@ use assistant_core::schema::store_config;
 use assistant_core::{ChannelKind, DirectChats, IngestOutcome, ProtectionConfig, privacy, schema};
 
 use crate::support;
-use crate::support::{answer_to, channel, inbound, recv_reply, with_command};
+use crate::support::{channel, first_answer_to, inbound, recv_reply, with_command};
 
 /// The stored mapping rows, keyed by channel identifier — read raw, because
 /// the assertion is about what the tables hold, not what an API reports.
@@ -134,7 +134,7 @@ async fn a_direct_message_under_off_touches_nothing_and_groups_are_served() {
     );
     assert_eq!(
         reply.text,
-        answer_to(asked),
+        first_answer_to(asked),
         "the group's answer is the edge's first item — the direct messages \
          put nothing ahead of it"
     );
@@ -182,5 +182,5 @@ async fn the_default_serves_direct_chats_unchanged() {
     );
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.channel, dm);
-    assert_eq!(reply.text, answer_to("still with me?"));
+    assert_eq!(reply.text, first_answer_to("still with me?"));
 }

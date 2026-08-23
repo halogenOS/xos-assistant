@@ -38,6 +38,15 @@
 //! derivation the metadata worker runs never finalizes an answer block in
 //! the conversation ledger, so it never appears here.
 //!
+//! # The first delivery introduces the assistant (2026-08-23)
+//!
+//! An undelivered answer whose summoning people include anyone never yet
+//! introduced has the disclosure line written into its stored block before
+//! the send — the disclosure module owns the resolution and the receipt —
+//! so the ledger, the model's history and the channel carry one text. The
+//! notice and the report line are fixed texts a person wrote and are never
+//! touched.
+//!
 //! # The report's delivery (2026-08-23)
 //!
 //! A filed report block delivers as its stored fixed line, marked
@@ -283,13 +292,14 @@ async fn deliver_answers_and_reports(
     if channel.adapter != adapter {
         return Ok(());
     }
-    let blocks = ctx.store().list_blocks(conversation_id).await?;
+    let mut blocks = ctx.store().list_blocks(conversation_id).await?;
     let cursor = cursors.entry(conversation_id).or_insert(0);
-    for block in &blocks {
-        if block.id <= *cursor {
+    for index in 0..blocks.len() {
+        let block_id = blocks[index].id;
+        if block_id <= *cursor {
             continue;
         }
-        let Some(deliverable) = deliverable_of(block) else {
+        let Some(deliverable) = deliverable_of(&blocks[index]) else {
             continue;
         };
         match deliverable {
@@ -298,6 +308,23 @@ async fn deliver_answers_and_reports(
                 kind,
                 reply_target,
             } => {
+                // An answer's first delivery resolves the first-interaction
+                // disclosure (decision 0079): the line is written into the
+                // stored block before the send, so the ledger carries what
+                // the channel saw. Only the model's answers are introduced;
+                // the notice, the report line and every other deterministic
+                // reply stays exactly the fixed text a person wrote.
+                let text = if kind == ReplyKind::Answer {
+                    crate::disclosure::deliverable_answer(
+                        ctx.store(),
+                        conversation_id,
+                        &mut blocks,
+                        index,
+                    )
+                    .await?
+                } else {
+                    text
+                };
                 let reply = OutboundReply {
                     channel: channel.clone(),
                     text,
@@ -311,12 +338,12 @@ async fn deliver_answers_and_reports(
             Deliverable::Skipped => {
                 tracing::debug!(
                     conversation_id,
-                    block_id = block.id,
+                    block_id,
                     "a targetless report is undeliverable; skipped"
                 );
             }
         }
-        *cursor = block.id;
+        *cursor = block_id;
     }
     Ok(())
 }
@@ -496,6 +523,9 @@ mod tests {
     /// The lag-recovery path, driven directly: an answer stored after the
     /// seed whose completion signal fell into a dropped-event window is
     /// still delivered, because the lag notice triggers the full re-read.
+    /// The answer here is written through the public write surface with no
+    /// dispatch anchor, so its summoners are unreadable and the delivery
+    /// carries the disclosure line — the documented fold toward the line.
     ///
     /// The runtime is single-threaded, so the edge task cannot run between
     /// the synchronous emits below: the flood provably overflows the
@@ -546,7 +576,7 @@ mod tests {
             .expect("the lag recovery delivers before the deadline")
             .expect("the edge outlives the test");
         assert_eq!(reply.channel, key);
-        assert_eq!(reply.text, "the owed answer");
+        assert_eq!(reply.text, crate::disclosure::disclosed("the owed answer"));
     }
 
     /// Dropping the receiver ends the edge task even though the bus stays

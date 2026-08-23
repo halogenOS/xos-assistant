@@ -47,6 +47,7 @@
 mod assembly;
 mod authorization;
 mod composing;
+mod disclosure;
 mod erasure;
 mod error;
 mod identity;
@@ -68,6 +69,7 @@ pub use assembly::{
     AssemblyConfig, Assistant, Budget, DirectChats, ModelBinding, OperatorConfig, ProtectionConfig,
     ScriptedPause,
 };
+pub use disclosure::{DISCLOSURE_LINE, disclosed};
 pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
 pub use message::{

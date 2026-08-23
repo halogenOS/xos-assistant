@@ -236,7 +236,11 @@ async fn a_members_reply_ask_files_and_the_edge_threads_the_report_before_the_an
     assert_eq!(first.reply_target.as_deref(), Some("origin-spam-1"));
     let second = recv_reply(&mut replies).await;
     assert_eq!(second.kind, ReplyKind::Answer);
-    assert_eq!(second.text, CLOSING_ANSWER);
+    assert_eq!(
+        second.text,
+        assistant_core::disclosed(CLOSING_ANSWER),
+        "the reporter's first answer opens with the disclosure line"
+    );
     assert_eq!(second.reply_target, None, "the answer stays unthreaded");
     let extra = replies.try_recv();
     assert!(extra.is_err(), "one report, one answer; got {extra:?}");
@@ -308,7 +312,11 @@ async fn a_bystanders_newer_reply_target_loses_to_the_co_summoners() {
     // The resolution: the co-summoner's target, not the newer bystander's.
     assert_eq!(field(&blocks[8], "target_origin"), "origin-reported");
     assert_eq!(blocks[8].fields["reported_principal_id"], json!(reported));
-    while recv_reply(&mut replies).await.text != CLOSING_ANSWER {}
+    while !recv_reply(&mut replies)
+        .await
+        .text
+        .ends_with(CLOSING_ANSWER)
+    {}
 }
 
 /// The other half of the origin walk (AC4): the ANCHOR carries no reply —
@@ -377,7 +385,11 @@ async fn an_absorbed_asks_reply_target_answers_for_a_replyless_anchor() {
     // The resolution: the absorbed ask's target, through the origin walk.
     assert_eq!(field(&blocks[7], "target_origin"), "origin-spam-1");
     assert_eq!(blocks[7].fields["reported_principal_id"], json!(spammer));
-    while recv_reply(&mut replies).await.text != CLOSING_ANSWER {}
+    while !recv_reply(&mut replies)
+        .await
+        .text
+        .ends_with(CLOSING_ANSWER)
+    {}
 }
 
 /// The debt walk's read-through set carries the report kind: a filed
@@ -565,7 +577,7 @@ async fn the_no_reply_self_report_and_unrecorded_target_asks_are_refused() {
         );
         assert_eq!(
             recv_reply(&mut replies).await.text,
-            CLOSING_ANSWER,
+            assistant_core::disclosed(CLOSING_ANSWER),
             "the {name} turn still closes with the model's answer"
         );
         let extra = replies.try_recv();
@@ -601,7 +613,10 @@ async fn a_direct_conversation_ask_is_refused() {
     )
     .await;
     assert_eq!(field(&blocks[4], "error"), report::GROUP_ONLY_ERROR);
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// The report window (AC5): the second ask inside the window is declined
@@ -626,7 +641,10 @@ async fn a_second_ask_inside_the_window_is_declined() {
     let conv = receipt.conversation_id;
     settle_shape(&fixture.store, conv, "the first filed turn", &FILED_TURN).await;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 
     // The second ask, inside the window: declined, nothing filed.
     support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
@@ -686,7 +704,10 @@ async fn a_transient_append_failure_spends_no_window_slot() {
         error.contains("right now"),
         "the failed append is the transient error: {error}"
     );
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 
     // Healed, the retry files: the failure spent no window slot.
     support::heal_appends(&fixture.store, report::REPORT_TABLE).await;
@@ -823,7 +844,11 @@ async fn a_narrating_turn_that_dies_delivers_narration_report_then_notice() {
         ReplyKind::Answer,
         "the committed narration delivers first, in ledger order"
     );
-    assert_eq!(first.text, "One moment.");
+    assert_eq!(
+        first.text,
+        assistant_core::disclosed("One moment."),
+        "the dead turn's narration is still the person's first answer"
+    );
     assert_eq!(first.reply_target, None, "narration stays unthreaded");
     let second = recv_reply(&mut replies).await;
     assert_eq!(
@@ -856,7 +881,10 @@ async fn a_report_ask_consumes_an_answer_slot() {
     let conv = receipt.conversation_id;
     settle_shape(&fixture.store, conv, "the filed turn", &FILED_TURN).await;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 
     // The same member's next addressed ask crosses the one-answer budget.
     support::ingest_recorded(
@@ -945,7 +973,7 @@ async fn the_reported_persons_erasure_nulls_the_target_and_the_edge_skips_it() {
     // The delivery: the answer alone — the targetless report was skipped.
     let only = recv_reply(&mut replies).await;
     assert_eq!(only.kind, ReplyKind::Answer);
-    assert_eq!(only.text, CLOSING_ANSWER);
+    assert_eq!(only.text, assistant_core::disclosed(CLOSING_ANSWER));
     let extra = replies.try_recv();
     assert!(
         extra.is_err(),
@@ -998,7 +1026,10 @@ async fn an_erased_targets_origin_cannot_be_re_reported() {
         "origin-spam-1",
         "the post-erasure ask keeps its stored reply target"
     );
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// The reporter's own erasure nulls the reply-target column on their
@@ -1018,7 +1049,11 @@ async fn the_reporters_erasure_nulls_their_reply_target_and_a_non_reply_stores_n
         &FILED_TURN,
     )
     .await;
-    while recv_reply(&mut replies).await.text != CLOSING_ANSWER {}
+    while !recv_reply(&mut replies)
+        .await
+        .text
+        .ends_with(CLOSING_ANSWER)
+    {}
 
     let outcome = fixture
         .assistant
@@ -1079,7 +1114,11 @@ async fn the_reported_persons_erasure_nulls_the_repliers_stored_reply_target() {
         &FILED_TURN,
     )
     .await;
-    while recv_reply(&mut replies).await.text != CLOSING_ANSWER {}
+    while !recv_reply(&mut replies)
+        .await
+        .text
+        .ends_with(CLOSING_ANSWER)
+    {}
 
     // The peer room: a different sender's offense under the same platform
     // message id — ids are unique only per channel — reported the same way.
@@ -1095,7 +1134,11 @@ async fn the_reported_persons_erasure_nulls_the_repliers_stored_reply_target() {
         &FILED_TURN,
     )
     .await;
-    while recv_reply(&mut replies).await.text != CLOSING_ANSWER {}
+    while !recv_reply(&mut replies)
+        .await
+        .text
+        .ends_with(CLOSING_ANSWER)
+    {}
 
     let outcome = fixture
         .assistant
@@ -1361,7 +1404,10 @@ async fn a_filing_racing_an_erasure_waits_on_the_fence() {
         .expect("the report block lands after the fence released");
     assert_eq!(field(stored, "target_origin"), "origin-spam-1");
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 // ─── AC7: registration, the palette, and the supersession ────────────────
@@ -1495,7 +1541,10 @@ async fn a_pre_unit_palette_gains_the_wiki_and_report_tools_on_first_activity() 
     })
     .await;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// No handle configured (AC7): the report tool is absent from a fresh

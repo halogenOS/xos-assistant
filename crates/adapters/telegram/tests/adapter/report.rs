@@ -97,7 +97,11 @@ async fn a_reply_ask_files_and_the_wire_threads_the_report_before_the_answer() {
         json!(true),
         "a deleted target degrades to a plain send"
     );
-    assert_eq!(sends[1].body["text"], json!(TOOL_CLOSING_ANSWER));
+    assert_eq!(
+        sends[1].body["text"],
+        json!(assistant_core::disclosed(TOOL_CLOSING_ANSWER)),
+        "the reporter's first answer opens with the disclosure line"
+    );
     assert_eq!(
         sends[1].body.get("reply_parameters"),
         None,
@@ -199,7 +203,10 @@ async fn an_over_cap_reply_threads_only_its_first_chunk() {
         line,
         "the chunks reassemble into the whole report line"
     );
-    assert_eq!(sends[2].body["text"], json!(TOOL_CLOSING_ANSWER));
+    assert_eq!(
+        sends[2].body["text"],
+        json!(assistant_core::disclosed(TOOL_CLOSING_ANSWER))
+    );
     assert_eq!(
         sends[2].body.get("reply_parameters"),
         None,

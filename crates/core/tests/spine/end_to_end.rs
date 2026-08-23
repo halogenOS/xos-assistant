@@ -12,7 +12,9 @@ use assistant_core::{Authority, ChannelKind};
 use serde_json::json;
 
 use crate::support;
-use crate::support::{answer_to, await_ledger, carries, channel, inbound, recv_reply};
+use crate::support::{
+    answer_to, await_ledger, carries, channel, first_answer_to, inbound, recv_reply,
+};
 
 /// The wake, proven on the bus: the append put the assistant's kind at the
 /// frontier, and the runtime's own conversation state must say so — work due,
@@ -86,8 +88,9 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
 
     assert_wake_precedes_turn_end(&mut events, conv).await;
 
-    // The outbound edge yields the answer, bound to the channel key.
-    let answer = answer_to("What is the plan?");
+    // The outbound edge yields the answer, bound to the channel key — the
+    // sender's first answer ever, so it opens with the disclosure line.
+    let answer = first_answer_to("What is the plan?");
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.channel, key);
     assert_eq!(reply.text, answer);
@@ -221,13 +224,15 @@ async fn two_channels_stay_two_conversations() {
     )
     .await;
     // The second channel's message arrives from an admin, so the stored
-    // authority below is provably each message's own, not a constant.
+    // authority below is provably each message's own, not a constant — and
+    // from a different sender, so each channel's first answer is that
+    // person's own first answer and both carry the line deterministically.
     support::ingest_recorded(
         &fixture.assistant,
         support::inbound_as(
             &key_two,
             ChannelKind::Group,
-            "42",
+            "57",
             Authority::Admin,
             "the second channel's question",
         ),
@@ -237,8 +242,14 @@ async fn two_channels_stay_two_conversations() {
     // Two replies arrive, in whichever order the two conversations finished,
     // each carrying its OWN channel's answer under its own key.
     let mut expected = HashMap::from([
-        (key_one.clone(), answer_to("the first channel's question")),
-        (key_two.clone(), answer_to("the second channel's question")),
+        (
+            key_one.clone(),
+            first_answer_to("the first channel's question"),
+        ),
+        (
+            key_two.clone(),
+            first_answer_to("the second channel's question"),
+        ),
     ]);
     for reply in [
         recv_reply(&mut replies).await,
@@ -274,7 +285,10 @@ async fn two_channels_stay_two_conversations() {
             assert_eq!(blocks[2].fields["authority"], json!("admin"));
             "the first channel's question"
         };
-        assert_eq!(support::block_text(&blocks[3], "content"), answer_to(&text));
+        assert_eq!(
+            support::block_text(&blocks[3], "content"),
+            first_answer_to(&text)
+        );
         assert!(
             !support::block_text(&blocks[3], "content").contains(other),
             "an answer never carries the other channel's text"
@@ -363,7 +377,9 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
 
     hold.release();
     let reply = recv_reply(&mut replies).await;
-    assert_eq!(reply.text, answer_to("message one"));
+    // Both people are new and both co-summoned the held turn — its answer
+    // is their shared introduction.
+    assert_eq!(reply.text, first_answer_to("message one"));
 
     // The ledger settles with the absorbed message BEFORE the answer that
     // streamed over it, and no second turn fires for it.
@@ -372,7 +388,7 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
     assert_eq!(support::block_text(&blocks[3], "text"), "message two");
     assert_eq!(
         support::block_text(&blocks[4], "content"),
-        answer_to("message one")
+        first_answer_to("message one")
     );
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
@@ -447,7 +463,7 @@ fn a_restarted_process_answers_a_known_channel() {
         )
         .await;
         let reply = recv_reply(&mut replies).await;
-        assert_eq!(reply.text, answer_to("the first question"));
+        assert_eq!(reply.text, first_answer_to("the first question"));
     });
 
     // The next process over the same file: the conversation exists in the
@@ -474,6 +490,8 @@ fn a_restarted_process_answers_a_known_channel() {
 
         let reply = recv_reply(&mut replies).await;
         assert_eq!(reply.channel, key);
+        // The stored introduction survives the restart: the person was
+        // introduced by the earlier process, so no second line shows.
         assert_eq!(reply.text, answer_to("the question after the restart"));
 
         // No second conversation was created for the known key, the stored

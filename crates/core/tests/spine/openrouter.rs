@@ -177,7 +177,7 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
         .await;
         let reply = recv_reply(&mut replies).await;
         assert_eq!(reply.kind, ReplyKind::Answer);
-        assert_eq!(reply.text, SERVER_ANSWER);
+        assert_eq!(reply.text, assistant_core::disclosed(SERVER_ANSWER));
         assert_eq!(reply.channel, key);
 
         // The server this test controls was actually hit, on the completions
@@ -276,7 +276,10 @@ async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accept
         inbound(&key, ChannelKind::Group, "42", "the first ask"),
     )
     .await;
-    assert_eq!(recv_reply(&mut replies).await.text, SERVER_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(SERVER_ANSWER)
+    );
     assistant
         .observe(assistant_core::Observation {
             channel: key.clone(),
@@ -294,7 +297,8 @@ async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accept
     assert_eq!(reply.kind, ReplyKind::Answer);
     assert_eq!(
         reply.text, SERVER_ANSWER,
-        "the module completed the turn over the noted ledger"
+        "the module completed the turn over the noted ledger — bare, the \
+         person's introduction rode the first answer"
     );
 
     // The second turn's wire body: the note is its own system message,

@@ -9,7 +9,8 @@ use serde_json::json;
 use crate::server::BotApiServer;
 use crate::support::{
     self, TempStateFile, answer_to, authorize_group, await_chat_messages, await_conversations,
-    date_of, group_update, message_id_of, recording_sleep, spawn_adapter, start_assistant,
+    date_of, first_answer_to, group_update, message_id_of, recording_sleep, spawn_adapter,
+    start_assistant,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -28,10 +29,12 @@ async fn a_group_message_round_trips_to_a_send() {
     let (sleep, _) = recording_sleep();
     let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
 
-    // The reply reaches the scripted server, bound to the chat it answers.
+    // The reply reaches the scripted server, bound to the chat it answers —
+    // the asker's first answer ever, so it opens with the disclosure line
+    // (unit 12, AC2's wire half).
     let sends = server.await_recorded("sendMessage", 1).await;
     assert_eq!(sends[0].body["chat_id"], json!(chat));
-    assert_eq!(sends[0].body["text"], json!(answer_to(&asked)));
+    assert_eq!(sends[0].body["text"], json!(first_answer_to(&asked)));
 
     // The ledger holds the recorded message with the translated fields.
     let conversation = await_conversations(&fixture.store, 1).await[0];
@@ -64,7 +67,7 @@ async fn a_group_message_round_trips_to_a_send() {
             .await
             .expect("the ledger reads");
         if blocks.iter().any(|block| {
-            block.block_type == "text" && block.fields["content"] == json!(answer_to(&asked))
+            block.block_type == "text" && block.fields["content"] == json!(first_answer_to(&asked))
         }) {
             break;
         }
@@ -80,6 +83,14 @@ async fn a_group_message_round_trips_to_a_send() {
         !server.recorded("getChatAdministrators").is_empty(),
         "a group message resolves authority through the administrator list"
     );
+
+    // The same person's second ask over the wire: the answer arrives bare —
+    // the introduction rode the first answer and never repeats.
+    let again = format!("@{} And the second question?", support::BOT_USERNAME);
+    server.push_update(group_update(2, chat, 7, &again));
+    let sends = server.await_recorded("sendMessage", 2).await;
+    assert_eq!(sends[1].body["chat_id"], json!(chat));
+    assert_eq!(sends[1].body["text"], json!(answer_to(&again)));
 
     // Titles are off (decision 0077): the whole answered round trip
     // dispatched no derivation. The window one would fire in is held open

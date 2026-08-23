@@ -179,7 +179,10 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
     // The answer reaches the chat.
     let sends = server.await_recorded("sendMessage", 1).await;
     assert_eq!(sends[0].body["chat_id"], json!(42));
-    assert_eq!(sends[0].body["text"], json!(TOOL_CLOSING_ANSWER));
+    assert_eq!(
+        sends[0].body["text"],
+        json!(assistant_core::disclosed(TOOL_CLOSING_ANSWER))
+    );
 
     // The ledger, block by block, tool call and result included.
     let conversation = await_conversations(&fixture.store, 1).await[0];
@@ -200,7 +203,10 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
     assert_eq!(field(&blocks[3], "name"), commit::NAME);
     assert_eq!(field(&blocks[3], "input"), COMMIT_INPUT);
     assert_eq!(field(&blocks[4], "content"), compact_result());
-    assert_eq!(field(&blocks[5], "content"), TOOL_CLOSING_ANSWER);
+    assert_eq!(
+        field(&blocks[5], "content"),
+        assistant_core::disclosed(TOOL_CLOSING_ANSWER)
+    );
 
     // The tool executed against the loopback forge, once, at the dialect's
     // path.
@@ -239,7 +245,10 @@ async fn narration_before_the_call_delivers_both_texts_to_the_chat() {
         .iter()
         .filter_map(|send| send.body["text"].as_str())
         .collect();
-    assert_eq!(texts, vec![NARRATION, TOOL_CLOSING_ANSWER]);
+    // The narration is the person's first answer block and carries the
+    // line; the closing answer behind it arrives bare.
+    let introduced = assistant_core::disclosed(NARRATION);
+    assert_eq!(texts, vec![introduced.as_str(), TOOL_CLOSING_ANSWER]);
 
     // Both stand in the ledger, in the production order: the message end
     // finalizes the narration text before the drained tool lifecycle
@@ -259,6 +268,6 @@ async fn narration_before_the_call_delivers_both_texts_to_the_chat() {
         ],
     )
     .await;
-    assert_eq!(field(&blocks[3], "content"), NARRATION);
+    assert_eq!(field(&blocks[3], "content"), introduced);
     assert_eq!(field(&blocks[6], "content"), TOOL_CLOSING_ANSWER);
 }
