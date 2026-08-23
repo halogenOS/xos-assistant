@@ -108,7 +108,7 @@ the conversation, with nothing in it and nothing pointing back to you. On the la
 model's side there is nothing to delete, because nothing is kept there.
 
 One exception: records of the assistant's lookups (query and result) are stored
-separately and are not yet covered by deletion. A query can quote your words.
+separately and are not covered by deletion. A query can quote your words.
 
 **Your rights**
 
