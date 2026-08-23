@@ -50,3 +50,39 @@ and no cost weight, and always on.
   adapter would be deciding when the assistant is working — behavior in an
   adapter, and wrong the moment a turn is summoned by anything but the
   message the driver just ingested.
+
+## Refinement (2026-08-23): every signal carries a lifetime bound
+
+A live orphan proved the residual real: a turn ended, its stop was lost —
+the stop travels at most once end-to-end, and the ended conversation then
+idled, so no later state change could heal it — and the adapter's refresh
+loop kept re-sending the typing action for three quarters of an hour on an
+idle chat. The refinement removes the dependency on a stop arriving at all,
+in two layers:
+
+- **The core edge bounds the signal.** Every begin carries a deadline, the
+  signal lifetime constant (five minutes, generous against any real turn);
+  a signal still open at its deadline is stopped on the edge's own clock,
+  and the expiry clears the edge's entry, so the next genuine begin is not
+  swallowed by stale bookkeeping. A turn genuinely running past the
+  deadline re-begins on its next state change, with a fresh deadline.
+- **The adapter's refresh loop bounds itself.** The loop runs at most the
+  signal lifetime in refresh periods, plus slack, then ends unconditionally
+  — a bound that needs no message delivered by anyone. The lifetime is the
+  core's exported constant: how long the cue may live stays the core's
+  decision, and the loop only obeys it.
+
+Rejected alternatives:
+
+- **Re-deriving the owed turn from the ledger before each re-send.** The
+  owed-turn derivation is the scheduler's alone — a second reader would
+  either duplicate it or run the ratchet from outside its single driver —
+  and placing the check in the adapter would put a decision in a component
+  that must hold none.
+- **Only healing on the next state event.** The edge already stops an open
+  signal when a later state change shows the turn ended; the orphan proved
+  the case where no later event ever comes, which no event-driven heal can
+  cover.
+- **Only the adapter-side bound.** It ends the orphaned loop but leaves the
+  edge's own entry stale, silently swallowing the conversation's next
+  begin; and a second adapter would have to reinvent the bound.

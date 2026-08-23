@@ -72,6 +72,7 @@ pub use assembly::{
     AssemblyConfig, Assistant, Budget, DirectChats, ModelBinding, OperatorConfig, ProtectionConfig,
     ScriptedPause,
 };
+pub use composing::COMPOSING_SIGNAL_LIFETIME;
 pub use disclosure::{DISCLOSURE_LINE, disclosed};
 pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
