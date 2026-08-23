@@ -5,6 +5,18 @@ group, and the exact rules the assistant reads by. The mechanisms behind it
 are recorded in decisions 0047 through 0054, and the report setup in 0060
 and 0062.
 
+## Group privacy mode must be off
+
+Before the assistant can see the group's messages, its platform privacy mode
+must be disabled: with it on (the platform default) the assistant receives
+only messages that mention it, reply to it, or are commands, and cannot read
+the ordinary conversation it exists to help with or moderate. Disable it in
+the platform's bot settings, then remove the assistant from the group and add
+it again — the platform fixes privacy mode at join time, so the change only
+takes effect on a fresh join. Keeping the assistant a non-administrator (see
+the report setup) is unaffected: privacy mode and admin status are separate
+switches.
+
 ## Admitting the assistant into a group
 
 The assistant serves only groups the configured operator added it to. The
