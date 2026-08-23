@@ -188,7 +188,7 @@ fn the_minimization_decision_ships_its_record_and_dated_doc_updates() {
         "the record rejects keeping titles nobody reads"
     );
 
-    let policy = repo_file("docs/privacy/privacy-policy.md");
+    let policy = repo_file("docs/privacy/bot-assistant-privacy-policy.md");
     let policy_flat = flattened(&policy);
     assert!(
         policy_flat.contains("We do not store your display name."),
@@ -244,7 +244,7 @@ fn the_minimization_decision_ships_its_record_and_dated_doc_updates() {
 fn the_four_privacy_drafts_carry_their_dated_report_updates() {
     for (draft, marker) in [
         (
-            "docs/privacy/privacy-policy.md",
+            "docs/privacy/bot-assistant-privacy-policy.md",
             "It can pass a report to the group's\nmoderation bot when a member replies to a message and asks for one",
         ),
         (
