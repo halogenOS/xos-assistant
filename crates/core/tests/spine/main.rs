@@ -7,7 +7,8 @@
 //! assembly (the wiring contract), storage (the composed kind and the durable
 //! registry), addressing (the answer-due stamp, the notice, re-engagement),
 //! protection (the budgets, the limited stamp, the debt authority),
-//! projection (role alternation under erasure), erasure with its stream
+//! projection (role alternation under erasure), speaker (the username
+//! projection), erasure with its stream
 //! ordering, the end-to-end turn, tools (the lookups against the scripted
 //! forge and mirror in `lookup_wire`, the palette, the anchor gate over
 //! the turn's provenance), and — behind the openrouter feature — the real
@@ -25,6 +26,7 @@ mod openrouter;
 mod projection;
 mod protection;
 mod report;
+mod speaker;
 mod storage;
 mod support;
 mod tools;

@@ -4,14 +4,15 @@
 //! tables:
 //!
 //! 1. The personal columns of the principal's messages — text, origin
-//!    reference, platform send time and the reply-target reference
-//!    (2026-08-23) — are nulled in every conversation: the kind's own
-//!    write on its content table, which is the separate personal-data
-//!    table of decision 0003. First, though, the reply-target copies OTHER
-//!    people's rows hold — a reply stores the replied-to message's id, the
-//!    erased person's own identifier — are nulled by the target-keyed pass
-//!    (2026-08-23), which joins on the very origins the
-//!    author-keyed pass nulls next, so the order between the two is
+//!    reference, platform send time, the reply-target reference and the
+//!    speaker (both extended 2026-08-23) — are nulled in every
+//!    conversation: the kind's own write on its content table, which is
+//!    the separate personal-data table of decision 0003. First, though,
+//!    the reply-target copies OTHER people's rows hold — a reply stores
+//!    the replied-to message's id, the erased person's own identifier —
+//!    are nulled by the target-keyed pass (2026-08-23), which joins on the
+//!    very origins the author-keyed pass nulls next, so the order between
+//!    the two is
 //!    load-bearing. Block header rows are never touched; positions,
 //!    references and conversation order keep their shape, and an erased
 //!    message projects none of its prose to the model — only the kind's

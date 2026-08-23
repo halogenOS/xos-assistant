@@ -62,3 +62,11 @@ change beyond what translation already carries. No configuration.
   carries the handle again — pinned.
 - **AC4** The prompt line ships; the DPIA note is dated; the decision records
   this unit's closure of 0056's implementation debt — pinned in the docs test.
+
+## Ratified at the unit's close, 2026-08-23
+
+The write path stores the speaker BOUNDED, beyond the contract's letter: an
+empty, whitespace-bearing or separator-bearing value is not stored and the
+message projects bare. The projection prefix must be unambiguous, and the
+bound is the core's to own rather than an assumption about one platform's
+handle alphabet.

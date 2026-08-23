@@ -15,7 +15,9 @@ use agent_ledger::{
     Block, CoreEvent, EventBus, ProviderModule, ProviderResponse, Role, StopReason, Store,
     StreamEvent,
 };
-use assistant_core::kind::{CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage, Stamp};
+use assistant_core::kind::{
+    CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage, RecordedSender, Stamp,
+};
 use assistant_core::schema::{PRINCIPAL_ADDRESSED_INDEX, store_config};
 use assistant_core::{Assistant, Authority, ChannelKind, ReplyKind};
 use serde_json::json;
@@ -154,8 +156,11 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                 CHAT_MESSAGE_KIND,
                 ChatMessage::stored_fields(
                     "a message the earlier binary recorded",
-                    1,
-                    Authority::Member,
+                    RecordedSender {
+                        principal_id: 1,
+                        authority: Authority::Member,
+                        speaker: None,
+                    },
                     Some("scripted:41"),
                     None,
                     "2026-08-21T00:00:00+00:00",
@@ -183,6 +188,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN debt_authority;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN reply_target;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN reply_to_assistant;
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;
                  DROP TABLE {palette};
                  DROP TABLE {note};
                  DROP TABLE {report};
@@ -214,6 +220,10 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
         columns.iter().any(|name| name == "reply_to_assistant"),
         "the reply-target step added its assistant-reply column"
     );
+    assert!(
+        columns.iter().any(|name| name == "speaker"),
+        "the speaker step added its column"
+    );
     assert_eq!(index_count, 1, "the appended step created the index");
     let report_tables: i64 =
         agent_ledger::store::domain_run(&reopened.tx(), assistant_core::schema::DOMAIN, |conn| {
@@ -228,7 +238,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        10,
+        11,
         "the appended steps advanced the domain's version"
     );
 
@@ -246,6 +256,10 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
         rows[0].fields.get("reply_target").is_none()
             && rows[0].fields.get("reply_to_assistant").is_none(),
         "the pre-existing row reads null in both reply facts"
+    );
+    assert!(
+        rows[0].fields.get("speaker").is_none(),
+        "the pre-existing row reads null in the speaker"
     );
     assert_eq!(
         rows[0].fields["answer_due"],
@@ -771,8 +785,11 @@ async fn a_pre_migration_owing_tail_folds_to_its_stored_sender_authority() {
             CHAT_MESSAGE_KIND,
             ChatMessage::stored_fields(
                 "the pre-migration admin ask",
-                receipt.principal_id,
-                Authority::Admin,
+                RecordedSender {
+                    principal_id: receipt.principal_id,
+                    authority: Authority::Admin,
+                    speaker: None,
+                },
                 None,
                 None,
                 "2026-08-21T00:00:00+00:00",

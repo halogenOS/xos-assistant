@@ -62,9 +62,11 @@ impl ChannelKind {
 
 /// Who sent a message, as the adapter saw them.
 ///
-/// This is the input to principal resolution and nothing else: the entry point
-/// resolves or creates the principal from it, and only the principal id enters
-/// the ledger.
+/// The input to principal resolution, plus one recorded fact: the entry point
+/// resolves or creates the principal from it, the principal id enters the
+/// ledger — and since decision 0065 the username joins the message row as its
+/// speaker, bounded by the kind's storable-speaker predicate. The external id
+/// and the display name never reach a block.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SenderIdentity {
     /// The sender's opaque external id on the adapter's platform.

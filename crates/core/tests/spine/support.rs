@@ -1072,6 +1072,14 @@ pub fn with_command(mut message: InboundMessage, command: &str) -> InboundMessag
     message
 }
 
+/// The same message, from a sender the platform gives the given public
+/// username — the suite's default sender carries none, so the speaker pins
+/// name their handles where they use them.
+pub fn with_username(mut message: InboundMessage, username: &str) -> InboundMessage {
+    message.sender.username = Some(username.into());
+    message
+}
+
 /// The same message, replying to the given target — the translated reply
 /// fact the adapter delivers beside the addressed flag.
 pub fn with_reply(

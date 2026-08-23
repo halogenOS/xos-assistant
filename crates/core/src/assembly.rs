@@ -501,10 +501,19 @@ impl Assistant {
                 .refusing_budget(principal_id, conversation_id)
                 .await?
                 .is_none();
+        // The speaker is the sender's public username as delivered at this
+        // receipt — the handle as it was when the person spoke (decision
+        // 0065). A handleless sender stores NULL and projects bare — no
+        // substitute identifier is minted (decision 0056) — and the kind's
+        // storable-speaker bound refuses a handle whose shape would blur
+        // the projected prefix.
         let fields = ChatMessage::stored_fields(
             &message.text,
-            principal_id,
-            authority,
+            kind::RecordedSender {
+                principal_id,
+                authority,
+                speaker: message.sender.username.as_deref(),
+            },
             message.origin.as_deref(),
             message.reply_target.as_ref(),
             &message.timestamp.to_rfc3339(),

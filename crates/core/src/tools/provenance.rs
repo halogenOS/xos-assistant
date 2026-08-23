@@ -321,6 +321,7 @@ mod tests {
             text: Some("a recorded line".into()),
             principal_id: Some(1),
             authority,
+            speaker: None,
             origin: None,
             sent_at: Some("2026-08-22T00:00:00Z".into()),
             addressed: Some(addressed),
@@ -403,8 +404,11 @@ mod tests {
             dispatch_anchor: None,
             fields: ChatMessage::stored_fields(
                 "a recorded line",
-                1,
-                authority,
+                crate::kind::RecordedSender {
+                    principal_id: 1,
+                    authority,
+                    speaker: None,
+                },
                 None,
                 None,
                 "2026-08-22T00:00:00Z",
@@ -424,8 +428,11 @@ mod tests {
             dispatch_anchor: None,
             fields: ChatMessage::stored_fields(
                 "a recorded reply",
-                1,
-                authority,
+                crate::kind::RecordedSender {
+                    principal_id: 1,
+                    authority,
+                    speaker: None,
+                },
                 None,
                 Some(&crate::message::ReplyTarget::Message {
                     origin: target.into(),

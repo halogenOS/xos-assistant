@@ -378,7 +378,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             .expect("the version-five store reopens under the shipped configuration");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            10,
+            11,
             "the appended steps advanced the domain's version"
         );
         let fixture = support::start_assistant_on(store.clone(), None).await;
@@ -650,8 +650,11 @@ async fn a_note_over_an_unanswered_message_leaves_the_turn_owed() {
             CHAT_MESSAGE_KIND,
             assistant_core::kind::ChatMessage::stored_fields(
                 "the owed ask",
-                1,
-                Authority::Member,
+                assistant_core::kind::RecordedSender {
+                    principal_id: 1,
+                    authority: Authority::Member,
+                    speaker: None,
+                },
                 None,
                 None,
                 "2026-08-23T00:00:00+00:00",
