@@ -23,7 +23,8 @@ tracing = "0.1"
 
 # Test-only. The scripted Bot API server in the test suite is a plain listener
 # on the loopback interface written against tokio's own networking, so the
-# suite needs `net` and `io-util` but no new crate. Cargo unifies features
+# suite needs `net` and `io-util` but no new crate; `test-util` is what the
+# refresher's self-bound pin pauses the clock with. Cargo unifies features
 # across a dependency graph, so these stay out of the library section.
 [dev-dependencies]
 agent-ledger = { path = "../../../../agent-ledger/crates/agent-ledger" }
@@ -33,5 +34,6 @@ tokio = { version = "1", features = [
     "net",
     "rt-multi-thread",
     "sync",
+    "test-util",
     "time",
 ] }

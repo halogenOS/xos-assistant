@@ -78,6 +78,17 @@ const POLL_BACKOFF: Duration = Duration::from_secs(2);
 /// bounds the action's rate-limit wait by this same cadence.
 pub(crate) const TYPING_REFRESH: Duration = Duration::from_secs(4);
 
+/// The most refresh cycles one begun loop runs before ending on its own:
+/// the core's signal lifetime in refresh periods, plus slack so the core's
+/// own expiry stop — or any real stop — always arrives first. The bound
+/// depends on nothing being delivered: a stop lost anywhere upstream still
+/// leaves a loop that ends here, instead of one refreshing an indicator on
+/// an idle chat forever. The lifetime is the core's constant on purpose —
+/// how long a composing cue may live is the core's decision, and this loop
+/// only obeys it.
+const TYPING_REFRESH_CYCLES: u64 =
+    assistant_core::COMPOSING_SIGNAL_LIFETIME.as_secs() / TYPING_REFRESH.as_secs() + 2;
+
 /// How long a failed chat lookup rests before the chat's next contact may
 /// retry it. Without the rest, a chat whose lookup keeps failing would pay
 /// one extra platform call per message — and under a rate-limit refusal,
@@ -241,6 +252,8 @@ impl Handled {
 /// by the last two: the composing consumer starts and stops the refreshers,
 /// and a delivered answer stops its chat's refresher too, so a stop signal
 /// lost on the core's lossy cue can never outlive the answer it was about.
+/// Each refresher is bounded on its own besides ([`refresh_typing`]): even
+/// with every stop lost, no loop outlives the core's signal lifetime.
 pub(crate) async fn run(
     config: Config,
     sleep: Sleep,
@@ -594,7 +607,9 @@ async fn leave(client: &BotClient, chat_id: i64, withdrawals: &mut ChatRest) {
 /// The running typing refreshers, one per chat: the pure mechanics of the
 /// core's composing signal — a begin spawns the chat's refresh loop, a stop
 /// aborts it. Dropping the registry aborts every refresher with it, so an
-/// abandoned run future leaves no loop sending actions to nowhere.
+/// abandoned run future leaves no loop sending actions to nowhere. A loop
+/// that ran out its own cycle bound leaves a finished handle behind; the
+/// next begin sweeps those, so the registry holds only live loops.
 #[derive(Default)]
 struct TypingRefreshers {
     running: std::sync::Mutex<HashMap<i64, tokio::task::AbortHandle>>,
@@ -609,6 +624,7 @@ impl TypingRefreshers {
             .running
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        running.retain(|_, handle| !handle.is_finished());
         if let Some(previous) = running.insert(chat_id, refresher.abort_handle()) {
             previous.abort();
         }
@@ -641,19 +657,25 @@ impl Drop for TypingRefreshers {
 }
 
 /// One chat's refresh loop: show the platform's typing indicator now and
-/// re-show it on the named interval until aborted. A failed action is
+/// re-show it on the named interval until aborted — or until
+/// [`TYPING_REFRESH_CYCLES`] cycles have run, the self-bound every ending
+/// that depends on a delivered stop sits inside of. A failed action is
 /// logged and the loop keeps its cadence — a presence cue must never
 /// disturb anything else, and the next tick retries anyway. The interval
 /// waits on the runtime's own timer, not the injectable sleep: the test
 /// seam yields without waiting, which would turn this loop into a hot spin
 /// of platform calls.
 async fn refresh_typing(client: Arc<BotClient>, chat_id: i64) {
-    loop {
+    for _ in 0..TYPING_REFRESH_CYCLES {
         if let Err(error) = client.send_chat_action(chat_id).await {
             tracing::warn!(chat_id, %error, "the typing action did not send; skipped");
         }
         tokio::time::sleep(TYPING_REFRESH).await;
     }
+    tracing::warn!(
+        chat_id,
+        "a typing refresher ran out its lifetime without a stop; ended"
+    );
 }
 
 /// Translate each composing transition from the core's edge into the
@@ -715,5 +737,28 @@ async fn consume_replies(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The refresher's self-bound, with every stop withheld: no transition,
+    /// no answer, no drop — the exact shape of the orphan a lost stop once
+    /// left refreshing an idle chat — and the loop still ends, inside a
+    /// bounded await on a paused clock. The client's root is not a URL, so
+    /// each action send fails before touching any wire and the paused
+    /// timer alone paces the cycles; the injectable sleep never runs on
+    /// this path, because a transport failure retries nothing.
+    #[tokio::test(start_paused = true)]
+    async fn an_unstopped_refresher_ends_at_its_own_bound() {
+        let sleep: Sleep = Arc::new(|_| Box::pin(async {}));
+        let client = Arc::new(BotClient::new("not a root", "token", sleep));
+        let refresher = tokio::spawn(refresh_typing(client, 41_650));
+        tokio::time::timeout(2 * assistant_core::COMPOSING_SIGNAL_LIFETIME, refresher)
+            .await
+            .expect("the refresher ends on its own bound, with no stop delivered")
+            .expect("the refresher ends cleanly");
     }
 }

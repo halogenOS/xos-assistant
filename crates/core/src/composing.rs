@@ -19,24 +19,49 @@
 //! stream that died with the process would be a lie. The bus is lossy, so
 //! the edge answers a lag the way the stream observer does: every open
 //! channel is stopped and the set cleared, and a still-running turn
-//! re-marks itself on its next state change. The residual hole — a turn
-//! whose every state change fell into one lag window — leaves the platform
-//! indicator to its own expiry; the adapter's stop-on-answer rule is a
-//! backstop only for a turn that delivers an answer — a turn that ends
-//! without one, the quiet failure above all, has this edge's stop
-//! transition as its only stop. A mapping read that
+//! re-marks itself on its next state change. The stop is still delivered
+//! at most once end-to-end, and a turn can end without any further state
+//! event reaching this edge — the quiet failure above all — so no open
+//! signal may depend on a stop arriving: every begin carries a deadline of
+//! [`COMPOSING_SIGNAL_LIFETIME`], and a signal still open at its deadline
+//! is stopped on the edge's own clock (refined 2026-08-23, after a lost
+//! stop left an adapter refreshing an indicator on an idle conversation).
+//! The expiry also clears the edge's own entry, so a stale open signal
+//! never swallows the next turn's begin; a turn genuinely running past
+//! the deadline re-begins on its next state change, with a fresh deadline.
+//! A mapping read that
 //! fails is logged and that transition dropped: the cue must never disturb
 //! answering, so no failure of this edge propagates anywhere.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use agent_ledger::{CoreEvent, RuntimeContext};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{ChannelKey, ComposingState, ComposingUpdate};
+
+/// The longest one composing signal may hold open. The stop transition is
+/// delivered at most once — a lost final state event, an idle conversation
+/// after it, and nothing would ever end the signal — so the edge stops any
+/// signal still open at this deadline on its own clock. Generous against a
+/// real turn on purpose: a turn that genuinely outlasts it loses the cue
+/// until its next state change re-begins the signal, while an orphaned
+/// signal ends here unconditionally. Public because an adapter's own
+/// refresh bound derives from it: the core owns how long the signal may
+/// live, the adapter only obeys.
+pub const COMPOSING_SIGNAL_LIFETIME: Duration = Duration::from_mins(5);
+
+/// One open composing signal: the channel resolved at the begin, reused
+/// for the stop, and the deadline past which the signal stops unasked.
+struct OpenSignal {
+    channel: ChannelKey,
+    expires_at: Instant,
+}
 
 /// Spawn the composing edge for one adapter and return its receiving end.
 /// The task ends when the receiver is dropped — noticed even on an idle bus
@@ -53,12 +78,38 @@ pub(crate) fn spawn_edge(
         // resolved once at the transition to composing and reused for the
         // stop, so a conversation whose mapping row an erasure removed
         // mid-turn still gets its stop.
-        let mut open: HashMap<i64, ChannelKey> = HashMap::new();
+        let mut open: HashMap<i64, OpenSignal> = HashMap::new();
         loop {
+            let deadline = open.values().map(|signal| signal.expires_at).min();
             let event = tokio::select! {
                 // A dropped receiver ends the task even while the bus
                 // idles; recv alone would park until the next event.
                 () = updates.closed() => break,
+                // The lifetime bound: a signal still open at its deadline
+                // stops on this clock, so a lost stop event ends the
+                // signal instead of never — and clearing the entry lets
+                // the next genuine begin through.
+                () = earliest(deadline) => {
+                    let now = Instant::now();
+                    let due: Vec<i64> = open
+                        .iter()
+                        .filter(|(_, signal)| signal.expires_at <= now)
+                        .map(|(&conversation_id, _)| conversation_id)
+                        .collect();
+                    for conversation_id in due {
+                        if let Some(signal) = open.remove(&conversation_id) {
+                            tracing::warn!(
+                                conversation_id,
+                                "a composing signal reached its lifetime without a stop; stopped"
+                            );
+                            let _ = updates.send(ComposingUpdate {
+                                channel: signal.channel,
+                                state: ComposingState::Stopped,
+                            });
+                        }
+                    }
+                    continue;
+                }
                 event = events.recv() => event,
             };
             match event {
@@ -77,15 +128,21 @@ pub(crate) fn spawn_edge(
                         // failed read answers `None`: none of this edge's
                         // business — or logged inside and dropped.
                         if let Some(channel) = channel_of(&ctx, &adapter, conversation_id).await {
-                            open.insert(conversation_id, channel.clone());
+                            open.insert(
+                                conversation_id,
+                                OpenSignal {
+                                    channel: channel.clone(),
+                                    expires_at: Instant::now() + COMPOSING_SIGNAL_LIFETIME,
+                                },
+                            );
                             let _ = updates.send(ComposingUpdate {
                                 channel,
                                 state: ComposingState::Composing,
                             });
                         }
-                    } else if let Some(channel) = open.remove(&conversation_id) {
+                    } else if let Some(signal) = open.remove(&conversation_id) {
                         let _ = updates.send(ComposingUpdate {
-                            channel,
+                            channel: signal.channel,
                             state: ComposingState::Stopped,
                         });
                     }
@@ -97,9 +154,9 @@ pub(crate) fn spawn_edge(
                 // stopped — the failure direction a presence cue wants.
                 Err(RecvError::Lagged(missed)) => {
                     tracing::warn!(missed, "the composing edge lagged; stopping every signal");
-                    for (_, channel) in open.drain() {
+                    for (_, signal) in open.drain() {
                         let _ = updates.send(ComposingUpdate {
-                            channel,
+                            channel: signal.channel,
                             state: ComposingState::Stopped,
                         });
                     }
@@ -109,6 +166,16 @@ pub(crate) fn spawn_edge(
         }
     });
     receiver
+}
+
+/// Resolves at the earliest lifetime deadline among the open signals, and
+/// pends forever when nothing is open — the select's other branches keep
+/// the loop responsive either way.
+async fn earliest(deadline: Option<Instant>) {
+    match deadline {
+        Some(at) => tokio::time::sleep_until(at).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// The channel a composing conversation signals on, when it is this
@@ -257,5 +324,48 @@ mod tests {
             .expect("the edge outlives the test");
         assert_eq!(stopped.channel, key);
         assert_eq!(stopped.state, ComposingState::Stopped);
+    }
+
+    /// The lifetime bound: after the begin, NO further event reaches the
+    /// edge — the exact shape of a stop transition lost without a lag, on
+    /// a conversation that then idles — and the stop still arrives, on the
+    /// edge's own clock, inside a bounded await. The clock is paused after
+    /// the begin, so the five-minute deadline elapses virtually and the
+    /// bound is proven, not waited out. A state change after the expiry
+    /// then re-begins the signal: a turn genuinely running past the
+    /// deadline gets the cue back instead of staying dark.
+    #[tokio::test]
+    async fn a_lost_stop_expires_on_the_edges_own_clock() {
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let ctx = quiet_ctx(store.clone());
+        let (conversation, key) = mapped_conversation(&store, "quiet", "dm-lost-stop").await;
+        let mut updates = spawn_edge(ctx.clone(), "quiet".into());
+
+        ctx.bus().emit(state_event(conversation, true, false));
+        let begun = updates.recv().await.expect("the begin arrives");
+        assert_eq!(begun.state, ComposingState::Composing);
+
+        // From here the edge receives nothing: the turn's end is never
+        // delivered. Pausing the clock lets the deadline fire virtually;
+        // the timeout outlasts it, so a missing expiry fails the test
+        // instead of hanging it.
+        tokio::time::pause();
+        let stopped = tokio::time::timeout(
+            COMPOSING_SIGNAL_LIFETIME + std::time::Duration::from_mins(1),
+            updates.recv(),
+        )
+        .await
+        .expect("the expiry stop arrives without any event reaching the edge")
+        .expect("the edge outlives the test");
+        assert_eq!(stopped.channel, key);
+        assert_eq!(stopped.state, ComposingState::Stopped);
+
+        // The expiry cleared the edge's entry: the still-running turn's
+        // next state change re-begins the signal instead of being
+        // swallowed by a stale open entry.
+        ctx.bus().emit(state_event(conversation, true, false));
+        let rearmed = updates.recv().await.expect("the re-begin arrives");
+        assert_eq!(rearmed.channel, key);
+        assert_eq!(rearmed.state, ComposingState::Composing);
     }
 }

@@ -42,3 +42,19 @@ with no privacy or cost weight, always on.
 - **AC5** Full battery green: build, tests parallel and single-threaded with all
   features, clippy denied, fmt, doc denied, vocabulary and secret scans; no new
   dependency.
+
+## Revision 2 (2026-08-23): the lifetime bound
+
+A live orphan showed the stop transition is at-most-once end-to-end: a lost
+stop on an idle conversation left the refresh loop firing for three quarters
+of an hour. The refinement to decision 0064 bounds the signal in two layers —
+the core edge stops any signal still open at the signal-lifetime deadline on
+its own clock (and clears its entry, so the next begin is not swallowed), and
+the adapter's refresh loop ends itself after the lifetime in refresh periods
+plus slack, with no delivered message required. Contract additions:
+
+- **AC6** Core pin: after a begin with every later event withheld, the stop
+  arrives on the edge's own clock inside a bounded await, and a following
+  state change re-begins the signal.
+- **AC7** Adapter pin: a refresh loop with every stop withheld ends on its
+  own cycle bound inside a bounded await, on a paused clock.
