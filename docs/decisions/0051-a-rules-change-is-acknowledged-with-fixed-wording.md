@@ -35,3 +35,20 @@ appends of one topic are now capped at `NOTE_TOPIC_APPEND_CAP` (3) per
 conversation within the same window. A capped delta is not queued: the next
 observation after the window re-reads the newest note, and the still-standing
 difference appends through the on-delta rule itself.
+
+Refined 2026-08-23, by the operator's decision: the acknowledgment window and
+the note append cap are removed from the rules and title note path. The
+threat model both bounds answered was wrong — pinning is an
+administrator-only right on the platform, so the "pin-toggling spammer"
+they were built against cannot exist, and in practice the bounds only
+silenced legitimate rules edits: an admin correcting the rules twice in
+five minutes had the second correction picked up without its confirmation,
+and a burst of real edits past the cap did not even reach the ledger until
+the window passed. What remains is the on-delta comparison, which was
+always the real check: a change appends its note and the rules note carries
+its acknowledgment, every time; an identical re-pin appends nothing and
+says nothing. The notice-answer window (`notice_answered`, on the same
+`ACKNOWLEDGMENT_WINDOW` length) is untouched by this refinement — a flood
+of notice-drawing triggers is a vector anyone in the chat can cause, so
+that bound protects against something real and stays, and the shared constant stays
+with it.

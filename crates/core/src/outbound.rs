@@ -121,9 +121,9 @@ fn is_quiet_failure(error: &str) -> bool {
 
 /// The fixed acknowledgment a rules change draws in the chat — deterministic
 /// product behavior, not a model answer, so the wording cannot drift
-/// (decided 2026-08-23). Delivered at most once per channel per
-/// acknowledgment window; a further delta inside the window appends its
-/// note silently.
+/// (decided 2026-08-23). Every real delta draws one (the operator decided,
+/// 2026-08-23): the on-delta comparison is the whole admission check, and an identical
+/// re-pin draws nothing.
 pub const RULES_ACKNOWLEDGMENT: &str =
     "Rules noted. The assistant follows the pinned rules of this group.";
 

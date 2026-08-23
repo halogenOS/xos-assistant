@@ -1,38 +1,39 @@
 //! The shared windowed bounds (decided 2026-08-23, refined at each unit's
 //! close): every structure here answers one question — "may this go out
 //! now" — over a named window length, and nothing here is a feature's own
-//! state. Three bounds live in this module:
+//! state. Two bounds live in this module:
 //!
 //! - [`LineWindow`] — at most one fixed line per channel per window: the
-//!   rules acknowledgment, the privacy notice's answer, and the report
-//!   filing each keep an instance.
-//! - [`AppendWindow`] — note appends of one topic capped per conversation
-//!   within the acknowledgment window.
+//!   privacy notice's answer and the report filing each keep an instance.
+//!   The rules acknowledgment left this bound on 2026-08-23: pinning is an
+//!   administrator-only right, so the pin-toggling spammer the window was
+//!   built against cannot exist, and the window only silenced legitimate
+//!   rules edits — the on-delta note comparison is the rules path's whole
+//!   admission check now.
 //! - [`ReplyWindow`] — up to a cap of replies per key per window, the
 //!   privacy family's per-person bound, carrying the one writing of the
 //!   grant-exactly-with-the-action protocol in [`ReplyWindow::grant_with`].
 //!
 //! The flood-amplifier discipline the protection unit recorded for notices
-//! applies to chat lines and ledger growth alike. The bookkeeping is
-//! in-memory on purpose: a restart forgetting the windows costs at most one
-//! window of extra lines and one burst of capped appends. Expired entries
-//! are swept on every access, so no map outlives its own window. Domain
-//! state with a window of its own — the deletion flow's pending memory —
-//! lives with its feature, not here.
+//! applies to the lines anyone can trigger. The bookkeeping is in-memory on
+//! purpose: a restart forgetting the windows costs at most one window of
+//! extra lines. Expired entries are swept on every access, so no map
+//! outlives its own window. Domain state with a window of its own — the
+//! deletion flow's pending memory — lives with its feature, not here.
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::hash::Hash;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
-/// At most one fixed line per channel inside this window — the rules
-/// acknowledgment and the privacy command's answer each keep their own
-/// per-channel bookkeeping over this one length; a further trigger within
-/// it is recorded silence. Note appends share the length as their cap
-/// window.
+/// At most one fixed line per channel inside this window — the privacy
+/// command's answer keeps its per-channel bookkeeping over this length; a
+/// further trigger within it is recorded silence. The name predates the
+/// rules acknowledgment's departure from the bound (2026-08-23): the
+/// notice window it still measures answers a real vector — a flood of
+/// failed or repeated triggers anyone in the chat can cause.
 pub const ACKNOWLEDGMENT_WINDOW: Duration = Duration::from_mins(5);
 
 /// At most one filed report per channel inside this window — the report
@@ -44,13 +45,6 @@ pub const ACKNOWLEDGMENT_WINDOW: Duration = Duration::from_mins(5);
 /// courtesy-line rationale: for THIS bound a restart forgives at most one
 /// extra report, which is one extra ping — accepted.
 pub const REPORT_WINDOW: Duration = Duration::from_mins(5);
-
-/// How many notes of one topic may append per conversation inside one
-/// window. A pin toggler's burst appends at most this many system-voiced
-/// notes; a capped delta is not queued — the next observation after the
-/// window re-reads the stored newest note and appends the still-standing
-/// delta then.
-pub const NOTE_TOPIC_APPEND_CAP: u32 = 3;
 
 /// The rights replies' own per-person window (decided 2026-08-23), the same
 /// length as the acknowledgment window: the four privacy commands and the
@@ -110,52 +104,6 @@ impl LineWindow {
     /// not silenced by a failure that delivered nothing.
     pub(crate) async fn revoke(&self, channel: i64) {
         self.granted.lock().await.remove(&channel);
-    }
-}
-
-/// The per-key append budget of one window: the first recorded append opens
-/// the key's window, further appends count against [`NOTE_TOPIC_APPEND_CAP`]
-/// inside it, and the window's expiry resets the count whole.
-///
-/// Admission and spend are two calls on purpose: [`Self::admits`] is a pure
-/// read gating the append, and [`Self::record`] counts it only once it
-/// stands — a transiently failed append spends nothing, so its redelivery is
-/// not capped by its own failures. The check-then-record pair is not atomic
-/// here; the one caller runs it under the stamp lock, which serializes every
-/// note append anyway.
-pub(crate) struct AppendWindow<K> {
-    opened: Mutex<HashMap<K, (Instant, u32)>>,
-}
-
-impl<K: Eq + Hash> AppendWindow<K> {
-    pub(crate) fn new() -> Self {
-        Self {
-            opened: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Whether one more append is admitted now — a read, spending nothing.
-    /// Expired windows are swept here, so the map holds only keys inside a
-    /// live window.
-    pub(crate) async fn admits(&self, key: K) -> bool {
-        let mut opened = self.opened.lock().await;
-        let now = Instant::now();
-        opened.retain(|_, (start, _)| now.duration_since(*start) < ACKNOWLEDGMENT_WINDOW);
-        opened
-            .get(&key)
-            .is_none_or(|(_, count)| *count < NOTE_TOPIC_APPEND_CAP)
-    }
-
-    /// One admitted append stood; count it. The first recorded append opens
-    /// the key's window.
-    pub(crate) async fn record(&self, key: K) {
-        let mut opened = self.opened.lock().await;
-        let now = Instant::now();
-        opened.retain(|_, (start, _)| now.duration_since(*start) < ACKNOWLEDGMENT_WINDOW);
-        opened
-            .entry(key)
-            .and_modify(|(_, count)| *count += 1)
-            .or_insert((now, 1));
     }
 }
 
@@ -320,25 +268,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn an_append_window_admits_the_cap_then_resets_past_the_window() {
-        let window: AppendWindow<i64> = AppendWindow::new();
-        for _ in 0..NOTE_TOPIC_APPEND_CAP {
-            assert!(
-                window.admits(1).await,
-                "appends within the cap are admitted"
-            );
-            window.record(1).await;
-        }
-        assert!(!window.admits(1).await, "the capped key admits no more");
-        assert!(window.admits(2).await, "keys are capped independently");
-        tokio::time::advance(ACKNOWLEDGMENT_WINDOW + Duration::from_secs(1)).await;
-        assert!(
-            window.admits(1).await,
-            "the expired window resets the count"
-        );
-    }
-
     /// The one-operation protocol over the reply bound: an exhausted window
     /// never runs the change, a granted change spends its slot, and a
     /// failed change hands the grant back — so a redelivery is not silenced
@@ -390,22 +319,6 @@ mod tests {
         assert!(
             window.grants(1).await,
             "the expired window resets the count whole"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_unrecorded_admission_spends_nothing() {
-        let window: AppendWindow<i64> = AppendWindow::new();
-        for _ in 0..(NOTE_TOPIC_APPEND_CAP * 2) {
-            assert!(
-                window.admits(1).await,
-                "an admission without a recorded append is a free read"
-            );
-        }
-        window.record(1).await;
-        assert!(
-            window.admits(1).await,
-            "only recorded appends count against the cap"
         );
     }
 }

@@ -39,8 +39,8 @@ use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
 use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
 use crate::window::{
-    ACKNOWLEDGMENT_WINDOW, AppendWindow, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW,
-    REPORT_WINDOW, ReplyWindow,
+    ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, REPORT_WINDOW,
+    ReplyWindow,
 };
 use crate::{authorization, identity, mapping, mirror, outbound, privacy, streams};
 
@@ -250,9 +250,8 @@ pub struct Assistant {
     streams: Arc<StreamObserver>,
     /// The answering budgets the stamp consults for addressed messages.
     /// Read-only after start; the budget counts themselves are derived
-    /// from the ledger at every write — the acknowledgment windows below
-    /// are the one in-memory tally, and they bound courtesy lines, never
-    /// budgets.
+    /// from the ledger at every write — the reply windows below are the
+    /// one in-memory tally, and they bound courtesy lines, never budgets.
     protection: ProtectionConfig,
     /// The operator wiring: who may admit the assistant into a group.
     /// Read-only after start.
@@ -262,15 +261,13 @@ pub struct Assistant {
     /// The address the privacy command answers with; absent answers the
     /// not-yet-published line. Read-only after start.
     privacy_policy_address: Option<String>,
-    /// The rules acknowledgment's per-channel window — at most one inside
-    /// it; a further rules delta appends its note silently. The window
-    /// module states why the bookkeeping is in-memory.
-    rules_acknowledged: LineWindow,
-    /// The privacy notice's per-channel window, sharing the acknowledgment
-    /// mechanism (refined 2026-08-23): the command stamp keeps the notice
-    /// out of both budget counts, so without this a quiet channel would
-    /// answer every repeat. The notice alone rides here — the four rights
-    /// commands are bounded per person by [`Self::privacy_replies`].
+    /// The privacy notice's per-channel window (refined 2026-08-23): the
+    /// command stamp keeps the notice out of both budget counts, so
+    /// without this a quiet channel would answer every repeat. The notice
+    /// alone rides here — the four rights commands are bounded per person
+    /// by [`Self::privacy_replies`], and the rules acknowledgment carries
+    /// no window at all since 2026-08-23: pinning is an admin-only right,
+    /// so its on-delta comparison is the whole admission check.
     notice_answered: LineWindow,
     /// The rights replies' per-person bound (decided 2026-08-23): the four
     /// self-service commands and the privacy tool draw at most the cap per
@@ -284,10 +281,6 @@ pub struct Assistant {
     /// memory, forgotten on restart — deletion is the flow where forgetting
     /// errs safe.
     pending_deletions: Arc<PendingDeletions>,
-    /// The per-topic note append cap within the window (refined
-    /// 2026-08-23): the ledger is bounded like the chat line, and a capped
-    /// delta lands on the next observation after the window.
-    note_appends: AppendWindow<(i64, NoteTopic)>,
     /// The observation race's test seam; `None` in production.
     note_read_pause: Option<ScriptedPause>,
     /// The suppression race's test seam, run between the pre-lock standing
@@ -430,11 +423,9 @@ impl Assistant {
             operators,
             direct_chats,
             privacy_policy_address,
-            rules_acknowledged: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
             notice_answered: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
             privacy_replies,
             pending_deletions,
-            note_appends: AppendWindow::new(),
             note_read_pause: None,
             standing_read_pause: None,
             palette_reconciled: Mutex::new(HashSet::new()),
@@ -725,16 +716,16 @@ impl Assistant {
     /// An admitted title or announcement observation derives its note — the
     /// rules contract reads the pinned announcement here, in the core — and
     /// appends it on-delta: only when the observed text differs from the
-    /// newest stored note of the same topic, and only within the topic's
-    /// per-window append cap (refined 2026-08-23) — a capped delta is not
-    /// queued, it lands on the next observation after the window through
-    /// the on-delta rule itself. The read-then-append is serialized under
-    /// the stamp lock, so two equal racing observations append one note; an
+    /// newest stored note of the same topic. The on-delta comparison is the
+    /// whole admission check (the operator decided, 2026-08-23): pinning is an
+    /// administrator-only right, so no rate window or append cap sits on
+    /// this path — an identical re-pin appends nothing, and every real
+    /// delta records. The read-then-append is serialized under the stamp
+    /// lock, so two equal racing observations append one note; an
     /// authorized, unmapped group channel takes the same winner-only
     /// creation path a first message does, system prompt and palette
-    /// included. A fresh rules note outside the acknowledgment window
-    /// carries the fixed acknowledgment back to the adapter; a title note
-    /// is never acknowledged.
+    /// included. Every appended rules note carries the fixed acknowledgment
+    /// back to the adapter; a title note is never acknowledged.
     ///
     /// A direct-channel observation observes nothing: group facts belong to
     /// groups, and the direct path is untouched by this unit.
@@ -808,15 +799,6 @@ impl Assistant {
                 if newest.as_deref() == Some(text.as_str()) {
                     return Ok(ObserveOutcome::Observed { deliver: None });
                 }
-                if !self.note_appends.admits((conversation_id, topic)).await {
-                    tracing::info!(
-                        conversation_id,
-                        topic = topic.as_str(),
-                        "the topic's appends are capped for this window; \
-                         the delta lands on the next observation after it"
-                    );
-                    return Ok(ObserveOutcome::Observed { deliver: None });
-                }
                 self.ctx
                     .store()
                     .append_consumer_block(
@@ -827,18 +809,16 @@ impl Assistant {
                         None,
                     )
                     .await?;
-                // The cap slot and the acknowledgment window are spent only
-                // past the successful append: a transiently failed append
-                // redelivers its observation, and spending either before
-                // the append would cap or silence the redelivery for a
-                // note that never landed.
-                self.note_appends.record((conversation_id, topic)).await;
+                // Every real rules delta is acknowledged (the operator decided,
+                // 2026-08-23): pinning is an administrator-only right, so
+                // no non-admin can trigger this line, and a rate window
+                // here would only silence legitimate rules edits. The
+                // on-delta comparison above is the whole admission check — an
+                // identical re-pin appends nothing and says nothing.
                 let deliver = match topic {
-                    NoteTopic::Rules => self
-                        .rules_acknowledged
-                        .grants(conversation_id)
-                        .await
-                        .then(|| DeliveryItem::Acknowledgment(RULES_ACKNOWLEDGMENT.to_owned())),
+                    NoteTopic::Rules => Some(DeliveryItem::Acknowledgment(
+                        RULES_ACKNOWLEDGMENT.to_owned(),
+                    )),
                     NoteTopic::Title => None,
                 };
                 Ok(ObserveOutcome::Observed { deliver })
