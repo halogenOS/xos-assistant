@@ -227,9 +227,9 @@ You may lodge a complaint with a supervisory authority, in particular in the Mem
 of your habitual residence, place of work, or the place of the alleged infringement. The
 authority competent for this controller is:
 
-Der Hamburgische Beauftragte für Datenschutz und Informationsfreiheit\
-Ludwig-Erhard-Str. 22, 20459 Hamburg\
-[https://datenschutz-hamburg.de](https://datenschutz-hamburg.de)
+Bayerisches Landesamt für Datenschutzaufsicht (BayLDA)\
+Promenade 18, 91522 Ansbach\
+[https://www.lda.bayern.de](https://www.lda.bayern.de)
 
 **Changes**
 
