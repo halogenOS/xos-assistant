@@ -1,0 +1,87 @@
+# 0077 — The display name is not stored, and titles are not derived
+
+Date: 2026-08-23
+
+## Context
+
+Two data-minimization findings from the operator's review of what the
+assistant actually holds and sends, decided together because both remove
+personal-data processing nothing consumes.
+
+First, the display name. The identity table stored each sender's display
+name beside the username, refreshed on every message. Verification showed
+it dead weight: written on refresh, read by nothing in production — the
+speaker column carries the username (decision 0065), the operator match
+reads the external id, the privacy documents promise it never crosses to
+the processor. A stored personal attribute with no consumer is exactly what
+minimization removes.
+
+Second, the conversation title. The framework's metadata worker derives a
+short title per conversation by sending an excerpt of the conversation's
+prose to a model. The assistant is a chat bot: no surface shows a
+conversation list, so nobody reads a derived title, and every derivation
+still ships member prose to a model for a product feature that does not
+exist here. Decision 0068 made the derivation's model configurable to fix
+its region; the operator has now decided the derivation itself is not
+wanted at all.
+
+## Decision
+
+The display name leaves every layer:
+
+- `SenderIdentity` drops the field, so the adapter boundary carries the
+  external id and the username and nothing more; the adapter stops decoding
+  the platform's name fields entirely, so a display name never enters the
+  process as a typed value.
+- Identity resolution reads and writes the username alone, and the
+  principals table's `display_name` column is dropped — values included —
+  by an appended migration step, per decision 0026's discipline. Erasure's
+  identity pass is unchanged in shape: it deletes the principal's row,
+  which now simply holds one field less.
+
+Title derivation is switched off:
+
+- The framework grows a construction option on its runtime context,
+  default on, off meaning no metadata worker is spawned and no title
+  request is ever dispatched — zero title traffic by construction.
+- The assembly builds its context with the option off, unconditionally: a
+  configuration knob would imply the feature might be wanted, and the
+  decision is that it is not.
+- The `title_model` configuration key, its resolver and its start error are
+  removed with the feature; a stale file still naming the key is refused at
+  the load by the unknown-key rule, so the removal fails loudly instead of
+  silently ignoring a line.
+
+The privacy documents shrink accordingly: the policy's identity category
+and language-model section lose their display-name and smaller-model
+sentences, and the impact assessment's title-derivation defect note closes
+— the non-EEA naming model is no longer an open dependency, because the
+naming step no longer exists.
+
+Residual, stated: titles derived before this change persist in the
+framework's metadata ledger of upgraded stores, and decision 0012's OPEN
+item on erased prose shaping a derived title still applies to them. No new
+derivation will ever join them.
+
+## Rejected alternatives
+
+- **Keeping the dead column.** A stored personal attribute nobody reads is
+  liability without function, and every privacy document would keep
+  carrying sentences about data held for nothing.
+- **Nulling the column instead of dropping it.** The null-and-retire path
+  exists for machinery that cannot drop a column; this store's SQLite drops
+  columns, and a retired-but-present column invites the next writer to
+  fill it again.
+- **Keeping title derivation because it is cheap.** Cost was never the
+  objection — decision 0068 already priced it as negligible. The objection
+  is member prose sent to a model for a feature with no reader; a
+  processing activity justified by nothing fails Article 5(1)(c) regardless
+  of price.
+- **A configuration switch for titles.** A knob says a deployment might
+  turn it on; no surface reads a title, so the knob would configure dead
+  behavior. If a conversation-listing surface ever ships, turning the
+  construction option back on is that feature's own decision to make.
+- **Dropping the framework feature instead of switching it off.** Other
+  consumers of the framework read their titles; the framework keeps the
+  feature and gains the off switch, defaulting on so existing consumers are
+  unchanged.

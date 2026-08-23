@@ -76,9 +76,9 @@ route reaches the same purpose.
 **Storing identity.** The platform account identifier is needed to attribute messages
 inside a conversation, to apply the per-person answering counter, and, most importantly,
 to make deletion possible at all: a request to delete one person's messages can only be
-served if the messages can be linked to that person. Display name and username are kept so
-a request can be matched to an account and so the operator can act on abuse. All three live
-in tables of their own.
+served if the messages can be linked to that person. The username is kept so a request can
+be matched to an account and so the operator can act on abuse; the display name is not
+stored (narrowed 2026-08-23, decision 0077). Both live in tables of their own.
 
 **Sending text and one handle to a model.** Answering is the purpose and a language model
 is the mechanism. Since the operator's decision of 2026-08-23 the request carries the
@@ -87,7 +87,8 @@ group has to be able to say which person it is answering, and the handle is how 
 addresses its members. The necessity is judged on that capability: without the handle the
 model can write an answer, but not one that points at the person who asked, and in a busy
 group that produces answers nobody can attach to their question. Everything else stays
-back. The numeric account identifier and the display name do not cross, and no history
+back. The numeric account identifier does not cross, the display name is not even stored
+(narrowed 2026-08-23, decision 0077), and no history
 beyond the conversation being answered is uploaded. The processor keeps nothing, and a
 model provider behind it keeps what the terms of the chosen model allow, which is why the
 choice of model belongs in this assessment and not only in the impact assessment. The
@@ -259,7 +260,8 @@ again:
    the send time and the reply reference, removes direct conversations whole and deletes
    the identity rows (decisions 0003, 0006, 0011, 0012, 0027, 0028).
 2. Exactly one identifier in provider requests, the public username, and no more: the
-   display name and the numeric account identifier stay on the machine, and nothing is
+   numeric account identifier stays on the machine, the display name is not stored at
+   all (decision 0077), and nothing is
    added to a request without weighing this assessment again.
 3. The processing chain stays as assessed: a processor in the United Kingdom under an
    Article 28 agreement with standard contractual clauses, storing and serving in
@@ -268,8 +270,9 @@ again:
    sub-processors engaged by that processor under its own agreements. Corrected
    2026-08-23: zero data retention binds the processor alone, so the terms of the chosen
    model decide the provider layer, and a model deployment outside the EEA rests on the
-   standard contractual clauses. The conversation-naming step reaches such a deployment
-   today through a framework defect whose fix is in flight.
+   standard contractual clauses. The conversation-naming step reached such a deployment
+   through a framework defect whose fix was in flight; closed 2026-08-23 by decision
+   0077 — title derivation is off entirely, and no naming request exists.
 4. Notice in the group before collection: the rules pin and the deterministic privacy
    command (decision 0053), plus the platform's own policy field.
 5. Objection and deletion answered within a month, free, with no more identity checking

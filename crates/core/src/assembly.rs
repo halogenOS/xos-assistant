@@ -355,8 +355,13 @@ impl Assistant {
         // calls against and the palette every new conversation records are
         // both derived from the set right here.
         let (registry, palette) = tools.into_registry();
+        // Title derivation is switched off for good (decision 0077): nobody
+        // reads a group chat's derived title, so no conversation excerpt is
+        // ever sent anywhere for naming — zero title requests by
+        // construction, not by configuration.
         let ctx: RuntimeContext<AssistantKind, CoreEvent> =
-            RuntimeContext::new(store, bus, providers, Arc::new(registry));
+            RuntimeContext::new(store, bus, providers, Arc::new(registry))
+                .without_title_derivation();
         ctx.store()
             .save_provider_instance(ProviderInstance {
                 id: binding.provider_instance.clone(),

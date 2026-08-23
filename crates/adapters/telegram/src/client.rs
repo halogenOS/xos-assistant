@@ -209,12 +209,13 @@ pub(crate) struct Chat {
     pub kind: String,
 }
 
-/// A sending person's identity fields.
+/// A sending person's identity fields — the two the translation carries
+/// (decision 0077): the id and the username. The platform's name fields are
+/// not decoded at all, so a display name never enters the process as a
+/// typed value; the decoder skips them like any other unknown key.
 #[derive(Debug, Deserialize)]
 pub(crate) struct User {
     pub id: i64,
-    pub first_name: String,
-    pub last_name: Option<String>,
     pub username: Option<String>,
 }
 

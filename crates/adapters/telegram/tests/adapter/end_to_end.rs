@@ -80,4 +80,16 @@ async fn a_group_message_round_trips_to_a_send() {
         !server.recorded("getChatAdministrators").is_empty(),
         "a group message resolves authority through the administrator list"
     );
+
+    // Titles are off (decision 0077): the whole answered round trip
+    // dispatched no derivation. The window one would fire in is held open
+    // before the count is read.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        fixture
+            .title_requests
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "a full conversation flow dispatches zero title requests"
+    );
 }

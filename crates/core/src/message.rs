@@ -66,13 +66,13 @@ impl ChannelKind {
 /// resolves or creates the principal from it, the principal id enters the
 /// ledger — and since decision 0065 the username joins the message row as its
 /// speaker, bounded by the kind's storable-speaker predicate. The external id
-/// and the display name never reach a block.
+/// never reaches a block. The display name is not carried at all (decision
+/// 0077): nothing consumed it, so the adapter stops translating it and the
+/// core stores what it needs and nothing it does not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SenderIdentity {
     /// The sender's opaque external id on the adapter's platform.
     pub external_id: String,
-    /// The name the sender displays.
-    pub display_name: String,
     /// The sender's username, where the platform has one.
     pub username: Option<String>,
 }

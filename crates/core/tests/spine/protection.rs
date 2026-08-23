@@ -176,12 +176,14 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
             )
             .await
             .expect("the pre-upgrade row appends");
-        // The rewind: drop exactly what the appended steps add and set the
-        // domain's version back, so the disk holds what the pre-protection
-        // binary's store held — the group-context unit's tables included.
-        // The dropped columns take their column-level CHECK constraints
-        // with them. The version rewind goes through the support seam that
-        // owns the suite's framework-schema knowledge.
+        // The rewind: drop exactly what the appended steps add, restore
+        // what the retirement step drops (a version-three principals table
+        // still carried its display-name column), and set the domain's
+        // version back, so the disk holds what the pre-protection binary's
+        // store held — the group-context unit's tables included. The
+        // dropped columns take their column-level CHECK constraints with
+        // them. The version rewind goes through the support seam that owns
+        // the suite's framework-schema knowledge.
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
                 "DROP INDEX {index};
@@ -193,7 +195,8 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                  DROP TABLE {palette};
                  DROP TABLE {note};
                  DROP TABLE {report};
-                 DROP TABLE group_authorizations;",
+                 DROP TABLE group_authorizations;
+                 ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';",
                 index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
                 palette = assistant_core::tools::palette::TOOL_PALETTE_TABLE,
                 note = assistant_core::note::CONTEXT_NOTE_TABLE,
@@ -239,7 +242,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        11,
+        12,
         "the appended steps advanced the domain's version"
     );
 

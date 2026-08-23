@@ -36,8 +36,9 @@ own community groups. You can object at any time, see below.
 
 **Message author**
 
-We store your username and the numeric account identifier your chat platform assigns
-you, in tables of their own so that a deletion request can remove them. We
+We store your username and the numeric account identifier your chat platform assigns you,
+in tables of their own so that a deletion request can remove them. We do not store your
+display name. We
 store beside each message the platform's send time and the time it reached us, which
 message it replied to, whether it was addressed to the assistant, whether you were an
 administrator then, and whether an answer was due or a limit refused one. We take the

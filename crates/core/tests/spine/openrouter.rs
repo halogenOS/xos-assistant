@@ -140,7 +140,7 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
         let store = Store::open_with(db.path(), store_config()).expect("the store opens");
         let mut providers = ProviderRegistry::new();
         let provider =
-            MemoryConfiguredProvider::new(&store, FAKE_KEY.into(), Some(base.clone()), None).await;
+            MemoryConfiguredProvider::new(&store, FAKE_KEY.into(), Some(base.clone())).await;
         let vendor = agent_ledger::ProviderModule::type_id(&provider).to_owned();
         providers.register(Box::new(provider));
         let assistant = Assistant::start(
@@ -238,8 +238,7 @@ async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accept
     let key = channel("group-noted-wire");
 
     let mut providers = ProviderRegistry::new();
-    let provider =
-        MemoryConfiguredProvider::new(&store, FAKE_KEY.into(), Some(base.clone()), None).await;
+    let provider = MemoryConfiguredProvider::new(&store, FAKE_KEY.into(), Some(base.clone())).await;
     let vendor = agent_ledger::ProviderModule::type_id(&provider).to_owned();
     providers.register(Box::new(provider));
     let assistant = Assistant::start(

@@ -1,11 +1,12 @@
 //! AC8's documentation pins: the prompt's returned report bullet with its
 //! tool teaching, the 0046 closure, the 0044 amendment, the 0045
 //! narrowing, the unit-5 no-write amendment, and the four privacy drafts'
-//! dated updates — joined by the username-projection unit's AC4 pins: the
+//! dated updates — joined by the username-projection unit's AC4 pins (the
 //! prompt's mention line, the DPIA's dated note and the three decision
-//! records that close 0056's implementation debt. Each pin reads the
-//! committed file the way the repository ships it, so a drifted edit fails
-//! loudly here.
+//! records that close 0056's implementation debt) and the minimization
+//! pins of decision 0077 (the record, the shrunken policy sections and the
+//! four documents' dated notes). Each pin reads the committed file the way
+//! the repository ships it, so a drifted edit fails loudly here.
 
 use std::path::Path;
 
@@ -161,6 +162,81 @@ fn the_unit_five_no_write_rule_carries_its_dated_amendment() {
     assert!(
         unit.contains("Lookups still write nothing."),
         "the rule's remainder stands"
+    );
+}
+
+/// Decision 0077's documentation pins: the decision record with its
+/// rejected alternatives, the policy's shrunken author and language-model
+/// sections, the DPIA's category note and defect closure, the records'
+/// narrowed rows, and the LIA's amended transfer line.
+#[test]
+fn the_minimization_decision_ships_its_record_and_dated_doc_updates() {
+    let record = repo_file(
+        "docs/decisions/0077-the-display-name-is-not-stored-and-titles-are-not-derived.md",
+    );
+    assert!(record.contains("Date: 2026-08-23"), "the record is dated");
+    assert!(
+        record.contains("## Rejected alternatives"),
+        "the record carries its rejected alternatives"
+    );
+    assert!(
+        record.contains("Keeping the dead column."),
+        "the record rejects keeping the dead column"
+    );
+    assert!(
+        record.contains("Keeping title derivation because it is cheap."),
+        "the record rejects keeping titles nobody reads"
+    );
+
+    let policy = repo_file("docs/privacy/privacy-policy.md");
+    let policy_flat = flattened(&policy);
+    assert!(
+        policy_flat.contains("We do not store your display name."),
+        "the policy's author section states the display name is not stored"
+    );
+    assert!(
+        !policy_flat.contains("smaller model") && !policy_flat.contains("smaller naming model"),
+        "the policy lost the smaller-model sentence and its transfer mention"
+    );
+
+    let dpia = repo_file("docs/privacy/dpia.md");
+    let dpia_flat = flattened(&dpia);
+    assert!(
+        dpia_flat.contains("the identity category shrinks"),
+        "the DPIA's identity category carries its dated narrowing note"
+    );
+    assert!(
+        dpia_flat.contains("Closed 2026-08-23: the conversation-naming feature is switched off"),
+        "the DPIA's title-derivation defect note carries its closure"
+    );
+
+    let records = repo_file("docs/privacy/records-of-processing.md");
+    let records_flat = flattened(&records);
+    assert!(
+        records_flat.contains("Narrowed 2026-08-23 (decision 0077)"),
+        "the records' identity row is narrowed with its date"
+    );
+    assert!(
+        records_flat.contains("no display name exists to send"),
+        "the records' processor row reflects the removal"
+    );
+
+    let lia = repo_file("docs/privacy/lia.md");
+    assert!(
+        flattened(&lia).contains("the display name is not even stored"),
+        "the LIA's transfer prose carries its dated narrowing"
+    );
+    assert!(
+        flattened(&lia).contains(
+            "the display name is not\nstored (narrowed 2026-08-23"
+                .replace('\n', " ")
+                .as_str()
+        ) || flattened(&lia).contains("the display name is not stored (narrowed 2026-08-23"),
+        "the LIA's necessity paragraph carries the narrowing too"
+    );
+    assert!(
+        !flattened(&lia).contains("All three live"),
+        "the necessity paragraph counts two stored identity fields, not three"
     );
 }
 

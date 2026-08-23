@@ -41,3 +41,12 @@ region.
 - **Skip title derivation when no title model is configured.** Loses the
   feature to avoid a negligible cost, and makes the unconfigured default a
   silent behavior change instead of a safe one.
+
+## Closed 2026-08-23
+
+Decision 0077 switches title derivation off entirely: the operator decided
+the feature is not wanted — no surface reads a derived title. The
+region-correctness reasoning above stands for any consumer that derives
+titles; this deployment no longer does, the `title_model` key is removed
+with the feature, and the rejected alternative "skip title derivation" is
+superseded by that explicit decision — not adopted silently.

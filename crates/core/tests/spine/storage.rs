@@ -252,3 +252,85 @@ async fn a_file_backed_store_reopens_and_loads_the_stored_kind() {
         }
     }
 }
+
+/// Decision 0077's upgrade pin: a store the previous unit's binary wrote —
+/// the principals table still carrying its display-name column with stored
+/// values, the domain's version at eleven — upgrades through the appended
+/// retirement step alone. The step drops the column with its values, the
+/// version advances, the surviving identity fields read back intact, and
+/// the write path resolves principals over the upgraded table.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
+    let db = TempDb::new("v11-upgrade");
+    {
+        let store =
+            Store::open_with(db.path(), store_config()).expect("the configured store opens");
+        // The rewind: restore exactly what the retirement step drops — the
+        // column, with a stored value — and set the version back, leaving
+        // the previous unit's disk shape. The written value proves the drop
+        // deletes data, not just an empty surface.
+        agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
+            conn.execute_batch(
+                "ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+                 INSERT INTO principals (adapter, external_id, display_name, username)
+                     VALUES ('test-adapter', '42', 'Ada Lovelace', 'ada');",
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the store rewinds to the previous unit's shape");
+        support::rewind_domain_migration_version(&store, 11).await;
+        // The first store closes before the reopen, so the upgrade reads
+        // the disk, not a live connection.
+    }
+
+    let reopened = Store::open_with(db.path(), store_config())
+        .expect("the version-eleven store reopens under the shipped configuration");
+    assert_eq!(
+        support::domain_migration_version(&reopened).await,
+        12,
+        "the appended step advanced the domain's version"
+    );
+    let (columns, row): (Vec<String>, (String, String, Option<String>)) =
+        agent_ledger::store::domain_run(&reopened.tx(), assistant_core::schema::DOMAIN, |conn| {
+            let mut statement = conn.prepare("SELECT name FROM pragma_table_info('principals')")?;
+            let columns = statement
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<Vec<String>, _>>()?;
+            let row = conn.query_row(
+                "SELECT adapter, external_id, username FROM principals",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            Ok((columns, row))
+        })
+        .await
+        .expect("the upgraded table reads");
+    assert!(
+        !columns.iter().any(|column| column == "display_name"),
+        "the retirement step dropped the column and its stored values"
+    );
+    assert_eq!(
+        row,
+        ("test-adapter".into(), "42".into(), Some("ada".into())),
+        "the surviving identity fields are intact"
+    );
+
+    // The upgraded store serves the write path: the pre-existing principal
+    // resolves — not a duplicate — for the first post-upgrade message.
+    let fixture = support::start_assistant_on(reopened, None).await;
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        support::inbound(
+            &support::channel("dm-post-upgrade"),
+            assistant_core::ChannelKind::Direct,
+            "42",
+            "the first post-upgrade ask",
+        ),
+    )
+    .await;
+    assert_eq!(
+        receipt.principal_id, 1,
+        "the stored principal resolved over the upgraded table"
+    );
+}
