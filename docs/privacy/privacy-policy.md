@@ -141,13 +141,13 @@ the assistant to stop collecting or to delete, and it honors that the same way.
 Write to [privacy@halogenos.org](mailto:privacy@halogenos.org) for anything else, or if you
 prefer a person, with your username and the group. A handle is visible to everyone, so we
 may ask you to show the request comes from that account, and nothing more. We answer within
-one month and charge nothing. A person answers mail; the commands are the one place a
+one month and charge nothing. A person answers email; the commands are the one place a
 machine acts, and only on your own confirmed instruction.
 
 **Objection**
 
 You can object at any time to any processing described here, for reasons that come from your
-own situation, by mail or with the commands above. We then stop unless we can show
+own situation, by email or with the commands above. We then stop unless we can show
 compelling legitimate reasons that override your interests, rights and freedoms, or we need
 the data for legal claims. In practice we weigh nothing: `/privacyout` stops collection from
 that moment, deletion removes what came before, and neither asks for a justification.
