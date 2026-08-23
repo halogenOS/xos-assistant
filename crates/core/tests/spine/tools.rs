@@ -200,7 +200,13 @@ async fn the_commit_lookup_decodes_the_forge_answer() {
     assert_eq!(field(&blocks[3], "name"), commit::NAME);
     assert_eq!(field(&blocks[3], "input"), COMMIT_INPUT);
     assert_eq!(field(&blocks[4], "content"), forge_compact_result());
-    assert_eq!(field(&blocks[5], "content"), CLOSING_ANSWER);
+    // Read by tail here: the settle can land on either side of the edge's
+    // stored disclosure prepend; the delivered reply below pins the exact
+    // text once the prepend has provably happened.
+    assert!(
+        field(&blocks[5], "content").ends_with(CLOSING_ANSWER),
+        "the stored closing text is the model's answer"
+    );
 
     // The wire: one GET, at the dialect's path.
     let requests = forge.requests();
@@ -230,7 +236,7 @@ async fn the_commit_lookup_decodes_the_forge_answer() {
 
     // The chat receives the model's answer alone — never the tool result.
     let reply = recv_reply(&mut replies).await;
-    assert_eq!(reply.text, CLOSING_ANSWER);
+    assert_eq!(reply.text, assistant_core::disclosed(CLOSING_ANSWER));
     let extra = replies.try_recv();
     assert!(extra.is_err(), "one turn, one chat answer; got {extra:?}");
 }
@@ -322,7 +328,10 @@ async fn the_release_lookup_decodes_the_mirror_answer_and_sends_the_token() {
         "the mirror requires a user agent"
     );
 
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// AC7's absent-token half, and the default tag: no `tag` in the input asks
@@ -356,7 +365,10 @@ async fn an_absent_token_sends_no_header_and_the_default_is_the_latest_release()
         inbound(&channel("dm-latest"), ChannelKind::Direct, "42", "latest?"),
     )
     .await;
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 
     let requests = mirror.requests();
     assert_eq!(requests.len(), 1);
@@ -459,7 +471,10 @@ async fn an_error_status_and_a_timeout_become_tool_errors_the_model_sees() {
             );
             // The model saw the error: the closing request carried the
             // answered call, and the chat received only the model's answer.
-            assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+            assert_eq!(
+                recv_reply(&mut replies).await.text,
+                assistant_core::disclosed(CLOSING_ANSWER)
+            );
             let extra = replies.try_recv();
             assert!(
                 extra.is_err(),
@@ -517,7 +532,10 @@ async fn a_redirect_answer_is_a_tool_error_and_is_not_followed() {
         1,
         "one bounded GET: the redirect was not followed"
     );
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 // ─── The palette: supersession on first activity, the creation set ───────
@@ -622,7 +640,10 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
         1,
         "the gained tool ran against the forge"
     );
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// A created conversation's palette names exactly the registered set — the
@@ -733,7 +754,10 @@ async fn a_member_call_is_admitted_for_a_member_level_tool() {
     .await;
     assert!(executed.load(Ordering::SeqCst), "the admitted body ran");
     assert_eq!(field(&blocks[4], "content"), "the probe ran");
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// Admitted above the floor: an admin-summoned turn's call to an
@@ -784,7 +808,10 @@ async fn an_admin_summoned_turn_admits_an_admin_tool() {
         Some(blocks[2].id),
         "the call block anchors on the summoning message"
     );
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// Declined below the requirement: a member-summoned turn's call to an
@@ -844,7 +871,10 @@ async fn a_member_summoned_turn_declines_an_admin_tool() {
         !executed.load(Ordering::SeqCst),
         "declined means the body never ran"
     );
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// The narrated-turn absorbed shape the refuted walk escalated on: a
@@ -1091,7 +1121,10 @@ async fn a_resting_member_before_the_summons_lies_outside_the_interval() {
         Some(blocks[3].id),
         "the call anchors on the summons, past the resting member"
     );
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// The refinement's modal case (decision 0043, refined 2026-08-22): live
@@ -1501,12 +1534,10 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
             "the turn anchors on the propagating frontier, not on the \
              admin command"
         );
-        assert!(
-            executed.load(Ordering::SeqCst),
-            "the admitted admin body ran"
-        );
+        assert!(executed.load(Ordering::SeqCst), "the admin body ran");
         assert_eq!(field(&blocks[5], "content"), "the probe ran");
-        assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+        let closing = recv_reply(&mut replies).await.text;
+        assert_eq!(closing, assistant_core::disclosed(CLOSING_ANSWER));
     });
 }
 
@@ -1544,11 +1575,13 @@ async fn await_streaming_tail(store: &Store, conversation_id: i64) {
 
 /// Await the closing answer, consuming any narration texts delivered ahead
 /// of it — a finalized narration is an answer block like any other on the
-/// outbound edge.
+/// outbound edge. Matched by tail: whichever answer block delivered first
+/// carries the person's disclosure line, so the closing text may arrive
+/// bare or introduced.
 async fn recv_closing(
     replies: &mut tokio::sync::mpsc::UnboundedReceiver<assistant_core::OutboundReply>,
 ) {
-    while recv_reply(replies).await.text != CLOSING_ANSWER {}
+    while !recv_reply(replies).await.text.ends_with(CLOSING_ANSWER) {}
 }
 
 /// The tail-only stamp under mid-turn absorption, per decision 0021's
@@ -1703,7 +1736,10 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
         inbound(&key, ChannelKind::Direct, "42", "the first ask"),
     )
     .await;
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
     let settled = settle_shape(
         &fixture.store,
         receipt.conversation_id,
@@ -1833,7 +1869,10 @@ async fn the_wiki_lookup_reads_a_page_end_to_end() {
     let requests = host.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].path, "/wiki/halogenOS/android_manifest/Home.md");
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        assistant_core::disclosed(CLOSING_ANSWER)
+    );
 }
 
 /// The wiki failure paths: a missing page becomes the tool error naming
@@ -1896,7 +1935,10 @@ async fn a_missing_wiki_page_and_a_timeout_become_tool_errors() {
             expected,
             "the {case} path records its named tool error"
         );
-        assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+        assert_eq!(
+            recv_reply(&mut replies).await.text,
+            assistant_core::disclosed(CLOSING_ANSWER)
+        );
         let extra = replies.try_recv();
         assert!(
             extra.is_err(),

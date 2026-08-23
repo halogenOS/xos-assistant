@@ -566,8 +566,11 @@ Any one of these triggers a review, and none of them is optional:
   decision that changes the legitimate-interest analysis.
 - Any capability that touches a person's standing in the group — a real moderation
   decision above the report relay — which also reopens the EU AI Act risk
-  classification (deployer of a minimal-risk conversational system today; noted
-  2026-08-23).
+  classification (a minimal-risk conversational system today; noted 2026-08-23 as
+  deployer, corrected 2026-08-23 to provider: the assistant is assembled from a
+  general-purpose model, given its own purpose and put into service under the
+  operator's name, which is the provider role under the Article 50 guidelines. The
+  AI Act compliance record beside the privacy documents carries the analysis).
 - Twelve months since this date, with no other trigger.
 
 ## 12. Addendum, 2026-08-23: the report and the wiki fetch

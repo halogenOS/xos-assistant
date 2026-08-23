@@ -157,7 +157,11 @@ async fn the_process_answers_and_no_secret_reaches_the_store_or_a_log() {
 
     let sends = telegram.await_recorded("sendMessage", 1).await;
     assert_eq!(sends[0].body["chat_id"].as_i64(), Some(42));
-    assert_eq!(sends[0].body["text"].as_str(), Some(ANSWER));
+    assert_eq!(
+        sends[0].body["text"].as_str(),
+        Some(assistant_core::disclosed(ANSWER).as_str()),
+        "the person's first answer opens with the disclosure line"
+    );
     assert!(
         completions.hit_count() >= 1,
         "the answer must have come over the scripted completions wire"
@@ -262,7 +266,11 @@ async fn the_mirror_token_reaches_the_wire_and_no_artifact() {
         "the configured token flows to the mirror's authorization header"
     );
     let sends = telegram.await_recorded("sendMessage", 1).await;
-    assert_eq!(sends[0].body["text"].as_str(), Some(ANSWER));
+    assert_eq!(
+        sends[0].body["text"].as_str(),
+        Some(assistant_core::disclosed(ANSWER).as_str()),
+        "the person's first answer opens with the disclosure line"
+    );
 
     run.terminate();
     let status = run.wait_exit(STOP_BOUND).await;
@@ -331,7 +339,11 @@ async fn the_forge_endpoint_reaches_the_commit_lookup() {
         "the forge is asked unauthenticated"
     );
     let sends = telegram.await_recorded("sendMessage", 1).await;
-    assert_eq!(sends[0].body["text"].as_str(), Some(ANSWER));
+    assert_eq!(
+        sends[0].body["text"].as_str(),
+        Some(assistant_core::disclosed(ANSWER).as_str()),
+        "the person's first answer opens with the disclosure line"
+    );
 
     run.terminate();
     assert!(run.wait_exit(STOP_BOUND).await.success());
@@ -365,7 +377,11 @@ async fn the_configured_budget_limits_answers_through_the_binary() {
         &scratch.path("stderr.txt"),
     );
     let sends = telegram.await_recorded("sendMessage", 1).await;
-    assert_eq!(sends[0].body["text"].as_str(), Some(ANSWER));
+    assert_eq!(
+        sends[0].body["text"].as_str(),
+        Some(assistant_core::disclosed(ANSWER).as_str()),
+        "the person's first answer opens with the disclosure line"
+    );
 
     // The second ask from the same person crosses the one-answer budget.
     // Its processing is proven by the poll cycle: the poller confirms an
@@ -510,7 +526,11 @@ async fn the_direct_chat_switch_on_spelled_out_serves_direct_chats() {
 
     let sends = telegram.await_recorded("sendMessage", 1).await;
     assert_eq!(sends[0].body["chat_id"].as_i64(), Some(42));
-    assert_eq!(sends[0].body["text"].as_str(), Some(ANSWER));
+    assert_eq!(
+        sends[0].body["text"].as_str(),
+        Some(assistant_core::disclosed(ANSWER).as_str()),
+        "the person's first answer opens with the disclosure line"
+    );
 
     run.terminate();
     assert!(run.wait_exit(STOP_BOUND).await.success());

@@ -18,8 +18,8 @@ use assistant_core::{
 use serde_json::json;
 
 use crate::support::{
-    self, ToolScript, answer_to, channel, field, inbound, inbound_unaddressed, recv_reply,
-    settle_shape, tool_scripted_provider, with_command, with_username,
+    self, ToolScript, channel, field, inbound, inbound_unaddressed, recv_reply, settle_shape,
+    tool_scripted_provider, with_command, with_username,
 };
 
 /// The tables the no-write claim reads raw, one by one: the identity
@@ -1180,7 +1180,7 @@ async fn a_budget_silenced_sender_still_draws_the_rights_answer() {
     .await;
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        answer_to("the first ask spends the budget")
+        support::first_answer_to("the first ask spends the budget")
     );
     let receipt = support::ingest_recorded(
         &fixture.assistant,

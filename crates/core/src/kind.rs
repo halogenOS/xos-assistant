@@ -729,6 +729,34 @@ fn window_modifier(window_seconds: NonZeroU64) -> String {
     format!("-{window_seconds} seconds")
 }
 
+/// Every conversation this principal has a recorded message in — the
+/// person-keyed read behind the first-answer disclosure (decision 0078):
+/// the ledger is the memory of who was already introduced, and this names
+/// where to look. Joined by name to the framework's junction table, the
+/// deliberate coupling decision 0032 records; rides the same
+/// (principal id, addressed) index as the principal budget count.
+///
+/// # Errors
+///
+/// [`StoreError`] if the query fails or the store's actor has stopped.
+pub(crate) async fn conversations_of_principal(
+    tx: &StoreTx,
+    principal_id: i64,
+) -> Result<Vec<i64>, StoreError> {
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        let mut statement = conn.prepare(&format!(
+            "SELECT DISTINCT cb.conversation_id FROM {CHAT_MESSAGE_TABLE} m \
+             JOIN conversation_blocks cb ON cb.block_id = m.block_id \
+             WHERE m.{COLUMN_PRINCIPAL_ID} = ?1"
+        ))?;
+        let rows = statement
+            .query_map([principal_id], |row| row.get(0))?
+            .collect::<Result<Vec<i64>, _>>()?;
+        Ok(rows)
+    })
+    .await
+}
+
 /// The composed kind set the runtime is instantiated over: the framework's
 /// kinds through the delegate, the assistant's beside them.
 #[derive(Agency)]

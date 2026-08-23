@@ -336,7 +336,7 @@ async fn an_admission_inside_the_withdrawal_rest_resolves_authority_at_once() {
     assert_eq!(sends[0].body["chat_id"], json!(chat));
     assert_eq!(
         sends[0].body["text"],
-        json!(support::answer_to(&format!(
+        json!(support::first_answer_to(&format!(
             "@{} are you with us?",
             support::BOT_USERNAME
         ))),
@@ -404,7 +404,7 @@ async fn a_stranger_group_with_an_unreadable_admin_list_cannot_wedge_the_batch()
     assert_eq!(sends[0].body["chat_id"], json!(42));
     assert_eq!(
         sends[0].body["text"],
-        json!(support::answer_to("a direct message behind it")),
+        json!(support::first_answer_to("a direct message behind it")),
         "the direct message behind the stranger is answered"
     );
     let leaves = server.await_recorded("leaveChat", 1).await;

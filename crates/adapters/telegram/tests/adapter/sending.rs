@@ -11,8 +11,8 @@ use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    TempStateFile, answer_to, await_chat_messages, await_conversations, private_update,
-    recording_sleep, spawn_adapter, start_assistant,
+    TempStateFile, answer_to, await_chat_messages, await_conversations, first_answer_to,
+    private_update, recording_sleep, spawn_adapter, start_assistant,
 };
 
 /// Two rate-limited attempts, then success: each refusal hands its stated
@@ -33,7 +33,7 @@ async fn a_rate_limited_send_waits_the_stated_time_and_retries() {
     for send in &sends {
         assert_eq!(
             send.body["text"],
-            json!(answer_to("kept through the retries"))
+            json!(first_answer_to("kept through the retries"))
         );
     }
     assert_eq!(
@@ -69,7 +69,10 @@ async fn past_the_bound_the_reply_is_dropped_and_the_consumer_moves_on() {
     // wedge the consumer.
     server.push_update(private_update(2, 6, "after the drop"));
     let sends = server.await_recorded("sendMessage", 4).await;
-    assert_eq!(sends[3].body["text"], json!(answer_to("after the drop")));
+    assert_eq!(
+        sends[3].body["text"],
+        json!(first_answer_to("after the drop"))
+    );
     assert_eq!(sends[3].body["chat_id"], json!(6));
 }
 
@@ -96,7 +99,7 @@ async fn a_stated_wait_past_the_ceiling_drops_the_reply_without_waiting() {
     let sends = server.await_recorded("sendMessage", 2).await;
     assert_eq!(
         sends[1].body["text"],
-        json!(answer_to("after the refused wait"))
+        json!(first_answer_to("after the refused wait"))
     );
     assert_eq!(sends[1].body["chat_id"], json!(6));
     assert!(
@@ -191,7 +194,7 @@ async fn a_reply_past_the_message_cap_is_sent_in_chunks() {
     }
     assert_eq!(
         delivered,
-        answer_to(&long_ask),
+        first_answer_to(&long_ask),
         "the chunks concatenate to the whole reply, in order"
     );
 }
@@ -220,7 +223,7 @@ async fn a_failed_later_chunk_ends_the_reply_and_the_tail_is_never_sent() {
 
     // The first chunk delivered; the second was attempted and refused.
     let sends = server.await_recorded("sendMessage", 2).await;
-    let whole = answer_to(&long_ask);
+    let whole = first_answer_to(&long_ask);
     let head: String = sends
         .iter()
         .take(2)
@@ -242,6 +245,8 @@ async fn a_failed_later_chunk_ends_the_reply_and_the_tail_is_never_sent() {
     assert_eq!(
         sends[2].body["text"],
         json!(answer_to("after the cut")),
+        // Bare: the person's introduction was stored with the cut reply's
+        // first chunk, which did deliver.
         "the send after the failure is the next reply, not the dropped tail"
     );
 }
@@ -277,7 +282,7 @@ async fn the_chunk_cap_counts_utf16_units_not_characters() {
     }
     assert_eq!(
         delivered,
-        answer_to(&long_ask),
+        first_answer_to(&long_ask),
         "the chunks concatenate to the whole reply with no character torn apart"
     );
 }

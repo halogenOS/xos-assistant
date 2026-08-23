@@ -11,8 +11,8 @@ use serde_json::json;
 use crate::server::BotApiServer;
 use crate::support::{
     BOT_USERNAME, TempStateFile, answer_to, authorize_group, await_chat_messages,
-    await_conversations, group_update, mention_update, private_update, recording_sleep,
-    reply_to_bot_update, spawn_adapter, start_assistant,
+    await_conversations, first_answer_to, group_update, mention_update, private_update,
+    recording_sleep, reply_to_bot_update, spawn_adapter, start_assistant,
 };
 
 /// The identity comes before the first poll: while `getMe` fails, the
@@ -39,7 +39,7 @@ async fn no_poll_happens_before_the_identity_answers() {
     let sends = server.await_recorded("sendMessage", 1).await;
     assert_eq!(
         sends[0].body["text"],
-        json!(answer_to("queued behind the identity"))
+        json!(first_answer_to("queued behind the identity"))
     );
 }
 
@@ -64,15 +64,17 @@ async fn direct_mention_and_reply_to_assistant_are_each_answered() {
         .iter()
         .map(|send| send.body["text"].as_str().unwrap_or_default().to_owned())
         .collect();
-    assert!(texts.contains(&answer_to("the direct ask")));
+    assert!(texts.contains(&first_answer_to("the direct ask")));
     let mentioned = format!("@{BOT_USERNAME} the mentioned ask");
-    assert!(texts.contains(&answer_to(&mentioned)));
+    assert!(texts.contains(&first_answer_to(&mentioned)));
 
     // The reply-to-assistant shape, on the settled group: the reply opens a
     // fresh user group behind the stored answer, so the projected tail — and
     // with it the scripted answer — is the reply's own text.
     server.push_update(reply_to_bot_update(3, group, 6, "the replied ask"));
     let sends = server.await_recorded("sendMessage", 3).await;
+    // The same person's second answer arrives bare: the introduction
+    // already rode the mentioned ask's answer.
     assert_eq!(sends[2].body["text"], json!(answer_to("the replied ask")));
     assert_eq!(sends[2].body["chat_id"], json!(group));
 }
@@ -109,7 +111,7 @@ async fn an_unaddressed_group_message_rests_and_joins_the_next_context() {
     let sends = server.await_recorded("sendMessage", 1).await;
     assert_eq!(
         sends[0].body["text"],
-        json!(answer_to(&format!(
+        json!(first_answer_to(&format!(
             "a resting remark\n\n@{BOT_USERNAME} now a question"
         )))
     );
@@ -171,6 +173,6 @@ async fn a_failed_turn_sends_the_plain_notice_line_and_the_chat_recovers() {
     let sends = server.await_recorded("sendMessage", 2).await;
     assert_eq!(
         sends[1].body["text"],
-        json!(answer_to("the failing ask\n\nasking again"))
+        json!(first_answer_to("the failing ask\n\nasking again"))
     );
 }

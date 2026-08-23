@@ -15,7 +15,7 @@ use assistant_core::{Authority, ChannelKind, ErasureOutcome};
 use serde_json::json;
 
 use crate::support::{
-    self, answer_to, await_ledger, inbound, inbound_unaddressed, recv_reply, with_username,
+    self, await_ledger, first_answer_to, inbound, inbound_unaddressed, recv_reply, with_username,
 };
 
 /// One projected message rendered to its whole text, in either content mode
@@ -251,8 +251,9 @@ async fn the_handle_reaches_the_model_and_the_assistants_answer_stays_bare() {
     let first_answer = recv_reply(&mut replies).await;
     assert_eq!(
         first_answer.text,
-        answer_to("ada: where did the setting move?"),
-        "the scripted answer derives from the projected text, prefix included"
+        first_answer_to("ada: where did the setting move?"),
+        "the scripted answer derives from the projected text, prefix \
+         included — and the person's first answer opens with the line"
     );
 
     // The handleless sender's ask opens the second turn, whose request
@@ -284,9 +285,11 @@ async fn the_handle_reaches_the_model_and_the_assistants_answer_stays_bare() {
     assert!(
         turn_two.contains(&(
             MessageRole::Assistant,
-            answer_to("ada: where did the setting move?"),
+            first_answer_to("ada: where did the setting move?"),
         )),
-        "the assistant's own answer projects with no prefix: {turn_two:?}"
+        "the assistant's own answer projects with no speaker prefix, the \
+         stored introduction included — the model reads in its own history \
+         that this person was introduced: {turn_two:?}"
     );
     assert_eq!(
         turn_two.last().map(|(role, text)| (*role, text.as_str())),

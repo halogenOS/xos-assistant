@@ -53,6 +53,14 @@ pub fn answer_to(text: &str) -> String {
     format!("The scripted answer to: {text}")
 }
 
+/// The first answer a person is delivered, as the edge stores and sends it:
+/// the disclosure line, a blank line, then the scripted answer to the given
+/// text.
+#[must_use]
+pub fn first_answer_to(text: &str) -> String {
+    assistant_core::disclosed(&answer_to(text))
+}
+
 /// A file path for one test's store, deleted with its sidecar files when this
 /// value drops, so parallel tests never share a database and no run leaves
 /// litter.

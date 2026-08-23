@@ -9,7 +9,12 @@
 //! pins: the prompt's tool teaching with its verbatim relay, the six
 //! decision records, the erasure decision's idempotency refinement, the
 //! no-write amendment's second clause, every fixed line verbatim, and the
-//! four policy edits with the two assessment notes. Each pin reads the
+//! four policy edits with the two assessment notes — and the
+//! first-interaction-disclosure unit's AC4 pins: the prompt's honest-answer
+//! teaching, the operator's disclosure copy verbatim, the AI Act compliance
+//! record's role conclusion, obligations map, marking position and notes,
+//! the DPIA's dated role correction, and the unit's four decision records.
+//! Each pin reads the
 //! committed file the way the repository ships it, so a drifted edit fails
 //! loudly here.
 
@@ -484,4 +489,126 @@ fn the_four_privacy_drafts_carry_their_dated_report_updates() {
         records.contains("The group's administrators, via the group's moderation bot"),
         "the recipients table names the report event's recipients"
     );
+}
+
+// ─── The first-interaction disclosure unit's pins (AC4, 2026-08-23) ──────
+
+#[test]
+fn the_prompt_teaches_the_honest_ai_answer() {
+    let prompt = flattened(&repo_file("prompts/assistant.md"));
+    assert!(
+        prompt.contains("You are an AI system."),
+        "the prompt names what the assistant is"
+    );
+    assert!(
+        prompt.contains(
+            "When someone asks whether you are an AI, a bot, or a machine, say yes plainly \
+             and never claim to be human"
+        ),
+        "the prompt teaches the honest answer to the AI question"
+    );
+}
+
+#[test]
+fn the_disclosure_line_is_the_operators_copy_verbatim() {
+    assert_eq!(
+        assistant_core::DISCLOSURE_LINE,
+        "Hi, I'm Xenia, the halogenOS Assistant Bot, an AI system, made to assist members \
+         of the community."
+    );
+}
+
+#[test]
+fn the_compliance_record_carries_the_role_the_map_the_marking_position_and_the_notes() {
+    // Blockquote markers fold away so the quoted line reads contiguously.
+    let record = flattened(&repo_file("docs/compliance/ai-act.md").replace("\n> ", "\n"));
+
+    // The role conclusion with its grounds.
+    assert!(
+        record.contains("The operator is the **provider** of this AI system"),
+        "the record concludes the provider role"
+    );
+    assert!(
+        record.contains("third example"),
+        "the conclusion cites the guidelines' example"
+    );
+    assert!(
+        record.contains("Article 2(10)") && record.contains("Article 2(12)"),
+        "both scope exits are named and refused"
+    );
+
+    // The obligations map: minimal risk, article-cited.
+    assert!(
+        record.contains("Article 5 (prohibited practices): clear"),
+        "the prohibited practices are cleared by name"
+    );
+    assert!(
+        record.contains("no Annex III category")
+            || record.contains("matches no Annex III category"),
+        "the high-risk classes are excluded by Annex III"
+    );
+
+    // The disclosure duty and its discharge.
+    assert!(
+        record.contains("at the latest at the first interaction"),
+        "the duty's timing is stated"
+    );
+    assert!(
+        record.contains(&flattened(assistant_core::DISCLOSURE_LINE)),
+        "the record quotes the shipped line"
+    );
+
+    // The Article 50(2) marking position with its two notes.
+    assert!(
+        record.contains("Upstream marking relied on"),
+        "the marking position is the permitted reliance path"
+    );
+    assert!(
+        record.contains("Due-diligence check: pending the first live turn"),
+        "the reliance check is recorded as pending"
+    );
+    assert!(
+        record.contains("Sub-measure 1.1.2") && record.contains("200 tokens"),
+        "the practice bound is noted with its source"
+    );
+    assert!(
+        record.contains("public industry-standard detector"),
+        "the detection route is named"
+    );
+
+    // The gap analysis and the literacy note.
+    assert!(
+        record.contains("without signing the Code of Practice") && record.contains("para 148"),
+        "the gap analysis stands in place of accession"
+    );
+    assert!(
+        record.contains("Article 4: AI literacy") && record.contains("ongoing literacy record"),
+        "the literacy note names the repository's documents as the record"
+    );
+}
+
+#[test]
+fn the_dpia_role_correction_is_dated_and_the_units_decisions_are_recorded() {
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    assert!(
+        dpia.contains("noted 2026-08-23 as deployer, corrected 2026-08-23 to provider"),
+        "the role paragraph corrects deployer to provider with its dates"
+    );
+
+    for record in [
+        "docs/decisions/0078-the-first-answer-discloses-the-machine-from-the-ledgers-memory.md",
+        "docs/decisions/0079-the-disclosure-line-is-stored-into-the-answer-block.md",
+        "docs/decisions/0080-the-prompt-answers-the-ai-question-honestly.md",
+        "docs/decisions/0081-the-operator-is-the-ai-act-provider.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-23"),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
 }
