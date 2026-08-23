@@ -13,7 +13,7 @@ Germany
 
 Data protection enquiries: [privacy@halogenos.org](mailto:privacy@halogenos.org)
 
-**What we process, why, and on what basis**
+**Processing**
 
 **Messages**
 
@@ -34,7 +34,7 @@ report when a member asks for one.
 _Legal basis:_ Article 6(1)(f) GDPR, our legitimate interest in running an assistant in our
 own community groups. You can object at any time, see below.
 
-**Who wrote them**
+**Message author**
 
 We store your username, your display name and the numeric account identifier your chat
 platform assigns you, in tables of their own so that a deletion request can remove them. We
@@ -49,7 +49,7 @@ _Purpose:_ attributing messages, addressing you in an answer, letting the operat
 abuse, and making deletion possible at all.
 _Legal basis:_ Article 6(1)(f) GDPR.
 
-**What we send to the language model**
+**Language model**
 
 We send the conversation to a language model through a processor, and each request carries:
 
@@ -65,7 +65,7 @@ naming it.
 
 _Purpose and legal basis:_ as under Messages. The sending is how an answer gets written.
 
-**What we do not do**
+**Excluded uses**
 
 We show no advertising and run no analytics, tracking or profiling. We do not sell, rent or
 pass on what you write for marketing, and neither we nor our processor train a language
@@ -144,7 +144,7 @@ may ask you to show the request comes from that account, and nothing more. We an
 one month and charge nothing. A person answers mail; the commands are the one place a
 machine acts, and only on your own confirmed instruction.
 
-**Your right to object**
+**Objection**
 
 You can object at any time to any processing described here, for reasons that come from your
 own situation, by mail or with the commands above. We then stop unless we can show
@@ -152,7 +152,7 @@ compelling legitimate reasons that override your interests, rights and freedoms,
 the data for legal claims. In practice we weigh nothing: `/privacyout` stops collection from
 that moment, deletion removes what came before, and neither asks for a justification.
 
-**Right to lodge a complaint**
+**Complaint**
 
 You can complain to a supervisory authority, in particular where you live, where you work,
 or where the alleged infringement took place. The authority competent for us is:
