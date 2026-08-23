@@ -56,6 +56,21 @@ use crate::message::{OutboundReply, ReplyKind};
 pub const FAILURE_NOTICE: &str =
     "I could not finish that answer. Mention me or message me again and I will retry.";
 
+/// The fixed acknowledgment a rules change draws in the chat — deterministic
+/// product behavior, not a model answer, so the wording cannot drift
+/// (decided 2026-08-23). Delivered at most once per channel per
+/// acknowledgment window; a further delta inside the window appends its
+/// note silently.
+pub const RULES_ACKNOWLEDGMENT: &str =
+    "Rules noted. The assistant follows the pinned rules of this group.";
+
+/// What the privacy command's answer opens with when an address is
+/// configured; the address follows directly.
+pub const PRIVACY_ANSWER_LEAD: &str = "Privacy policy: ";
+
+/// The privacy command's answer when no address is configured.
+pub const PRIVACY_UNPUBLISHED: &str = "The privacy policy is not published yet.";
+
 /// The highest block id already accounted for, per conversation. Replies are
 /// read from the ledger, so the cursor is what keeps a re-read from
 /// repeating what this subscriber already delivered. Seeded from stored

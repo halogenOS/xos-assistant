@@ -195,16 +195,16 @@ async fn the_commit_lookup_decodes_the_forge_answer() {
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
             &channel("dm-commit"),
             ChannelKind::Direct,
             "42",
             "what changed?",
-        ))
-        .await
-        .expect("the question ingests");
+        ),
+    )
+    .await;
     let blocks = settle_shape(
         &fixture.store,
         receipt.conversation_id,
@@ -293,16 +293,16 @@ async fn the_release_lookup_decodes_the_mirror_answer_and_sends_the_token() {
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
             &channel("dm-release"),
             ChannelKind::Direct,
             "42",
             "what is the latest build?",
-        ))
-        .await
-        .expect("the question ingests");
+        ),
+    )
+    .await;
     let blocks = settle_shape(
         &fixture.store,
         receipt.conversation_id,
@@ -374,17 +374,11 @@ async fn an_absent_token_sends_no_header_and_the_default_is_the_latest_release()
         narration: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
-
-    fixture
-        .assistant
-        .ingest(inbound(
-            &channel("dm-latest"),
-            ChannelKind::Direct,
-            "42",
-            "latest?",
-        ))
-        .await
-        .expect("the question ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&channel("dm-latest"), ChannelKind::Direct, "42", "latest?"),
+    )
+    .await;
     assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
 
     let requests = mirror.requests();
@@ -457,16 +451,16 @@ async fn an_error_status_and_a_timeout_become_tool_errors_the_model_sees() {
             };
             let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
-            let receipt = fixture
-                .assistant
-                .ingest(inbound(
+            let receipt = support::ingest_recorded(
+                &fixture.assistant,
+                inbound(
                     &channel("dm-fail"),
                     ChannelKind::Direct,
                     "42",
                     "what changed?",
-                ))
-                .await
-                .expect("the question ingests");
+                ),
+            )
+            .await;
             let blocks = settle_shape(
                 &fixture.store,
                 receipt.conversation_id,
@@ -513,16 +507,16 @@ async fn a_redirect_answer_is_a_tool_error_and_is_not_followed() {
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
             &channel("dm-redirect"),
             ChannelKind::Direct,
             "42",
             "what changed?",
-        ))
-        .await
-        .expect("the question ingests");
+        ),
+    )
+    .await;
     let blocks = settle_shape(
         &fixture.store,
         receipt.conversation_id,
@@ -602,16 +596,16 @@ async fn a_conversation_without_a_palette_admits_no_tool_call() {
     let (fixture, mut replies) =
         assemble(store, provider, handle, tools, ProtectionConfig::default()).await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
             &channel("dm-pre-unit"),
             ChannelKind::Direct,
             "42",
             "what changed?",
-        ))
-        .await
-        .expect("the question ingests");
+        ),
+    )
+    .await;
     assert_eq!(receipt.conversation_id, conversation);
 
     let blocks = settle_shape(
@@ -655,26 +649,17 @@ async fn a_created_conversation_names_exactly_the_two_tools_direct_and_group_ali
         .await
         .expect("the outbound edge opens");
 
-    let direct = fixture
-        .assistant
-        .ingest(inbound(
-            &channel("dm-palette"),
-            ChannelKind::Direct,
-            "42",
-            "hello",
-        ))
-        .await
-        .expect("the direct message ingests");
-    let group = fixture
-        .assistant
-        .ingest(inbound(
-            &channel("room-palette"),
-            ChannelKind::Group,
-            "42",
-            "hello group",
-        ))
-        .await
-        .expect("the group message ingests");
+    let direct = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&channel("dm-palette"), ChannelKind::Direct, "42", "hello"),
+    )
+    .await;
+    let room = support::authorized_group(&fixture.assistant, "room-palette").await;
+    let group = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&room, ChannelKind::Group, "42", "hello group"),
+    )
+    .await;
     recv_reply(&mut replies).await;
     recv_reply(&mut replies).await;
 
@@ -734,16 +719,11 @@ async fn a_member_call_is_admitted_for_a_member_level_tool() {
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(
-            &channel("dm-member"),
-            ChannelKind::Direct,
-            "42",
-            "probe it",
-        ))
-        .await
-        .expect("the question ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&channel("dm-member"), ChannelKind::Direct, "42", "probe it"),
+    )
+    .await;
     let blocks = settle_shape(
         &fixture.store,
         receipt.conversation_id,
@@ -779,17 +759,17 @@ async fn an_admin_summoned_turn_admits_an_admin_tool() {
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound_as(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_as(
             &channel("dm-admin-summons"),
             ChannelKind::Direct,
             "boss",
             Authority::Admin,
             "probe it",
-        ))
-        .await
-        .expect("the summons ingests");
+        ),
+    )
+    .await;
     let blocks = settle_shape(
         &fixture.store,
         receipt.conversation_id,
@@ -830,16 +810,16 @@ async fn a_member_summoned_turn_declines_an_admin_tool() {
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
             &channel("dm-member-summons"),
             ChannelKind::Direct,
             "42",
             "probe it",
-        ))
-        .await
-        .expect("the summons ingests");
+        ),
+    )
+    .await;
     let blocks = settle_shape(
         &fixture.store,
         receipt.conversation_id,
@@ -892,13 +872,13 @@ async fn an_admin_absorbed_mid_narration_cannot_escalate_a_member_summons() {
         narration: Some("One moment.".into()),
     };
     let (fixture, mut replies) = tool_fixture(script, Some(hold.clone()), tools).await;
-    let key = channel("room-narrated-absorption");
+    let key = support::authorized_group(&fixture.assistant, "room-narrated-absorption").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "m", "the summons"))
-        .await
-        .expect("the summons ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "m", "the summons"),
+    )
+    .await;
     let conv = receipt.conversation_id;
 
     // The narration is mid-stream — the ledger's tail is the streaming
@@ -906,17 +886,17 @@ async fn an_admin_absorbed_mid_narration_cannot_escalate_a_member_summons() {
     // call block exists.
     hold.started().await;
     await_streaming_tail(&fixture.store, conv).await;
-    fixture
-        .assistant
-        .ingest(inbound_as(
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_as(
             &key,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "an admin mid-turn",
-        ))
-        .await
-        .expect("the mid-turn absorption ingests");
+        ),
+    )
+    .await;
     hold.release();
 
     let blocks = settle_shape(
@@ -984,35 +964,30 @@ async fn an_addressed_member_absorbed_between_rounds_lowers_an_admin_summons() {
         },
     ];
     let (fixture, mut replies) = round_fixture(rounds, Arc::clone(&hold), tools).await;
-    let key = channel("room-window-absorption");
+    let key = support::authorized_group(&fixture.assistant, "room-window-absorption").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound_as(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_as(
             &key,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "the summons",
-        ))
-        .await
-        .expect("the summons ingests");
+        ),
+    )
+    .await;
     let conv = receipt.conversation_id;
 
     // The narration finalized, the call not yet inserted: the ledger's
     // tail is the finalized text when the member message is absorbed.
     hold.started().await;
     await_tail(&fixture.store, conv, "the finalized narration", "text").await;
-    fixture
-        .assistant
-        .ingest(inbound(
-            &key,
-            ChannelKind::Group,
-            "m",
-            "a member in the window",
-        ))
-        .await
-        .expect("the in-window absorption ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "m", "a member in the window"),
+    )
+    .await;
     hold.release();
 
     let blocks = settle_shape(
@@ -1070,32 +1045,32 @@ async fn a_resting_member_before_the_summons_lies_outside_the_interval() {
         narration: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
-    let key = channel("room-pre-summons-member");
+    let key = support::authorized_group(&fixture.assistant, "room-pre-summons-member").await;
 
     // The resting member: recorded before the summons, unaddressed,
     // summoning nothing.
-    let receipt = fixture
-        .assistant
-        .ingest(inbound_unaddressed(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(
             &key,
             ChannelKind::Group,
             "m",
             "a bystander before the summons",
-        ))
-        .await
-        .expect("the resting message ingests");
+        ),
+    )
+    .await;
     let conv = receipt.conversation_id;
-    fixture
-        .assistant
-        .ingest(inbound_as(
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_as(
             &key,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "probe it",
-        ))
-        .await
-        .expect("the summons ingests");
+        ),
+    )
+    .await;
 
     let blocks = settle_shape(
         &fixture.store,
@@ -1144,19 +1119,19 @@ async fn unaddressed_bystanders_absorbed_mid_turn_contribute_nothing() {
         narration: Some("One moment.".into()),
     };
     let (fixture, mut replies) = tool_fixture(script, Some(hold.clone()), tools).await;
-    let key = channel("room-bystanders");
+    let key = support::authorized_group(&fixture.assistant, "room-bystanders").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound_as(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_as(
             &key,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "probe it",
-        ))
-        .await
-        .expect("the summons ingests");
+        ),
+    )
+    .await;
     let conv = receipt.conversation_id;
 
     // The narration is mid-stream when the two bystander lines land,
@@ -1165,11 +1140,11 @@ async fn unaddressed_bystanders_absorbed_mid_turn_contribute_nothing() {
     hold.started().await;
     await_streaming_tail(&fixture.store, conv).await;
     for text in ["a bystander line", "another bystander line"] {
-        fixture
-            .assistant
-            .ingest(inbound_unaddressed(&key, ChannelKind::Group, "m", text))
-            .await
-            .expect("the bystander line ingests");
+        support::ingest_recorded(
+            &fixture.assistant,
+            inbound_unaddressed(&key, ChannelKind::Group, "m", text),
+        )
+        .await;
     }
     hold.release();
 
@@ -1229,19 +1204,19 @@ async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
         support::budgets(None, Some((1, 600))),
     )
     .await;
-    let key = channel("room-limited-line");
+    let key = support::authorized_group(&fixture.assistant, "room-limited-line").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound_as(
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_as(
             &key,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "probe it",
-        ))
-        .await
-        .expect("the summons ingests");
+        ),
+    )
+    .await;
     let conv = receipt.conversation_id;
 
     // The narration is mid-stream when the flooder's addressed line lands:
@@ -1249,16 +1224,16 @@ async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
     // is recorded limited.
     hold.started().await;
     await_streaming_tail(&fixture.store, conv).await;
-    fixture
-        .assistant
-        .ingest(inbound(
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
             &key,
             ChannelKind::Group,
             "m",
             "an addressed line past the budget",
-        ))
-        .await
-        .expect("the refused line ingests");
+        ),
+    )
+    .await;
     hold.release();
 
     let blocks = settle_shape(
@@ -1331,13 +1306,13 @@ async fn an_admin_absorbed_after_a_rounds_result_cannot_reanchor_the_turn() {
         },
     ];
     let (fixture, mut replies) = round_fixture(rounds, Arc::clone(&hold), tools).await;
-    let key = channel("room-post-result-absorption");
+    let key = support::authorized_group(&fixture.assistant, "room-post-result-absorption").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "m", "the summons"))
-        .await
-        .expect("the summons ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "m", "the summons"),
+    )
+    .await;
     let conv = receipt.conversation_id;
 
     // Round one is held before its trailing done: the call recorded, the
@@ -1346,17 +1321,17 @@ async fn an_admin_absorbed_after_a_rounds_result_cannot_reanchor_the_turn() {
     // continuation the close re-drives.
     hold.started().await;
     await_tail(&fixture.store, conv, "round one's result", "tool_result").await;
-    fixture
-        .assistant
-        .ingest(inbound_as(
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_as(
             &key,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "an admin after the result",
-        ))
-        .await
-        .expect("the post-result absorption ingests");
+        ),
+    )
+    .await;
     hold.release();
 
     let blocks = settle_shape(
@@ -1450,26 +1425,33 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
             Arc::new(EventBus::new()),
             support::registry_of(support::silent_provider()),
             tools,
-            support::binding(),
-            support::SYSTEM_PROMPT.into(),
-            ProtectionConfig::default(),
+            assistant_core::AssemblyConfig {
+                binding: support::binding(),
+                system_prompt: support::SYSTEM_PROMPT.into(),
+                protection: ProtectionConfig::default(),
+                operators: support::operator_config(),
+                privacy_policy_address: None,
+            },
         )
         .await
         .expect("the first assembly starts");
-        let receipt = assistant
-            .ingest(inbound_as(
+        support::authorize(&assistant, &key).await;
+        let receipt = support::ingest_recorded(
+            &assistant,
+            inbound_as(
                 &key,
                 ChannelKind::Group,
                 "boss",
                 Authority::Admin,
                 "probe it",
-            ))
-            .await
-            .expect("the command ingests");
-        assistant
-            .ingest(inbound_unaddressed(&key, ChannelKind::Group, "m", "lol"))
-            .await
-            .expect("the line on its heels ingests");
+            ),
+        )
+        .await;
+        support::ingest_recorded(
+            &assistant,
+            inbound_unaddressed(&key, ChannelKind::Group, "m", "lol"),
+        )
+        .await;
         // The premise: the line propagates the admin's debt, and its own
         // min-folded stamp — the ANSWERING fact — reads member.
         let messages = chat_messages(&store, receipt.conversation_id).await;
@@ -1594,30 +1576,30 @@ async fn an_absorbed_message_opens_a_fresh_debt_at_its_own_authority() {
         narration: Some("One moment.".into()),
     };
     let (fixture, mut replies) = tool_fixture(script, Some(hold.clone()), tools).await;
-    let key = channel("room-fresh-debt");
+    let key = support::authorized_group(&fixture.assistant, "room-fresh-debt").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "m", "the summons"))
-        .await
-        .expect("the summons ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "m", "the summons"),
+    )
+    .await;
     let conv = receipt.conversation_id;
 
     // The narration is mid-stream — the ledger's tail is the streaming
     // block — when the admin message is absorbed.
     hold.started().await;
     await_streaming_tail(&fixture.store, conv).await;
-    fixture
-        .assistant
-        .ingest(inbound_as(
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_as(
             &key,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "an admin mid-turn",
-        ))
-        .await
-        .expect("the mid-turn absorption ingests");
+        ),
+    )
+    .await;
     let absorbed = chat_messages(&fixture.store, conv).await;
     assert_eq!(absorbed.len(), 2, "the summons and the absorbed message");
     assert_eq!(absorbed[1].fields["answer_due"], json!(true));
@@ -1664,13 +1646,13 @@ async fn the_redispatch_window_dispatches_no_echo_turn() {
         },
     ];
     let (fixture, mut replies) = round_fixture(rounds, Arc::clone(&hold), tools).await;
-    let key = channel("room-redispatch-canary");
+    let key = support::authorized_group(&fixture.assistant, "room-redispatch-canary").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "m", "the summons"))
-        .await
-        .expect("the summons ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "m", "the summons"),
+    )
+    .await;
     let conv = receipt.conversation_id;
 
     // The narration finalized, the call not yet inserted: the ledger's
@@ -1678,16 +1660,11 @@ async fn the_redispatch_window_dispatches_no_echo_turn() {
     // the redispatch window.
     hold.started().await;
     await_tail(&fixture.store, conv, "the finalized narration", "text").await;
-    fixture
-        .assistant
-        .ingest(inbound(
-            &key,
-            ChannelKind::Group,
-            "n",
-            "a question in the window",
-        ))
-        .await
-        .expect("the in-window absorption ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "n", "a question in the window"),
+    )
+    .await;
     // Keep the window open long enough for a redispatched turn to reach
     // the provider before the release closes it — without the pause the
     // race is decided by scheduler timing and the echo shows up in only
@@ -1726,11 +1703,11 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
     .await;
     let key = channel("dm-budget");
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "42", "the first ask"))
-        .await
-        .expect("the first ask ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "42", "the first ask"),
+    )
+    .await;
     assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
     let settled = settle_shape(
         &fixture.store,
@@ -1750,11 +1727,11 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
 
     // The second ask crosses the one-answer budget: recorded, limited,
     // never summoning a turn — and therefore never a tool.
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "42", "the second ask"))
-        .await
-        .expect("the second ask ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "42", "the second ask"),
+    )
+    .await;
     let blocks = support::await_ledger(
         &fixture.store,
         receipt.conversation_id,

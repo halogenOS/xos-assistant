@@ -14,10 +14,12 @@
 
 use chrono::{DateTime, Utc};
 
-use assistant_core::{Authority, ChannelKey, ChannelKind, SenderIdentity};
+use assistant_core::{
+    Authority, ChannelKey, ChannelKind, InvokedCommand, Observation, ObservedFact, SenderIdentity,
+};
 
 use crate::ADAPTER_NAME;
-use crate::client::{BotIdentity, Incoming, Update};
+use crate::client::{BotIdentity, ChatInfo, Incoming, MemberState, MemberUpdate, Update};
 
 /// What one update translates to.
 pub(crate) enum Translation {
@@ -26,10 +28,13 @@ pub(crate) enum Translation {
     Skip(Skip),
     /// A message to record, pending authority resolution for groups.
     Record(Pending),
+    /// A platform fact for the core's observation surface: a pin event's
+    /// announcement text, or the assistant's own entry into a group.
+    Observe(Observation),
 }
 
 /// Every reason an update is skipped, each one a recorded decision or a
-/// well-formedness guard, so a log line names the case instead of a shrug.
+/// well-formedness check, so a log line names the case instead of a shrug.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Skip {
     /// The update carries no new message at all (decision 0017).
@@ -52,6 +57,21 @@ pub(crate) enum Skip {
     UnknownChatKind,
     /// A send time outside the representable range — a malformed update.
     BadTimestamp,
+    /// A pin whose content the platform withholds — the inaccessible form,
+    /// discriminated by its zero date. It yields no observation.
+    InaccessiblePin,
+    /// A pinned message with neither text nor caption; the rules contract
+    /// reads text, so there is nothing to report.
+    TextlessPin,
+    /// A pin service note outside a group; group facts belong to groups.
+    PinOutsideGroup,
+    /// A membership change outside a group — the platform fires the same
+    /// update for private blocks and unblocks, which are nobody's
+    /// invitation.
+    MembershipOutsideGroup,
+    /// A membership change that is not the assistant entering the group —
+    /// judged by membership, never by a literal status pair.
+    MembershipNotAnEntry,
 }
 
 /// One message ready for the core, minus the authority a group still owes.
@@ -72,6 +92,12 @@ pub(crate) struct Pending {
     /// it mentions the bot's username or replies to one of the bot's own
     /// messages. The core receives only this neutral fact.
     pub addressed: bool,
+    /// The command the message invokes, reported beside the text: the
+    /// leading command token, a self-directed handle suffix normalized
+    /// away. The text itself is never rewritten.
+    pub command: Option<InvokedCommand>,
+    /// What was said, verbatim — the ledger records what the person typed
+    /// (refined 2026-08-23).
     pub text: String,
     /// The platform's message id, the origin reference.
     pub origin: String,
@@ -82,6 +108,9 @@ pub(crate) struct Pending {
 /// Translate one update per the recorded decisions, resolving addressing
 /// against the bot's own identity.
 pub(crate) fn translate(update: &Update, me: &BotIdentity) -> Translation {
+    if let Some(member) = &update.my_chat_member {
+        return translate_membership(member);
+    }
     if update.edited_message.is_some() {
         return Translation::Skip(Skip::EditedMessage);
     }
@@ -94,6 +123,30 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity) -> Translation {
         "channel" => return Translation::Skip(Skip::ChannelBroadcast),
         _ => return Translation::Skip(Skip::UnknownChatKind),
     };
+    // The pin service note translates ahead of the on-behalf-of-chat skip:
+    // an anonymous-admin pin arrives exactly there, and the pin is the
+    // group's own fact, not a person's message.
+    if let Some(pinned) = &message.pinned_message {
+        if channel_kind != ChannelKind::Group {
+            return Translation::Skip(Skip::PinOutsideGroup);
+        }
+        if pinned.date == 0 {
+            return Translation::Skip(Skip::InaccessiblePin);
+        }
+        let text = pinned
+            .text
+            .as_deref()
+            .or(pinned.caption.as_deref())
+            .filter(|text| !text.is_empty());
+        let Some(text) = text else {
+            return Translation::Skip(Skip::TextlessPin);
+        };
+        return Translation::Observe(Observation {
+            channel: channel_key(message.chat.id),
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::PinnedAnnouncement(text.to_owned()),
+        });
+    }
     if message.sender_chat.is_some() {
         return Translation::Skip(Skip::OnBehalfOfChat);
     }
@@ -115,6 +168,7 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity) -> Translation {
         channel_kind,
         authority,
         addressed,
+        command: invoked_command(text, me),
         sender: SenderIdentity {
             external_id: from.id.to_string(),
             display_name: display_name(&from.first_name, from.last_name.as_deref()),
@@ -125,6 +179,119 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity) -> Translation {
         origin: message.message_id.to_string(),
         sent_at,
     })
+}
+
+/// Translate one membership update about the assistant itself: an entry
+/// into a group — from outside the member set to inside it, in any member
+/// shape the platform grants — becomes a membership observation carrying
+/// the acting principal. Everything else is a named skip: the platform
+/// fires the same update for private blocks and unblocks, and a departure
+/// is not an invitation.
+fn translate_membership(member: &MemberUpdate) -> Translation {
+    match member.chat.kind.as_str() {
+        "group" | "supergroup" => {}
+        _ => return Translation::Skip(Skip::MembershipOutsideGroup),
+    }
+    let was_in = member.old_chat_member.as_ref().is_some_and(is_in_chat);
+    let is_in = member.new_chat_member.as_ref().is_some_and(is_in_chat);
+    if was_in || !is_in {
+        return Translation::Skip(Skip::MembershipNotAnEntry);
+    }
+    Translation::Observe(Observation {
+        channel: channel_key(member.chat.id),
+        channel_kind: ChannelKind::Group,
+        fact: ObservedFact::Added {
+            by: member.from.as_ref().map(|from| SenderIdentity {
+                external_id: from.id.to_string(),
+                display_name: display_name(&from.first_name, from.last_name.as_deref()),
+                username: from.username.clone(),
+            }),
+        },
+    })
+}
+
+/// Whether one member state is inside the chat — membership, never a
+/// literal status pair: member, administrator and creator are in; the
+/// restricted form is in exactly when its own member flag says so; left
+/// and kicked — and any status outside the vocabulary — are out.
+fn is_in_chat(state: &MemberState) -> bool {
+    match state.status.as_str() {
+        "member" | "administrator" | "creator" => true,
+        "restricted" => state.is_member == Some(true),
+        _ => false,
+    }
+}
+
+/// What one first-contact lookup reports. A pin event outranks the
+/// lookup's pin (refined 2026-08-23): when the lookup runs because a pin
+/// event arrived, the event carries the authoritative text, and the
+/// lookup's by-sending-date pin would append stale rules and spend the
+/// acknowledgment on them — so that lookup reports the title only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LookupScope {
+    /// The title and the exposed pinned announcement.
+    Whole,
+    /// The title only; the caller's pin event carries the pinned text.
+    TitleOnly,
+}
+
+/// The observations one first-contact lookup yields: the chat's title, and
+/// — within [`LookupScope::Whole`] — the exposed pinned announcement where
+/// it is accessible and carries text. Pure translation of the lookup's
+/// answer; what either fact means is the core's contract.
+pub(crate) fn lookup_observations(
+    chat_id: i64,
+    info: &ChatInfo,
+    scope: LookupScope,
+) -> Vec<Observation> {
+    let mut observations = Vec::new();
+    if let Some(title) = info.title.as_deref().filter(|title| !title.is_empty()) {
+        observations.push(Observation {
+            channel: channel_key(chat_id),
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::Title(title.to_owned()),
+        });
+    }
+    if scope == LookupScope::Whole
+        && let Some(pinned) = &info.pinned_message
+        && pinned.date != 0
+        && let Some(text) = pinned
+            .text
+            .as_deref()
+            .or(pinned.caption.as_deref())
+            .filter(|text| !text.is_empty())
+    {
+        observations.push(Observation {
+            channel: channel_key(chat_id),
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::PinnedAnnouncement(text.to_owned()),
+        });
+    }
+    observations
+}
+
+/// The command a message invokes, read from a leading command token: the
+/// token as the invocation, with exactly the assistant's own handle suffix
+/// normalized away — case-insensitively on the handle, because the
+/// platform treats usernames so. A foreign handle reports nothing: that
+/// command was aimed at someone else. Only the first token is read, because
+/// the platform's command-at-a-bot form lives there. The text itself is
+/// NEVER rewritten (refined 2026-08-23): the ledger records what the
+/// person typed, and the core matches this report, not the text.
+fn invoked_command(text: &str, me: &BotIdentity) -> Option<InvokedCommand> {
+    if !text.starts_with('/') {
+        return None;
+    }
+    let token_end = text.find(char::is_whitespace).unwrap_or(text.len());
+    let token = &text[..token_end];
+    let Some(at) = token.find('@') else {
+        return Some(InvokedCommand::new(token));
+    };
+    let username = me.username.as_deref()?;
+    let handle = &token[at + 1..];
+    handle
+        .eq_ignore_ascii_case(username)
+        .then(|| InvokedCommand::new(&token[..at]))
 }
 
 /// The core-side key of one chat: the adapter's pinned name plus the chat
@@ -242,6 +409,13 @@ impl std::fmt::Display for Skip {
             Self::NoSender => "a message without a sending person",
             Self::UnknownChatKind => "a chat type outside the vocabulary",
             Self::BadTimestamp => "a send time outside the representable range",
+            Self::InaccessiblePin => "a pin whose content the platform withholds",
+            Self::TextlessPin => "a pinned message with neither text nor caption",
+            Self::PinOutsideGroup => "a pin service note outside a group",
+            Self::MembershipOutsideGroup => "a membership change outside a group",
+            Self::MembershipNotAnEntry => {
+                "a membership change that is not the assistant entering the group"
+            }
         };
         f.write_str(reason)
     }
@@ -250,7 +424,7 @@ impl std::fmt::Display for Skip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{Chat, Incoming, RepliedTo, Update, User};
+    use crate::client::{Chat, Incoming, PinnedContent, RepliedTo, Update, User};
 
     /// The bot identity the tests resolve addressing against.
     fn bot() -> BotIdentity {
@@ -276,8 +450,10 @@ mod tests {
                 text: Some("a message".into()),
                 caption: None,
                 reply_to_message: None,
+                pinned_message: None,
             }),
             edited_message: None,
+            my_chat_member: None,
         }
     }
 
@@ -286,6 +462,9 @@ mod tests {
             Translation::Record(pending) => pending,
             Translation::Skip(reason) => {
                 panic!("expected a recorded message, got a skip: {reason}")
+            }
+            Translation::Observe(_) => {
+                panic!("expected a recorded message, got an observation")
             }
         }
     }
@@ -319,8 +498,10 @@ mod tests {
                         username: None,
                     }),
                 }),
+                pinned_message: None,
             }),
             edited_message: None,
+            my_chat_member: None,
         }
     }
 
@@ -398,5 +579,329 @@ mod tests {
         }));
         assert_eq!(pending.sender.display_name, "Ada");
         assert_eq!(pending.sender.username, None);
+    }
+
+    // ─── Membership translation ──────────────────────────────────────────
+
+    /// One membership update: the assistant moved between the given member
+    /// states in a chat of the given kind, by actor 77.
+    fn membership(chat_kind: &str, old: Option<MemberState>, new: Option<MemberState>) -> Update {
+        Update {
+            id: 3,
+            message: None,
+            edited_message: None,
+            my_chat_member: Some(MemberUpdate {
+                chat: Chat {
+                    id: -200,
+                    kind: chat_kind.into(),
+                },
+                from: Some(User {
+                    id: 77,
+                    first_name: "Op".into(),
+                    last_name: None,
+                    username: None,
+                }),
+                old_chat_member: old,
+                new_chat_member: new,
+            }),
+        }
+    }
+
+    fn state(status: &str, is_member: Option<bool>) -> MemberState {
+        MemberState {
+            status: status.into(),
+            is_member,
+        }
+    }
+
+    fn observed_fact(update: &Update) -> ObservedFact {
+        match translate(update, &bot()) {
+            Translation::Observe(observation) => {
+                assert_eq!(observation.channel_kind, ChannelKind::Group);
+                observation.fact
+            }
+            Translation::Skip(reason) => panic!("expected an observation, got a skip: {reason}"),
+            Translation::Record(_) => panic!("expected an observation, got a recorded message"),
+        }
+    }
+
+    /// An entry is judged by membership, in every member shape the platform
+    /// grants: member, administrator, and restricted-but-in.
+    #[test]
+    fn every_member_shape_of_an_entry_translates_to_the_added_observation() {
+        for new in [
+            state("member", None),
+            state("administrator", None),
+            state("restricted", Some(true)),
+        ] {
+            let fact = observed_fact(&membership(
+                "supergroup",
+                Some(state("left", None)),
+                Some(new),
+            ));
+            let ObservedFact::Added { by } = fact else {
+                panic!("an entry translates to the membership fact");
+            };
+            assert_eq!(
+                by.expect("the acting principal is carried").external_id,
+                "77"
+            );
+        }
+    }
+
+    /// Transitions that are not the assistant entering — staying in,
+    /// leaving, or arriving restricted-but-out — are named skips, never a
+    /// status-pair match.
+    #[test]
+    fn a_non_entry_membership_transition_is_skipped() {
+        let cases = [
+            membership(
+                "group",
+                Some(state("member", None)),
+                Some(state("administrator", None)),
+            ),
+            membership(
+                "group",
+                Some(state("member", None)),
+                Some(state("left", None)),
+            ),
+            membership(
+                "group",
+                Some(state("kicked", None)),
+                Some(state("restricted", Some(false))),
+            ),
+            membership("group", None, None),
+        ];
+        for update in cases {
+            assert!(
+                matches!(
+                    translate(&update, &bot()),
+                    Translation::Skip(Skip::MembershipNotAnEntry)
+                ),
+                "a non-entry transition is the named skip"
+            );
+        }
+    }
+
+    /// A private-chat membership shape — the platform's block and unblock —
+    /// produces no observation, and neither does a broadcast channel's.
+    #[test]
+    fn a_private_membership_shape_produces_no_observation() {
+        for kind in ["private", "channel"] {
+            assert!(
+                matches!(
+                    translate(
+                        &membership(kind, Some(state("left", None)), Some(state("member", None))),
+                        &bot()
+                    ),
+                    Translation::Skip(Skip::MembershipOutsideGroup)
+                ),
+                "a {kind} membership change observes nothing"
+            );
+        }
+    }
+
+    // ─── Pin translation ─────────────────────────────────────────────────
+
+    /// One pin service message in the given chat kind, with the given
+    /// pinned payload; sent on behalf of the chat when `anonymous`.
+    fn pin(chat_kind: &str, pinned: PinnedContent, anonymous: bool) -> Update {
+        Update {
+            id: 4,
+            message: Some(Incoming {
+                message_id: 40,
+                date: 1_700_000_000,
+                chat: Chat {
+                    id: -300,
+                    kind: chat_kind.into(),
+                },
+                from: None,
+                sender_chat: anonymous.then(|| Chat {
+                    id: -300,
+                    kind: chat_kind.into(),
+                }),
+                text: None,
+                caption: None,
+                reply_to_message: None,
+                pinned_message: Some(pinned),
+            }),
+            edited_message: None,
+            my_chat_member: None,
+        }
+    }
+
+    fn pinned_text(text: Option<&str>, caption: Option<&str>, date: i64) -> PinnedContent {
+        PinnedContent {
+            date,
+            text: text.map(Into::into),
+            caption: caption.map(Into::into),
+        }
+    }
+
+    /// A group pin translates to the announcement observation — and an
+    /// anonymous-admin pin does too, because pin handling precedes the
+    /// on-behalf-of-chat skip, which is exactly where such a pin arrives.
+    #[test]
+    fn a_pin_translates_ahead_of_the_on_behalf_of_chat_skip() {
+        for anonymous in [false, true] {
+            let fact = observed_fact(&pin(
+                "group",
+                pinned_text(Some("Rules:\nBe kind."), None, 1_700_000_000),
+                anonymous,
+            ));
+            let ObservedFact::PinnedAnnouncement(text) = fact else {
+                panic!("a pin translates to the announcement fact");
+            };
+            assert_eq!(text, "Rules:\nBe kind.");
+        }
+    }
+
+    /// The withheld and empty pin forms are named skips: the inaccessible
+    /// form's zero-date discriminator, a pin with neither text nor caption,
+    /// and a pin outside a group.
+    #[test]
+    fn the_inaccessible_textless_and_direct_pin_forms_yield_no_observation() {
+        assert!(matches!(
+            translate(
+                &pin("group", pinned_text(Some("hidden"), None, 0), false),
+                &bot()
+            ),
+            Translation::Skip(Skip::InaccessiblePin)
+        ));
+        assert!(matches!(
+            translate(
+                &pin("group", pinned_text(None, None, 1_700_000_000), false),
+                &bot()
+            ),
+            Translation::Skip(Skip::TextlessPin)
+        ));
+        assert!(matches!(
+            translate(
+                &pin(
+                    "private",
+                    pinned_text(Some("a note"), None, 1_700_000_000),
+                    false
+                ),
+                &bot()
+            ),
+            Translation::Skip(Skip::PinOutsideGroup)
+        ));
+    }
+
+    /// A pinned media message's caption is the fallback text, mirroring the
+    /// message rule.
+    #[test]
+    fn a_pinned_caption_is_the_fallback_text() {
+        let fact = observed_fact(&pin(
+            "group",
+            pinned_text(None, Some("Rules:\nFrom a caption."), 1_700_000_000),
+            false,
+        ));
+        assert!(
+            matches!(fact, ObservedFact::PinnedAnnouncement(text) if text == "Rules:\nFrom a caption.")
+        );
+    }
+
+    // ─── The invoked-command report ──────────────────────────────────────
+
+    /// One recordable group update carrying exactly this text.
+    fn group_text_update(text: &str) -> Update {
+        group_update(text, None)
+    }
+
+    /// The text lands verbatim in every form, and the invocation travels
+    /// beside it: a bare leading command reports itself, the assistant's
+    /// own handle suffix is normalized out of the report case-insensitively,
+    /// and a foreign handle, a mid-text command or a non-command text
+    /// report nothing.
+    #[test]
+    fn the_text_stays_verbatim_and_the_invoked_command_is_reported_beside_it() {
+        let own = recorded(&group_text_update("/privacy@helper_bot"));
+        assert_eq!(
+            own.text, "/privacy@helper_bot",
+            "the text is never rewritten"
+        );
+        assert_eq!(own.command, Some(InvokedCommand::new("/privacy")));
+
+        let cased = recorded(&group_text_update("/privacy@Helper_Bot please"));
+        assert_eq!(cased.text, "/privacy@Helper_Bot please");
+        assert_eq!(cased.command, Some(InvokedCommand::new("/privacy")));
+
+        let bare = recorded(&group_text_update("/privacy"));
+        assert_eq!(bare.command, Some(InvokedCommand::new("/privacy")));
+
+        assert_eq!(
+            recorded(&group_text_update("/privacy@helper_bot2")).command,
+            None,
+            "a foreign handle reports no command"
+        );
+        assert_eq!(
+            recorded(&group_text_update("see /privacy@helper_bot")).command,
+            None,
+            "only a leading command token is read"
+        );
+        assert_eq!(
+            recorded(&group_text_update("mail a@helper_bot.example")).command,
+            None,
+            "a non-command text reports nothing"
+        );
+    }
+
+    /// The own-handle command form stays addressed: addressing is resolved
+    /// on the text as sent, where that form is a mention.
+    #[test]
+    fn the_own_handle_command_form_keeps_its_addressing() {
+        let pending = recorded(&group_text_update("/privacy@helper_bot"));
+        assert!(pending.addressed, "the command form addressed the bot");
+        assert_eq!(pending.command, Some(InvokedCommand::new("/privacy")));
+    }
+
+    // ─── The first-contact lookup's observations ─────────────────────────
+
+    /// The lookup yields the title and the accessible pinned text, and
+    /// withholds the inaccessible or textless pin while keeping the title.
+    #[test]
+    fn the_lookup_yields_title_and_accessible_pin_observations() {
+        let full = lookup_observations(
+            -300,
+            &ChatInfo {
+                title: Some("The kernel room".into()),
+                pinned_message: Some(pinned_text(Some("Rules:\nBe kind."), None, 1_700_000_000)),
+            },
+            LookupScope::Whole,
+        );
+        assert_eq!(full.len(), 2);
+        assert!(matches!(&full[0].fact, ObservedFact::Title(t) if t == "The kernel room"));
+        assert!(
+            matches!(&full[1].fact, ObservedFact::PinnedAnnouncement(t) if t == "Rules:\nBe kind.")
+        );
+        assert_eq!(full[0].channel.channel, "-300");
+
+        let withheld = lookup_observations(
+            -300,
+            &ChatInfo {
+                title: Some("The kernel room".into()),
+                pinned_message: Some(pinned_text(Some("hidden"), None, 0)),
+            },
+            LookupScope::Whole,
+        );
+        assert_eq!(withheld.len(), 1, "the inaccessible pin yields nothing");
+        assert!(matches!(&withheld[0].fact, ObservedFact::Title(_)));
+    }
+
+    /// The title-only scope withholds even an accessible pinned text: the
+    /// pin event that triggered the lookup carries the authoritative pin.
+    #[test]
+    fn the_title_only_scope_reports_the_title_and_never_the_lookups_pin() {
+        let title_only = lookup_observations(
+            -300,
+            &ChatInfo {
+                title: Some("The kernel room".into()),
+                pinned_message: Some(pinned_text(Some("Rules:\nThe stale rules."), None, 100)),
+            },
+            LookupScope::TitleOnly,
+        );
+        assert_eq!(title_only.len(), 1);
+        assert!(matches!(&title_only[0].fact, ObservedFact::Title(_)));
     }
 }

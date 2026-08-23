@@ -27,12 +27,14 @@ const FAKE_KEY: &str = "sk-or-FAKE-TEST-KEY-FOR-THE-LOOPBACK-SERVER";
 /// The one answer the scripted server streams for every completion request.
 const SERVER_ANSWER: &str = "The scripted provider answer.";
 
-/// One recorded completion request: the path asked and the authorization
-/// header presented.
+/// One recorded completion request: the path asked, the authorization
+/// header presented, and the decoded JSON body — what the wire-shape pins
+/// read the projected messages from.
 #[derive(Debug, Clone)]
 struct Hit {
     path: String,
     authorization: Option<String>,
+    body: serde_json::Value,
 }
 
 /// A chat-completions-shaped loopback server: answers every POST with one
@@ -57,7 +59,7 @@ async fn start_completions_server() -> (String, Arc<Mutex<Vec<Hit>>>) {
             tokio::spawn(async move {
                 let mut request = Vec::new();
                 let mut chunk = [0_u8; 4096];
-                let head = loop {
+                let (head, body_start) = loop {
                     let Ok(read) = stream.read(&mut chunk).await else {
                         return;
                     };
@@ -75,19 +77,19 @@ async fn start_completions_server() -> (String, Arc<Mutex<Vec<Hit>>>) {
                                     .then(|| value.trim().parse::<usize>().ok())?
                             })
                             .unwrap_or(0);
-                        // Drain the body so the peer finishes writing before
-                        // the response goes out.
-                        let mut have = request.len() - end - 4;
-                        while have < length {
+                        // Read the whole body in, so the peer finishes
+                        // writing before the response goes out and the hit
+                        // records what was asked.
+                        while request.len() < end + 4 + length {
                             let Ok(read) = stream.read(&mut chunk).await else {
                                 return;
                             };
                             if read == 0 {
                                 break;
                             }
-                            have += read;
+                            request.extend_from_slice(&chunk[..read]);
                         }
-                        break head;
+                        break (head, end + 4);
                     }
                 };
                 let path = head
@@ -101,9 +103,12 @@ async fn start_completions_server() -> (String, Arc<Mutex<Vec<Hit>>>) {
                     name.eq_ignore_ascii_case("authorization")
                         .then(|| value.trim().to_owned())
                 });
+                let body = serde_json::from_slice(&request[body_start..])
+                    .unwrap_or(serde_json::Value::Null);
                 recorded.lock().expect("the hit log locks").push(Hit {
                     path,
                     authorization,
+                    body,
                 });
                 let body = format!(
                     "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{SERVER_ANSWER}\"}}}}]}}\n\n\
@@ -143,15 +148,19 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
             Arc::new(EventBus::new()),
             Arc::new(providers),
             assistant_core::tools::ToolSet::new(),
-            ModelBinding {
-                provider_instance: "openrouter-1".into(),
-                provider_display_name: "OpenRouter".into(),
-                vendor: vendor.clone(),
-                model: "test-vendor/test-model".into(),
-                model_display_name: "Test Model".into(),
+            assistant_core::AssemblyConfig {
+                binding: ModelBinding {
+                    provider_instance: "openrouter-1".into(),
+                    provider_display_name: "OpenRouter".into(),
+                    vendor: vendor.clone(),
+                    model: "test-vendor/test-model".into(),
+                    model_display_name: "Test Model".into(),
+                },
+                system_prompt: support::SYSTEM_PROMPT.into(),
+                protection: assistant_core::ProtectionConfig::default(),
+                operators: support::operator_config(),
+                privacy_policy_address: None,
             },
-            support::SYSTEM_PROMPT.into(),
-            assistant_core::ProtectionConfig::default(),
         )
         .await
         .expect("the assembly starts over the real module");
@@ -159,11 +168,11 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
             .replies(support::ADAPTER)
             .await
             .expect("the outbound edge opens");
-
-        assistant
-            .ingest(inbound(&key, ChannelKind::Direct, "42", "ask the model"))
-            .await
-            .expect("the message ingests");
+        support::ingest_recorded(
+            &assistant,
+            inbound(&key, ChannelKind::Direct, "42", "ask the model"),
+        )
+        .await;
         let reply = recv_reply(&mut replies).await;
         assert_eq!(reply.kind, ReplyKind::Answer);
         assert_eq!(reply.text, SERVER_ANSWER);
@@ -214,4 +223,120 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
             "the key must not appear anywhere in the store file {path:?}"
         );
     }
+}
+
+/// AC4's wire half: a context note landing between two chat messages
+/// renders a wire shape the live provider module builds and completes a
+/// turn over — the note travels as its own system-voiced message after the
+/// first exchange, and the system prompt stays untouched ahead of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accepts() {
+    let (base, hits) = start_completions_server().await;
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let key = channel("group-noted-wire");
+
+    let mut providers = ProviderRegistry::new();
+    let provider = MemoryConfiguredProvider::new(&store, FAKE_KEY.into(), Some(base.clone())).await;
+    let vendor = agent_ledger::ProviderModule::type_id(&provider).to_owned();
+    providers.register(Box::new(provider));
+    let assistant = Assistant::start(
+        store.clone(),
+        Arc::new(EventBus::new()),
+        Arc::new(providers),
+        assistant_core::tools::ToolSet::new(),
+        assistant_core::AssemblyConfig {
+            binding: ModelBinding {
+                provider_instance: "openrouter-1".into(),
+                provider_display_name: "OpenRouter".into(),
+                vendor,
+                model: "test-vendor/test-model".into(),
+                model_display_name: "Test Model".into(),
+            },
+            system_prompt: support::SYSTEM_PROMPT.into(),
+            protection: assistant_core::ProtectionConfig::default(),
+            operators: support::operator_config(),
+            privacy_policy_address: None,
+        },
+    )
+    .await
+    .expect("the assembly starts over the real module");
+    let mut replies = assistant
+        .replies(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
+    support::authorize(&assistant, &key).await;
+
+    // First exchange, then the note, then the second ask.
+    support::ingest_recorded(
+        &assistant,
+        inbound(&key, ChannelKind::Group, "42", "the first ask"),
+    )
+    .await;
+    assert_eq!(recv_reply(&mut replies).await.text, SERVER_ANSWER);
+    assistant
+        .observe(assistant_core::Observation {
+            channel: key.clone(),
+            channel_kind: ChannelKind::Group,
+            fact: assistant_core::ObservedFact::PinnedAnnouncement("Rules:\nBe kind.".into()),
+        })
+        .await
+        .expect("the rules pin is judged");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&key, ChannelKind::Group, "42", "the second ask"),
+    )
+    .await;
+    let reply = recv_reply(&mut replies).await;
+    assert_eq!(reply.kind, ReplyKind::Answer);
+    assert_eq!(
+        reply.text, SERVER_ANSWER,
+        "the module completed the turn over the noted ledger"
+    );
+
+    // The second turn's wire body: the note is its own system message,
+    // after the first exchange and before the second ask, with the system
+    // prompt still leading.
+    let turn = recorded_turn(&hits, "the second ask");
+    assert_eq!(turn[0].0, "system", "the system prompt leads: {turn:?}");
+    assert!(turn[0].1.contains(support::SYSTEM_PROMPT));
+    let position = |role: &str, needle: &str| {
+        turn.iter()
+            .position(|(r, content)| r == role && content.contains(needle))
+            .unwrap_or_else(|| {
+                panic!("no {role} message carrying {needle:?} on the wire: {turn:?}")
+            })
+    };
+    let note_index = position("system", "The group's rules are now:\nBe kind.");
+    assert!(
+        position("user", "the first ask") < note_index
+            && note_index < position("user", "the second ask"),
+        "the note sits between the two chat messages: {turn:?}"
+    );
+}
+
+/// The recorded wire request whose messages carry the needle, as
+/// `(role, content)` pairs in wire order — the newest matching hit, so the
+/// pin reads the turn it names, not an earlier projection.
+fn recorded_turn(hits: &Arc<Mutex<Vec<Hit>>>, needle: &str) -> Vec<(String, String)> {
+    let recorded = hits.lock().expect("the hit log locks").clone();
+    recorded
+        .iter()
+        .rev()
+        .find_map(|hit| {
+            let messages = hit.body.get("messages")?.as_array()?;
+            let pairs: Vec<(String, String)> = messages
+                .iter()
+                .map(|message| {
+                    (
+                        message["role"].as_str().unwrap_or_default().to_owned(),
+                        message["content"].as_str().unwrap_or_default().to_owned(),
+                    )
+                })
+                .collect();
+            pairs
+                .iter()
+                .any(|(_, content)| content.contains(needle))
+                .then_some(pairs)
+        })
+        .expect("the named turn's request was recorded")
 }

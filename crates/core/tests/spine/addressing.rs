@@ -27,18 +27,13 @@ async fn an_unaddressed_message_rests_and_joins_the_next_context() {
         .replies(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
-    let key = channel("room-rest");
+    let key = support::authorized_group(&fixture.assistant, "room-rest").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound_unaddressed(
-            &key,
-            ChannelKind::Group,
-            "42",
-            "a resting remark",
-        ))
-        .await
-        .expect("the unaddressed message ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "42", "a resting remark"),
+    )
+    .await;
     let conv = receipt.conversation_id;
 
     // Recorded with the stamped facts, resting.
@@ -62,12 +57,13 @@ async fn an_unaddressed_message_rests_and_joins_the_next_context() {
     );
 
     // The addressed message that follows is answered, with the resting
+    // The addressed message that follows is answered, with the resting
     // remark in its projected context.
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "43", "the question"))
-        .await
-        .expect("the addressed message ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "43", "the question"),
+    )
+    .await;
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.text, answer_to("a resting remark\n\nthe question"));
     assert_eq!(reply.kind, ReplyKind::Answer);
@@ -92,11 +88,11 @@ async fn the_system_prompt_is_recorded_and_projected() {
         .expect("the outbound edge opens");
     let key = channel("dm-prompt");
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "42", "hello"))
-        .await
-        .expect("the message ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "42", "hello"),
+    )
+    .await;
     recv_reply(&mut replies).await;
 
     let blocks = fixture
@@ -145,11 +141,11 @@ async fn a_failed_turn_yields_one_notice_and_the_next_addressed_message_reengage
     let key = channel("dm-failure");
 
     fixture.script.fail_next_turns(1);
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "42", "the failing ask"))
-        .await
-        .expect("the message ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "42", "the failing ask"),
+    )
+    .await;
 
     let notice = recv_reply(&mut replies).await;
     assert_eq!(notice.kind, ReplyKind::Notice, "the notice is marked");
@@ -164,11 +160,11 @@ async fn a_failed_turn_yields_one_notice_and_the_next_addressed_message_reengage
     );
 
     // The next addressed message re-engages the latched conversation.
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "42", "asking again"))
-        .await
-        .expect("the re-engaging message ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "42", "asking again"),
+    )
+    .await;
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.kind, ReplyKind::Answer);
     assert_eq!(reply.text, answer_to("the failing ask\n\nasking again"));
@@ -186,27 +182,28 @@ async fn the_stamp_propagates_an_unanswered_debt_at_the_write() {
         Arc::new(EventBus::new()),
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
-        support::binding(),
-        support::SYSTEM_PROMPT.into(),
-        assistant_core::ProtectionConfig::default(),
+        assistant_core::AssemblyConfig {
+            binding: support::binding(),
+            system_prompt: support::SYSTEM_PROMPT.into(),
+            protection: assistant_core::ProtectionConfig::default(),
+            operators: support::operator_config(),
+            privacy_policy_address: None,
+        },
     )
     .await
     .expect("the assembly starts");
-    let key = channel("room-debt");
+    let key = support::authorized_group(&assistant, "room-debt").await;
 
-    let receipt = assistant
-        .ingest(inbound(&key, ChannelKind::Group, "42", "the addressed ask"))
-        .await
-        .expect("the addressed message ingests");
-    assistant
-        .ingest(inbound_unaddressed(
-            &key,
-            ChannelKind::Group,
-            "43",
-            "an aside on its heels",
-        ))
-        .await
-        .expect("the unaddressed message ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&key, ChannelKind::Group, "42", "the addressed ask"),
+    )
+    .await;
+    support::ingest_recorded(
+        &assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "43", "an aside on its heels"),
+    )
+    .await;
 
     let blocks = store
         .list_blocks(receipt.conversation_id)
@@ -241,26 +238,26 @@ async fn an_erased_tail_propagates_no_debt() {
         Arc::new(EventBus::new()),
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
-        support::binding(),
-        support::SYSTEM_PROMPT.into(),
-        assistant_core::ProtectionConfig::default(),
+        assistant_core::AssemblyConfig {
+            binding: support::binding(),
+            system_prompt: support::SYSTEM_PROMPT.into(),
+            protection: assistant_core::ProtectionConfig::default(),
+            operators: support::operator_config(),
+            privacy_policy_address: None,
+        },
     )
     .await
     .expect("the assembly starts");
-    let key = channel("room-erased-debt");
+    let key = support::authorized_group(&assistant, "room-erased-debt").await;
 
     // The answer stays withheld, so the addressed ask remains the tail,
     // stamped answer-due — then its sender is erased. The group conversation
     // survives the erasure; only the personal columns are nulled.
-    let receipt = assistant
-        .ingest(inbound(
-            &key,
-            ChannelKind::Group,
-            "42",
-            "the never-answered ask",
-        ))
-        .await
-        .expect("the addressed message ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&key, ChannelKind::Group, "42", "the never-answered ask"),
+    )
+    .await;
     let outcome = assistant
         .erase_principal(receipt.principal_id)
         .await
@@ -272,16 +269,11 @@ async fn an_erased_tail_propagates_no_debt() {
         },
         "a group conversation is kept, its sender's prose nulled"
     );
-
-    assistant
-        .ingest(inbound_unaddressed(
-            &key,
-            ChannelKind::Group,
-            "43",
-            "an aside after the erasure",
-        ))
-        .await
-        .expect("the unaddressed message ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "43", "an aside after the erasure"),
+    )
+    .await;
     let blocks = store
         .list_blocks(receipt.conversation_id)
         .await
@@ -310,13 +302,13 @@ async fn a_paid_debt_does_not_propagate() {
         .replies(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
-    let key = channel("room-paid");
+    let key = support::authorized_group(&fixture.assistant, "room-paid").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "42", "the answered ask"))
-        .await
-        .expect("the addressed message ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "42", "the answered ask"),
+    )
+    .await;
     recv_reply(&mut replies).await;
     support::settle(
         &fixture.store,
@@ -325,17 +317,11 @@ async fn a_paid_debt_does_not_propagate() {
         4,
     )
     .await;
-
-    fixture
-        .assistant
-        .ingest(inbound_unaddressed(
-            &key,
-            ChannelKind::Group,
-            "43",
-            "an aside after the answer",
-        ))
-        .await
-        .expect("the unaddressed message ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "43", "an aside after the answer"),
+    )
+    .await;
     let blocks = fixture
         .store
         .list_blocks(receipt.conversation_id)
@@ -357,23 +343,18 @@ async fn a_paid_debt_does_not_propagate() {
 async fn only_addressed_messages_emit_the_unlatch_intent() {
     let fixture = support::start_assistant(None).await;
     let mut events = fixture.bus.subscribe();
-    let key = channel("room-unlatch");
+    let key = support::authorized_group(&fixture.assistant, "room-unlatch").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound_unaddressed(
-            &key,
-            ChannelKind::Group,
-            "42",
-            "resting",
-        ))
-        .await
-        .expect("the unaddressed message ingests");
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "42", "addressed"))
-        .await
-        .expect("the addressed message ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "42", "resting"),
+    )
+    .await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "42", "addressed"),
+    )
+    .await;
 
     let mut unlatches = 0;
     while let Ok(event) = events.try_recv() {

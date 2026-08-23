@@ -57,7 +57,7 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
             assert_eq!(message.answer_due, Some(true));
             assert_eq!(message.awaiting(), Some(Awaiting::Model));
         }
-        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) => {
+        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) | AssistantKind::ContextNote(_) => {
             panic!("the assistant's kind resolved through the delegate")
         }
     }
@@ -74,11 +74,15 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         "a framework kind resolves through the delegate, untouched"
     );
 
-    assert_eq!(AssistantKind::DESCRIPTORS.len(), 2);
+    assert_eq!(AssistantKind::DESCRIPTORS.len(), 3);
     assert_eq!(AssistantKind::DESCRIPTORS[0].table, CHAT_MESSAGE_TABLE);
     assert_eq!(
         AssistantKind::DESCRIPTORS[1].table,
         assistant_core::tools::palette::TOOL_PALETTE_TABLE
+    );
+    assert_eq!(
+        AssistantKind::DESCRIPTORS[2].table,
+        assistant_core::note::CONTEXT_NOTE_TABLE
     );
     agent_ledger::agency::check_descriptor_durability::<AssistantKind>(AssistantKind::DESCRIPTORS)
         .expect("durable() and the descriptor's ephemerality are one fact");
@@ -114,7 +118,7 @@ fn resting_and_erased_messages_summon_no_turn() {
                 "a resting message still projects"
             );
         }
-        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) => {
+        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) | AssistantKind::ContextNote(_) => {
             panic!("the resting row resolved through the delegate")
         }
     }
@@ -153,7 +157,7 @@ fn resting_and_erased_messages_summon_no_turn() {
                 other => panic!("the erased parts carry one marker part, got {other:?}"),
             }
         }
-        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) => {
+        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) | AssistantKind::ContextNote(_) => {
             panic!("the erased row resolved through the delegate")
         }
     }
@@ -227,7 +231,7 @@ async fn a_file_backed_store_reopens_and_loads_the_stored_kind() {
                 Some("2026-08-21T00:00:00+00:00")
             );
         }
-        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) => {
+        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) | AssistantKind::ContextNote(_) => {
             panic!("the reopened row resolved through the delegate")
         }
     }

@@ -8,8 +8,8 @@ use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    self, TempStateFile, answer_to, await_chat_messages, await_conversations, date_of,
-    group_update, message_id_of, recording_sleep, spawn_adapter, start_assistant,
+    self, TempStateFile, answer_to, authorize_group, await_chat_messages, await_conversations,
+    date_of, group_update, message_id_of, recording_sleep, spawn_adapter, start_assistant,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -21,6 +21,7 @@ async fn a_group_message_round_trips_to_a_send() {
     // text keeps the mention, so the scripted answer derives from it too.
     let asked = format!("@{} What is the release cadence?", support::BOT_USERNAME);
     server.set_admins(chat, &[]);
+    authorize_group(&fixture.assistant, chat).await;
     server.push_update(group_update(1, chat, 7, &asked));
 
     let state = TempStateFile::new("e2e");

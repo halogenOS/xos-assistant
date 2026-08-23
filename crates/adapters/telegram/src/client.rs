@@ -86,6 +86,12 @@ pub(crate) struct SendError {
     pub error: ClientError,
 }
 
+/// The update types the poll consumes, named explicitly on every poll: an
+/// absent selection inherits whatever an earlier setting left on the token,
+/// so the selection is stated instead of assumed. Messages and their edits,
+/// and the assistant's own membership updates.
+pub(crate) const CONSUMED_UPDATE_TYPES: [&str; 3] = ["message", "edited_message", "my_chat_member"];
+
 /// One update, decoded into the minimal model this adapter reads. Unknown
 /// fields are ignored by the decoder, so the model stays exactly as small as
 /// the translation needs.
@@ -100,6 +106,8 @@ pub(crate) struct Update {
     /// An edit to an existing message — present so the edit skip is a named
     /// case instead of an anonymous non-message update.
     pub edited_message: Option<Incoming>,
+    /// A change to the assistant's own membership in a chat.
+    pub my_chat_member: Option<MemberUpdate>,
 }
 
 /// One incoming message, reduced to what translation reads.
@@ -120,6 +128,57 @@ pub(crate) struct Incoming {
     /// The message this one replies to, reduced to the author the
     /// reply-to-self addressing check reads.
     pub reply_to_message: Option<RepliedTo>,
+    /// The pinned message a pin service note points at, reduced to what the
+    /// pin observation reads. Present exactly on the pin service message.
+    pub pinned_message: Option<PinnedContent>,
+}
+
+/// A pinned message, reduced to its date discriminator and its text. The
+/// platform delivers a pin it withholds the content of in the inaccessible
+/// form, whose discriminator is a date of zero — such a pin yields no
+/// observation. The date decodes leniently on purpose: a payload without
+/// one reads as inaccessible instead of refusing the whole update batch.
+#[derive(Debug, Deserialize)]
+pub(crate) struct PinnedContent {
+    /// The pinned message's send date, unix seconds; zero is the
+    /// inaccessible form.
+    #[serde(default)]
+    pub date: i64,
+    pub text: Option<String>,
+    /// A pinned media message's caption, the fallback text.
+    pub caption: Option<String>,
+}
+
+/// One membership update about the assistant itself: which chat, who acted,
+/// and the member states before and after. The states decode leniently so a
+/// malformed update degrades to a skip instead of refusing the batch.
+#[derive(Debug, Deserialize)]
+pub(crate) struct MemberUpdate {
+    pub chat: Chat,
+    /// Who performed the change — the acting principal of a membership
+    /// observation.
+    pub from: Option<User>,
+    pub old_chat_member: Option<MemberState>,
+    pub new_chat_member: Option<MemberState>,
+}
+
+/// One side of a membership transition, reduced to what membership is
+/// judged by: the status string, and the restricted form's own member flag.
+#[derive(Debug, Deserialize)]
+pub(crate) struct MemberState {
+    pub status: String,
+    /// Whether a restricted member is still in the chat; the platform
+    /// carries it on the restricted form only.
+    pub is_member: Option<bool>,
+}
+
+/// What the channel lookup reads from one chat: the title and the exposed
+/// pinned announcement — the first-contact enrichment the adapter reports
+/// as observations.
+#[derive(Debug, Deserialize)]
+pub(crate) struct ChatInfo {
+    pub title: Option<String>,
+    pub pinned_message: Option<PinnedContent>,
 }
 
 /// The replied-to message, reduced to its author: addressing only asks
@@ -228,17 +287,51 @@ impl BotClient {
     }
 
     /// One long poll: every update at or past the offset, or an empty batch
-    /// when the poll times out quietly.
+    /// when the poll times out quietly. The consumed update types are named
+    /// on every poll ([`CONSUMED_UPDATE_TYPES`]): an absent selection would
+    /// inherit whatever an earlier setting left on the token.
     pub(crate) async fn get_updates(
         &self,
         offset: Option<i64>,
     ) -> Result<Vec<Update>, ClientError> {
-        let mut body = serde_json::json!({ "timeout": LONG_POLL_SECONDS });
+        let mut body = serde_json::json!({
+            "timeout": LONG_POLL_SECONDS,
+            "allowed_updates": CONSUMED_UPDATE_TYPES,
+        });
         if let Some(offset) = offset {
             body["offset"] = serde_json::json!(offset);
         }
         let response = self.request("getUpdates", &body, None).await?;
         self.decode(response).await
+    }
+
+    /// One chat's own facts — the first-contact lookup's wire call. The
+    /// wait ceiling applies because the lookup runs inside the sequential
+    /// batch, where an unbounded stated wait would park every later
+    /// update — and the caller treats any failure as best-effort, logged
+    /// and retried on the chat's next contact, so a ceiling refusal costs
+    /// nothing but the retry the lookup already has.
+    pub(crate) async fn get_chat(&self, chat_id: i64) -> Result<ChatInfo, ClientError> {
+        let body = serde_json::json!({ "chat_id": chat_id });
+        let response = self
+            .request("getChat", &body, Some(MAX_RATE_LIMIT_WAIT))
+            .await?;
+        self.decode(response).await
+    }
+
+    /// Leave one chat — what the core's withdraw directive maps to. A
+    /// failure is the caller's to log and leave to the authorization
+    /// check's self-healing: the group's next contact is refused and
+    /// re-directed all over again. The send ceiling applies because the
+    /// call runs inside the sequential batch, where an unbounded stated
+    /// wait would park every later update.
+    pub(crate) async fn leave_chat(&self, chat_id: i64) -> Result<(), ClientError> {
+        let body = serde_json::json!({ "chat_id": chat_id });
+        let response = self
+            .request("leaveChat", &body, Some(MAX_RATE_LIMIT_WAIT))
+            .await?;
+        let _left: serde_json::Value = self.decode(response).await?;
+        Ok(())
     }
 
     /// Send one reply's text to its chat. Text past the platform's message
@@ -286,12 +379,18 @@ impl BotClient {
     /// injectable sleep and the call retries, up to
     /// [`RATE_LIMIT_ATTEMPTS`] attempts in total; past the bound the call
     /// fails with [`ClientError::RateLimitedOut`]. The ceiling applies only
-    /// where a caller asks for it: the send holds a queue of pending replies
-    /// behind it, so a stated wait past [`MAX_RATE_LIMIT_WAIT`] fails the
-    /// send at once with [`ClientError::RateLimitWaitOverCeiling`], while
-    /// the poll and the administrator fetch park nothing and honor whatever
-    /// the limiter states — re-asking early would amplify the very load
-    /// being limited.
+    /// where a caller asks for it: the send holds a queue of pending
+    /// replies behind it, and the leave call and the first-contact lookup
+    /// run inside the sequential update batch, so for those a stated wait
+    /// past [`MAX_RATE_LIMIT_WAIT`] fails the call at once with
+    /// [`ClientError::RateLimitWaitOverCeiling`]. The callers that park
+    /// nothing honor whatever the limiter states: the identity fetch and
+    /// the poll, which run ahead of any batch with nothing queued behind
+    /// them, and the administrator fetch, whose failure leaves the message
+    /// authority-unresolved — for an admitted chat the core's transient
+    /// refusal halts the batch on it — so waiting the stated time is
+    /// strictly better than failing, and re-asking early would amplify the
+    /// very load being limited.
     async fn request(
         &self,
         method: &str,

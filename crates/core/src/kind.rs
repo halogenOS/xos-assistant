@@ -86,9 +86,11 @@ pub const COLUMN_DEBT_AUTHORITY: &str = "debt_authority";
 /// of the person's words, so the erasure's promise holds.
 pub const ERASED_MARKER: &str = "[message erased]";
 
-/// Which budget refused a message's own debt — the stored vocabulary of the
-/// limited stamp. The fact reads as "this message's own debt was refused";
-/// a true answer-due beside it is a propagated debt, not a contradiction.
+/// Why a message's own debt was never taken — the stored vocabulary of the
+/// limited stamp. The two budget kinds read as "this message's own debt was
+/// refused"; the command kind (added 2026-08-23) reads as "this message is
+/// a command and takes no debt by its nature". Under every kind, a true
+/// answer-due beside it is a propagated debt, not a contradiction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LimitedBy {
     /// The sender's own budget refused, counted globally across
@@ -96,13 +98,20 @@ pub enum LimitedBy {
     Principal,
     /// The conversation's budget refused.
     Channel,
+    /// The message is a command with a deterministic answer: it opens no
+    /// debt, counts against no answer window, and unlatches nothing — a
+    /// pending tail debt propagates past it exactly as past any non-owing
+    /// message.
+    Command,
 }
 
 impl LimitedBy {
     /// Every variant, in stored-encoding order — what closes the vocabulary
-    /// in the migration's CHECK constraint, so the constraint and this enum
-    /// cannot drift apart.
-    pub const ALL: [Self; 2] = [Self::Principal, Self::Channel];
+    /// in the widening migration's CHECK constraint, so the constraint and
+    /// this enum cannot drift apart. The protection unit's shipped step
+    /// quotes its own frozen two-kind list instead, per the appended-steps
+    /// discipline.
+    pub const ALL: [Self; 3] = [Self::Principal, Self::Channel, Self::Command];
 
     /// The stored encoding, a closed vocabulary.
     #[must_use]
@@ -110,6 +119,7 @@ impl LimitedBy {
         match self {
             Self::Principal => "principal",
             Self::Channel => "channel",
+            Self::Command => "command",
         }
     }
 
@@ -120,6 +130,7 @@ impl LimitedBy {
         match stored {
             "principal" => Some(Self::Principal),
             "channel" => Some(Self::Channel),
+            "command" => Some(Self::Command),
             _ => None,
         }
     }
@@ -574,6 +585,10 @@ pub enum AssistantKind {
     /// The conversation's tool admission record (the tools module owns the
     /// kind; it composes here so one parse path reads every block).
     ToolPalette(crate::tools::palette::ToolPalette),
+    /// A group's observed fact — its title or its rules (the note module
+    /// owns the kind; it composes here so one parse path reads every
+    /// block).
+    ContextNote(crate::note::ContextNote),
 }
 
 /// A text field read by column name from a loaded block's fields, absent when

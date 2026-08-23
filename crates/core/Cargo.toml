@@ -34,8 +34,10 @@ tracing = "0.1"
 
 # Test-only. The OpenRouter suite's scripted completions server is a plain
 # listener on the loopback interface written against tokio's own networking,
-# so it needs `net` and `io-util` and no new crate. Cargo unifies features
-# across a dependency graph, so these stay out of the library section.
+# so it needs `net` and `io-util` and no new crate; `test-util` is what the
+# window-expiry pins pause and advance the clock with. Cargo unifies
+# features across a dependency graph, so these stay out of the library
+# section.
 [dev-dependencies]
 tokio = { version = "1", features = [
     "io-util",
@@ -43,5 +45,6 @@ tokio = { version = "1", features = [
     "net",
     "rt-multi-thread",
     "sync",
+    "test-util",
     "time",
 ] }

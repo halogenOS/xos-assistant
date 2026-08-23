@@ -18,9 +18,12 @@ use agent_ledger::{
     Block, EventBus, LlmError, ProviderModule, ProviderRegistry, ProviderRequest, ProviderResponse,
     StopReason, Store, StoreError, StreamEvent,
 };
-use assistant_adapter_telegram::{Config, Sleep, TelegramAdapter};
+use assistant_adapter_telegram::{ADAPTER_NAME, Config, Sleep, TelegramAdapter};
 use assistant_core::schema::store_config;
-use assistant_core::{Assistant, ModelBinding};
+use assistant_core::{
+    Assistant, ChannelKey, ChannelKind, ModelBinding, Observation, ObserveOutcome, ObservedFact,
+    OperatorConfig, SenderIdentity,
+};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
@@ -51,6 +54,10 @@ pub const BOT_USERNAME: &str = "assistant_fixture_bot";
 /// talk to the loopback listener, and the token check (AC6) asserts this
 /// exact string reaches no log line.
 pub const TOKEN: &str = "0000000000:FAKE-TEST-TOKEN-FOR-THE-SCRIPTED-SERVER";
+
+/// The operator every test assembly is configured with — the platform user
+/// id whose adds admit groups.
+pub const OPERATOR_ID: i64 = 777_000;
 
 /// The answer the script streams for a turn whose newest projected message
 /// carries this text — derived from the request, so two chats' answers
@@ -122,6 +129,8 @@ pub const TOOL_CLOSING_ANSWER: &str = "The scripted closing answer.";
 /// the call-then-close shape.
 struct ScriptedChat {
     failures: Arc<AtomicUsize>,
+    /// Every turn request's projected messages, for the projection pins.
+    seen: Arc<Mutex<Vec<Vec<Message>>>>,
     tool_script: Option<ToolScript>,
 }
 
@@ -164,6 +173,7 @@ impl ProviderModule for ScriptedChat {
         let (request_tx, mut requests) = mpsc::unbounded_channel();
         let (response_tx, responses) = mpsc::unbounded_channel();
         let failures = Arc::clone(&self.failures);
+        let seen = Arc::clone(&self.seen);
         let tool_script = self.tool_script.clone();
         tokio::spawn(async move {
             let mut calls = 0_usize;
@@ -178,6 +188,9 @@ impl ProviderModule for ScriptedChat {
                     let _ = response_tx.send(ProviderResponse::Done);
                     continue;
                 }
+                seen.lock()
+                    .expect("the request log locks")
+                    .push(messages.clone());
                 if failures
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                         left.checked_sub(1)
@@ -295,6 +308,9 @@ pub struct Fixture {
     pub store: Store,
     /// How many upcoming turns fail with a scripted stream error.
     pub failures: Arc<AtomicUsize>,
+    /// Every turn request's projected messages, as the scripted provider
+    /// received them.
+    pub seen: Arc<Mutex<Vec<Vec<Message>>>>,
 }
 
 /// A loopback address nothing listens on: a tool constructed over it can be
@@ -322,9 +338,11 @@ pub async fn start_assistant_with_tools(
 ) -> Fixture {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let failures = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
     let mut providers = ProviderRegistry::new();
     providers.register(Box::new(ScriptedChat {
         failures: Arc::clone(&failures),
+        seen: Arc::clone(&seen),
         tool_script,
     }));
     let assistant = Assistant::start(
@@ -332,15 +350,19 @@ pub async fn start_assistant_with_tools(
         Arc::new(EventBus::new()),
         Arc::new(providers),
         tools,
-        ModelBinding {
-            provider_instance: "scripted-1".into(),
-            provider_display_name: "Scripted".into(),
-            vendor: VENDOR.into(),
-            model: "script-model".into(),
-            model_display_name: "Script Model".into(),
+        assistant_core::AssemblyConfig {
+            binding: ModelBinding {
+                provider_instance: "scripted-1".into(),
+                provider_display_name: "Scripted".into(),
+                vendor: VENDOR.into(),
+                model: "script-model".into(),
+                model_display_name: "Script Model".into(),
+            },
+            system_prompt: "You are the adapter suite's scripted assistant fixture.".into(),
+            protection: assistant_core::ProtectionConfig::default(),
+            operators: operator_config(),
+            privacy_policy_address: None,
         },
-        "You are the adapter suite's scripted assistant fixture.".into(),
-        assistant_core::ProtectionConfig::default(),
     )
     .await
     .expect("the assembly starts");
@@ -348,7 +370,98 @@ pub async fn start_assistant_with_tools(
         assistant: Arc::new(assistant),
         store,
         failures,
+        seen,
     }
+}
+
+/// The suite's operator wiring: [`OPERATOR_ID`] on this adapter.
+pub fn operator_config() -> OperatorConfig {
+    OperatorConfig {
+        by_adapter: std::collections::HashMap::from([(
+            ADAPTER_NAME.to_owned(),
+            OPERATOR_ID.to_string(),
+        )]),
+    }
+}
+
+/// The core-side key of one chat on this adapter — what the direct
+/// admission below and the ledger assertions name a chat by.
+#[must_use]
+pub fn chat_key(chat_id: i64) -> ChannelKey {
+    ChannelKey {
+        adapter: ADAPTER_NAME.into(),
+        channel: chat_id.to_string(),
+    }
+}
+
+/// Admit one group chat as the configured operator, through the core's own
+/// observation edge — the standing premise of every test that speaks in a
+/// group; the wire-driven admission pins push the membership update through
+/// the adapter instead.
+pub async fn authorize_group(assistant: &Assistant, chat_id: i64) {
+    let outcome = assistant
+        .observe(Observation {
+            channel: chat_key(chat_id),
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::Added {
+                by: Some(SenderIdentity {
+                    external_id: OPERATOR_ID.to_string(),
+                    display_name: "The Operator".into(),
+                    username: None,
+                }),
+            },
+        })
+        .await
+        .expect("the membership observation is judged");
+    assert_eq!(
+        outcome,
+        ObserveOutcome::Observed { deliver: None },
+        "the operator's add admits the group"
+    );
+}
+
+/// One membership update: the assistant moved between the given member
+/// statuses in the given chat, by the acting user.
+#[must_use]
+pub fn membership_update(
+    update_id: i64,
+    chat_kind: &str,
+    chat_id: i64,
+    actor_id: i64,
+    old_status: &str,
+    new_status: &str,
+) -> Value {
+    json!({
+        "update_id": update_id,
+        "my_chat_member": {
+            "chat": { "id": chat_id, "type": chat_kind },
+            "from": { "id": actor_id, "first_name": format!("Person {actor_id}") },
+            "date": date_of(update_id),
+            "old_chat_member": { "user": { "id": BOT_ID }, "status": old_status },
+            "new_chat_member": { "user": { "id": BOT_ID }, "status": new_status },
+        },
+    })
+}
+
+/// One pin service message: the chat's pinned announcement carrying the
+/// given text, pinned by the given user.
+#[must_use]
+pub fn pin_update(update_id: i64, chat_id: i64, pinner_id: i64, pinned_text: &str) -> Value {
+    json!({
+        "update_id": update_id,
+        "message": {
+            "message_id": message_id_of(update_id),
+            "date": date_of(update_id),
+            "chat": { "id": chat_id, "type": "group" },
+            "from": { "id": pinner_id, "first_name": format!("Person {pinner_id}") },
+            "pinned_message": {
+                "message_id": message_id_of(update_id) - 1,
+                "date": date_of(update_id) - 1,
+                "chat": { "id": chat_id, "type": "group" },
+                "text": pinned_text,
+            },
+        },
+    })
 }
 
 /// The running adapter, aborted when the guard drops so no test leaks a

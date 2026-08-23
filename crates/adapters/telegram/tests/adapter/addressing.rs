@@ -10,9 +10,9 @@ use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    BOT_USERNAME, TempStateFile, answer_to, await_chat_messages, await_conversations, group_update,
-    mention_update, private_update, recording_sleep, reply_to_bot_update, spawn_adapter,
-    start_assistant,
+    BOT_USERNAME, TempStateFile, answer_to, authorize_group, await_chat_messages,
+    await_conversations, group_update, mention_update, private_update, recording_sleep,
+    reply_to_bot_update, spawn_adapter, start_assistant,
 };
 
 /// The identity comes before the first poll: while `getMe` fails, the
@@ -51,6 +51,7 @@ async fn direct_mention_and_reply_to_assistant_are_each_answered() {
     let server = BotApiServer::start().await;
     let group = -400;
     server.set_admins(group, &[]);
+    authorize_group(&fixture.assistant, group).await;
     server.push_update(private_update(1, 5, "the direct ask"));
     server.push_update(mention_update(2, group, 6, "the mentioned ask"));
 
@@ -85,6 +86,7 @@ async fn an_unaddressed_group_message_rests_and_joins_the_next_context() {
     let server = BotApiServer::start().await;
     let group = -401;
     server.set_admins(group, &[]);
+    authorize_group(&fixture.assistant, group).await;
     server.push_update(group_update(1, group, 7, "a resting remark"));
 
     let state = TempStateFile::new("resting-group");
@@ -122,6 +124,7 @@ async fn a_trailing_unaddressed_message_does_not_cancel_the_owed_answer() {
     let server = BotApiServer::start().await;
     let group = -402;
     server.set_admins(group, &[]);
+    authorize_group(&fixture.assistant, group).await;
     server.push_update(mention_update(1, group, 7, "the owed ask"));
     server.push_update(group_update(2, group, 8, "an aside right behind it"));
 

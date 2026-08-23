@@ -120,6 +120,30 @@ impl Authority {
     }
 }
 
+/// The command a message invokes, as the adapter translated it: the leading
+/// command token of the text as sent, with a self-directed handle suffix
+/// normalized away — platform knowledge, resolved at the boundary. Which
+/// commands exist and what they answer stays the core's; the adapter only
+/// reports the invocation, and the core matches the reported command, never
+/// the stored text (refined 2026-08-23). A token aimed at a foreign handle
+/// is no invocation and reports nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvokedCommand(String);
+
+impl InvokedCommand {
+    /// The reported invocation, by its bare command token.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
+    /// The bare command token, the assistant's own handle already stripped.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.0
+    }
+}
+
 /// One message on its way into the core.
 #[derive(Debug, Clone)]
 pub struct InboundMessage {
@@ -129,14 +153,25 @@ pub struct InboundMessage {
     pub channel_kind: ChannelKind,
     /// Who said it, as the adapter saw them.
     pub sender: SenderIdentity,
-    /// The sender's standing in the channel at receipt.
-    pub authority: Authority,
+    /// The sender's standing in the channel at receipt. `None` says the
+    /// adapter's authority source failed and the standing is unresolved —
+    /// delivered anyway, because admission is judged before authority
+    /// (refined 2026-08-23): an unadmitted group is refused with the
+    /// withdraw directive without this field ever being read, and an
+    /// admitted message with no authority is refused with the typed
+    /// transient [`crate::CoreError::AuthorityUnresolved`], never recorded
+    /// with a default.
+    pub authority: Option<Authority>,
     /// Whether the message addresses the assistant. What "addressed" means on
     /// a platform — a direct chat, a mention of the assistant, a reply to one
     /// of its messages — is platform knowledge the adapter resolves; the core
     /// receives only the neutral fact and stores it on the message block.
     pub addressed: bool,
-    /// What was said.
+    /// The command the message invokes, as the adapter reports it beside
+    /// the addressed flag — the core matches this, never the text.
+    pub command: Option<InvokedCommand>,
+    /// What was said, verbatim: the ledger records what the person typed,
+    /// never a rewritten form (refined 2026-08-23).
     pub text: String,
     /// The platform's own id for the message, opaque, kept for later reply
     /// threading.
@@ -145,6 +180,111 @@ pub struct InboundMessage {
     /// block, so the ledger keeps both times: the platform's send time from
     /// this field, and the store's own insertion time on the block header.
     pub timestamp: DateTime<Utc>,
+}
+
+/// One platform-neutral observation on its way into the core: a fact about
+/// a channel, read from the channel itself — never configuration. The
+/// observation surface judges it against the stored facts and answers with
+/// an [`ObserveOutcome`]; everything deterministic it decides rides that
+/// return, never the event edge (decided 2026-08-23).
+#[derive(Debug, Clone)]
+pub struct Observation {
+    /// The channel the fact is about.
+    pub channel: ChannelKey,
+    /// Whether the channel names a person or a group — checked against the
+    /// stored mapping exactly as ingestion checks it.
+    pub channel_kind: ChannelKind,
+    /// The observed fact itself.
+    pub fact: ObservedFact,
+}
+
+/// What one observation reports.
+#[derive(Debug, Clone)]
+pub enum ObservedFact {
+    /// The channel's title, as the platform shows it.
+    Title(String),
+    /// The text of the channel's pinned announcement — the one the
+    /// platform's lookup exposes, or the one a pin event names. Whether it
+    /// is the group's rules is the core's contract, never the adapter's.
+    PinnedAnnouncement(String),
+    /// The assistant itself entered the channel's member set.
+    Added {
+        /// The acting principal — who admitted the assistant, as the
+        /// adapter saw them. Absence fails closed: an add nobody is named
+        /// for is nobody's invitation.
+        by: Option<SenderIdentity>,
+    },
+}
+
+/// One deterministic item a call returns for the adapter to deliver on the
+/// channel — typed by what it is, so an adapter can present the kinds
+/// differently without reading the text. The core still supplies the exact
+/// wording for both, because wording is behavior and behavior stays out of
+/// adapters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryItem {
+    /// The rules acknowledgment: a rules note was appended outside the
+    /// acknowledgment window.
+    Acknowledgment(String),
+    /// A command's fixed answer — the privacy command's, in this unit.
+    CommandAnswer(String),
+}
+
+impl DeliveryItem {
+    /// The delivered text, whichever kind carries it.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Acknowledgment(text) | Self::CommandAnswer(text) => text,
+        }
+    }
+}
+
+/// What one observation call comes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObserveOutcome {
+    /// The observation was judged against the stored facts; a delta
+    /// appended its note, an unchanged fact appended nothing.
+    Observed {
+        /// The item the adapter delivers on the channel — the rules
+        /// acknowledgment, when a rules note was appended outside the
+        /// acknowledgment window. `None` says nothing.
+        deliver: Option<DeliveryItem>,
+    },
+    /// Refused fail-closed: the channel is a group the operator never
+    /// admitted, or the membership observation named no admissible adder.
+    /// Nothing touched the ledger; the adapter performs the withdrawal.
+    Withdraw,
+}
+
+/// What one ingestion call comes to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IngestOutcome {
+    /// The message was recorded on the ledger.
+    Recorded {
+        /// The ids the write resolved on the way in.
+        receipt: IngestReceipt,
+        /// The item the adapter delivers on the channel — the privacy
+        /// command's answer. `None` says nothing.
+        deliver: Option<DeliveryItem>,
+    },
+    /// Refused fail-closed: the channel is a group the operator never
+    /// admitted. Nothing touched the ledger; the adapter performs the
+    /// withdrawal.
+    Withdraw,
+}
+
+/// What one accepted ingestion reports back: the ids the core resolved on
+/// the way in. The principal id is the handle a later
+/// [`crate::Assistant::erase_principal`] call needs, so an operator surface
+/// built on the adapter has a lawful path to it without reading the core's
+/// tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IngestReceipt {
+    /// The principal the sender resolved or created.
+    pub principal_id: i64,
+    /// The conversation the message was recorded in.
+    pub conversation_id: i64,
 }
 
 /// What one outbound item is: the assistant's own prose, or the core's

@@ -70,11 +70,7 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
     let mut message = inbound(&key, ChannelKind::Direct, "42", "What is the plan?");
     message.origin = Some("origin-7".into());
     let sent_at = message.timestamp.to_rfc3339();
-    let receipt = fixture
-        .assistant
-        .ingest(message)
-        .await
-        .expect("the message ingests");
+    let receipt = support::ingest_recorded(&fixture.assistant, message).await;
 
     let conversations = fixture
         .store
@@ -127,7 +123,7 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
                 "the ledger records the platform's send time, not its own clock"
             );
         }
-        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) => {
+        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) | AssistantKind::ContextNote(_) => {
             panic!("the stored row resolved through the delegate")
         }
     }
@@ -211,31 +207,31 @@ async fn two_channels_stay_two_conversations() {
         .await
         .expect("the outbound edge opens");
 
-    let key_one = channel("room-1");
-    let key_two = channel("room-2");
-    fixture
-        .assistant
-        .ingest(inbound(
+    let key_one = support::authorized_group(&fixture.assistant, "room-1").await;
+    let key_two = support::authorized_group(&fixture.assistant, "room-2").await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
             &key_one,
             ChannelKind::Group,
             "42",
             "the first channel's question",
-        ))
-        .await
-        .expect("the first message ingests");
+        ),
+    )
+    .await;
     // The second channel's message arrives from an admin, so the stored
     // authority below is provably each message's own, not a constant.
-    fixture
-        .assistant
-        .ingest(support::inbound_as(
+    support::ingest_recorded(
+        &fixture.assistant,
+        support::inbound_as(
             &key_two,
             ChannelKind::Group,
             "42",
             Authority::Admin,
             "the second channel's question",
-        ))
-        .await
-        .expect("the second message ingests");
+        ),
+    )
+    .await;
 
     // Two replies arrive, in whichever order the two conversations finished,
     // each carrying its OWN channel's answer under its own key.
@@ -328,22 +324,21 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
         .replies(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
-    let key = channel("room-9");
-
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "42", "message one"))
-        .await
-        .expect("message one ingests");
+    let key = support::authorized_group(&fixture.assistant, "room-9").await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "42", "message one"),
+    )
+    .await;
     let turn = hold.started().await;
     assert_eq!(turn, 1, "message one opened the first turn");
 
     // The stream is open and held. The mid-turn arrival:
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "43", "message two"))
-        .await
-        .expect("message two ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "43", "message two"),
+    )
+    .await;
     let conversations = fixture
         .store
         .list_conversations()
@@ -386,11 +381,11 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
 
     // The next appended message opens the next turn, and the absorbed
     // message joins that turn's projected context.
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "42", "message three"))
-        .await
-        .expect("message three ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "42", "message three"),
+    )
+    .await;
     let turn = hold.started().await;
     assert_eq!(turn, 2, "message three opened the second turn");
     hold.release();
@@ -445,16 +440,11 @@ fn a_restarted_process_answers_a_known_channel() {
             .replies(support::ADAPTER)
             .await
             .expect("the outbound edge opens");
-        fixture
-            .assistant
-            .ingest(inbound(
-                &key,
-                ChannelKind::Direct,
-                "42",
-                "the first question",
-            ))
-            .await
-            .expect("the first message ingests");
+        support::ingest_recorded(
+            &fixture.assistant,
+            inbound(&key, ChannelKind::Direct, "42", "the first question"),
+        )
+        .await;
         let reply = recv_reply(&mut replies).await;
         assert_eq!(reply.text, answer_to("the first question"));
     });
@@ -470,16 +460,16 @@ fn a_restarted_process_answers_a_known_channel() {
             .replies(support::ADAPTER)
             .await
             .expect("the outbound edge reopens");
-        fixture
-            .assistant
-            .ingest(inbound(
+        support::ingest_recorded(
+            &fixture.assistant,
+            inbound(
                 &key,
                 ChannelKind::Direct,
                 "42",
                 "the question after the restart",
-            ))
-            .await
-            .expect("the message after the restart ingests");
+            ),
+        )
+        .await;
 
         let reply = recv_reply(&mut replies).await;
         assert_eq!(reply.channel, key);

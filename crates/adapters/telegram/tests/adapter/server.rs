@@ -55,6 +55,14 @@ enum AdminScript {
     Failing,
 }
 
+/// What the chat lookup answers for one chat: its title and, optionally,
+/// its exposed pinned message as `(date, text)` — a zero date scripts the
+/// inaccessible form.
+pub struct ChatScript {
+    pub title: Option<String>,
+    pub pinned: Option<(i64, String)>,
+}
+
 #[derive(Default)]
 struct ServerState {
     /// The bot identity `getMe` answers, `(id, username)`. `None` scripts
@@ -68,6 +76,11 @@ struct ServerState {
     send_scripts: Mutex<VecDeque<SendScript>>,
     poll_scripts: Mutex<VecDeque<RateLimited>>,
     admins: Mutex<HashMap<i64, AdminScript>>,
+    /// The chat lookup's script per chat; an unscripted chat answers a
+    /// scripted failure, so a test that says nothing about the lookup
+    /// exercises the retried-on-next-contact path and keeps its ledger
+    /// free of notes.
+    chats: Mutex<HashMap<i64, ChatScript>>,
 }
 
 /// The running scripted server. Dropping it stops accepting; the per-test
@@ -150,6 +163,22 @@ impl BotApiServer {
             .lock()
             .expect("the admin scripts lock")
             .insert(chat_id, AdminScript::List(list));
+    }
+
+    /// Script one chat's lookup answer: its title and, optionally, its
+    /// pinned message as `(date, text)`.
+    pub fn set_chat_info(&self, chat_id: i64, title: &str, pinned: Option<(i64, &str)>) {
+        self.state
+            .chats
+            .lock()
+            .expect("the chat scripts lock")
+            .insert(
+                chat_id,
+                ChatScript {
+                    title: Some(title.to_owned()),
+                    pinned: pinned.map(|(date, text)| (date, text.to_owned())),
+                },
+            );
     }
 
     /// Script one chat's administrator list to fail until re-scripted.
@@ -369,6 +398,7 @@ async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16
                 }
             }
         }
+        "getChat" => chat_info_answer(state, &body),
         "getChatAdministrators" => {
             let chat_id = body["chat_id"].as_i64().unwrap_or_default();
             let admins = state.admins.lock().expect("the admin scripts lock");
@@ -387,7 +417,37 @@ async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16
                 None => (200, json!({ "ok": true, "result": [] })),
             }
         }
+        // Every other method — the leave call above all — succeeds plainly;
+        // the recorded request is what the assertions read.
         _ => (200, json!({ "ok": true, "result": true })),
+    }
+}
+
+/// The chat lookup's answer from the script: the chat's facts, or the
+/// scripted failure an unscripted chat draws.
+fn chat_info_answer(state: &Arc<ServerState>, body: &Value) -> (u16, Value) {
+    let chat_id = body["chat_id"].as_i64().unwrap_or_default();
+    let chats = state.chats.lock().expect("the chat scripts lock");
+    match chats.get(&chat_id) {
+        Some(script) => {
+            let mut result = json!({ "id": chat_id, "type": "group" });
+            if let Some(title) = &script.title {
+                result["title"] = json!(title);
+            }
+            if let Some((date, text)) = &script.pinned {
+                result["pinned_message"] = json!({
+                    "message_id": 1,
+                    "date": date,
+                    "chat": { "id": chat_id, "type": "group" },
+                    "text": text,
+                });
+            }
+            (200, json!({ "ok": true, "result": result }))
+        }
+        None => (
+            500,
+            json!({ "ok": false, "description": "scripted lookup failure" }),
+        ),
     }
 }
 

@@ -49,36 +49,39 @@ async fn an_erased_principal_id_is_never_reissued() {
     let fixture = support::start_assistant(None).await;
     let assistant = &fixture.assistant;
     let store = &fixture.store;
-
-    assistant
-        .ingest(support::inbound(
+    support::ingest_recorded(
+        assistant,
+        support::inbound(
             &support::channel("dm-a"),
             ChannelKind::Direct,
             "A",
             "a direct question from A",
-        ))
-        .await
-        .expect("the direct message from A ingests");
-    let receipt_b = assistant
-        .ingest(support::inbound(
+        ),
+    )
+    .await;
+    let receipt_b = support::ingest_recorded(
+        assistant,
+        support::inbound(
             &support::channel("dm-b"),
             ChannelKind::Direct,
             "B",
             "a direct question from B",
-        ))
-        .await
-        .expect("the direct message from B ingests");
+        ),
+    )
+    .await;
     // B also spoke in a group, so blocks carrying B's principal id survive
     // the erasure — the retention that makes id reuse dangerous at all.
-    let receipt_group = assistant
-        .ingest(support::inbound(
-            &support::channel("room-reissue"),
+    let reissue_room = support::authorized_group(assistant, "room-reissue").await;
+    let receipt_group = support::ingest_recorded(
+        assistant,
+        support::inbound(
+            &reissue_room,
             ChannelKind::Group,
             "B",
             "a group question from B",
-        ))
-        .await
-        .expect("the group message from B ingests");
+        ),
+    )
+    .await;
     // Every turn settles before the erasure, so no stream is open while the
     // direct conversation under it goes away.
     support::settle(store, receipt_b.conversation_id, "B's direct turn", 4).await;
@@ -95,15 +98,16 @@ async fn an_erased_principal_id_is_never_reissued() {
     );
 
     // A new sender arrives after the erasure and must get a fresh id.
-    let receipt_c = assistant
-        .ingest(support::inbound(
+    let receipt_c = support::ingest_recorded(
+        assistant,
+        support::inbound(
             &support::channel("dm-c"),
             ChannelKind::Direct,
             "C",
             "a direct question from C",
-        ))
-        .await
-        .expect("the direct message from C ingests");
+        ),
+    )
+    .await;
     assert_ne!(
         receipt_c.principal_id, receipt_b.principal_id,
         "the erased id is reissued: the erased sender's retained blocks would \
@@ -128,17 +132,18 @@ struct Staged {
 async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
     let assistant = &fixture.assistant;
     let store = &fixture.store;
-    let group = support::channel("room-1");
+    let group = support::authorized_group(assistant, "room-1").await;
 
-    let receipt_a = assistant
-        .ingest(support::inbound(
+    let receipt_a = support::ingest_recorded(
+        assistant,
+        support::inbound(
             &support::channel("dm-a"),
             ChannelKind::Direct,
             "A",
             "first direct question",
-        ))
-        .await
-        .expect("the direct message from A ingests");
+        ),
+    )
+    .await;
     support::settle(
         store,
         receipt_a.conversation_id,
@@ -147,25 +152,22 @@ async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
     )
     .await;
 
-    let receipt_b = assistant
-        .ingest(support::inbound(
+    let receipt_b = support::ingest_recorded(
+        assistant,
+        support::inbound(
             &support::channel("dm-b"),
             ChannelKind::Direct,
             "B",
             "second direct question",
-        ))
-        .await
-        .expect("the direct message from B ingests");
-    let conv_group = assistant
-        .ingest(support::inbound(
-            &group,
-            ChannelKind::Group,
-            "A",
-            "a group question from A",
-        ))
-        .await
-        .expect("the group message from A ingests")
-        .conversation_id;
+        ),
+    )
+    .await;
+    let conv_group = support::ingest_recorded(
+        assistant,
+        support::inbound(&group, ChannelKind::Group, "A", "a group question from A"),
+    )
+    .await
+    .conversation_id;
     support::settle(
         store,
         receipt_b.conversation_id,
@@ -174,15 +176,11 @@ async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
     )
     .await;
     support::settle(store, conv_group, "the first group turn", 4).await;
-    assistant
-        .ingest(support::inbound(
-            &group,
-            ChannelKind::Group,
-            "B",
-            "a group question from B",
-        ))
-        .await
-        .expect("the group message from B ingests");
+    support::ingest_recorded(
+        assistant,
+        support::inbound(&group, ChannelKind::Group, "B", "a group question from B"),
+    )
+    .await;
     support::settle(store, conv_group, "the second group turn", 6).await;
 
     Staged {
