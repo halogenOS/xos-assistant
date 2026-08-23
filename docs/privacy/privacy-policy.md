@@ -1,7 +1,5 @@
 # Privacy policy: the halogenOS Group Assistant
 
-**Draft, not yet published.**
-
 Date: 2026-08-23
 
 The halogenOS Group Assistant is a bot in the halogenOS community chat groups. It answers
