@@ -220,8 +220,9 @@ pub(crate) struct User {
 }
 
 /// The bot's own identity, from `getMe`: what mention and reply-to-self
-/// resolution compare against. Fetched before the first poll; no message is
-/// translated without it.
+/// resolution compare against, and — since unit 14 — where the embedder
+/// reads the display name the assistant's name defaults to. Fetched before
+/// the first poll; no message is translated without it.
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct BotIdentity {
     /// The bot's own user id — what a reply's author is compared to.
@@ -230,6 +231,11 @@ pub(crate) struct BotIdentity {
     /// for every bot, but the decoder keeps it optional so a malformed
     /// answer degrades to mention-blindness instead of refusing to decode.
     pub username: Option<String>,
+    /// The bot's display name — the platform requires one, but the decoder
+    /// keeps it optional so a malformed answer degrades instead of
+    /// refusing to decode; the embedder's startup read refuses loudly on
+    /// its own when the default it needs is absent.
+    pub first_name: Option<String>,
 }
 
 /// One entry of a chat's administrator list: who, with which status string.

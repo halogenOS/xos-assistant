@@ -90,8 +90,9 @@ pub(crate) struct Pending {
     pub sender_id: i64,
     /// Whether the message addresses the assistant — platform knowledge,
     /// resolved here: a direct chat always does; a group message does when
-    /// it mentions the bot's username or replies to one of the bot's own
-    /// messages. The core receives only this neutral fact.
+    /// it mentions the bot's username, replies to one of the bot's own
+    /// messages, or names the assistant by its validated wake trigger
+    /// (unit 14). The core receives only this neutral fact.
     pub addressed: bool,
     /// What the message replies to, translated beside the addressed flag
     /// (2026-08-23): the replied-to message's id as the opaque origin, or
@@ -113,8 +114,9 @@ pub(crate) struct Pending {
 }
 
 /// Translate one update per the recorded decisions, resolving addressing
-/// against the bot's own identity.
-pub(crate) fn translate(update: &Update, me: &BotIdentity) -> Translation {
+/// against the bot's own identity and the validated wake trigger, if one
+/// stands ([`wake_trigger`]).
+pub(crate) fn translate(update: &Update, me: &BotIdentity, wake: Option<&str>) -> Translation {
     if let Some(member) = &update.my_chat_member {
         return translate_membership(member);
     }
@@ -168,7 +170,11 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity) -> Translation {
     };
     let addressed = match channel_kind {
         ChannelKind::Direct => true,
-        ChannelKind::Group => mentions_bot(text, me) || replies_to_bot(message, me),
+        ChannelKind::Group => {
+            mentions_bot(text, me)
+                || replies_to_bot(message, me)
+                || wake.is_some_and(|trigger| names_bot(text, trigger))
+        }
     };
     Translation::Record(Pending {
         chat_id: message.chat.id,
@@ -325,6 +331,52 @@ pub(crate) fn message_id_of(origin: &str) -> Option<i64> {
     origin.parse().ok()
 }
 
+/// The configured name as a usable wake trigger, lowercased for the
+/// case-insensitive match (unit 14): the trimmed name, accepted exactly
+/// when every character is alphanumeric or an underscore — the shapes
+/// whole-word matching can bound. A name outside that alphabet — spaces,
+/// punctuation, an empty trim — yields no trigger; the caller logs the
+/// fallback to mention-and-reply once at startup.
+pub(crate) fn wake_trigger(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    let clean = !trimmed.is_empty() && trimmed.chars().all(|c| c.is_alphanumeric() || c == '_');
+    clean.then(|| trimmed.to_lowercase())
+}
+
+/// Whether the text names the assistant: the validated wake trigger as one
+/// whole word, case-insensitively — a longer word merely containing the
+/// name is someone or something else. The comparison runs over the
+/// lowercased text against the already-lowercased trigger, so the word
+/// boundaries are judged in one casing.
+fn names_bot(text: &str, trigger: &str) -> bool {
+    let lowered = text.to_lowercase();
+    let mut from = 0;
+    while let Some(position) = lowered[from..].find(trigger) {
+        let start = from + position;
+        let end = start + trigger.len();
+        let bounded_left = lowered[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_word_char(c));
+        let bounded_right = lowered[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !is_word_char(c));
+        if bounded_left && bounded_right {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// A word character for the name trigger's boundaries: alphanumeric in any
+/// script, or the underscore — wider than the platform's handle alphabet
+/// on purpose, because the name is the operator's word, not a handle.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
 /// Whether the text mentions the bot by username. A mention is `@` followed
 /// by exactly the bot's username as one whole handle token — the platform's
 /// handle alphabet is ASCII letters, digits and the underscore — compared
@@ -452,6 +504,7 @@ mod tests {
         BotIdentity {
             id: 4242,
             username: Some("helper_bot".into()),
+            first_name: Some("Fixture".into()),
         }
     }
 
@@ -479,7 +532,7 @@ mod tests {
     }
 
     fn recorded(update: &Update) -> Pending {
-        match translate(update, &bot()) {
+        match translate(update, &bot(), None) {
             Translation::Record(pending) => pending,
             Translation::Skip(reason) => {
                 panic!("expected a recorded message, got a skip: {reason}")
@@ -563,6 +616,64 @@ mod tests {
     fn group_addressing_reads_the_replied_author() {
         assert!(recorded(&group_update("thanks!", Some(4242))).addressed);
         assert!(!recorded(&group_update("thanks!", Some(9))).addressed);
+    }
+
+    /// The recorded message under the given wake trigger, for the name
+    /// rule's own table.
+    fn recorded_waked(update: &Update, wake: Option<&str>) -> Pending {
+        match translate(update, &bot(), wake) {
+            Translation::Record(pending) => pending,
+            Translation::Skip(reason) => {
+                panic!("expected a recorded message, got a skip: {reason}")
+            }
+            Translation::Observe(_) => {
+                panic!("expected a recorded message, got an observation")
+            }
+        }
+    }
+
+    /// The name rule (unit 14): the validated trigger addresses as one
+    /// whole word in any casing, at any position and against punctuation
+    /// boundaries; a longer word merely containing it does not, and
+    /// without a trigger the same naming text rests on mention-and-reply.
+    #[test]
+    fn group_addressing_reads_the_name_as_a_whole_word() {
+        let wake = wake_trigger("Xenia").expect("a clean name forms a trigger");
+        let addressed =
+            |text: &str| recorded_waked(&group_update(text, None), Some(&wake)).addressed;
+        assert!(addressed("Xenia, which kernel does it run?"));
+        assert!(addressed("does XENIA know this?"));
+        assert!(addressed("ask xenia."));
+        assert!(!addressed("the xenial release is old"));
+        assert!(!addressed("praxenia is someone else"));
+        assert!(!addressed("no name at all"));
+
+        assert!(
+            !recorded_waked(&group_update("Xenia, hello", None), None).addressed,
+            "without a trigger the naming text rests"
+        );
+        assert!(
+            recorded_waked(&group_update("hey @helper_bot", None), None).addressed,
+            "the mention stands with or without a trigger"
+        );
+    }
+
+    /// The trigger validation (unit 14): a trimmed alphanumeric-or-
+    /// underscore name lowercases into the trigger, and a name outside
+    /// that alphabet — spaces, punctuation, an empty trim — forms none:
+    /// the fallback to mention-and-reply the driver logs.
+    #[test]
+    fn a_name_outside_the_trigger_alphabet_forms_no_trigger() {
+        assert_eq!(wake_trigger("Xenia").as_deref(), Some("xenia"));
+        assert_eq!(wake_trigger("  Xenia  ").as_deref(), Some("xenia"));
+        assert_eq!(wake_trigger("helper_9").as_deref(), Some("helper_9"));
+        assert_eq!(
+            wake_trigger("XOS Assistant"),
+            None,
+            "a space bounds no one word"
+        );
+        assert_eq!(wake_trigger("X-9!"), None, "punctuation falls back");
+        assert_eq!(wake_trigger("   "), None, "an empty trim falls back");
     }
 
     /// The reply-target translation (2026-08-23): a reply to another
@@ -669,7 +780,7 @@ mod tests {
     }
 
     fn observed_fact(update: &Update) -> ObservedFact {
-        match translate(update, &bot()) {
+        match translate(update, &bot(), None) {
             Translation::Observe(observation) => {
                 assert_eq!(observation.channel_kind, ChannelKind::Group);
                 observation.fact
@@ -729,7 +840,7 @@ mod tests {
         for update in cases {
             assert!(
                 matches!(
-                    translate(&update, &bot()),
+                    translate(&update, &bot(), None),
                     Translation::Skip(Skip::MembershipNotAnEntry)
                 ),
                 "a non-entry transition is the named skip"
@@ -746,7 +857,8 @@ mod tests {
                 matches!(
                     translate(
                         &membership(kind, Some(state("left", None)), Some(state("member", None))),
-                        &bot()
+                        &bot(),
+                        None,
                     ),
                     Translation::Skip(Skip::MembershipOutsideGroup)
                 ),
@@ -818,14 +930,16 @@ mod tests {
         assert!(matches!(
             translate(
                 &pin("group", pinned_text(Some("hidden"), None, 0), false),
-                &bot()
+                &bot(),
+                None,
             ),
             Translation::Skip(Skip::InaccessiblePin)
         ));
         assert!(matches!(
             translate(
                 &pin("group", pinned_text(None, None, 1_700_000_000), false),
-                &bot()
+                &bot(),
+                None,
             ),
             Translation::Skip(Skip::TextlessPin)
         ));
@@ -836,7 +950,8 @@ mod tests {
                     pinned_text(Some("a note"), None, 1_700_000_000),
                     false
                 ),
-                &bot()
+                &bot(),
+                None,
             ),
             Translation::Skip(Skip::PinOutsideGroup)
         ));

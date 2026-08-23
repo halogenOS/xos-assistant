@@ -117,6 +117,91 @@ async fn an_unaddressed_group_message_rests_and_joins_the_next_context() {
     );
 }
 
+/// The name trigger over the wire (unit 14): a group message naming the
+/// assistant — its wake name as one whole word, in any casing — summons
+/// exactly one answer, while a longer word merely containing the name
+/// rests like any unaddressed remark.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_message_naming_the_assistant_summons_one_answer() {
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    let group = -405;
+    server.set_admins(group, &[]);
+    authorize_group(&fixture.assistant, group).await;
+    // The longer word rests; the lowercased whole-word name summons.
+    server.push_update(group_update(1, group, 7, "the fixtures are elsewhere"));
+    server.push_update(group_update(
+        2,
+        group,
+        7,
+        "fixture, which kernel does it run?",
+    ));
+
+    let state = TempStateFile::new("name-trigger");
+    let (sleep, _) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+
+    let sends = server.await_recorded("sendMessage", 1).await;
+    assert_eq!(
+        sends[0].body["text"],
+        json!(first_answer_to(
+            "the fixtures are elsewhere\n\nfixture, which kernel does it run?"
+        )),
+        "the naming message summons the turn; the longer word only rested \
+         into its context"
+    );
+    let conversation = await_conversations(&fixture.store, 1).await[0];
+    let messages = await_chat_messages(&fixture.store, conversation, 2).await;
+    assert_eq!(
+        messages[0].fields["addressed"],
+        json!(false),
+        "a longer word containing the name does not address"
+    );
+    assert_eq!(messages[1].fields["addressed"], json!(true));
+}
+
+/// The punctuated-name fallback over the wire (unit 14): a configured name
+/// that cannot form a clean trigger word wakes nothing — the naming text
+/// rests — while the mention keeps addressing exactly as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_punctuated_name_falls_back_to_mention_and_reply() {
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    let group = -406;
+    server.set_admins(group, &[]);
+    authorize_group(&fixture.assistant, group).await;
+    server.push_update(group_update(1, group, 7, "Fix ture! are you around?"));
+
+    let state = TempStateFile::new("punctuated-name");
+    let (sleep, _) = recording_sleep();
+    let _adapter = crate::support::spawn_adapter_named(
+        &server,
+        state.path(),
+        Arc::clone(&fixture.assistant),
+        sleep,
+        Some("Fix ture!"),
+    );
+
+    // Recorded, resting: no trigger formed, nothing was sent.
+    let conversation = await_conversations(&fixture.store, 1).await[0];
+    let messages = await_chat_messages(&fixture.store, conversation, 1).await;
+    assert_eq!(messages[0].fields["addressed"], json!(false));
+    assert!(
+        server.recorded("sendMessage").is_empty(),
+        "a punctuated name wakes nothing"
+    );
+
+    // The mention still addresses: the fallback is mention-and-reply.
+    server.push_update(mention_update(2, group, 7, "now a question"));
+    let sends = server.await_recorded("sendMessage", 1).await;
+    assert_eq!(
+        sends[0].body["text"],
+        json!(first_answer_to(&format!(
+            "Fix ture! are you around?\n\n@{BOT_USERNAME} now a question"
+        )))
+    );
+}
+
 /// An unaddressed message arriving after an addressed one does not cancel
 /// the owed answer: both land in one poll batch, and the addressed
 /// message's answer still arrives.

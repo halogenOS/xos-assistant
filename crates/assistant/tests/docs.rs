@@ -515,11 +515,13 @@ fn the_prompt_teaches_the_honest_ai_answer() {
 }
 
 #[test]
-fn the_disclosure_line_is_the_operators_copy_verbatim() {
+fn the_disclosure_default_composes_from_the_name() {
+    // The operator's original copy (decision 0079) became the composition's
+    // shape with the name as its slot (unit 14): the configured `disclosure`
+    // key overrides it whole, and unset composes exactly this.
     assert_eq!(
-        assistant_core::DISCLOSURE_LINE,
-        "Hi, I'm Xenia, the halogenOS Assistant Bot, an AI system, made to assist members \
-         of the community."
+        assistant_core::composed_disclosure_line("Xenia"),
+        "Hi, I'm Xenia, an AI system, made to assist members of the community."
     );
 }
 
@@ -559,8 +561,10 @@ fn the_compliance_record_carries_the_role_the_map_the_marking_position_and_the_n
         "the duty's timing is stated"
     );
     assert!(
-        record.contains(&flattened(assistant_core::DISCLOSURE_LINE)),
-        "the record quotes the shipped line"
+        record.contains(&flattened(&assistant_core::composed_disclosure_line(
+            "<name>"
+        ))),
+        "the record quotes the shipped default with its name slot"
     );
 
     // The Article 50(2) marking position with its two notes.
@@ -709,5 +713,68 @@ fn the_deletion_mirrors_decisions_are_recorded_with_dates_and_rejected_alternati
         ))
         .contains("SILENT: no reply, no acknowledgment."),
         "the mirror's silence is recorded as decided"
+    );
+}
+
+// ─── The helpful-mode unit's pins (AC5, 2026-08-23) ──────────────────────
+
+#[test]
+fn the_helpful_mode_unit_ships_its_compliance_note_and_policy_sentence() {
+    let record = flattened(&repo_file("docs/compliance/ai-act.md").replace("\n> ", "\n"));
+    assert!(
+        record.contains("Amended 2026-08-23, with the helpful-mode unit"),
+        "the compliance page's disclosure amendment is dated"
+    );
+    assert!(
+        record.contains("The duty holds under every answering mode"),
+        "the note states the duty holds under every mode"
+    );
+    assert!(
+        record.contains("the first SPOKEN answer to a person still carries the line"),
+        "the note names what still discharges the duty"
+    );
+    assert!(
+        record.contains("an abstained turn speaks nothing and therefore introduces no one"),
+        "the note covers the abstention honestly"
+    );
+
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains(
+            "The assistant also reads group messages that do not address it, to offer \
+             help when it can answer a question"
+        ),
+        "the policy's processing description names the helpful reading"
+    );
+    assert!(
+        policy.contains("on the same basis and under the same limits"),
+        "the sentence keeps the processing under the stated basis"
+    );
+}
+
+#[test]
+fn the_helpful_mode_units_decisions_are_recorded_with_dates_and_rejected_alternatives() {
+    for record in [
+        "docs/decisions/0087-answering-is-a-mode-and-the-summons-is-stamped-at-the-write.md",
+        "docs/decisions/0088-the-model-abstains-through-a-fixed-sentinel.md",
+        "docs/decisions/0089-the-name-is-one-configuration-key-with-three-effects.md",
+        "docs/decisions/0090-the-disclosure-line-is-a-configured-value.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-23"),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+    assert!(
+        flattened(&repo_file(
+            "docs/decisions/0088-the-model-abstains-through-a-fixed-sentinel.md"
+        ))
+        .contains("the sentinel is the whole answer or it is no abstention"),
+        "the sentinel's whole-answer rule is recorded as decided"
     );
 }

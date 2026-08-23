@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 
-use assistant_core::{Budget, DirectChats, OperatorConfig, ProtectionConfig, ReasoningLevel};
+use assistant_core::{
+    AnsweringMode, Budget, DirectChats, OperatorConfig, ProtectionConfig, ReasoningLevel,
+};
 use serde::Deserialize;
 
 use crate::StartError;
@@ -60,6 +62,23 @@ pub struct Configuration {
     /// a small budget already carries the moderation assessments.
     #[serde(default)]
     pub reasoning: ReasoningKey,
+    /// How group messages summon a turn: the closed words `helpful` and
+    /// `addressed`, any other value refused at the load. Absent means
+    /// helpful — the operator's stated economics — and a deployment that
+    /// wants the quiet shape spells `addressed`.
+    #[serde(default)]
+    pub answering: AnsweringKey,
+    /// The assistant's name; absent takes the display name the process
+    /// reads from the platform at startup. Resolved through
+    /// [`Configuration::resolve_name`], which trims and refuses an empty
+    /// value.
+    pub name: Option<String>,
+    /// The first-interaction disclosure line; absent composes it from the
+    /// resolved name. Resolved through
+    /// [`Configuration::resolve_disclosure`], which trims and refuses an
+    /// empty value — the duty is not optional, so unset means the composed
+    /// default, never no text.
+    pub disclosure: Option<String>,
     /// The address the privacy command answers with; absent answers the
     /// not-yet-published line. Resolved through
     /// [`Configuration::resolve_privacy_policy`], which refuses an empty
@@ -184,6 +203,33 @@ impl ReasoningKey {
             Self::High => ReasoningLevel::High,
             Self::XHigh => ReasoningLevel::XHigh,
             Self::Max => ReasoningLevel::Max,
+        }
+    }
+}
+
+/// The answering key's closed word list: decoding is the validation, so a
+/// misspelled value refuses the load with the failing place named — never
+/// a deployment that meant to be quiet answering every message.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AnsweringKey {
+    /// Every group message summons a turn and the model decides whether to
+    /// speak — the absent key's meaning, per the operator's stated
+    /// economics.
+    #[default]
+    Helpful,
+    /// A group message summons a turn only when it addresses the
+    /// assistant.
+    Addressed,
+}
+
+impl AnsweringKey {
+    /// The core's answering mode this key names.
+    #[must_use]
+    pub fn resolve(self) -> AnsweringMode {
+        match self {
+            Self::Helpful => AnsweringMode::Helpful,
+            Self::Addressed => AnsweringMode::Addressed,
         }
     }
 }
@@ -362,6 +408,46 @@ impl Configuration {
                 }
                 Ok(Some(handle.to_owned()))
             }
+            None => Ok(None),
+        }
+    }
+
+    /// The assistant's configured name, `None` when the key is absent —
+    /// under which the display name read from the platform at startup
+    /// stands in.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::NameEmpty`] when the key is present but empty or
+    /// whitespace — a blank name would compose a nameless identity and a
+    /// broken disclosure line silently; omitting the key is how the
+    /// platform default is chosen. A surviving name resolves trimmed.
+    pub fn resolve_name(&self) -> Result<Option<String>, StartError> {
+        match &self.name {
+            Some(name) => match name.trim() {
+                "" => Err(StartError::NameEmpty),
+                trimmed => Ok(Some(trimmed.to_owned())),
+            },
+            None => Ok(None),
+        }
+    }
+
+    /// The configured disclosure line, `None` when the key is absent —
+    /// under which the line composes from the resolved name. Unset never
+    /// means no line: the transparency duty is not optional.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::DisclosureEmpty`] when the key is present but empty
+    /// or whitespace — a blank line would discharge nothing silently;
+    /// omitting the key is how the composed default is chosen. A surviving
+    /// line resolves trimmed.
+    pub fn resolve_disclosure(&self) -> Result<Option<String>, StartError> {
+        match &self.disclosure {
+            Some(line) => match line.trim() {
+                "" => Err(StartError::DisclosureEmpty),
+                trimmed => Ok(Some(trimmed.to_owned())),
+            },
             None => Ok(None),
         }
     }
@@ -1017,6 +1103,106 @@ mod tests {
             matches!(refused, StartError::WikiEndpointEmpty),
             "the refusal names the empty address; got {refused}"
         );
+    }
+
+    // ─── The answering mode, the name and the disclosure ─────────────────
+
+    #[test]
+    fn the_answering_key_decodes_its_two_words_and_defaults_helpful() {
+        assert!(
+            matches!(
+                loaded("log = \"stderr\"", "").answering.resolve(),
+                AnsweringMode::Helpful
+            ),
+            "the absent key means helpful — the operator's stated default"
+        );
+        assert!(matches!(
+            loaded("log = \"stderr\"", "answering = \"helpful\"\n")
+                .answering
+                .resolve(),
+            AnsweringMode::Helpful
+        ));
+        assert!(matches!(
+            loaded("log = \"stderr\"", "answering = \"addressed\"\n")
+                .answering
+                .resolve(),
+            AnsweringMode::Addressed
+        ));
+    }
+
+    #[test]
+    fn an_answering_value_outside_the_two_words_is_refused_at_the_load() {
+        for spelling in [
+            "answering = \"quiet\"\n",
+            "answering = \"HELPFUL\"\n",
+            "answering = \"\"\n",
+            "answering = true\n",
+        ] {
+            assert!(
+                load(&full("log = \"stderr\"", spelling)).is_err(),
+                "the value must be exactly `helpful` or `addressed`; {spelling:?} decoded"
+            );
+        }
+    }
+
+    #[test]
+    fn the_name_and_the_disclosure_resolve_trimmed_and_absent_means_default() {
+        let configuration = loaded(
+            "log = \"stderr\"",
+            "name = \" Xenia \"\ndisclosure = \" I am a machine. \"\n",
+        );
+        assert_eq!(
+            configuration
+                .resolve_name()
+                .expect("the name resolves")
+                .as_deref(),
+            Some("Xenia"),
+            "the pad is file formatting, never identity"
+        );
+        assert_eq!(
+            configuration
+                .resolve_disclosure()
+                .expect("the disclosure resolves")
+                .as_deref(),
+            Some("I am a machine."),
+            "no whitespace flows into the stored line"
+        );
+
+        let absent = loaded("log = \"stderr\"", "");
+        assert_eq!(
+            absent.resolve_name().expect("the absent key resolves"),
+            None,
+            "no name key means the platform display name"
+        );
+        assert_eq!(
+            absent
+                .resolve_disclosure()
+                .expect("the absent key resolves"),
+            None,
+            "no disclosure key means the line composed from the name"
+        );
+    }
+
+    #[test]
+    fn an_empty_name_or_disclosure_is_refused() {
+        for spelling in ["name = \"\"\n", "name = \"   \"\n"] {
+            let refused = loaded("log = \"stderr\"", spelling)
+                .resolve_name()
+                .expect_err("a blank name must be refused");
+            assert!(
+                matches!(refused, StartError::NameEmpty),
+                "the refusal names the empty name; got {refused}"
+            );
+        }
+        for spelling in ["disclosure = \"\"\n", "disclosure = \"   \"\n"] {
+            let refused = loaded("log = \"stderr\"", spelling)
+                .resolve_disclosure()
+                .expect_err("a blank disclosure must be refused");
+            assert!(
+                matches!(refused, StartError::DisclosureEmpty),
+                "the refusal names the empty line; got {refused}"
+            );
+        }
     }
 
     // ─── The retired title-model key ─────────────────────────────────────

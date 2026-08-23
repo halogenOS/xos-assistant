@@ -158,6 +158,9 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
                     model_display_name: "Test Model".into(),
                 },
                 system_prompt: support::SYSTEM_PROMPT.into(),
+                answering: support::FIXTURE_ANSWERING,
+                name: support::NAME.into(),
+                disclosure: None,
                 protection: assistant_core::ProtectionConfig::default(),
                 operators: support::operator_config(),
                 direct_chats: assistant_core::DirectChats::default(),
@@ -178,7 +181,7 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
         .await;
         let reply = recv_reply(&mut replies).await;
         assert_eq!(reply.kind, ReplyKind::Answer);
-        assert_eq!(reply.text, assistant_core::disclosed(SERVER_ANSWER));
+        assert_eq!(reply.text, support::disclosed(SERVER_ANSWER));
         assert_eq!(reply.channel, key);
 
         // The server this test controls was actually hit, on the completions
@@ -257,6 +260,9 @@ async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accept
                 model_display_name: "Test Model".into(),
             },
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -280,7 +286,7 @@ async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accept
     .await;
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(SERVER_ANSWER)
+        support::disclosed(SERVER_ANSWER)
     );
     assistant
         .observe(assistant_core::Observation {

@@ -238,7 +238,7 @@ async fn a_members_reply_ask_files_and_the_edge_threads_the_report_before_the_an
     assert_eq!(second.kind, ReplyKind::Answer);
     assert_eq!(
         second.text,
-        assistant_core::disclosed(CLOSING_ANSWER),
+        support::disclosed(CLOSING_ANSWER),
         "the reporter's first answer opens with the disclosure line"
     );
     assert_eq!(second.reply_target, None, "the answer stays unthreaded");
@@ -577,7 +577,7 @@ async fn the_no_reply_self_report_and_unrecorded_target_asks_are_refused() {
         );
         assert_eq!(
             recv_reply(&mut replies).await.text,
-            assistant_core::disclosed(CLOSING_ANSWER),
+            support::disclosed(CLOSING_ANSWER),
             "the {name} turn still closes with the model's answer"
         );
         let extra = replies.try_recv();
@@ -615,7 +615,7 @@ async fn a_direct_conversation_ask_is_refused() {
     assert_eq!(field(&blocks[4], "error"), report::GROUP_ONLY_ERROR);
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -643,7 +643,7 @@ async fn a_second_ask_inside_the_window_is_declined() {
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 
     // The second ask, inside the window: declined, nothing filed.
@@ -706,7 +706,7 @@ async fn a_transient_append_failure_spends_no_window_slot() {
     );
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 
     // Healed, the retry files: the failure spent no window slot.
@@ -846,7 +846,7 @@ async fn a_narrating_turn_that_dies_delivers_narration_report_then_notice() {
     );
     assert_eq!(
         first.text,
-        assistant_core::disclosed("One moment."),
+        support::disclosed("One moment."),
         "the dead turn's narration is still the person's first answer"
     );
     assert_eq!(first.reply_target, None, "narration stays unthreaded");
@@ -883,7 +883,7 @@ async fn a_report_ask_consumes_an_answer_slot() {
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 
     // The same member's next addressed ask crosses the one-answer budget.
@@ -973,7 +973,7 @@ async fn the_reported_persons_erasure_nulls_the_target_and_the_edge_skips_it() {
     // The delivery: the answer alone — the targetless report was skipped.
     let only = recv_reply(&mut replies).await;
     assert_eq!(only.kind, ReplyKind::Answer);
-    assert_eq!(only.text, assistant_core::disclosed(CLOSING_ANSWER));
+    assert_eq!(only.text, support::disclosed(CLOSING_ANSWER));
     let extra = replies.try_recv();
     assert!(
         extra.is_err(),
@@ -1028,7 +1028,7 @@ async fn an_erased_targets_origin_cannot_be_re_reported() {
     );
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -1406,7 +1406,7 @@ async fn a_filing_racing_an_erasure_waits_on_the_fence() {
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -1543,7 +1543,7 @@ async fn a_pre_unit_palette_gains_the_wiki_and_report_tools_on_first_activity() 
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 

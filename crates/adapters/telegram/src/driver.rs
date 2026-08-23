@@ -266,9 +266,22 @@ pub(crate) async fn run(
         &config.token,
         Arc::clone(&sleep),
     ));
+    // The name's wake trigger is validated once here (unit 14): a name that
+    // cannot form a clean trigger word logs the fallback a single time, and
+    // every message then translates against mention-and-reply alone.
+    let wake = config.name.as_deref().and_then(|name| {
+        let trigger = translate::wake_trigger(name);
+        if trigger.is_none() {
+            tracing::warn!(
+                "the configured name forms no clean trigger word; \
+                 addressing falls back to mention-and-reply"
+            );
+        }
+        trigger
+    });
     let typing = TypingRefreshers::default();
     tokio::select! {
-        () = poll_loop(&client, &config.state_file, &sleep, &assistant) => {}
+        () = poll_loop(&client, &config.state_file, wake.as_deref(), &sleep, &assistant) => {}
         () = consume_replies(replies, &client, &typing) => {}
         () = consume_composing(composing, &client, &typing) => {}
     }
@@ -282,7 +295,13 @@ pub(crate) async fn run(
 /// The bot's own identity comes first, with the poll's own backoff: mention
 /// and reply-to-self resolution compare against it, so no message is
 /// translated before it is known.
-async fn poll_loop(client: &BotClient, state_file: &Path, sleep: &Sleep, assistant: &Assistant) {
+async fn poll_loop(
+    client: &BotClient,
+    state_file: &Path,
+    wake: Option<&str>,
+    sleep: &Sleep,
+    assistant: &Assistant,
+) {
     let me = fetch_identity(client, sleep).await;
     let mut next_offset = state::read(state_file);
     let mut memories = Memories::new();
@@ -298,7 +317,7 @@ async fn poll_loop(client: &BotClient, state_file: &Path, sleep: &Sleep, assista
         let mut halted = false;
         let offset_before = next_offset;
         for update in &updates {
-            match process(update, &me, client, &mut memories, assistant).await {
+            match process(update, &me, wake, client, &mut memories, assistant).await {
                 Step::Acknowledged => next_offset = Some(update.id + 1),
                 Step::Halted => {
                     halted = true;
@@ -340,11 +359,12 @@ async fn fetch_identity(client: &BotClient, sleep: &Sleep) -> BotIdentity {
 async fn process(
     update: &Update,
     me: &BotIdentity,
+    wake: Option<&str>,
     client: &BotClient,
     memories: &mut Memories,
     assistant: &Assistant,
 ) -> Step {
-    let pending = match translate::translate(update, me) {
+    let pending = match translate::translate(update, me, wake) {
         Translation::Skip(reason) => {
             tracing::debug!(update_id = update.id, %reason, "update skipped");
             return Step::Acknowledged;

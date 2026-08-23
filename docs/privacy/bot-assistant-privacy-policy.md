@@ -26,7 +26,9 @@ chats: a direct message is rejected and not stored.
 We do not look for sensitive content and cannot recognise it: whatever a message carries,
 we store and send on like any other text. We delete a stored message that concerns you on
 request, whether you wrote it or not, your own through the route below and somebody else's
-after a person reviews it.
+after a person reviews it. The assistant also reads group messages that do not address it,
+to offer help when it can answer a question — on the same basis and under the same limits
+as everything else here (added 2026-08-23).
 
 _Purpose:_ answering questions in the groups, reading the conversation for
 context, limiting how much the assistant answers per person and per chat, and passing on a

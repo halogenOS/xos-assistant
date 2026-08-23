@@ -6,9 +6,9 @@
 use agent_ledger::Role;
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::{
-    ChannelKind, DISCLOSURE_LINE, DeliveryItem, ErasureOutcome, FAILURE_NOTICE, IngestOutcome,
-    Observation, ObserveOutcome, ObservedFact, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
-    disclosed,
+    ChannelKind, DeliveryItem, ErasureOutcome, FAILURE_NOTICE, IngestOutcome, Observation,
+    ObserveOutcome, ObservedFact, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
+    composed_disclosure_line,
 };
 use serde_json::json;
 
@@ -16,18 +16,27 @@ use crate::support::{
     self, answer_to, await_ledger, channel, first_answer_to, inbound, recv_reply, with_command,
 };
 
-/// The exact copy, pinned beside the tests that deliver it: the operator's
-/// line verbatim, one line, no legalese.
+/// The copy the fixtures deliver, pinned beside the tests that deliver it
+/// (amended with unit 14): the line composed from the fixture's name — the
+/// unset-key default — one line, no legalese, shaped after the operator's
+/// original copy with the name as its slot.
 #[test]
-fn the_disclosure_copy_is_the_operators_verbatim() {
+fn the_disclosure_copy_composes_from_the_name() {
     assert_eq!(
-        DISCLOSURE_LINE,
-        "Hi, I'm Xenia, the halogenOS Assistant Bot, an AI system, made to \
-         assist members of the community."
+        support::fixture_disclosure().line(),
+        format!(
+            "Hi, I'm {}, an AI system, made to assist members of the community.",
+            support::NAME
+        )
     );
     assert_eq!(
-        disclosed("the answer"),
-        format!("{DISCLOSURE_LINE}\n\nthe answer"),
+        composed_disclosure_line(support::NAME),
+        support::fixture_disclosure().line(),
+        "the assembly's unset-key default is the composed line"
+    );
+    assert_eq!(
+        support::disclosed("the answer"),
+        format!("{}\n\nthe answer", support::fixture_disclosure().line()),
         "the delivered shape is the line, a blank line, then the answer"
     );
 }
@@ -55,7 +64,9 @@ async fn the_first_answer_carries_the_line_and_the_second_does_not() {
     assert_eq!(reply.channel, key);
     assert_eq!(reply.text, first_answer_to("the first question"));
     assert!(
-        reply.text.starts_with(&format!("{DISCLOSURE_LINE}\n\n")),
+        reply
+            .text
+            .starts_with(&format!("{}\n\n", support::fixture_disclosure().line())),
         "the line comes first, separated by a blank line"
     );
 
@@ -356,7 +367,7 @@ async fn deterministic_replies_carry_no_disclosure() {
     };
     assert_eq!(answer, PRIVACY_UNPUBLISHED);
     assert!(
-        !answer.contains(DISCLOSURE_LINE),
+        !answer.contains(support::fixture_disclosure().line()),
         "a fixed command answer is never introduced"
     );
 
@@ -389,7 +400,7 @@ async fn deterministic_replies_carry_no_disclosure() {
     let notice = recv_reply(&mut replies).await;
     assert_eq!(notice.text, FAILURE_NOTICE);
     assert!(
-        !notice.text.contains(DISCLOSURE_LINE),
+        !notice.text.contains(support::fixture_disclosure().line()),
         "the notice is the core's fixed line, never introduced"
     );
 }

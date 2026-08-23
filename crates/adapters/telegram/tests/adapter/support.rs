@@ -64,11 +64,23 @@ pub fn answer_to(text: &str) -> String {
     format!("The scripted answer to: {text}")
 }
 
+/// The assistant name every adapter-suite assembly resolves — matching the
+/// display name the scripted `getMe` answers, so the wire identity and the
+/// core's name agree.
+pub const NAME: &str = "Fixture";
+
+/// An answer as its first delivery to someone carries it: the fixture's
+/// composed disclosure line, a blank line, then the answer.
+#[must_use]
+pub fn disclosed(answer: &str) -> String {
+    assistant_core::Disclosure::resolve(None, NAME).disclosed(answer)
+}
+
 /// The first answer a person is sent, as the core stores and delivers it:
 /// the disclosure line, a blank line, then the scripted answer.
 #[must_use]
 pub fn first_answer_to(text: &str) -> String {
-    assistant_core::disclosed(&answer_to(text))
+    disclosed(&answer_to(text))
 }
 
 /// A unique path in the temp directory, removed on drop with the offset
@@ -476,6 +488,9 @@ async fn assemble(
                 model_display_name: "Script Model".into(),
             },
             system_prompt: "You are the adapter suite's scripted assistant fixture.".into(),
+            answering: assistant_core::AnsweringMode::Addressed,
+            name: NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: operator_config(),
             direct_chats,
@@ -596,15 +611,29 @@ impl Drop for AdapterGuard {
 }
 
 /// Start the adapter against the scripted server, with every wait handed to
-/// the given sleep.
+/// the given sleep and the suite's [`NAME`] as the wake name — matching the
+/// core fixture's resolved name, as the embedder wires it.
 pub fn spawn_adapter(
     server: &BotApiServer,
     state_file: &Path,
     assistant: Arc<Assistant>,
     sleep: Sleep,
 ) -> AdapterGuard {
+    spawn_adapter_named(server, state_file, assistant, sleep, Some(NAME))
+}
+
+/// The name-varying seam behind [`spawn_adapter`]: the wake-trigger pins
+/// hand a punctuated or absent name through here.
+pub fn spawn_adapter_named(
+    server: &BotApiServer,
+    state_file: &Path,
+    assistant: Arc<Assistant>,
+    sleep: Sleep,
+    name: Option<&str>,
+) -> AdapterGuard {
     let mut config = Config::new(TOKEN, state_file);
     config.api_root = server.root();
+    config.name = name.map(ToOwned::to_owned);
     let adapter = TelegramAdapter::with_sleep(config, sleep);
     AdapterGuard(tokio::spawn(async move {
         adapter

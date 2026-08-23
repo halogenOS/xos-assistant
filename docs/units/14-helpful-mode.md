@@ -11,6 +11,14 @@ thing they all read: an unlimited group message opens an answer debt exactly as
 an addressed one does, and flows through every existing mechanism unchanged.
 The only genuinely new pieces are the abstention sentinel and the mode gate.
 
+Revision 2 (2026-08-23) recasts the mechanism onto the debt spine, changing
+no decision: an unlimited group message OPENS A DEBT when it is addressed or
+the mode is helpful — the summons resolved once at the entry point and
+stamped at the write, never a second trigger beside the addressed one. The
+stamp's readers — the unlatch emission, the budget counts, the co-summoner
+rule, the disclosure fold, mid-turn absorption — then work unchanged and
+mode-free, which is the recast's whole point.
+
 ## Decisions taken with this unit
 
 - **Helpful mode makes an unaddressed question open a debt, 2026-08-23.** The
@@ -110,22 +118,20 @@ The only genuinely new pieces are the abstention sentinel and the mode gate.
 
 ## The unit's contract
 
-Three optional keys — `answering` (closed enum helpful|addressed, decoding is
-validation), `name` (trimmed, empty rejected), `disclosure` (trimmed, empty
-rejected) — refused-unknown-keys. The debt-opening predicate gains the mode:
-an unlimited group message opens a debt when addressed OR the mode is helpful,
-routed through the existing unlatch, budget, limited-stamp, co-summoner and
-channel-counting unchanged. The abstention sentinel constant; its exact
-recognition on raw finalized content at the outbound edge, before the
-disclosure prepend, delivering nothing and introducing nobody; its projection
-skip so the model never reads it. The startup display-name fetch and its flow
-to the assembly; the name's three effects; the trigger-word predicate in the
-adapter for addressed mode. The disclosure template composed from the name.
-The prompt's helpful/abstain teaching and its name identity. The compliance
-page notes the disclosure holds under every mode (the first SPOKEN answer
-carries the line, and helpful answers are spoken answers that open real
-debts). The policy's processing description gains one sentence: the assistant
-reads group messages to offer help, under the same legitimate interest.
+The `answering` mode key, the `name` key, the `disclosure` key — all optional,
+refused-unknown-keys, validated (empty rejected, name trimmed). The helpful
+debt-opening in the core keyed on the mode at exactly one place: an unlimited
+group message opens a debt when addressed or when the mode is helpful, the
+summons stamped at the write (revision 2). The abstention
+sentinel constant and its recognition at the outbound edge, delivering nothing
+and spending no window; the recognized abstention kept out of the projection.
+The prompt's helpful/abstain teaching and its name
+identity, composed at assembly from the config. The adapter's name-trigger in
+`addressed` mode, whole-word case-insensitive, beside the mention. The
+disclosure fill from the name. Decisions recorded; the compliance page notes
+that the disclosure duty holds under every mode (the first spoken answer still
+carries the line); the policy's processing description gains one sentence that
+the assistant reads group messages to offer help, under the same basis.
 
 ## Acceptance criteria
 
