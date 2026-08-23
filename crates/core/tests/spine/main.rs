@@ -18,6 +18,7 @@ mod assembly;
 mod end_to_end;
 mod erasure;
 mod erasure_streams;
+mod group_context;
 mod lookup_wire;
 #[cfg(feature = "openrouter")]
 mod openrouter;

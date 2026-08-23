@@ -67,9 +67,13 @@ async fn silent_assistant(
         Arc::clone(&bus),
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
-        support::binding(),
-        support::SYSTEM_PROMPT.into(),
-        protection,
+        assistant_core::AssemblyConfig {
+            binding: support::binding(),
+            system_prompt: support::SYSTEM_PROMPT.into(),
+            protection,
+            operators: support::operator_config(),
+            privacy_policy_address: None,
+        },
     )
     .await
     .expect("the assembly starts");
@@ -148,7 +152,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                     "a message the earlier binary recorded",
                     1,
                     Authority::Member,
-                    None,
+                    Some("scripted:41"),
                     "2026-08-21T00:00:00+00:00",
                     Stamp {
                         addressed: true,
@@ -163,17 +167,21 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
             .expect("the pre-upgrade row appends");
         // The rewind: drop exactly what the appended steps add and set the
         // domain's version back, so the disk holds what the pre-protection
-        // binary's store held. The dropped columns take their column-level
-        // CHECK constraints with them. The version rewind goes through the
-        // support seam that owns the suite's framework-schema knowledge.
+        // binary's store held — the group-context unit's tables included.
+        // The dropped columns take their column-level CHECK constraints
+        // with them. The version rewind goes through the support seam that
+        // owns the suite's framework-schema knowledge.
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
                 "DROP INDEX {index};
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN limited;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN debt_authority;
-                 DROP TABLE {palette};",
+                 DROP TABLE {palette};
+                 DROP TABLE {note};
+                 DROP TABLE group_authorizations;",
                 index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
                 palette = assistant_core::tools::palette::TOOL_PALETTE_TABLE,
+                note = assistant_core::note::CONTEXT_NOTE_TABLE,
             ))?;
             Ok(())
         })
@@ -192,7 +200,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(index_count, 1, "the appended step created the index");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        5,
+        8,
         "the appended steps advanced the domain's version"
     );
 
@@ -210,6 +218,32 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
         rows[0].fields["answer_due"],
         json!(true),
         "the upgrade left the stored stamp itself untouched"
+    );
+    // The command-stamp step recreates the message table and copies every
+    // row, so each nullable content column is pinned by exact value: one
+    // omitted from the copy list would read back as silently erased
+    // history — NULL text is the erasure encoding, and a NULL role
+    // mis-voices the row and cancels its owed answer — while the NOT NULL
+    // columns would fail the copy loudly on their own.
+    assert_eq!(
+        rows[0].fields["text"],
+        json!("a message the earlier binary recorded"),
+        "the recreate-and-copy carried the stored text"
+    );
+    assert_eq!(
+        rows[0].fields["origin"],
+        json!("scripted:41"),
+        "the recreate-and-copy carried the stored origin"
+    );
+    assert_eq!(
+        rows[0].fields["sent_at"],
+        json!("2026-08-21T00:00:00+00:00"),
+        "the recreate-and-copy carried the stored sending time"
+    );
+    assert_eq!(
+        rows[0].role,
+        Some(Role::User),
+        "the recreate-and-copy carried the stored voice"
     );
 }
 
@@ -230,29 +264,29 @@ async fn the_principal_budget_refuses_the_next_debt_and_the_window_releases_it()
         .expect("the outbound edge opens");
     let key = channel("dm-principal-budget");
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "A", "the first ask"))
-        .await
-        .expect("the first ask ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "A", "the first ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Answer);
     support::settle(&fixture.store, conv, "the first answer", 4).await;
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "A", "the second ask"))
-        .await
-        .expect("the second ask ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "A", "the second ask"),
+    )
+    .await;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Answer);
     support::settle(&fixture.store, conv, "the second answer", 6).await;
 
     // The third ask crosses the budget: recorded, addressed, limited by the
     // principal budget, owing nothing — and silent, no answer and no notice.
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "A", "the refused ask"))
-        .await
-        .expect("the refused ask still ingests — recording is never limited");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "A", "the refused ask"),
+    )
+    .await;
     let refused = await_message(&fixture.store, conv, 3).await;
     assert_eq!(refused.fields["addressed"], json!(true));
     assert_eq!(refused.fields["limited"], json!("principal"));
@@ -274,11 +308,11 @@ async fn the_principal_budget_refuses_the_next_debt_and_the_window_releases_it()
     // Aging the receipt times past the window releases the budget: the same
     // principal is answered again.
     age_receipts(&fixture.store, 601).await;
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "A", "the later ask"))
-        .await
-        .expect("the later ask ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "A", "the later ask"),
+    )
+    .await;
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.kind, ReplyKind::Answer);
     assert_eq!(
@@ -302,60 +336,52 @@ async fn the_channel_budget_spares_other_channels_and_the_direct_chat() {
         .replies(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
-    let room = channel("room-channel-budget");
+    let room = support::authorized_group(&fixture.assistant, "room-channel-budget").await;
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&room, ChannelKind::Group, "A", "the first ask"))
-        .await
-        .expect("the first ask ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&room, ChannelKind::Group, "A", "the first ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Answer);
     support::settle(&fixture.store, conv, "the first answer", 4).await;
-    fixture
-        .assistant
-        .ingest(inbound(&room, ChannelKind::Group, "B", "the second ask"))
-        .await
-        .expect("the second ask ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&room, ChannelKind::Group, "B", "the second ask"),
+    )
+    .await;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Answer);
     support::settle(&fixture.store, conv, "the second answer", 6).await;
 
     // The two principals exhausted the channel together: B's next ask is
+    // The two principals exhausted the channel together: B's next ask is
     // limited with the channel fact.
-    fixture
-        .assistant
-        .ingest(inbound(&room, ChannelKind::Group, "B", "the refused ask"))
-        .await
-        .expect("the refused ask ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&room, ChannelKind::Group, "B", "the refused ask"),
+    )
+    .await;
     let refused = await_message(&fixture.store, conv, 3).await;
     assert_eq!(refused.fields["limited"], json!("channel"));
     assert_eq!(refused.fields["answer_due"], json!(false));
 
     // Another channel is unaffected.
-    fixture
-        .assistant
-        .ingest(inbound(
-            &channel("room-untouched"),
-            ChannelKind::Group,
-            "B",
-            "the other room's ask",
-        ))
-        .await
-        .expect("the other room's ask ingests");
+    let untouched = support::authorized_group(&fixture.assistant, "room-untouched").await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&untouched, ChannelKind::Group, "B", "the other room's ask"),
+    )
+    .await;
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.text, support::answer_to("the other room's ask"));
 
     // The limited principal's direct chat answers under its own budgets.
-    fixture
-        .assistant
-        .ingest(inbound(
-            &channel("dm-b"),
-            ChannelKind::Direct,
-            "B",
-            "the direct ask",
-        ))
-        .await
-        .expect("the direct ask ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&channel("dm-b"), ChannelKind::Direct, "B", "the direct ask"),
+    )
+    .await;
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.text, support::answer_to("the direct ask"));
 }
@@ -412,9 +438,13 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
         Arc::clone(&bus),
         support::registry_of(held_provider(Arc::clone(&release))),
         assistant_core::tools::ToolSet::new(),
-        support::binding(),
-        support::SYSTEM_PROMPT.into(),
-        budgets(None, Some((1, 600))),
+        assistant_core::AssemblyConfig {
+            binding: support::binding(),
+            system_prompt: support::SYSTEM_PROMPT.into(),
+            protection: budgets(None, Some((1, 600))),
+            operators: support::operator_config(),
+            privacy_policy_address: None,
+        },
     )
     .await
     .expect("the assembly starts");
@@ -422,22 +452,24 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
         .replies(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
-    let room = channel("room-propagated");
+    let room = support::authorized_group(&assistant, "room-propagated").await;
 
     // The innocent sender's ask takes the channel's one slot; its turn is
     // held before any stream event, so the ask stays the unanswered tail.
-    let receipt = assistant
-        .ingest(inbound(&room, ChannelKind::Group, "A", "the innocent ask"))
-        .await
-        .expect("the innocent ask ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "A", "the innocent ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
 
     // The flooder's ask is over-limit AND behind the owed answer: limited
     // set, answer-due still true — the propagated debt, not a contradiction.
-    assistant
-        .ingest(inbound(&room, ChannelKind::Group, "B", "the flooding ask"))
-        .await
-        .expect("the flooding ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "B", "the flooding ask"),
+    )
+    .await;
     let flooded = await_message(&store, conv, 2).await;
     assert_eq!(flooded.fields["addressed"], json!(true));
     assert_eq!(flooded.fields["limited"], json!("channel"));
@@ -449,16 +481,13 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
     );
 
     // The exhausted channel consults no budget for an unaddressed message:
+    // The exhausted channel consults no budget for an unaddressed message:
     // recorded with a null limited fact.
-    assistant
-        .ingest(inbound_unaddressed(
-            &room,
-            ChannelKind::Group,
-            "C",
-            "an aside",
-        ))
-        .await
-        .expect("the aside ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound_unaddressed(&room, ChannelKind::Group, "C", "an aside"),
+    )
+    .await;
     let aside = await_message(&store, conv, 3).await;
     assert_eq!(aside.fields["addressed"], json!(false));
     assert!(
@@ -487,22 +516,18 @@ async fn two_racing_messages_cannot_both_take_the_last_slot() {
     let (assistant, store, _bus) = silent_assistant(budgets(None, Some((1, 600)))).await;
     let assistant = Arc::new(assistant);
     for round in 0..30 {
-        let room = channel(&format!("room-race-{round}"));
+        let room = support::authorized_group(&assistant, &format!("room-race-{round}")).await;
         // The room is mapped and both racers' principals resolved before
         // the race, by an unaddressed opener from each — openers consume no
         // budget — so the racers reach the stamp in lockstep instead of
         // skewing apart on first-message conversation creation or on a
         // first-sender identity insert.
         for sender in ["A", "B"] {
-            assistant
-                .ingest(inbound_unaddressed(
-                    &room,
-                    ChannelKind::Group,
-                    sender,
-                    "the opener",
-                ))
-                .await
-                .expect("the opener ingests");
+            support::ingest_recorded(
+                &assistant,
+                inbound_unaddressed(&room, ChannelKind::Group, sender, "the opener"),
+            )
+            .await;
         }
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
         let racer = |sender: &'static str, text: &'static str| {
@@ -511,10 +536,11 @@ async fn two_racing_messages_cannot_both_take_the_last_slot() {
             let barrier = Arc::clone(&barrier);
             tokio::spawn(async move {
                 barrier.wait().await;
-                assistant
-                    .ingest(inbound(&room, ChannelKind::Group, sender, text))
-                    .await
-                    .expect("the racer ingests")
+                support::ingest_recorded(
+                    &assistant,
+                    inbound(&room, ChannelKind::Group, sender, text),
+                )
+                .await
             })
         };
         let (first, second) = tokio::join!(racer("A", "one racer"), racer("B", "the other racer"));
@@ -554,17 +580,18 @@ async fn the_debt_authority_is_stamped_by_the_minimum_rule() {
 
     // An admin's addressed message opens an admin debt; a member's
     // unaddressed message propagating it stamps member.
-    let room = channel("room-authority-propagated");
-    let receipt = assistant
-        .ingest(inbound_as(
+    let room = support::authorized_group(&assistant, "room-authority-propagated").await;
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound_as(
             &room,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "the admin ask",
-        ))
-        .await
-        .expect("the admin ask ingests");
+        ),
+    )
+    .await;
     let opened = await_message(&store, receipt.conversation_id, 1).await;
     assert_eq!(opened.fields["debt_authority"], json!("admin"));
     let mut aside = inbound_as(
@@ -575,7 +602,7 @@ async fn the_debt_authority_is_stamped_by_the_minimum_rule() {
         "a member aside",
     );
     aside.addressed = false;
-    assistant.ingest(aside).await.expect("the aside ingests");
+    support::ingest_recorded(&assistant, aside).await;
     let carried = await_message(&store, receipt.conversation_id, 2).await;
     assert_eq!(carried.fields["answer_due"], json!(true));
     assert_eq!(
@@ -587,54 +614,55 @@ async fn the_debt_authority_is_stamped_by_the_minimum_rule() {
     // A member's ADDRESSED message behind the same admin-debt shape also
     // stamps member: the minimum rule applies whenever the tail owes,
     // regardless of the incoming message's own addressed fact.
-    let room = channel("room-authority-addressed");
-    let receipt = assistant
-        .ingest(inbound_as(
+    let room = support::authorized_group(&assistant, "room-authority-addressed").await;
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound_as(
             &room,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "the admin ask",
-        ))
-        .await
-        .expect("the admin ask ingests");
-    assistant
-        .ingest(inbound_as(
+        ),
+    )
+    .await;
+    support::ingest_recorded(
+        &assistant,
+        inbound_as(
             &room,
             ChannelKind::Group,
             "m",
             Authority::Member,
             "a member question behind it",
-        ))
-        .await
-        .expect("the member question ingests");
+        ),
+    )
+    .await;
     let riding = await_message(&store, receipt.conversation_id, 2).await;
     assert_eq!(riding.fields["debt_authority"], json!("member"));
 
     // A fresh member debt stays member.
-    let receipt = assistant
-        .ingest(inbound_as(
-            &channel("room-authority-fresh"),
+    let fresh_room = support::authorized_group(&assistant, "room-authority-fresh").await;
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound_as(
+            &fresh_room,
             ChannelKind::Group,
             "m",
             Authority::Member,
             "a fresh member ask",
-        ))
-        .await
-        .expect("the fresh ask ingests");
+        ),
+    )
+    .await;
     let fresh = await_message(&store, receipt.conversation_id, 1).await;
     assert_eq!(fresh.fields["debt_authority"], json!("member"));
 
     // A resting unaddressed message with no owing tail carries no debt.
-    let receipt = assistant
-        .ingest(inbound_unaddressed(
-            &channel("room-authority-resting"),
-            ChannelKind::Group,
-            "m",
-            "a resting remark",
-        ))
-        .await
-        .expect("the resting remark ingests");
+    let resting_room = support::authorized_group(&assistant, "room-authority-resting").await;
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound_unaddressed(&resting_room, ChannelKind::Group, "m", "a resting remark"),
+    )
+    .await;
     let resting = await_message(&store, receipt.conversation_id, 1).await;
     assert!(resting.fields.get("debt_authority").is_none());
 }
@@ -647,31 +675,32 @@ async fn the_debt_authority_is_stamped_by_the_minimum_rule() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_higher_authority_sender_behind_a_lower_debt_carries_the_lower() {
     let (assistant, store, _bus) = silent_assistant(budgets(None, None)).await;
-    let room = channel("room-authority-escalation");
+    let room = support::authorized_group(&assistant, "room-authority-escalation").await;
 
-    let receipt = assistant
-        .ingest(inbound_as(
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound_as(
             &room,
             ChannelKind::Group,
             "m",
             Authority::Member,
             "the member ask",
-        ))
-        .await
-        .expect("the member ask ingests");
+        ),
+    )
+    .await;
     let opened = await_message(&store, receipt.conversation_id, 1).await;
     assert_eq!(opened.fields["debt_authority"], json!("member"));
-
-    assistant
-        .ingest(inbound_as(
+    support::ingest_recorded(
+        &assistant,
+        inbound_as(
             &room,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "the admin follow-up",
-        ))
-        .await
-        .expect("the admin follow-up ingests");
+        ),
+    )
+    .await;
     let held = await_message(&store, receipt.conversation_id, 2).await;
     assert_eq!(held.fields["answer_due"], json!(true));
     assert_eq!(
@@ -690,20 +719,16 @@ async fn a_higher_authority_sender_behind_a_lower_debt_carries_the_lower() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pre_migration_owing_tail_folds_to_its_stored_sender_authority() {
     let (assistant, store, _bus) = silent_assistant(budgets(None, None)).await;
-    let room = channel("room-pre-migration");
+    let room = support::authorized_group(&assistant, "room-pre-migration").await;
 
     // The conversation exists through the ordinary edge; the pre-migration
     // shape is then appended directly — the exact field set the old binary
     // wrote, with neither protection stamp.
-    let receipt = assistant
-        .ingest(inbound_unaddressed(
-            &room,
-            ChannelKind::Group,
-            "m",
-            "an opening remark",
-        ))
-        .await
-        .expect("the opening remark ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound_unaddressed(&room, ChannelKind::Group, "m", "an opening remark"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     store
         .append_consumer_block(
@@ -731,17 +756,17 @@ async fn a_pre_migration_owing_tail_folds_to_its_stored_sender_authority() {
         )
         .await
         .expect("the pre-migration-shaped row appends");
-
-    assistant
-        .ingest(inbound_as(
+    support::ingest_recorded(
+        &assistant,
+        inbound_as(
             &room,
             ChannelKind::Group,
             "boss",
             Authority::Admin,
             "the follow-up",
-        ))
-        .await
-        .expect("the follow-up ingests");
+        ),
+    )
+    .await;
     let carried = await_message(&store, conv, 3).await;
     assert_eq!(carried.fields["answer_due"], json!(true));
     assert_eq!(
@@ -761,16 +786,18 @@ async fn a_pre_migration_owing_tail_folds_to_its_stored_sender_authority() {
 async fn only_a_taken_debt_emits_the_unlatch_intent() {
     let (assistant, _store, bus) = silent_assistant(budgets(None, Some((1, 600)))).await;
     let mut events = bus.subscribe();
-    let room = channel("room-unlatch-limited");
+    let room = support::authorized_group(&assistant, "room-unlatch-limited").await;
 
-    let receipt = assistant
-        .ingest(inbound(&room, ChannelKind::Group, "A", "the taken ask"))
-        .await
-        .expect("the taken ask ingests");
-    assistant
-        .ingest(inbound(&room, ChannelKind::Group, "B", "the refused ask"))
-        .await
-        .expect("the refused ask ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "A", "the taken ask"),
+    )
+    .await;
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "B", "the refused ask"),
+    )
+    .await;
 
     let mut unlatches = 0;
     while let Ok(event) = events.try_recv() {
@@ -805,16 +832,21 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
             Arc::new(EventBus::new()),
             support::registry_of(support::silent_provider()),
             assistant_core::tools::ToolSet::new(),
-            support::binding(),
-            support::SYSTEM_PROMPT.into(),
-            protection.clone(),
+            assistant_core::AssemblyConfig {
+                binding: support::binding(),
+                system_prompt: support::SYSTEM_PROMPT.into(),
+                protection: protection.clone(),
+                operators: support::operator_config(),
+                privacy_policy_address: None,
+            },
         )
         .await
         .expect("the first assembly starts");
-        let receipt = assistant
-            .ingest(inbound(&room, ChannelKind::Direct, "A", "the taken ask"))
-            .await
-            .expect("the taken ask ingests");
+        let receipt = support::ingest_recorded(
+            &assistant,
+            inbound(&room, ChannelKind::Direct, "A", "the taken ask"),
+        )
+        .await;
         let taken = await_message(&store, receipt.conversation_id, 1).await;
         assert!(taken.fields.get("limited").is_none());
     }
@@ -827,18 +859,23 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
             Arc::clone(&bus),
             support::registry_of(support::silent_provider()),
             assistant_core::tools::ToolSet::new(),
-            support::binding(),
-            support::SYSTEM_PROMPT.into(),
-            protection,
+            assistant_core::AssemblyConfig {
+                binding: support::binding(),
+                system_prompt: support::SYSTEM_PROMPT.into(),
+                protection,
+                operators: support::operator_config(),
+                privacy_policy_address: None,
+            },
         )
         .await
         .expect("the second assembly starts");
         (assistant, store, bus)
     };
-    let receipt = assistant
-        .ingest(inbound(&room, ChannelKind::Direct, "A", "the refused ask"))
-        .await
-        .expect("the refused ask ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Direct, "A", "the refused ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     let refused = await_message(&store, conv, 2).await;
     assert_eq!(refused.fields["limited"], json!("principal"));
@@ -847,20 +884,22 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
     // inside the window. (That a refused debt consumes no budget is pinned
     // by the staggered-aging test below — under this one-answer budget the
     // count here is at the limit either way.)
-    assistant
-        .ingest(inbound(&room, ChannelKind::Direct, "A", "still refused"))
-        .await
-        .expect("the still-refused ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Direct, "A", "still refused"),
+    )
+    .await;
     let still = await_message(&store, conv, 3).await;
     assert_eq!(still.fields["limited"], json!("principal"));
 
     // The one history change a budget answers to: the receipt times age
     // past the window, and the budget releases.
     age_receipts(&store, 601).await;
-    assistant
-        .ingest(inbound(&room, ChannelKind::Direct, "A", "the released ask"))
-        .await
-        .expect("the released ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Direct, "A", "the released ask"),
+    )
+    .await;
     let released = await_message(&store, conv, 4).await;
     assert!(
         released.fields.get("limited").is_none(),
@@ -881,20 +920,22 @@ async fn a_refused_debt_consumes_no_budget() {
     let (assistant, store, _bus) = silent_assistant(budgets(Some((1, 600)), None)).await;
     let room = channel("dm-refused-consumes-nothing");
 
-    let receipt = assistant
-        .ingest(inbound(&room, ChannelKind::Direct, "A", "the taken ask"))
-        .await
-        .expect("the taken ask ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Direct, "A", "the taken ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     let taken = await_message(&store, conv, 1).await;
     assert!(taken.fields.get("limited").is_none());
 
     // Half a window on, the taken debt still refuses the next ask.
     age_receipts(&store, 300).await;
-    assistant
-        .ingest(inbound(&room, ChannelKind::Direct, "A", "the refused ask"))
-        .await
-        .expect("the refused ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Direct, "A", "the refused ask"),
+    )
+    .await;
     let refused = await_message(&store, conv, 2).await;
     assert_eq!(refused.fields["limited"], json!("principal"));
 
@@ -902,10 +943,11 @@ async fn a_refused_debt_consumes_no_budget() {
     // seconds while the refused one sits inside it at roughly 400 — and
     // the ask is admitted, because only the taken debt ever counted.
     age_receipts(&store, 400).await;
-    assistant
-        .ingest(inbound(&room, ChannelKind::Direct, "A", "the admitted ask"))
-        .await
-        .expect("the admitted ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Direct, "A", "the admitted ask"),
+    )
+    .await;
     let admitted = await_message(&store, conv, 3).await;
     assert!(
         admitted.fields.get("limited").is_none(),
@@ -925,31 +967,34 @@ async fn a_refused_debt_consumes_no_budget() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_debt_consumes_no_channel_budget() {
     let (assistant, store, _bus) = silent_assistant(budgets(None, Some((1, 600)))).await;
-    let room = channel("room-refused-consumes-nothing");
+    let room = support::authorized_group(&assistant, "room-refused-consumes-nothing").await;
 
-    let receipt = assistant
-        .ingest(inbound(&room, ChannelKind::Group, "A", "the taken ask"))
-        .await
-        .expect("the taken ask ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "A", "the taken ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     let taken = await_message(&store, conv, 1).await;
     assert!(taken.fields.get("limited").is_none());
 
     // Half a window on, the channel's one slot still refuses the next ask.
     age_receipts(&store, 300).await;
-    assistant
-        .ingest(inbound(&room, ChannelKind::Group, "B", "the refused ask"))
-        .await
-        .expect("the refused ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "B", "the refused ask"),
+    )
+    .await;
     let refused = await_message(&store, conv, 2).await;
     assert_eq!(refused.fields["limited"], json!("channel"));
 
     // Nothing aged between them: the next ask is refused by the same
     // budget — unchanged history, unchanged outcome.
-    assistant
-        .ingest(inbound(&room, ChannelKind::Group, "B", "still refused"))
-        .await
-        .expect("the still-refused ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "B", "still refused"),
+    )
+    .await;
     let still = await_message(&store, conv, 3).await;
     assert_eq!(still.fields["limited"], json!("channel"));
 
@@ -957,10 +1002,11 @@ async fn a_refused_debt_consumes_no_channel_budget() {
     // seconds while the refused rows sit inside it at roughly 400 — and
     // the ask is admitted, because only the taken debt ever counted.
     age_receipts(&store, 400).await;
-    assistant
-        .ingest(inbound(&room, ChannelKind::Group, "B", "the admitted ask"))
-        .await
-        .expect("the admitted ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "B", "the admitted ask"),
+    )
+    .await;
     let admitted = await_message(&store, conv, 4).await;
     assert!(
         admitted.fields.get("limited").is_none(),
@@ -974,21 +1020,22 @@ async fn a_refused_debt_consumes_no_channel_budget() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_budgets_exhausted_at_once_name_the_principal_fact() {
     let (assistant, store, _bus) = silent_assistant(budgets(Some((1, 600)), Some((1, 600)))).await;
-    let room = channel("room-both-exhausted");
+    let room = support::authorized_group(&assistant, "room-both-exhausted").await;
 
     // One taken debt exhausts both one-answer budgets together.
-    let receipt = assistant
-        .ingest(inbound(&room, ChannelKind::Group, "A", "the taken ask"))
-        .await
-        .expect("the taken ask ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "A", "the taken ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     let taken = await_message(&store, conv, 1).await;
     assert!(taken.fields.get("limited").is_none());
-
-    assistant
-        .ingest(inbound(&room, ChannelKind::Group, "A", "the refused ask"))
-        .await
-        .expect("the refused ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "A", "the refused ask"),
+    )
+    .await;
     let refused = await_message(&store, conv, 2).await;
     assert_eq!(
         refused.fields["limited"],
@@ -1007,30 +1054,28 @@ async fn both_budgets_exhausted_at_once_name_the_principal_fact() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_principal_budget_spans_conversations() {
     let (assistant, store, _bus) = silent_assistant(budgets(Some((1, 600)), None)).await;
+    let room = support::authorized_group(&assistant, "room-global-budget").await;
 
-    let receipt = assistant
-        .ingest(inbound(
-            &channel("room-global-budget"),
-            ChannelKind::Group,
-            "A",
-            "the group ask",
-        ))
-        .await
-        .expect("the group ask ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "A", "the group ask"),
+    )
+    .await;
     let taken = await_message(&store, receipt.conversation_id, 1).await;
     assert!(taken.fields.get("limited").is_none());
 
     // The same principal in a different conversation: refused, because the
     // count crosses conversations.
-    let receipt = assistant
-        .ingest(inbound(
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(
             &channel("dm-global-budget-a"),
             ChannelKind::Direct,
             "A",
             "the direct ask",
-        ))
-        .await
-        .expect("the direct ask ingests");
+        ),
+    )
+    .await;
     let refused = await_message(&store, receipt.conversation_id, 1).await;
     assert_eq!(
         refused.fields["limited"],
@@ -1039,15 +1084,16 @@ async fn the_principal_budget_spans_conversations() {
     );
 
     // Another principal's spend is their own: admitted.
-    let receipt = assistant
-        .ingest(inbound(
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(
             &channel("dm-global-budget-b"),
             ChannelKind::Direct,
             "B",
             "the other ask",
-        ))
-        .await
-        .expect("the other ask ingests");
+        ),
+    )
+    .await;
     let admitted = await_message(&store, receipt.conversation_id, 1).await;
     assert!(admitted.fields.get("limited").is_none());
 }
@@ -1065,10 +1111,11 @@ async fn the_window_counts_receipt_times_across_offset_encodings() {
     let (assistant, store, _bus) = silent_assistant(budgets(Some((1, 600)), None)).await;
     let room = channel("dm-offset-encoding");
 
-    let receipt = assistant
-        .ingest(inbound(&room, ChannelKind::Direct, "A", "the taken ask"))
-        .await
-        .expect("the taken ask ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Direct, "A", "the taken ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     let taken = await_message(&store, conv, 1).await;
     assert!(taken.fields.get("limited").is_none());
@@ -1079,19 +1126,21 @@ async fn the_window_counts_receipt_times_across_offset_encodings() {
 
     // Still inside the window, so still refused — a raw text comparison
     // against the UTC cutoff would have excluded the re-encoded row.
-    assistant
-        .ingest(inbound(&room, ChannelKind::Direct, "A", "the refused ask"))
-        .await
-        .expect("the refused ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Direct, "A", "the refused ask"),
+    )
+    .await;
     let refused = await_message(&store, conv, 2).await;
     assert_eq!(refused.fields["limited"], json!("principal"));
 
     // Aging keeps the UTC-05:00 encoding and the window still releases.
     age_receipts(&store, 601).await;
-    assistant
-        .ingest(inbound(&room, ChannelKind::Direct, "A", "the released ask"))
-        .await
-        .expect("the released ask ingests");
+    support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Direct, "A", "the released ask"),
+    )
+    .await;
     let released = await_message(&store, conv, 3).await;
     assert!(
         released.fields.get("limited").is_none(),

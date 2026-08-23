@@ -10,7 +10,7 @@ use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND, ERASED_MARKER};
 use assistant_core::{ChannelKind, ErasureOutcome};
 use serde_json::json;
 
-use crate::support::{self, channel, inbound, recv_reply};
+use crate::support::{self, inbound, recv_reply};
 
 /// No two adjacent messages share a role, the first non-system message is
 /// not the assistant's, and no message carries empty content — the strict
@@ -162,22 +162,22 @@ async fn a_really_erased_group_ledger_projects_alternating() {
         .replies(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
-    let key = channel("room-alternation");
+    let key = support::authorized_group(&fixture.assistant, "room-alternation").await;
 
     // A asks and is answered; B asks and is answered; then A is erased —
     // the opening message of the ledger becomes the erased shape.
-    let receipt_a = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "A", "A's opening ask"))
-        .await
-        .expect("A's message ingests");
+    let receipt_a = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "A", "A's opening ask"),
+    )
+    .await;
     recv_reply(&mut replies).await;
     support::settle(&fixture.store, receipt_a.conversation_id, "A's turn", 4).await;
-    fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Group, "B", "B's later ask"))
-        .await
-        .expect("B's message ingests");
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "B", "B's later ask"),
+    )
+    .await;
     recv_reply(&mut replies).await;
     let conv = receipt_a.conversation_id;
     support::settle(&fixture.store, conv, "B's turn", 6).await;

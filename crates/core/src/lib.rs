@@ -16,9 +16,11 @@
 //! - [`InboundMessage`] and [`OutboundReply`] with their parts — the core's
 //!   own vocabulary, which adapters translate into and out of.
 //! - [`Assistant`] — the assembly: runtime wiring, the ingestion entry point
-//!   (answering with an [`IngestReceipt`], its stamp bounded by the
-//!   [`ProtectionConfig`] budgets), the per-adapter outbound subscription,
-//!   and erasure with its [`ErasureOutcome`].
+//!   (answering with an [`IngestOutcome`], its stamp bounded by the
+//!   [`ProtectionConfig`] budgets and its group admission checked against
+//!   the [`OperatorConfig`]), the observation entry point (answering with an
+//!   [`ObserveOutcome`]), the per-adapter outbound subscription, and erasure
+//!   with its [`ErasureOutcome`].
 //! - [`CoreError`] — what a core operation fails with.
 //!
 //! The public modules stay addressable by path, because their items read by
@@ -26,6 +28,9 @@
 //!
 //! - [`kind`] — the assistant's block kind, composed with the framework's
 //!   kinds through the derive.
+//! - [`note`] — the context-note kind carrying a group's observed facts,
+//!   and the rules contract that reads the pinned announcement.
+//! - [`privacy`] — the privacy command's recognition and its fixed answer.
 //! - [`schema`] — the store configuration and the domain tables; identity
 //!   lives apart from the ledger so erasure never touches a block.
 //! - [`tools`] — the project lookups, the palette kind that gates their
@@ -37,23 +42,35 @@
 //!   API key never enters the store.
 
 mod assembly;
+mod authorization;
 mod erasure;
 mod error;
 mod identity;
 pub mod kind;
 mod mapping;
 mod message;
+pub mod note;
 mod outbound;
+pub mod privacy;
 #[cfg(feature = "openrouter")]
 pub mod provider;
 pub mod schema;
 mod streams;
 pub mod tools;
+mod window;
 
-pub use assembly::{Assistant, Budget, IngestReceipt, ModelBinding, ProtectionConfig};
+pub use assembly::{
+    AssemblyConfig, Assistant, Budget, ModelBinding, NoteReadPause, OperatorConfig,
+    ProtectionConfig,
+};
 pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
 pub use message::{
-    Authority, ChannelKey, ChannelKind, InboundMessage, OutboundReply, ReplyKind, SenderIdentity,
+    Authority, ChannelKey, ChannelKind, DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt,
+    InvokedCommand, Observation, ObserveOutcome, ObservedFact, OutboundReply, ReplyKind,
+    SenderIdentity,
 };
-pub use outbound::FAILURE_NOTICE;
+pub use outbound::{
+    FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
+};
+pub use window::{ACKNOWLEDGMENT_WINDOW, NOTE_TOPIC_APPEND_CAP};

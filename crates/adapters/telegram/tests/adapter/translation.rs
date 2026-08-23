@@ -14,8 +14,9 @@ use serde_json::{Value, json};
 
 use crate::server::BotApiServer;
 use crate::support::{
-    TempStateFile, await_chat_messages, await_conversations, await_state_file, group_update,
-    message_id_of, message_update, private_update, recording_sleep, spawn_adapter, start_assistant,
+    TempStateFile, authorize_group, await_chat_messages, await_conversations, await_state_file,
+    group_update, message_id_of, message_update, private_update, recording_sleep, spawn_adapter,
+    start_assistant,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -50,6 +51,8 @@ async fn group_and_supergroup_both_map_group() {
     let server = BotApiServer::start().await;
     server.set_admins(-70, &[]);
     server.set_admins(-71, &[]);
+    authorize_group(&fixture.assistant, -70).await;
+    authorize_group(&fixture.assistant, -71).await;
     server.push_update(message_update(1, "group", -70, 5, "in a group"));
     server.push_update(message_update(2, "supergroup", -71, 5, "in a supergroup"));
 
@@ -78,6 +81,7 @@ async fn member_statuses_translate_to_authorities() {
     let server = BotApiServer::start().await;
     let chat = -80;
     server.set_admins(chat, &[(1, "creator"), (2, "administrator")]);
+    authorize_group(&fixture.assistant, chat).await;
     server.push_update(group_update(1, chat, 1, "from the creator"));
     server.push_update(group_update(2, chat, 2, "from an administrator"));
     server.push_update(group_update(3, chat, 3, "from a plain member"));
@@ -138,6 +142,7 @@ async fn assert_skipped_and_acknowledged(name: &str, skipped: Value) {
     let fixture = start_assistant().await;
     let server = BotApiServer::start().await;
     server.set_admins(SKIP_TEST_CHAT, &[]);
+    authorize_group(&fixture.assistant, SKIP_TEST_CHAT).await;
     server.push_update(skipped);
     server.push_update(group_update(2, SKIP_TEST_CHAT, 3, "the recordable message"));
 
@@ -259,15 +264,15 @@ async fn a_broadcast_shaped_message_is_skipped_and_acknowledged() {
     .await;
 }
 
-/// A non-message update — here a membership change — is skipped per
-/// decision 0017.
+/// An update carrying nothing this adapter consumes — here a poll — is
+/// skipped per decision 0017 as a non-message update.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_non_message_update_is_skipped_and_acknowledged() {
     assert_skipped_and_acknowledged(
         "skip-non-message",
         json!({
             "update_id": 1,
-            "my_chat_member": { "chat": { "id": SKIP_TEST_CHAT, "type": "group" } },
+            "poll": { "id": "irrelevant" },
         }),
     )
     .await;

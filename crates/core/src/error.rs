@@ -50,6 +50,18 @@ pub enum CoreError {
         claimed: ChannelKind,
     },
 
+    /// The message's sender authority arrived unresolved — the adapter's
+    /// authority source failed — for a channel the core admitted. Authority
+    /// is never defaulted into the ledger, so the message is refused and
+    /// nothing is recorded; the refusal is transient, and the adapter's
+    /// batch discipline halts on it so the message redelivers once the
+    /// source answers. Judged after admission on purpose (refined
+    /// 2026-08-23): an unadmitted group is refused with the withdraw
+    /// directive before authority is ever read, so a stranger group whose
+    /// authority source keeps failing can never wedge the batch.
+    #[error("the sender's authority is unresolved; the message was not recorded")]
+    AuthorityUnresolved,
+
     /// A first-message claim found its channel mapping gone between the
     /// insert and the read back — the row was deleted mid-claim. The
     /// ingestion cannot tell which conversation now owns the channel, so it
@@ -104,6 +116,7 @@ impl CoreError {
             Self::Store(_)
             | Self::UnknownVendor { .. }
             | Self::MissingContentTable { .. }
+            | Self::AuthorityUnresolved
             | Self::ClaimLost
             | Self::ErasureUnsettled { .. } => FailureKind::Transient,
         }
@@ -135,6 +148,7 @@ mod tests {
                 vendor: "unregistered".into(),
             },
             CoreError::MissingContentTable { table: "absent" },
+            CoreError::AuthorityUnresolved,
             CoreError::ClaimLost,
             CoreError::ErasureUnsettled { conversation_id: 1 },
         ];

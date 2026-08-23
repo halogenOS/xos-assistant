@@ -53,6 +53,10 @@ file path per secret — and never appear in the file itself:
     log = "stderr"
     model = "<the provider's id for the model>"
 
+    # Optional: the address the /privacy command answers with. Absent, the
+    # command answers a fixed not-yet-published line instead.
+    #privacy_policy = "https://example.org/privacy"
+
     [secrets.bot_token]
     env = "ASSISTANT_BOT_TOKEN"
 
@@ -70,6 +74,12 @@ file path per secret — and never appear in the file itself:
     principal_window_seconds = 600
     channel_answers = 20
     channel_window_seconds = 600
+
+    # The operator per adapter: the external id of the one account whose
+    # group invitations the assistant accepts. With no entry for an adapter,
+    # every group add on it is refused and the assistant leaves the group.
+    [operators]
+    telegram = "<the operator's numeric Telegram user id>"
 
 The `[endpoints]` table can override any of the four hosts the process talks to —
 `telegram`, `openrouter`, `forge` (the commit lookup's canonical forge, default
@@ -93,6 +103,15 @@ job. Budgets limit answering only, never recording: an over-limit message is sti
 recorded with the refusing budget named on it, draws no reply and no notice — a
 refusal notice would hand a flooder the assistant's voice — and cannot cancel an
 answer someone else is still owed.
+
+Group membership is the operator's call: the assistant stays only in groups the
+configured operator added it to, the admission persists across restarts, and a group
+add by anyone else — or any group contact with no operator entry for that adapter —
+is refused, with the assistant leaving the group. The `/privacy` command is answered
+deterministically, without a model turn: with `Privacy policy: ` plus the configured
+`privacy_policy` address, or with the fixed not-yet-published line when the key is
+absent — an empty value is refused at start. The answer goes out at most once per
+chat per window; repeats within it are recorded in silence.
 
 The process logs its startup facts — never a secret — and stops cleanly on SIGTERM.
 Deployment wiring, including the group-privacy platform setting the record-all

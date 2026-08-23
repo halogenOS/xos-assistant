@@ -87,7 +87,9 @@ pub fn turn_reading(ledger: &[Block], call_block_id: i64) -> Authority {
         .filter(|block| block.id > anchor && block.id < call_block_id)
         .filter_map(|block| match AssistantKind::from_block(block) {
             AssistantKind::ChatMessage(message) => Some(message),
-            AssistantKind::Core(_) | AssistantKind::ToolPalette(_) => None,
+            AssistantKind::Core(_)
+            | AssistantKind::ToolPalette(_)
+            | AssistantKind::ContextNote(_) => None,
         });
     fold(origin, span)
 }

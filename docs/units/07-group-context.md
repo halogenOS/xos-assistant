@@ -279,3 +279,54 @@ the framework superseding-block compaction.
   OPEN among them; the reference document exists with the operator contract;
   the follow-ups are recorded; the fixed strings ship as named constants with
   the exact copy above.
+
+## Refined at the unit's close, 2026-08-23
+
+The closing verification and the two adversarial seats refuted parts of the
+mechanisms above; the build closes them under these refinements:
+
+1. **Authority resolution is deferred to the core's need.** The adapter no
+   longer halts the batch when the administrator fetch fails for a group
+   message; it delivers the message with authority unresolved. The core
+   refuses an unauthorized group before ever reading authority — the withdraw
+   needs none — and answers an authorized message whose authority is missing
+   with a typed transient refusal the driver halts on, exactly as before.
+   Nothing is recorded with a defaulted authority; the never-default rule
+   holds. This closes the verified wedge: a stranger's group message arrived
+   in front of an administrator fetch its own leave call had doomed, and the
+   halt starved every chat behind it.
+2. **The privacy answer shares the acknowledgment window.** The claim that
+   the exhausted-window silence bounds the reply rate was refuted: the
+   command stamp keeps the command out of both budget counts, so a quiet
+   channel never exhausts and every repeat answered. Deterministic command
+   replies are bounded the way the acknowledgment already is: at most one
+   per channel per window, recorded silence within it. The rejected
+   alternative "a separate cooldown mechanism" stands rejected — this is the
+   same mechanism, shared.
+3. **The title is bounded in the core.** The platform's title cap was
+   load-bearing for the system-voice surface; the core owns its own bound —
+   a named byte constant, an over-bound title refused whole with a log line.
+4. **The ledger records what the person typed.** The adapter no longer
+   rewrites a self-directed command suffix out of the stored text; the text
+   lands verbatim, and the adapter reports the invoked command as its own
+   typed translation beside the addressed flag. The core matches the
+   reported command, never the text. A foreign-handle suffix reports no
+   command.
+5. **The consumer's transparent walk is scoped to context notes.** Walking
+   past every frontier-transparent kind silently widened debt propagation
+   onto the framework's turn-closure markers — a protection-relevant change
+   nobody specified. The consumer walk reads through notes exactly; the
+   framework's own walk keeps governing turn liveness. The failed-turn tail
+   shape is pinned at its pre-unit behavior.
+6. **A pin event outranks the lookup's pin.** When a pin event arrives for a
+   channel whose first-contact lookup has not run, the lookup reports the
+   title only — the event carries the authoritative text, and the lookup's
+   by-sending-date pin would otherwise append stale rules and spend the
+   acknowledgment on them.
+7. **Note appends are bounded per topic per window.** The acknowledgment
+   window bounded the chat line and left the ledger unbounded: a pin toggler
+   appended a system-voiced note per toggle. Appends of one topic are capped
+   within the window by a small named constant; a capped delta lands on the
+   next observation after the window opens. The full-history hot-path reads
+   are gone with it: the newest-note lookup and the owing-tail read are
+   bounded queries, never a full conversation hydration.

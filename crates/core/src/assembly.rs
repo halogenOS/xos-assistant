@@ -10,22 +10,31 @@
 //! registries it passed in; the adapter edges below are the only surface an
 //! adapter touches.
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::num::{NonZeroU32, NonZeroU64};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use agent_ledger::store::ProviderInstance;
 use agent_ledger::{
-    CoreEvent, EventBus, ProviderRegistry, Role, RuntimeContext, Store, spawn_reactor,
+    CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext, Store, spawn_reactor,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
 use crate::kind::{self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage};
-use crate::message::{ChannelKey, ChannelKind, InboundMessage, OutboundReply};
+use crate::message::{
+    ChannelKey, ChannelKind, DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt,
+    Observation, ObserveOutcome, ObservedFact, OutboundReply,
+};
+use crate::note::{self, ContextNote, NoteTopic};
+use crate::outbound::RULES_ACKNOWLEDGMENT;
 use crate::streams::StreamObserver;
 use crate::tools::{ToolSet, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
-use crate::{identity, mapping, outbound, streams};
+use crate::window::{AppendWindow, LineWindow};
+use crate::{authorization, identity, mapping, outbound, privacy, streams};
 
 /// The model every new conversation is created under: one provider instance
 /// and one model, named by the assembly and never by a message.
@@ -112,16 +121,41 @@ pub struct Budget {
     pub window_seconds: NonZeroU64,
 }
 
-/// What one accepted ingestion reports back: the ids the core resolved on
-/// the way in. The principal id is the handle a later
-/// [`Assistant::erase_principal`] call needs, so an operator surface built
-/// on the adapter has a lawful path to it without reading the core's tables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IngestReceipt {
-    /// The principal the sender resolved or created.
-    pub principal_id: i64,
-    /// The conversation the message was recorded in.
-    pub conversation_id: i64,
+/// The operator wiring of the group-context unit (decided 2026-08-23): who
+/// may admit the assistant into a group, per adapter. It comes from the
+/// embedder's configuration and is absent by default — with no operator
+/// configured, every group add fails closed.
+#[derive(Debug, Clone, Default)]
+pub struct OperatorConfig {
+    /// The operator's adapter-scoped external id, keyed by adapter name. A
+    /// membership observation authorizes a group only when its adder's
+    /// external id matches this entry for the observation's adapter.
+    pub by_adapter: HashMap<String, String>,
+}
+
+/// A scripted pause between the on-delta newest-note read and its append —
+/// the observation race's test seam, mirroring the adapter's injectable
+/// sleep: a suite pins the stamp lock's serialization without racing the
+/// scheduler. Production installs nothing and nothing pauses.
+pub type NoteReadPause = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// Everything the embedder decides about the assistant beyond its runtime
+/// wiring: the model binding, the system prompt, the answering budgets, the
+/// operator wiring and the privacy policy address — one carrier, so a later
+/// policy knob joins here instead of growing the constructor.
+#[derive(Debug, Clone)]
+pub struct AssemblyConfig {
+    /// The model every new conversation is created under.
+    pub binding: ModelBinding,
+    /// The system prompt recorded into every conversation at its creation.
+    pub system_prompt: String,
+    /// The answering budgets the stamp consults for addressed messages.
+    pub protection: ProtectionConfig,
+    /// The operator wiring: who may admit the assistant into a group.
+    pub operators: OperatorConfig,
+    /// The address the privacy command answers with; absent answers the
+    /// not-yet-published line.
+    pub privacy_policy_address: Option<String>,
 }
 
 /// The running core: the framework runtime spawned over the assistant's
@@ -145,9 +179,32 @@ pub struct Assistant {
     /// contract and its lossy edges are stated on the streams module.
     streams: Arc<StreamObserver>,
     /// The answering budgets the stamp consults for addressed messages.
-    /// Read-only after start; the limits themselves are derived from the
-    /// ledger at every write, never tallied here.
+    /// Read-only after start; the budget counts themselves are derived
+    /// from the ledger at every write — the acknowledgment windows below
+    /// are the one in-memory tally, and they bound courtesy lines, never
+    /// budgets.
     protection: ProtectionConfig,
+    /// The operator wiring: who may admit the assistant into a group.
+    /// Read-only after start.
+    operators: OperatorConfig,
+    /// The address the privacy command answers with; absent answers the
+    /// not-yet-published line. Read-only after start.
+    privacy_policy_address: Option<String>,
+    /// The rules acknowledgment's per-channel window — at most one inside
+    /// it; a further rules delta appends its note silently. The window
+    /// module states why the bookkeeping is in-memory.
+    rules_acknowledged: LineWindow,
+    /// The privacy answer's per-channel window, sharing the acknowledgment
+    /// mechanism (refined 2026-08-23): the command stamp keeps the command
+    /// out of both budget counts, so without this a quiet channel would
+    /// answer every repeat.
+    command_answered: LineWindow,
+    /// The per-topic note append cap within the window (refined
+    /// 2026-08-23): the ledger is bounded like the chat line, and a capped
+    /// delta lands on the next observation after the window.
+    note_appends: AppendWindow<(i64, NoteTopic)>,
+    /// The observation race's test seam; `None` in production.
+    note_read_pause: Option<NoteReadPause>,
     /// Serializes the answer-due stamp against other ingestions: the tail
     /// read and the append it feeds are a read-then-write, and two
     /// concurrent ingestions into one conversation could both observe the
@@ -191,10 +248,15 @@ impl Assistant {
         bus: Arc<EventBus<CoreEvent>>,
         providers: Arc<ProviderRegistry>,
         tools: ToolSet,
-        binding: ModelBinding,
-        system_prompt: String,
-        protection: ProtectionConfig,
+        config: AssemblyConfig,
     ) -> Result<Self, CoreError> {
+        let AssemblyConfig {
+            binding,
+            system_prompt,
+            protection,
+            operators,
+            privacy_policy_address,
+        } = config;
         if !store.content_tables().contains(&CHAT_MESSAGE_TABLE) {
             return Err(CoreError::MissingContentTable {
                 table: CHAT_MESSAGE_TABLE,
@@ -227,35 +289,72 @@ impl Assistant {
             palette,
             streams,
             protection,
+            operators,
+            privacy_policy_address,
+            rules_acknowledged: LineWindow::new(),
+            command_answered: LineWindow::new(),
+            note_appends: AppendWindow::new(),
+            note_read_pause: None,
             stamp_lock: Mutex::new(()),
             erasure_fence: RwLock::new(()),
         })
     }
 
-    /// The ingestion edge: record one inbound message and return the ids it
-    /// resolved to.
+    /// Install the observation race's test seam: the given pause runs
+    /// between the on-delta newest-note read and its append, inside the
+    /// stamp lock — which is exactly why a suite can prove the lock holds
+    /// the read-then-append window. Production never calls this.
+    pub fn pause_between_note_read_and_append(&mut self, pause: NoteReadPause) {
+        self.note_read_pause = Some(pause);
+    }
+
+    /// The ingestion edge: record one inbound message and answer with what
+    /// the write decided — the resolved ids, and any deterministic item the
+    /// adapter carries out.
     ///
-    /// Resolves or creates the sender's principal, maps the channel —
-    /// creating the conversation under the assembly's binding, with the
-    /// assembly's system prompt recorded first, on first message — stamps
-    /// the message, and appends the message block through the framework's
-    /// consumer write path. The stamp order is fixed: addressing first;
-    /// budgets consulted only for addressed messages, principal before
+    /// A group message is admitted first: a group channel with no
+    /// authorization row is refused fail-closed with
+    /// [`IngestOutcome::Withdraw`], touching neither the ledger nor the
+    /// identity tables — the row-or-refusal shape is what makes the check
+    /// survive lost leave calls and restarts alike. Direct channels are
+    /// untouched by the check.
+    ///
+    /// An admitted message resolves or creates the sender's principal, maps
+    /// the channel — creating the conversation under the assembly's
+    /// binding, with the assembly's system prompt recorded first, on first
+    /// message — stamps the message, and appends the message block through
+    /// the framework's consumer write path. The stamp order is fixed:
+    /// addressing first; the privacy command stamped with the command kind
+    /// ahead of any budget — a command takes no debt by its nature; budgets
+    /// consulted only for addressed non-command messages, principal before
     /// channel, the first refusing budget naming the limited fact; then
     /// answer-due by the composition rule — due when the message's own debt
     /// was taken (addressed, not limited) or when the tail owes, so a
     /// refused sender's message can be denied its own answer but can never
     /// cancel a debt it merely propagates; then the debt authority by the
-    /// minimum rule. Nothing here ever drops a message: protection limits
-    /// answering, never recording.
+    /// minimum rule. Nothing past admission ever drops a message:
+    /// protection limits answering, never recording.
+    ///
+    /// Authority is read only past admission (refined 2026-08-23): an
+    /// unadmitted group is refused with the withdraw directive before this
+    /// method ever looks at the sender's standing, and an admitted message
+    /// whose authority arrived unresolved is refused with the transient
+    /// [`CoreError::AuthorityUnresolved`] — never recorded with a default.
+    ///
+    /// The privacy command's fixed answer rides the returned outcome — the
+    /// return-value transport of decision 2026-08-23, never the event edge
+    /// — and is granted only while no budget refuses the sender AND the
+    /// channel's answer window admits it: the command shares the
+    /// acknowledgment-window mechanism (refined 2026-08-23), at most one
+    /// answer per channel per window, recorded silence within it — the
+    /// notice discipline of the protection unit.
     ///
     /// A message whose own debt was taken then emits the unlatch intent,
     /// always: a person addressing the assistant IS the deliberate
     /// re-engagement, the intent is idempotent, and the same emission
     /// releases a fresh conversation's boot latch and a stream error's
     /// re-latch alike. An unaddressed message never unlatches, and neither
-    /// does a limited one — a refused debt is not re-engagement, so a
-    /// limited flood cannot wake an error-latched conversation.
+    /// does a limited or command-stamped one — neither is re-engagement.
     ///
     /// # Errors
     ///
@@ -264,9 +363,35 @@ impl Assistant {
     /// [`CoreError::ClaimLost`] if a first-message claim lost its mapping
     /// row mid-claim. [`CoreError::Store`] if identity resolution, mapping
     /// or the append fails.
-    pub async fn ingest(&self, message: InboundMessage) -> Result<IngestReceipt, CoreError> {
+    pub async fn ingest(&self, message: InboundMessage) -> Result<IngestOutcome, CoreError> {
         let _no_erasure_mid_message = self.erasure_fence.read().await;
         let tx = self.ctx.store().tx();
+
+        // The mapping's stored kind refuses a mis-claimed channel before
+        // anything else: the mapping knows what the channel is, and every
+        // later step decides personal-data handling by the kind.
+        let mapped = mapping::find(&tx, &message.channel).await?;
+        if let Some((_, stored_kind)) = mapped
+            && stored_kind != message.channel_kind
+        {
+            return Err(CoreError::ChannelKindMismatch {
+                stored: stored_kind,
+                claimed: message.channel_kind,
+            });
+        }
+        if message.channel_kind == ChannelKind::Group
+            && !authorization::is_authorized(&tx, &message.channel).await?
+        {
+            return Ok(IngestOutcome::Withdraw);
+        }
+        // Past admission, the write needs the sender's standing; delivered
+        // unresolved, the message is refused transient and redelivers —
+        // the never-default rule, without letting a stranger group's
+        // failing authority source starve the batch (see the error's doc).
+        let Some(authority) = message.authority else {
+            return Err(CoreError::AuthorityUnresolved);
+        };
+
         let principal_id = identity::resolve_principal(
             &tx,
             message.channel.adapter.clone(),
@@ -274,16 +399,8 @@ impl Assistant {
         )
         .await?;
 
-        let conversation_id = match mapping::find(&tx, &message.channel).await? {
-            Some((existing, stored_kind)) => {
-                if stored_kind != message.channel_kind {
-                    return Err(CoreError::ChannelKindMismatch {
-                        stored: stored_kind,
-                        claimed: message.channel_kind,
-                    });
-                }
-                existing
-            }
+        let conversation_id = match mapped {
+            Some((existing, _)) => existing,
             None => {
                 self.map_new_channel(&message.channel, message.channel_kind)
                     .await?
@@ -298,18 +415,30 @@ impl Assistant {
         // contract is on its field.
         let _one_stamp_at_a_time = self.stamp_lock.lock().await;
         let owing_tail = self.owing_tail_debt(conversation_id).await?;
-        let limited = if message.addressed {
+        let is_command = privacy::is_privacy_command(message.command.as_ref());
+        let limited = if is_command {
+            Some(kind::LimitedBy::Command)
+        } else if message.addressed {
             self.refusing_budget(principal_id, conversation_id).await?
         } else {
             None
         };
         // The composition rule and the minimum rule live on the kind, as
         // one pure composition beside the stamp's readers.
-        let stamp = kind::Stamp::compose(message.addressed, message.authority, limited, owing_tail);
+        let stamp = kind::Stamp::compose(message.addressed, authority, limited, owing_tail);
+        // The command's budget half is decided inside the stamp
+        // serialization, so the consultation it shares with the stamp sees
+        // the same recorded history: answered only while every budget
+        // admits the sender — recorded silence otherwise.
+        let command_admitted = is_command
+            && self
+                .refusing_budget(principal_id, conversation_id)
+                .await?
+                .is_none();
         let fields = ChatMessage::stored_fields(
             &message.text,
             principal_id,
-            message.authority,
+            authority,
             message.origin.as_deref(),
             &message.timestamp.to_rfc3339(),
             stamp,
@@ -324,15 +453,162 @@ impl Assistant {
                 None,
             )
             .await?;
+        // The window is consulted last, after the append stands: a
+        // budget-refused command never spends it, and neither does one
+        // whose append failed transiently — a grant spent before the
+        // append would answer the redelivered command with silence.
+        let deliver = if command_admitted && self.command_answered.grants(conversation_id).await {
+            Some(DeliveryItem::CommandAnswer(privacy::privacy_answer(
+                self.privacy_policy_address.as_deref(),
+            )))
+        } else {
+            None
+        };
         if stamp.own_debt_taken() {
             self.ctx
                 .bus()
                 .emit(CoreEvent::UnlatchRequested { conversation_id });
         }
-        Ok(IngestReceipt {
-            principal_id,
-            conversation_id,
+        Ok(IngestOutcome::Recorded {
+            receipt: IngestReceipt {
+                principal_id,
+                conversation_id,
+            },
+            deliver,
         })
+    }
+
+    /// The observation edge: judge one platform-neutral observation and
+    /// answer with what was decided — the fail-closed refusal, or the
+    /// appended note's acknowledgment. Everything deterministic rides this
+    /// return; the event edge stays the model's answers and the failure
+    /// notice (decided 2026-08-23).
+    ///
+    /// A membership observation is the authorization table's one writer: an
+    /// add whose adder matches the configured operator records the group's
+    /// admission and stands across restarts. A foreign adder, a missing
+    /// adder, or no configured operator answers [`ObserveOutcome::Withdraw`]
+    /// and records nothing — and so does any title or announcement
+    /// observation for a group without an authorization row, so a lost
+    /// leave call is healed by the group's next contact.
+    ///
+    /// An admitted title or announcement observation derives its note — the
+    /// rules contract reads the pinned announcement here, in the core — and
+    /// appends it on-delta: only when the observed text differs from the
+    /// newest stored note of the same topic, and only within the topic's
+    /// per-window append cap (refined 2026-08-23) — a capped delta is not
+    /// queued, it lands on the next observation after the window through
+    /// the on-delta rule itself. The read-then-append is serialized under
+    /// the stamp lock, so two equal racing observations append one note; an
+    /// authorized, unmapped group channel takes the same winner-only
+    /// creation path a first message does, system prompt and palette
+    /// included. A fresh rules note outside the acknowledgment window
+    /// carries the fixed acknowledgment back to the adapter; a title note
+    /// is never acknowledged.
+    ///
+    /// A direct-channel observation observes nothing: group facts belong to
+    /// groups, and the direct path is untouched by this unit.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::ChannelKindMismatch`] if the channel is already mapped
+    /// under a different kind than the observation claims.
+    /// [`CoreError::ClaimLost`] if a first-contact claim lost its mapping
+    /// row mid-claim. [`CoreError::Store`] if a read or the append fails.
+    pub async fn observe(&self, observation: Observation) -> Result<ObserveOutcome, CoreError> {
+        let _no_erasure_mid_observation = self.erasure_fence.read().await;
+        let tx = self.ctx.store().tx();
+
+        if let Some((_, stored_kind)) = mapping::find(&tx, &observation.channel).await?
+            && stored_kind != observation.channel_kind
+        {
+            return Err(CoreError::ChannelKindMismatch {
+                stored: stored_kind,
+                claimed: observation.channel_kind,
+            });
+        }
+        if observation.channel_kind != ChannelKind::Group {
+            tracing::debug!("a direct-channel observation observes nothing");
+            return Ok(ObserveOutcome::Observed { deliver: None });
+        }
+
+        match observation.fact {
+            ObservedFact::Added { by } => {
+                let operator = self
+                    .operators
+                    .by_adapter
+                    .get(&observation.channel.adapter)
+                    .map(String::as_str);
+                if !authorization::operator_admits(operator, by.as_ref()) {
+                    return Ok(ObserveOutcome::Withdraw);
+                }
+                authorization::authorize(&tx, &observation.channel).await?;
+                Ok(ObserveOutcome::Observed { deliver: None })
+            }
+            ObservedFact::Title(_) | ObservedFact::PinnedAnnouncement(_) => {
+                if !authorization::is_authorized(&tx, &observation.channel).await? {
+                    return Ok(ObserveOutcome::Withdraw);
+                }
+                let Some((topic, text)) = note::note_of(&observation.fact) else {
+                    return Ok(ObserveOutcome::Observed { deliver: None });
+                };
+                // The on-delta read-then-append, serialized against every
+                // other stamp-locked write: without the lock two equal
+                // observations would both read the pre-append newest note
+                // and both append. Mapping resolution sits inside the lock
+                // for the same reason — the loser of a creation race must
+                // see the winner's note, not its own empty conversation.
+                let _one_stamp_at_a_time = self.stamp_lock.lock().await;
+                let conversation_id = match mapping::find(&tx, &observation.channel).await? {
+                    Some((existing, _)) => existing,
+                    None => {
+                        self.map_new_channel(&observation.channel, ChannelKind::Group)
+                            .await?
+                    }
+                };
+                let newest = note::newest_text(self.ctx.store(), conversation_id, topic).await?;
+                if let Some(pause) = &self.note_read_pause {
+                    pause().await;
+                }
+                if newest.as_deref() == Some(text.as_str()) {
+                    return Ok(ObserveOutcome::Observed { deliver: None });
+                }
+                if !self.note_appends.admits((conversation_id, topic)).await {
+                    tracing::info!(
+                        conversation_id,
+                        topic = topic.as_str(),
+                        "the topic's appends are capped for this window; \
+                         the delta lands on the next observation after it"
+                    );
+                    return Ok(ObserveOutcome::Observed { deliver: None });
+                }
+                self.ctx
+                    .store()
+                    .append_consumer_block(
+                        conversation_id,
+                        None,
+                        note::CONTEXT_NOTE_KIND,
+                        ContextNote::stored_fields(topic, &text),
+                        None,
+                    )
+                    .await?;
+                // The cap slot and the acknowledgment window are spent only
+                // past the successful append: a transiently failed append
+                // redelivers its observation, and spending either before
+                // the append would cap or silence the redelivery for a
+                // note that never landed.
+                self.note_appends.record((conversation_id, topic)).await;
+                let deliver = match topic {
+                    NoteTopic::Rules => self
+                        .rules_acknowledged
+                        .grants(conversation_id)
+                        .await
+                        .then(|| DeliveryItem::Acknowledgment(RULES_ACKNOWLEDGMENT.to_owned())),
+                    NoteTopic::Title => None,
+                };
+                Ok(ObserveOutcome::Observed { deliver })
+            }
+        }
     }
 
     /// The outbound edge for one adapter: a subscription yielding the
@@ -471,21 +747,47 @@ impl Assistant {
     /// opened-debt predicate, not through this debt stamp (decision 0043).
     /// An owing tail hands over the authority its debt carries, folded
     /// through the kind's pre-migration rule.
+    ///
+    /// The read walks past context notes exactly (refined 2026-08-23): a
+    /// note appended over an unanswered message leaves the turn owed, so
+    /// the debt it carries must propagate through the note to the next
+    /// message's stamp — while the framework's other transparent kinds,
+    /// the turn-closure markers above all, stay a settled tail here: the
+    /// framework's own walk governs turn liveness, and reading debt
+    /// through a closed turn's marker would widen propagation past failed
+    /// turns. Every read is bounded — one row behind the tail at most,
+    /// never a conversation hydration — because this sits on ingestion's
+    /// hot path and the framework leaves a transparent turn-end marker as
+    /// the tail of every answered conversation.
     async fn owing_tail_debt(
         &self,
         conversation_id: i64,
     ) -> Result<Option<kind::TailDebt>, CoreError> {
-        use agent_ledger::FromBlock;
-        let Some(tail) = self.ctx.store().latest_block(conversation_id).await? else {
+        let store = self.ctx.store();
+        let Some(tail) = store.latest_block(conversation_id).await? else {
             return Ok(None);
         };
-        Ok(match AssistantKind::from_block(&tail) {
-            AssistantKind::ChatMessage(message) if message.owes_answer() => Some(kind::TailDebt {
-                authority: message.carried_debt_authority(),
-            }),
-            AssistantKind::ChatMessage(_)
-            | AssistantKind::Core(_)
-            | AssistantKind::ToolPalette(_) => None,
+        let tail = if tail.block_type == note::CONTEXT_NOTE_KIND {
+            match note::newest_block_id_past_notes(store, conversation_id).await? {
+                Some(behind_the_notes) => store.find_block(behind_the_notes).await?,
+                None => None,
+            }
+        } else {
+            Some(tail)
+        };
+        Ok(match tail.map(|block| AssistantKind::from_block(&block)) {
+            Some(AssistantKind::ChatMessage(message)) if message.owes_answer() => {
+                Some(kind::TailDebt {
+                    authority: message.carried_debt_authority(),
+                })
+            }
+            Some(
+                AssistantKind::ChatMessage(_)
+                | AssistantKind::Core(_)
+                | AssistantKind::ToolPalette(_)
+                | AssistantKind::ContextNote(_),
+            )
+            | None => None,
         })
     }
 

@@ -7,10 +7,11 @@
 //! or in any log line. Every error below names where a value was looked for,
 //! never what was found.
 
+use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 
-use assistant_core::{Budget, ProtectionConfig};
+use assistant_core::{Budget, OperatorConfig, ProtectionConfig};
 use serde::Deserialize;
 
 use crate::StartError;
@@ -36,8 +37,58 @@ pub struct Configuration {
     /// The answering budgets; omitted fields keep the stated defaults.
     #[serde(default)]
     pub protection: Protection,
+    /// The operators table — who may admit the assistant into a group.
+    /// Absent by default, under which every group add fails closed.
+    #[serde(default)]
+    pub operators: OperatorsTable,
+    /// The address the privacy command answers with; absent answers the
+    /// not-yet-published line. Resolved through
+    /// [`Configuration::resolve_privacy_policy`], which refuses an empty
+    /// value.
+    pub privacy_policy: Option<String>,
     /// Where the two secrets are found — never the secrets themselves.
     pub secrets: Secrets,
+}
+
+/// The operators table: adapter name to the operator's adapter-scoped
+/// external id on that adapter. Its own validated type: the table's rules —
+/// a non-empty id, a key naming a known adapter — live here beside the
+/// shape, not hoisted into aggregate validation.
+#[derive(Debug, Default, Deserialize)]
+#[serde(transparent)]
+pub struct OperatorsTable(BTreeMap<String, String>);
+
+impl OperatorsTable {
+    /// The core's operator wiring these entries name, validated against
+    /// the adapters the binary actually assembles.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::OperatorUnknownAdapter`] when a key names no known
+    /// adapter — a typoed key would silently refuse every group add on the
+    /// intended one; [`StartError::OperatorEmpty`] when an entry carries an
+    /// empty id — an empty value would match no adder and silently refuse
+    /// every add. Both refuse the start instead. A surviving id is stored
+    /// trimmed: a padded value would match no adder either, and the pad is
+    /// file formatting, never identity.
+    pub fn resolve(&self, known_adapters: &[&str]) -> Result<OperatorConfig, StartError> {
+        let mut by_adapter = std::collections::HashMap::new();
+        for (adapter, external_id) in &self.0 {
+            if !known_adapters.contains(&adapter.as_str()) {
+                return Err(StartError::OperatorUnknownAdapter {
+                    adapter: adapter.clone(),
+                });
+            }
+            let external_id = external_id.trim();
+            if external_id.is_empty() {
+                return Err(StartError::OperatorEmpty {
+                    adapter: adapter.clone(),
+                });
+            }
+            by_adapter.insert(adapter.clone(), external_id.to_owned());
+        }
+        Ok(OperatorConfig { by_adapter })
+    }
 }
 
 /// Where log lines go, decoded into its own arms so no caller compares
@@ -167,6 +218,29 @@ impl Protection {
     }
 }
 
+impl Configuration {
+    /// The privacy address the command answers with, `None` when the key
+    /// is absent.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::PrivacyPolicyEmpty`] when the key is present but
+    /// empty or whitespace — a blank legal pointer is a misconfiguration,
+    /// refused at load like an empty operator id; omitting the key is how
+    /// the not-yet-published line is chosen. A surviving address resolves
+    /// trimmed: the pad is file formatting, and it must not flow into the
+    /// fixed answer line.
+    pub fn resolve_privacy_policy(&self) -> Result<Option<String>, StartError> {
+        match &self.privacy_policy {
+            Some(address) => match address.trim() {
+                "" => Err(StartError::PrivacyPolicyEmpty),
+                trimmed => Ok(Some(trimmed.to_owned())),
+            },
+            None => Ok(None),
+        }
+    }
+}
+
 /// The longest accepted window: one year. Far past this, the database's
 /// date arithmetic returns null and the count would silently admit
 /// everything; the bound turns that cliff into a parse refusal.
@@ -286,34 +360,118 @@ fn locate(text: &str, span: Option<std::ops::Range<usize>>) -> String {
     format!("at line {line}, column {column}")
 }
 
+// Every test below binds to the real load path: a whole file on disk, read
+// and decoded through [`Configuration::load`] exactly as the binary does —
+// never a private probe copy of the shape, which could drift from the real
+// one without a test noticing.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A carrier for the log key alone, so each spelling decodes through
-    /// the same serde path the configuration file uses.
-    #[derive(Deserialize)]
-    struct Probe {
-        log: LogDestination,
+    /// The adapters the binary assembles, as the resolution tests validate
+    /// against.
+    const KNOWN_ADAPTERS: [&str; 1] = ["telegram"];
+
+    /// A configuration file on disk, removed when dropped.
+    struct TempConfigFile(PathBuf);
+
+    impl TempConfigFile {
+        fn new(content: &str) -> Self {
+            let unique = format!(
+                "assistant-config-{}-{}.toml",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("the clock is past the epoch")
+                    .as_nanos()
+            );
+            let path = std::env::temp_dir().join(unique);
+            std::fs::write(&path, content).expect("the configuration file writes");
+            Self(path)
+        }
     }
 
-    fn decode(toml: &str) -> LogDestination {
-        toml::from_str::<Probe>(toml)
-            .unwrap_or_else(|error| panic!("{toml:?} decodes: {error}"))
-            .log
+    impl Drop for TempConfigFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
+
+    fn load(content: &str) -> Result<Configuration, StartError> {
+        let file = TempConfigFile::new(content);
+        Configuration::load(&file.0)
+    }
+
+    /// A whole valid file around the given log line and extra content —
+    /// bare keys in `extra` land ahead of the secrets tables, so both
+    /// spellings compose.
+    fn full(log_line: &str, extra: &str) -> String {
+        format!(
+            "store_path = \"assistant.db\"\n\
+             telegram_state_path = \"telegram.offset\"\n\
+             prompt_dir = \"prompts\"\n\
+             {log_line}\n\
+             model = \"test-model\"\n\
+             {extra}\n\
+             [secrets.bot_token]\n\
+             env = \"UNUSED\"\n\
+             \n\
+             [secrets.openrouter_key]\n\
+             env = \"UNUSED\"\n"
+        )
+    }
+
+    fn loaded(log_line: &str, extra: &str) -> Configuration {
+        load(&full(log_line, extra)).expect("the configuration loads")
+    }
+
+    /// The README's own example, extracted verbatim and decoded through the
+    /// real load path, with every resolution the binary performs behind the
+    /// decode — so the shown example cannot rot away from the real shape.
+    #[test]
+    fn the_readme_example_loads_and_resolves() {
+        let readme = include_str!("../../../README.md");
+        let lines: Vec<&str> = readme.lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with("store_path"))
+            .expect("the README shows the example configuration");
+        let end = lines
+            .iter()
+            .rposition(|line| line.contains("telegram = \"<"))
+            .expect("the example ends with the operators entry");
+        let example: String = lines[start..=end]
+            .iter()
+            .map(|line| line.strip_prefix("    ").unwrap_or(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let configuration = load(&example).expect("the README example decodes");
+        configuration
+            .operators
+            .resolve(&KNOWN_ADAPTERS)
+            .expect("the example's operators table resolves");
+        configuration
+            .protection
+            .resolve()
+            .expect("the example's protection table resolves");
+        configuration
+            .resolve_privacy_policy()
+            .expect("the example's privacy key resolves");
+    }
+
+    // ─── The log destination ─────────────────────────────────────────────
 
     #[test]
     fn the_bare_word_names_the_console() {
         assert!(matches!(
-            decode("log = \"stderr\""),
+            loaded("log = \"stderr\"", "").log,
             LogDestination::Console(ConsoleStream::Stderr)
         ));
     }
 
     #[test]
     fn any_other_bare_string_names_a_file() {
-        let LogDestination::File(file) = decode("log = \"assistant.log\"") else {
+        let LogDestination::File(file) = loaded("log = \"assistant.log\"", "").log else {
             panic!("a bare path string decodes as a file destination");
         };
         assert_eq!(file.path(), Path::new("assistant.log"));
@@ -321,32 +479,21 @@ mod tests {
 
     #[test]
     fn the_table_spelling_names_a_file_even_one_named_after_the_console() {
-        let LogDestination::File(file) = decode("log = { file = \"stderr\" }") else {
+        let LogDestination::File(file) = loaded("log = { file = \"stderr\" }", "").log else {
             panic!("the table spelling decodes as a file destination");
         };
         assert_eq!(file.path(), Path::new("stderr"));
     }
 
-    /// A carrier for the protection table alone, decoding through the same
-    /// serde path the configuration file uses. `#[serde(default)]` mirrors
-    /// the field's attribute on [`Configuration`], so the absent table
-    /// decodes here exactly as it does there.
-    #[derive(Deserialize)]
-    struct ProtectionProbe {
-        #[serde(default)]
-        protection: Protection,
-    }
+    // ─── The protection table ────────────────────────────────────────────
 
-    fn decode_protection(toml: &str) -> Result<ProtectionConfig, StartError> {
-        toml::from_str::<ProtectionProbe>(toml)
-            .unwrap_or_else(|error| panic!("{toml:?} decodes: {error}"))
-            .protection
-            .resolve()
+    fn resolved_protection(extra: &str) -> Result<ProtectionConfig, StartError> {
+        loaded("log = \"stderr\"", extra).protection.resolve()
     }
 
     #[test]
     fn an_absent_protection_table_takes_the_stated_defaults() {
-        let resolved = decode_protection("").expect("the defaults resolve");
+        let resolved = resolved_protection("").expect("the defaults resolve");
         let principal = resolved.principal.expect("the principal budget is on");
         let channel = resolved.channel.expect("the channel budget is on");
         assert_eq!(
@@ -369,7 +516,7 @@ mod tests {
 
     #[test]
     fn a_partial_protection_table_takes_per_field_defaults() {
-        let resolved = decode_protection("[protection]\nprincipal_answers = 2\n")
+        let resolved = resolved_protection("[protection]\nprincipal_answers = 2\n")
             .expect("the partial table resolves");
         let principal = resolved.principal.expect("the principal budget is on");
         assert_eq!(principal.answers.get(), 2, "the named field overrides");
@@ -388,7 +535,7 @@ mod tests {
 
     #[test]
     fn a_zero_window_disables_that_budget_and_only_that_budget() {
-        let resolved = decode_protection("[protection]\nchannel_window_seconds = 0\n")
+        let resolved = resolved_protection("[protection]\nchannel_window_seconds = 0\n")
             .expect("the disabling window resolves");
         assert!(resolved.channel.is_none(), "a zero window disables");
         assert!(
@@ -399,8 +546,9 @@ mod tests {
 
     #[test]
     fn an_over_year_window_is_refused_naming_the_field() {
-        let refused = decode_protection("[protection]\nprincipal_window_seconds = 1000000000000\n")
-            .expect_err("a window past the year bound must be refused");
+        let refused =
+            resolved_protection("[protection]\nprincipal_window_seconds = 1000000000000\n")
+                .expect_err("a window past the year bound must be refused");
         match refused {
             StartError::ProtectionWindowOverBound { field } => {
                 assert_eq!(field, "principal_window_seconds");
@@ -409,7 +557,7 @@ mod tests {
         }
         // The bound itself still resolves.
         assert!(
-            decode_protection("[protection]\nchannel_window_seconds = 31536000\n")
+            resolved_protection("[protection]\nchannel_window_seconds = 31536000\n")
                 .expect("the one-year window resolves")
                 .channel
                 .is_some()
@@ -418,7 +566,7 @@ mod tests {
 
     #[test]
     fn a_zero_answer_count_is_refused_naming_the_field() {
-        let refused = decode_protection("[protection]\nchannel_answers = 0\n")
+        let refused = resolved_protection("[protection]\nchannel_answers = 0\n")
             .expect_err("a zero count must be refused");
         match refused {
             StartError::ProtectionAnswersZero { field } => {
@@ -428,7 +576,7 @@ mod tests {
         }
         // Refused even beside the window that would disable the budget.
         assert!(
-            decode_protection(
+            resolved_protection(
                 "[protection]\nprincipal_answers = 0\nprincipal_window_seconds = 0\n"
             )
             .is_err(),
@@ -437,10 +585,126 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_protection_key_is_refused() {
+    fn an_unknown_key_is_refused_at_the_load() {
         assert!(
-            toml::from_str::<ProtectionProbe>("[protection]\nprincipal_burst = 3\n").is_err(),
+            load(&full(
+                "log = \"stderr\"",
+                "[protection]\nprincipal_burst = 3\n"
+            ))
+            .is_err(),
             "unknown keys in the protection table are refused"
         );
+        assert!(
+            load(&full("log = \"stderr\"", "surprise = true\n")).is_err(),
+            "unknown top-level keys are refused"
+        );
+    }
+
+    // ─── The operators table and the privacy address ─────────────────────
+
+    #[test]
+    fn the_operators_table_and_the_privacy_address_resolve() {
+        let configuration = loaded(
+            "log = \"stderr\"",
+            "privacy_policy = \"https://example.org/privacy\"\n\
+             [operators]\n\
+             telegram = \"12345\"\n",
+        );
+        let resolved = configuration
+            .operators
+            .resolve(&KNOWN_ADAPTERS)
+            .expect("the wiring resolves");
+        assert_eq!(
+            resolved.by_adapter.get("telegram").map(String::as_str),
+            Some("12345")
+        );
+        assert_eq!(
+            configuration
+                .resolve_privacy_policy()
+                .expect("the address resolves")
+                .as_deref(),
+            Some("https://example.org/privacy")
+        );
+    }
+
+    #[test]
+    fn both_keys_are_absent_by_default() {
+        let configuration = loaded("log = \"stderr\"", "");
+        let resolved = configuration
+            .operators
+            .resolve(&KNOWN_ADAPTERS)
+            .expect("the absent wiring resolves");
+        assert!(resolved.by_adapter.is_empty(), "no operator by default");
+        assert_eq!(
+            configuration
+                .resolve_privacy_policy()
+                .expect("the absent key resolves"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_padded_operator_id_and_privacy_address_resolve_trimmed() {
+        let configuration = loaded(
+            "log = \"stderr\"",
+            "privacy_policy = \" https://example.org/privacy \"\n\
+             [operators]\n\
+             telegram = \" 12345 \"\n",
+        );
+        let resolved = configuration
+            .operators
+            .resolve(&KNOWN_ADAPTERS)
+            .expect("the padded id resolves");
+        assert_eq!(
+            resolved.by_adapter.get("telegram").map(String::as_str),
+            Some("12345"),
+            "the pad is file formatting, never identity — untrimmed it would \
+             match no adder and silently refuse every add"
+        );
+        assert_eq!(
+            configuration
+                .resolve_privacy_policy()
+                .expect("the padded address resolves")
+                .as_deref(),
+            Some("https://example.org/privacy"),
+            "no whitespace flows into the fixed answer line"
+        );
+    }
+
+    #[test]
+    fn an_empty_operator_id_is_refused_naming_the_adapter() {
+        let refused = loaded("log = \"stderr\"", "[operators]\ntelegram = \"  \"\n")
+            .operators
+            .resolve(&KNOWN_ADAPTERS)
+            .expect_err("an empty operator id must be refused");
+        match refused {
+            StartError::OperatorEmpty { adapter } => assert_eq!(adapter, "telegram"),
+            other => panic!("the refusal names the adapter; got {other}"),
+        }
+    }
+
+    #[test]
+    fn an_operator_key_naming_no_known_adapter_is_refused() {
+        let refused = loaded("log = \"stderr\"", "[operators]\ntelegrm = \"12345\"\n")
+            .operators
+            .resolve(&KNOWN_ADAPTERS)
+            .expect_err("a typoed adapter key must be refused");
+        match refused {
+            StartError::OperatorUnknownAdapter { adapter } => assert_eq!(adapter, "telegrm"),
+            other => panic!("the refusal names the unknown key; got {other}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_privacy_address_is_refused() {
+        for address in ["privacy_policy = \"\"\n", "privacy_policy = \"   \"\n"] {
+            let refused = loaded("log = \"stderr\"", address)
+                .resolve_privacy_policy()
+                .expect_err("a blank legal pointer must be refused");
+            assert!(
+                matches!(refused, StartError::PrivacyPolicyEmpty),
+                "the refusal names the empty address; got {refused}"
+            );
+        }
     }
 }

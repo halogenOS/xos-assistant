@@ -35,11 +35,11 @@ async fn erasing_during_a_held_stream_interrupts_settles_then_deletes() {
     let fixture = support::start_assistant(Some(hold.clone())).await;
     let key = channel("dm-held");
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "A", "the held ask"))
-        .await
-        .expect("the message ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "A", "the held ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     hold.started().await;
     // The stream is provably open once its tail is in stored state; waiting
@@ -100,11 +100,11 @@ async fn an_idle_erasure_pays_no_wait() {
         .expect("the outbound edge opens");
     let key = channel("dm-idle");
 
-    let receipt = fixture
-        .assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "A", "the settled ask"))
-        .await
-        .expect("the message ingests");
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "A", "the settled ask"),
+    )
+    .await;
     support::recv_reply(&mut replies).await;
     support::settle(
         &fixture.store,
@@ -181,18 +181,23 @@ async fn a_stream_that_never_settles_fails_the_erasure_loudly_deleting_nothing()
         Arc::new(EventBus::new()),
         support::registry_of(deaf_provider()),
         assistant_core::tools::ToolSet::new(),
-        support::binding(),
-        support::SYSTEM_PROMPT.into(),
-        assistant_core::ProtectionConfig::default(),
+        assistant_core::AssemblyConfig {
+            binding: support::binding(),
+            system_prompt: support::SYSTEM_PROMPT.into(),
+            protection: assistant_core::ProtectionConfig::default(),
+            operators: support::operator_config(),
+            privacy_policy_address: None,
+        },
     )
     .await
     .expect("the assembly starts");
     let key = channel("dm-deaf");
 
-    let receipt = assistant
-        .ingest(inbound(&key, ChannelKind::Direct, "A", "the unsettled ask"))
-        .await
-        .expect("the message ingests");
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&key, ChannelKind::Direct, "A", "the unsettled ask"),
+    )
+    .await;
     let conv = receipt.conversation_id;
     await_ledger(&store, conv, "the deaf streaming tail", |blocks| {
         blocks.iter().any(|b| b.block_type == "streaming")
@@ -274,16 +279,21 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
             Arc::new(EventBus::new()),
             support::registry_of(deaf_provider()),
             assistant_core::tools::ToolSet::new(),
-            support::binding(),
-            support::SYSTEM_PROMPT.into(),
-            assistant_core::ProtectionConfig::default(),
+            assistant_core::AssemblyConfig {
+                binding: support::binding(),
+                system_prompt: support::SYSTEM_PROMPT.into(),
+                protection: assistant_core::ProtectionConfig::default(),
+                operators: support::operator_config(),
+                privacy_policy_address: None,
+            },
         )
         .await
         .expect("the first assembly starts");
-        let receipt = first
-            .ingest(inbound(&key, ChannelKind::Direct, "A", "the abandoned ask"))
-            .await
-            .expect("the message ingests");
+        let receipt = support::ingest_recorded(
+            &first,
+            inbound(&key, ChannelKind::Direct, "A", "the abandoned ask"),
+        )
+        .await;
         await_ledger(
             &store,
             receipt.conversation_id,
@@ -302,9 +312,13 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
         Arc::new(EventBus::new()),
         support::registry_of(deaf_provider()),
         assistant_core::tools::ToolSet::new(),
-        support::binding(),
-        support::SYSTEM_PROMPT.into(),
-        assistant_core::ProtectionConfig::default(),
+        assistant_core::AssemblyConfig {
+            binding: support::binding(),
+            system_prompt: support::SYSTEM_PROMPT.into(),
+            protection: assistant_core::ProtectionConfig::default(),
+            operators: support::operator_config(),
+            privacy_policy_address: None,
+        },
     )
     .await
     .expect("the second assembly starts");

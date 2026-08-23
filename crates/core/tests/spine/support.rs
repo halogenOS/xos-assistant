@@ -16,7 +16,8 @@ use agent_ledger::{
 use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::{
-    Assistant, Authority, Budget, ChannelKey, ChannelKind, InboundMessage, ModelBinding,
+    Assistant, Authority, Budget, ChannelKey, ChannelKind, InboundMessage, IngestReceipt,
+    InvokedCommand, ModelBinding, Observation, ObserveOutcome, ObservedFact, OperatorConfig,
     OutboundReply, ProtectionConfig, SenderIdentity,
 };
 use serde_json::{Value, json};
@@ -679,8 +680,7 @@ pub async fn start_assistant_configured(
 }
 
 /// Assemble a running assistant over the given provider and tool set — the
-/// full seam the tool tests use, and what every narrower helper delegates
-/// to.
+/// full seam the tool tests use, under the suite's default operator wiring.
 pub async fn start_assistant_full(
     store: Store,
     provider: Box<dyn ProviderModule>,
@@ -688,15 +688,43 @@ pub async fn start_assistant_full(
     tools: ToolSet,
     protection: ProtectionConfig,
 ) -> Fixture {
+    start_assistant_operators(
+        store,
+        provider,
+        script,
+        tools,
+        protection,
+        operator_config(),
+        None,
+    )
+    .await
+}
+
+/// The widest seam: everything spelled out, operator wiring and privacy
+/// address included — for the group-context tests that pin a configured
+/// privacy address or an absent operator.
+pub async fn start_assistant_operators(
+    store: Store,
+    provider: Box<dyn ProviderModule>,
+    script: ScriptHandle,
+    tools: ToolSet,
+    protection: ProtectionConfig,
+    operators: OperatorConfig,
+    privacy_policy_address: Option<String>,
+) -> Fixture {
     let bus: Arc<EventBus<CoreEvent>> = Arc::new(EventBus::new());
     let assistant = Assistant::start(
         store.clone(),
         Arc::clone(&bus),
         registry_of(provider),
         tools,
-        binding(),
-        SYSTEM_PROMPT.into(),
-        protection,
+        assistant_core::AssemblyConfig {
+            binding: binding(),
+            system_prompt: SYSTEM_PROMPT.into(),
+            protection,
+            operators,
+            privacy_policy_address,
+        },
     )
     .await
     .expect("the assembly starts");
@@ -705,6 +733,76 @@ pub async fn start_assistant_full(
         script,
         store,
         bus,
+    }
+}
+
+/// The operator every test assembly is configured with, on the suite's
+/// [`ADAPTER`]: the external id [`authorize`] admits groups as.
+pub const OPERATOR: &str = "operator-1";
+
+/// The suite's default operator wiring: the one operator on the suite's
+/// adapter.
+pub fn operator_config() -> OperatorConfig {
+    OperatorConfig {
+        by_adapter: std::collections::HashMap::from([(ADAPTER.to_owned(), OPERATOR.to_owned())]),
+    }
+}
+
+/// One membership observation: the assistant added to the channel by the
+/// sender of the given external id.
+pub fn added_by(channel: &ChannelKey, external_id: &str) -> Observation {
+    Observation {
+        channel: channel.clone(),
+        channel_kind: ChannelKind::Group,
+        fact: ObservedFact::Added {
+            by: Some(SenderIdentity {
+                external_id: external_id.into(),
+                display_name: format!("Sender {external_id}"),
+                username: None,
+            }),
+        },
+    }
+}
+
+/// A group channel admitted by the configured operator, in one visible
+/// step: the admission every group test states where it names the channel,
+/// so no test speaks in a group it was admitted to silently.
+pub async fn authorized_group(assistant: &Assistant, id: &str) -> ChannelKey {
+    let key = channel(id);
+    authorize(assistant, &key).await;
+    key
+}
+
+/// Admit one group channel as the configured operator — what a test does
+/// before speaking in a group, mirroring the deployment where the operator
+/// adds the assistant first.
+pub async fn authorize(assistant: &Assistant, channel: &ChannelKey) {
+    let outcome = assistant
+        .observe(added_by(channel, OPERATOR))
+        .await
+        .expect("the membership observation is judged");
+    assert_eq!(
+        outcome,
+        ObserveOutcome::Observed { deliver: None },
+        "the operator's add admits the group"
+    );
+}
+
+/// Ingest one message that must be recorded, and return its receipt — the
+/// shape almost every test wants. Authorization is the caller's, spelled
+/// out at every group call site with [`authorize`]: an implicit admission
+/// here would blind the whole suite to authorization regressions. Never
+/// routes a message the test expects refused.
+pub async fn ingest_recorded(assistant: &Assistant, message: InboundMessage) -> IngestReceipt {
+    match assistant
+        .ingest(message)
+        .await
+        .expect("the message ingests")
+    {
+        assistant_core::IngestOutcome::Recorded { receipt, .. } => receipt,
+        assistant_core::IngestOutcome::Withdraw => {
+            panic!("the message was refused; the test channel is not authorized")
+        }
     }
 }
 
@@ -783,6 +881,35 @@ pub async fn reencode_receipts_at_utc_minus_five(store: &Store) {
     .expect("the receipt times re-encode");
 }
 
+/// The transient append fault, injected at the store: a temporary trigger
+/// aborts every INSERT into the named content table while every read stays
+/// live — the seam behind the redelivered-after-transient-failure pins,
+/// which prove no window or cap is spent before an append stands. The
+/// framework's append is one transaction, so the aborted content insert
+/// rolls the header back with it and the ledger keeps no half-written
+/// block. [`heal_appends`] removes the fault.
+pub async fn sabotage_appends(store: &Store, table: &'static str) {
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER sabotage_{table} BEFORE INSERT ON {table} \
+             BEGIN SELECT RAISE(ABORT, 'injected append failure'); END;"
+        ))?;
+        Ok(())
+    })
+    .await
+    .expect("the sabotage trigger installs");
+}
+
+/// Remove the injected append fault; the next append stands again.
+pub async fn heal_appends(store: &Store, table: &'static str) {
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
+        conn.execute_batch(&format!("DROP TRIGGER sabotage_{table};"))?;
+        Ok(())
+    })
+    .await
+    .expect("the sabotage trigger drops");
+}
+
 /// The framework's recorded migration version for the assistant's domain.
 /// This helper and its rewind below live beside [`age_receipts`] on
 /// purpose: the suite's knowledge of the framework's schema — the `blocks`
@@ -855,8 +982,9 @@ pub fn inbound_as(
             display_name: format!("Sender {sender_external_id}"),
             username: None,
         },
-        authority,
+        authority: Some(authority),
         addressed: true,
+        command: None,
         text: text.into(),
         origin: Some(format!(
             "origin-{sender_external_id}-{text_len}",
@@ -864,6 +992,14 @@ pub fn inbound_as(
         )),
         timestamp: chrono::Utc::now(),
     }
+}
+
+/// The same message, invoking the given command — the report the adapter
+/// sends beside the verbatim text, which the core matches instead of the
+/// text.
+pub fn with_command(mut message: InboundMessage, command: &str) -> InboundMessage {
+    message.command = Some(InvokedCommand::new(command));
+    message
 }
 
 /// One unaddressed inbound message — recorded, resting, never unlatching.

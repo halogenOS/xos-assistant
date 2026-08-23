@@ -26,9 +26,13 @@ async fn a_binding_with_an_unregistered_vendor_is_refused_at_start() {
         bus,
         support::registry_of(provider),
         assistant_core::tools::ToolSet::new(),
-        binding,
-        support::SYSTEM_PROMPT.into(),
-        assistant_core::ProtectionConfig::default(),
+        assistant_core::AssemblyConfig {
+            binding,
+            system_prompt: support::SYSTEM_PROMPT.into(),
+            protection: assistant_core::ProtectionConfig::default(),
+            operators: support::operator_config(),
+            privacy_policy_address: None,
+        },
     )
     .await
     else {
@@ -54,9 +58,13 @@ async fn a_store_opened_without_the_configuration_is_refused_at_start() {
         bus,
         support::registry_of(provider),
         assistant_core::tools::ToolSet::new(),
-        support::binding(),
-        support::SYSTEM_PROMPT.into(),
-        assistant_core::ProtectionConfig::default(),
+        assistant_core::AssemblyConfig {
+            binding: support::binding(),
+            system_prompt: support::SYSTEM_PROMPT.into(),
+            protection: assistant_core::ProtectionConfig::default(),
+            operators: support::operator_config(),
+            privacy_policy_address: None,
+        },
     )
     .await
     else {
@@ -74,18 +82,12 @@ async fn a_store_opened_without_the_configuration_is_refused_at_start() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_message_disagreeing_with_the_mapped_channel_kind_is_refused() {
     let fixture = support::start_assistant(None).await;
-    let key = support::channel("room-kind");
-
-    fixture
-        .assistant
-        .ingest(support::inbound(
-            &key,
-            ChannelKind::Group,
-            "42",
-            "the mapping message",
-        ))
-        .await
-        .expect("the first message maps the channel as a group");
+    let key = support::authorized_group(&fixture.assistant, "room-kind").await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        support::inbound(&key, ChannelKind::Group, "42", "the mapping message"),
+    )
+    .await;
 
     let refused = fixture
         .assistant

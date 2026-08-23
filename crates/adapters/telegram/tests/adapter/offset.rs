@@ -9,8 +9,9 @@ use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    DEADLINE, TempStateFile, await_chat_messages, await_conversations, await_state_file,
-    group_update, private_update, recording_sleep, spawn_adapter, start_assistant,
+    DEADLINE, TempStateFile, authorize_group, await_chat_messages, await_conversations,
+    await_state_file, group_update, private_update, recording_sleep, spawn_adapter,
+    start_assistant,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -92,6 +93,7 @@ async fn a_midway_failure_persists_up_to_the_last_success_and_redelivers() {
     let state = TempStateFile::new("midway");
     let chat = -110;
     server.fail_admins(chat);
+    authorize_group(&fixture.assistant, chat).await;
     server.push_update(private_update(30, 6, "recorded before the failure"));
     server.push_update(group_update(31, chat, 6, "held back by the failure"));
 

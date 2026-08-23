@@ -68,6 +68,25 @@ enum StartError {
     )]
     ProtectionWindowOverBound { field: &'static str },
 
+    /// An operators entry carries an empty external id. An empty value
+    /// would match no adder and silently refuse every group add, so the
+    /// line refuses the start instead.
+    #[error("the operators entry for `{adapter}` must carry the operator's external id")]
+    OperatorEmpty { adapter: String },
+    /// An operators key names no adapter this binary assembles. A typoed
+    /// key would sit inert while the intended adapter refuses every group
+    /// add, so the line refuses the start instead.
+    #[error("the operators key `{adapter}` names no known adapter")]
+    OperatorUnknownAdapter { adapter: String },
+
+    /// The `privacy_policy` key is present but empty or whitespace — a blank
+    /// legal pointer. Omitting the key is how the not-yet-published answer
+    /// is chosen.
+    #[error(
+        "the privacy_policy key must carry an address; omit it to leave the policy unpublished"
+    )]
+    PrivacyPolicyEmpty,
+
     /// A secret reference names both sources or neither.
     #[error("the secret `{key}` must name exactly one of `env` or `file`")]
     SecretRef { key: &'static str },
@@ -131,9 +150,12 @@ fn run() -> Result<(), StartError> {
         return Err(StartError::Usage);
     };
     let configuration = Configuration::load(config_path.as_ref())?;
-    // Resolved right behind the decode: a zero answer count refuses the
-    // start here, before any secret is read or a connection is opened.
+    // Resolved right behind the decode: a zero answer count, an empty or
+    // unknown-adapter operator entry and a blank privacy address refuse
+    // the start here, before any secret is read or a connection is opened.
     let protection = configuration.protection.resolve()?;
+    let operators = configuration.operators.resolve(&KNOWN_ADAPTERS)?;
+    let privacy_policy = configuration.resolve_privacy_policy()?;
     let bot_token = configuration.secrets.bot_token.resolve("bot_token")?;
     let openrouter_key = configuration
         .secrets
@@ -153,15 +175,22 @@ fn run() -> Result<(), StartError> {
         .enable_all()
         .build()
         .map_err(StartError::Runtime)?
-        .block_on(serve(
+        .block_on(serve(ServeInputs {
             configuration,
             protection,
+            operators,
+            privacy_policy,
             bot_token,
             openrouter_key,
             mirror_token,
             system_prompt,
-        ))
+        }))
 }
+
+/// The adapters this binary assembles — what the operators table's keys
+/// are validated against, so a typoed key refuses the start instead of
+/// silently refusing every group add on the intended adapter.
+const KNOWN_ADAPTERS: [&str; 1] = [assistant_adapter_telegram::ADAPTER_NAME];
 
 /// Route log lines to the configured destination. The filter honours the
 /// standard environment override and speaks at `info` otherwise.
@@ -193,15 +222,31 @@ fn init_logging(destination: &LogDestination) -> Result<(), StartError> {
     Ok(())
 }
 
-/// Assemble and serve until SIGTERM or an adapter start refusal.
-async fn serve(
+/// Everything the resolved start hands the serving future — one carrier,
+/// so the resolution order above stays readable as the argument list grows.
+struct ServeInputs {
     configuration: Configuration,
     protection: assistant_core::ProtectionConfig,
+    operators: assistant_core::OperatorConfig,
+    privacy_policy: Option<String>,
     bot_token: String,
     openrouter_key: String,
     mirror_token: Option<String>,
     system_prompt: String,
-) -> Result<(), StartError> {
+}
+
+/// Assemble and serve until SIGTERM or an adapter start refusal.
+async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
+    let ServeInputs {
+        configuration,
+        protection,
+        operators,
+        privacy_policy,
+        bot_token,
+        openrouter_key,
+        mirror_token,
+        system_prompt,
+    } = inputs;
     let store = Store::open_with(&configuration.store_path, store_config())?;
     let provider = MemoryConfiguredProvider::new(
         &store,
@@ -240,9 +285,13 @@ async fn serve(
         Arc::new(EventBus::new()),
         Arc::new(providers),
         tools,
-        binding,
-        system_prompt,
-        protection,
+        assistant_core::AssemblyConfig {
+            binding,
+            system_prompt,
+            protection,
+            operators,
+            privacy_policy_address: privacy_policy,
+        },
     )
     .await?;
 

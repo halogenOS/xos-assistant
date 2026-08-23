@@ -19,7 +19,7 @@ use agent_ledger::{DomainMigrations, FromBlock, StoreConfig};
 use crate::kind::{
     AssistantKind, CHAT_MESSAGE_TABLE, COLUMN_ADDRESSED, COLUMN_ANSWER_DUE, COLUMN_AUTHORITY,
     COLUMN_DEBT_AUTHORITY, COLUMN_LIMITED, COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID, COLUMN_ROLE,
-    COLUMN_SENT_AT, COLUMN_TEXT, LimitedBy,
+    COLUMN_SENT_AT, COLUMN_TEXT,
 };
 use crate::message::{Authority, ChannelKind};
 
@@ -107,19 +107,52 @@ static CHANNELS_SCHEMA: LazyLock<String> = LazyLock::new(|| {
 pub static PRINCIPAL_ADDRESSED_INDEX: LazyLock<String> =
     LazyLock::new(|| format!("idx_{CHAT_MESSAGE_TABLE}_principal_addressed"));
 
+// ─── The appended steps' frozen vocabularies ─────────────────────────────
+//
+// Every appended migration step quotes vocabulary lists frozen at the
+// moment the step shipped, never the live enums: an applied step's
+// generated SQL must stay byte-identical under the appended-steps
+// discipline, and a step quoting a live enum would silently diverge fresh
+// stores from upgraded ones the moment the enum grows its next variant.
+// The live vocabularies stay on the enums; a future widening is a NEW
+// appended step quoting its own frozen list. The tests at the bottom pin
+// each newest frozen list to its enum, so growing an enum fails loudly
+// right here — the failure is the reminder to append the widening step.
+
+/// The limited vocabulary the protection unit shipped; the widening step
+/// further down is where the stored constraint caught up with the command
+/// kind.
+const SHIPPED_PROTECTION_LIMITS: [&str; 2] = ["principal", "channel"];
+
+/// The authority vocabulary as it stood when the protection and widening
+/// steps shipped.
+const SHIPPED_AUTHORITIES: [&str; 3] = ["member", "moderator", "admin"];
+
+/// The note-topic vocabulary as it stood when the context-note step
+/// shipped.
+const SHIPPED_NOTE_TOPICS: [&str; 2] = ["title", "rules"];
+
+/// The group channel kind's stored encoding as it stood when the
+/// authorization step shipped — what the backfill selects by.
+const SHIPPED_GROUP_KIND: &str = "group";
+
+/// The limited vocabulary the widening step widened TO — the full list as
+/// it stood at the group-context unit, the command kind included.
+const WIDENED_COMMAND_LIMITS: [&str; 3] = ["principal", "channel", "command"];
+
 /// The protection stamp — the first appended migration step, per decision
 /// 0026's discipline: the shipped CREATE TABLE above stays as it was written
 /// and every schema change from the live-model unit on is a new entry here.
 /// The framework counts entry `i` of the domain's list as version `i + 1`,
-/// so a store created before this step holds version 3 and runs the two
-/// appended steps — this one, then the palette step below — at open, while
-/// a fresh store runs all five in order.
+/// so a store created before this step holds version 3 and runs every
+/// appended step from here on at open, while a fresh store runs the whole
+/// list in order.
 ///
 /// The step adds the two protection columns — both nullable, so every
 /// pre-existing row reads NULL in both, with their vocabularies closed by
-/// the same enums the code parses with — and the index the principal budget
-/// count runs on. Both columns are structure, not personal data: erasure
-/// leaves them.
+/// the enums as they stood when the step shipped — and the index the
+/// principal budget count runs on. Both columns are structure, not personal
+/// data: erasure leaves them.
 static PROTECTION_STAMP_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     format!(
         "ALTER TABLE {CHAT_MESSAGE_TABLE}
@@ -130,8 +163,8 @@ static PROTECTION_STAMP_MIGRATION: LazyLock<String> = LazyLock::new(|| {
          CREATE INDEX {index}
              ON {CHAT_MESSAGE_TABLE}({COLUMN_PRINCIPAL_ID}, {COLUMN_ADDRESSED});",
         index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
-        limits = quoted_list(LimitedBy::ALL.iter().map(|l| l.as_str())),
-        authorities = quoted_list(Authority::ALL.iter().map(|a| a.as_str())),
+        limits = quoted_list(SHIPPED_PROTECTION_LIMITS.iter().copied()),
+        authorities = quoted_list(SHIPPED_AUTHORITIES.iter().copied()),
     )
 });
 
@@ -152,6 +185,87 @@ static TOOL_PALETTE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The context note's content table — an appended migration step of the
+/// group-context unit, per decision 0026's discipline. The table shape is
+/// the note kind's descriptor contract: the block header row is the ledger
+/// entry, this row carries the topic and the observed text, with the topic
+/// vocabulary closed by the same enum the code parses with. The text is
+/// the group's own published governance, not a person's conversation;
+/// erasure's boundary here is recorded OPEN in its own decision.
+static CONTEXT_NOTE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {table} (
+            block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {topic}  TEXT NOT NULL CHECK ({topic} IN ({topics})),
+            {text}   TEXT NOT NULL
+        );",
+        table = crate::note::CONTEXT_NOTE_TABLE,
+        topic = crate::note::COLUMN_TOPIC,
+        text = crate::note::COLUMN_TEXT,
+        topics = quoted_list(SHIPPED_NOTE_TOPICS.iter().copied()),
+    )
+});
+
+/// The group authorization table — an appended migration step of the
+/// group-context unit. One row per group channel the operator admitted,
+/// keyed like the channel mapping; absence is refusal, which is what makes
+/// the check fail closed across restarts. The backfill authorizes every
+/// group mapping that exists at migration time: those groups were admitted
+/// under the old regime by the operator's own hand.
+static GROUP_AUTHORIZATION_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE group_authorizations (
+            adapter TEXT NOT NULL,
+            channel TEXT NOT NULL,
+            PRIMARY KEY (adapter, channel)
+        );
+        INSERT INTO group_authorizations (adapter, channel)
+            SELECT adapter, channel FROM channels WHERE kind = '{SHIPPED_GROUP_KIND}';",
+    )
+});
+
+/// The limited vocabulary's widening — an appended migration step of the
+/// group-context unit, adding the command kind to the stored constraint. A
+/// column CHECK cannot be altered in place, so the step recreates the
+/// content table under the frozen [`WIDENED_COMMAND_LIMITS`] vocabulary,
+/// copies every row, and rebuilds the principal count's index the table
+/// drop removed.
+/// Every stored value survives unchanged; only the constraint widens. On a
+/// fresh store the step follows the shipped two-kind step and widens it the
+/// same way, so both paths end at one schema.
+static COMMAND_STAMP_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    let columns = format!(
+        "block_id, {COLUMN_ROLE}, {COLUMN_TEXT}, {COLUMN_PRINCIPAL_ID}, {COLUMN_AUTHORITY}, \
+         {COLUMN_ORIGIN}, {COLUMN_SENT_AT}, {COLUMN_ADDRESSED}, {COLUMN_ANSWER_DUE}, \
+         {COLUMN_LIMITED}, {COLUMN_DEBT_AUTHORITY}"
+    );
+    format!(
+        "CREATE TABLE {CHAT_MESSAGE_TABLE}_widened (
+            block_id             INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {COLUMN_ROLE}         TEXT,
+            {COLUMN_TEXT}         TEXT,
+            {COLUMN_PRINCIPAL_ID} INTEGER NOT NULL,
+            {COLUMN_AUTHORITY}    TEXT NOT NULL CHECK ({COLUMN_AUTHORITY} IN ({authorities})),
+            {COLUMN_ORIGIN}       TEXT,
+            {COLUMN_SENT_AT}      TEXT,
+            {COLUMN_ADDRESSED}    INTEGER NOT NULL CHECK ({COLUMN_ADDRESSED} IN (0, 1)),
+            {COLUMN_ANSWER_DUE}   INTEGER NOT NULL CHECK ({COLUMN_ANSWER_DUE} IN (0, 1)),
+            {COLUMN_LIMITED}      TEXT CHECK ({COLUMN_LIMITED} IN ({limits})),
+            {COLUMN_DEBT_AUTHORITY} TEXT
+                CHECK ({COLUMN_DEBT_AUTHORITY} IN ({authorities}))
+        );
+        INSERT INTO {CHAT_MESSAGE_TABLE}_widened ({columns})
+            SELECT {columns} FROM {CHAT_MESSAGE_TABLE};
+        DROP TABLE {CHAT_MESSAGE_TABLE};
+        ALTER TABLE {CHAT_MESSAGE_TABLE}_widened RENAME TO {CHAT_MESSAGE_TABLE};
+        CREATE INDEX {index}
+            ON {CHAT_MESSAGE_TABLE}({COLUMN_PRINCIPAL_ID}, {COLUMN_ADDRESSED});",
+        authorities = quoted_list(SHIPPED_AUTHORITIES.iter().copied()),
+        limits = quoted_list(WIDENED_COMMAND_LIMITS.iter().copied()),
+        index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -167,7 +281,50 @@ pub fn store_config() -> StoreConfig {
                 CHANNELS_SCHEMA.as_str(),
                 PROTECTION_STAMP_MIGRATION.as_str(),
                 TOOL_PALETTE_MIGRATION.as_str(),
+                CONTEXT_NOTE_MIGRATION.as_str(),
+                GROUP_AUTHORIZATION_MIGRATION.as_str(),
+                COMMAND_STAMP_MIGRATION.as_str(),
             ],
         }],
+    }
+}
+
+// Each vocabulary's NEWEST frozen list is pinned to its live enum: while
+// they coincide, fresh stores and upgraded ones end at one schema. The
+// moment an enum grows, its pin here fails — the loud reminder that the
+// growth needs a new appended widening step with its own frozen list, after
+// which the pin is re-pointed at that step's list.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kind::LimitedBy;
+    use crate::note::NoteTopic;
+
+    #[test]
+    fn the_newest_frozen_limited_list_matches_the_live_enum() {
+        let live: Vec<&str> = LimitedBy::ALL.iter().map(|l| l.as_str()).collect();
+        assert_eq!(
+            live, WIDENED_COMMAND_LIMITS,
+            "the limited vocabulary grew; append a widening step with its own frozen list"
+        );
+    }
+
+    #[test]
+    fn the_frozen_authority_list_matches_the_live_enum() {
+        let live: Vec<&str> = Authority::ALL.iter().map(|a| a.as_str()).collect();
+        assert_eq!(
+            live, SHIPPED_AUTHORITIES,
+            "the authority vocabulary grew; append a widening step with its own frozen list"
+        );
+    }
+
+    #[test]
+    fn the_frozen_note_topic_list_and_group_kind_match_the_live_enums() {
+        let live: Vec<&str> = NoteTopic::ALL.iter().map(|t| t.as_str()).collect();
+        assert_eq!(
+            live, SHIPPED_NOTE_TOPICS,
+            "the note-topic vocabulary grew; append a widening step with its own frozen list"
+        );
+        assert_eq!(SHIPPED_GROUP_KIND, ChannelKind::Group.as_str());
     }
 }
