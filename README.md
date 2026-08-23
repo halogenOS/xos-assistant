@@ -74,6 +74,11 @@ file path per secret — and never appear in the file itself:
     # nothing is recorded, nothing is answered. Groups are unaffected.
     #direct_chats = "off"
 
+    # Optional: the reasoning effort every conversation is created under —
+    # one of "off", "auto", "minimal", "low" (the default), "medium",
+    # "high", "xhigh", "max". Any other value refuses the start.
+    #reasoning = "medium"
+
     [secrets.bot_token]
     env = "ASSISTANT_BOT_TOKEN"
 
@@ -158,6 +163,14 @@ Direct chats are served by default and can be switched off with `direct_chats =
 row, no conversation, no answer, the `/privacy` command included — while groups are
 served as ever. The two spelled values are the whole vocabulary; anything else
 refuses the start.
+
+The `reasoning` key sets the reasoning effort every conversation is created under,
+one of the framework's eight levels (`off`, `auto`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, `max`); an unknown value refuses the start, and the absent key
+means `low` — moderation assessments ride on some thinking, while no set level at
+all lets the model think unboundedly. The level is stored on each conversation at
+its creation, so a changed key reaches new conversations only; conversations from
+before the key existed keep deferring to the provider's default.
 
 The process logs its startup facts — never a secret — and stops cleanly on SIGTERM.
 Deployment wiring, including the group-privacy platform setting the record-all

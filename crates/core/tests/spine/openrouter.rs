@@ -149,6 +149,7 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
             Arc::new(providers),
             assistant_core::tools::ToolSet::new(),
             assistant_core::AssemblyConfig {
+                reasoning: assistant_core::ReasoningLevel::Low,
                 binding: ModelBinding {
                     provider_instance: "openrouter-1".into(),
                     provider_display_name: "OpenRouter".into(),
@@ -247,6 +248,7 @@ async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accept
         Arc::new(providers),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: ModelBinding {
                 provider_instance: "openrouter-1".into(),
                 provider_display_name: "OpenRouter".into(),

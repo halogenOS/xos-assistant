@@ -7,6 +7,8 @@
 //! assembly (the wiring contract), storage (the composed kind and the durable
 //! registry), addressing (the answer-due stamp, the notice, re-engagement),
 //! protection (the budgets, the limited stamp, the debt authority),
+//! reasoning (the configured effort level on every created conversation
+//! and on the provider's requests),
 //! `direct_chats` (the configuration switch refusing direct channels
 //! before any write), disclosure (the first-interaction line and the
 //! deterministic replies' exemption),
@@ -35,6 +37,7 @@ mod openrouter;
 mod privacy_rights;
 mod projection;
 mod protection;
+mod reasoning;
 mod report;
 mod speaker;
 mod storage;

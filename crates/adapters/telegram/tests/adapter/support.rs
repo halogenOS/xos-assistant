@@ -467,6 +467,7 @@ async fn assemble(
         Arc::new(providers),
         tools,
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: ModelBinding {
                 provider_instance: "scripted-1".into(),
                 provider_display_name: "Scripted".into(),

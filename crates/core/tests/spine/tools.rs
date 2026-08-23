@@ -1452,6 +1452,7 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
             support::registry_of(support::silent_provider()),
             tools,
             assistant_core::AssemblyConfig {
+                reasoning: assistant_core::ReasoningLevel::Low,
                 binding: support::binding(),
                 system_prompt: support::SYSTEM_PROMPT.into(),
                 protection: ProtectionConfig::default(),

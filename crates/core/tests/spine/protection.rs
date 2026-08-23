@@ -70,6 +70,7 @@ async fn silent_assistant(
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection,
@@ -491,6 +492,7 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
         support::registry_of(held_provider(Arc::clone(&release))),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection: budgets(None, Some((1, 600))),
@@ -891,6 +893,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
             support::registry_of(support::silent_provider()),
             assistant_core::tools::ToolSet::new(),
             assistant_core::AssemblyConfig {
+                reasoning: assistant_core::ReasoningLevel::Low,
                 binding: support::binding(),
                 system_prompt: support::SYSTEM_PROMPT.into(),
                 protection: protection.clone(),
@@ -920,6 +923,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
             support::registry_of(support::silent_provider()),
             assistant_core::tools::ToolSet::new(),
             assistant_core::AssemblyConfig {
+                reasoning: assistant_core::ReasoningLevel::Low,
                 binding: support::binding(),
                 system_prompt: support::SYSTEM_PROMPT.into(),
                 protection,

@@ -274,6 +274,7 @@ async fn the_stamp_propagates_an_unanswered_debt_at_the_write() {
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection: assistant_core::ProtectionConfig::default(),
@@ -332,6 +333,7 @@ async fn an_erased_tail_propagates_no_debt() {
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection: assistant_core::ProtectionConfig::default(),
