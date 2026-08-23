@@ -12,7 +12,8 @@ speaks the Bot API directly — long polling in, plain sends out — with its up
 persisted in a state file the embedder names (decisions 0013–0019). The live model is
 in: the assistant answers through the OpenRouter provider with its key held in memory and
 never stored, addressing decides which messages are answered (a direct message, a
-mention, a reply to the assistant), a failed turn tells the chat once, and the
+mention, a reply to the assistant), a failed turn tells the chat once — except a
+provider refusal for lack of balance, which stays out of the chat entirely — and the
 `assistant` binary embeds the pieces into a runnable process (decisions 0020–0028).
 Flood protection is in: two configurable answering budgets — per sender and per chat —
 limit what the assistant answers, never what it records, and every message carries the

@@ -121,15 +121,23 @@ impl TurnHold {
     }
 }
 
+/// The error text an unqualified scripted failure carries: prose in no
+/// particular shape, standing for every failure the consumer classifies as
+/// ordinary.
+pub const SCRIPTED_FAILURE: &str = "scripted stream failure";
+
 /// What a test observes of the scripted provider: turn count, every turn
 /// request's projected messages, and the failure script.
 #[derive(Clone)]
 pub struct ScriptHandle {
     pub turns: Arc<AtomicUsize>,
     pub seen: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
-    /// How many upcoming turns fail with a scripted stream error before the
-    /// script answers normally again.
-    pub failures: Arc<AtomicUsize>,
+    /// The error texts the upcoming turns fail with, one per turn, in order;
+    /// a turn that finds the queue empty answers normally. Texts and not a
+    /// count, because the consumer reads the error text to classify the
+    /// failure, so a test that pins a classification has to say which text
+    /// arrives.
+    pub failures: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
 }
 
 impl ScriptHandle {
@@ -138,13 +146,24 @@ impl ScriptHandle {
         Self {
             turns: Arc::new(AtomicUsize::new(0)),
             seen: Arc::new(std::sync::Mutex::new(Vec::new())),
-            failures: Arc::new(AtomicUsize::new(0)),
+            failures: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
         }
     }
 
-    /// Script the next `count` turns to fail with a stream error.
+    /// Script the next `count` turns to fail with the unqualified
+    /// [`SCRIPTED_FAILURE`] text.
     pub fn fail_next_turns(&self, count: usize) {
-        self.failures.store(count, Ordering::SeqCst);
+        self.fail_next_turns_with(count, SCRIPTED_FAILURE);
+    }
+
+    /// Script the next `count` turns to fail with the given error text — the
+    /// wire's rendering of a particular provider refusal, for a test that
+    /// pins how the consumer classifies it.
+    pub fn fail_next_turns_with(&self, count: usize, error: &str) {
+        let mut scripted = self.failures.lock().unwrap();
+        for _ in 0..count {
+            scripted.push_back(error.to_owned());
+        }
     }
 }
 
@@ -247,14 +266,9 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                 // runtime surfaces it as stream status, which is what the
                 // assembly's stream observer keys on.
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
-                if failures
-                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-                        left.checked_sub(1)
-                    })
-                    .is_ok()
-                {
-                    let _ =
-                        response_tx.send(ProviderResponse::Error("scripted stream failure".into()));
+                let scripted_failure = failures.lock().unwrap().pop_front();
+                if let Some(failure) = scripted_failure {
+                    let _ = response_tx.send(ProviderResponse::Error(failure));
                     continue;
                 }
                 let answer = answer_to(&messages.last().map(message_text).unwrap_or_default());
@@ -1068,6 +1082,42 @@ pub fn settled(len: usize) -> impl Fn(&[Block]) -> bool {
 /// answer last, per [`settled`] — and return the blocks.
 pub async fn settle(store: &Store, conversation_id: i64, what: &str, len: usize) -> Vec<Block> {
     await_ledger(store, conversation_id, what, settled(len)).await
+}
+
+/// Await one conversation's failed turn settling: its error signal, and then
+/// the latched state the runtime publishes once the dispatch closed on that
+/// error. Both halves are needed — a conversation publishes a latched state
+/// before its first message too, so the latch alone would be satisfied by a
+/// turn that has not run yet.
+///
+/// This is the sync point a test needs between a failed turn and the message
+/// that re-engages it, whenever the failure produces no reply to wait on. A
+/// write that overtook the latch would have its unlatch applied first and
+/// leave the conversation latched with an answer owed, which reads as a
+/// hang.
+pub async fn await_failure_latch(
+    events: &mut tokio::sync::broadcast::Receiver<CoreEvent>,
+    conversation_id: i64,
+) {
+    let mut failed = false;
+    loop {
+        let event = tokio::time::timeout(DEADLINE, events.recv())
+            .await
+            .expect("the failed turn settles before the deadline")
+            .expect("the bus outlives the test");
+        match event {
+            CoreEvent::StreamError {
+                conversation_id: conv,
+                ..
+            } if conv == conversation_id => failed = true,
+            CoreEvent::ConversationState {
+                conversation_id: conv,
+                latched: true,
+                ..
+            } if failed && conv == conversation_id => return,
+            _ => {}
+        }
+    }
 }
 
 /// Await the next outbound reply, or name the stall.

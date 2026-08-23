@@ -170,6 +170,88 @@ async fn a_failed_turn_yields_one_notice_and_the_next_addressed_message_reengage
     assert_eq!(reply.text, answer_to("the failing ask\n\nasking again"));
 }
 
+/// The quiet rule: a payment-class refusal fails the turn like any other,
+/// and tells the chat nothing. Scripted as the wire renders it —
+/// `api error 402: …`, the framework's own rendering of a non-success
+/// provider response — so what the consumer classifies on is the text it
+/// would really receive.
+///
+/// The absence is proven by order, not by waiting: the outbound edge is one
+/// task feeding one channel in order, so a notice for the quiet failure
+/// would necessarily sit in front of everything the following turn
+/// produces. The first reply that arrives is therefore the whole evidence,
+/// and the plain failure at the end shows the silence is bound to the class
+/// and not to the path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_payment_class_failure_stays_quiet_and_a_plain_failure_still_speaks() {
+    let fixture = support::start_assistant(None).await;
+    let mut replies = fixture
+        .assistant
+        .replies(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
+    let mut events = fixture.bus.subscribe();
+    let key = channel("dm-no-balance");
+
+    fixture.script.fail_next_turns_with(
+        1,
+        r#"api error 402: {"error":{"message":"Insufficient credits"}}"#,
+    );
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "42", "the ask with no balance"),
+    )
+    .await;
+
+    // The latch is the failed turn's own settling; awaited so the message
+    // below cannot overtake it.
+    support::await_failure_latch(&mut events, receipt.conversation_id).await;
+    assert!(
+        matches!(
+            replies.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "a payment-class failure tells the chat nothing"
+    );
+
+    // The next addressed message re-engages and is answered. This reply
+    // arriving as an answer is what proves no notice was queued ahead of it.
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "42", "asking again"),
+    )
+    .await;
+    let reply = recv_reply(&mut replies).await;
+    assert_eq!(
+        reply.kind,
+        ReplyKind::Answer,
+        "the quiet failure queued no notice ahead of this answer"
+    );
+    assert_eq!(
+        reply.text,
+        answer_to("the ask with no balance\n\nasking again")
+    );
+
+    // An ordinary failure on the same channel still speaks.
+    fixture.script.fail_next_turns(1);
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "42", "the plainly failing ask"),
+    )
+    .await;
+    let notice = recv_reply(&mut replies).await;
+    assert_eq!(notice.kind, ReplyKind::Notice);
+    assert_eq!(notice.text, FAILURE_NOTICE);
+    assert_eq!(notice.channel, key);
+    assert!(
+        matches!(
+            replies.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "two failed turns, one notice"
+    );
+}
+
 /// The write-time stamp, pinned deterministically: with the answer withheld,
 /// an unaddressed message written onto the heels of an addressed one reads
 /// the tail's unanswered debt and carries it forward — recorded unaddressed,
