@@ -478,13 +478,15 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
             )
             .await
             .expect("the pre-upgrade row appends");
-        // The rewind: drop exactly what the speaker step adds and set the
-        // version back, leaving the previous unit's disk shape. The
-        // non-vacuity check proves the drop was real — a speaker write must
-        // be refused before the reopen.
+        // The rewind: drop exactly what the steps past version ten add —
+        // the speaker column and the suppression flag — and set the version
+        // back, leaving that unit's disk shape. The non-vacuity check
+        // proves the drop was real — a speaker write must be refused before
+        // the reopen.
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
-                "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;"
+                "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;
+                 ALTER TABLE principals DROP COLUMN opted_out;"
             ))?;
             let refused = conn.execute(
                 &format!("UPDATE {CHAT_MESSAGE_TABLE} SET speaker = 'ada'"),
@@ -507,8 +509,8 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         .expect("the version-ten store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        11,
-        "the appended step advanced the domain's version"
+        12,
+        "the appended steps advanced the domain's version"
     );
     let blocks = reopened
         .list_blocks(conversation)

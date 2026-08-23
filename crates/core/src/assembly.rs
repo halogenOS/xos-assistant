@@ -16,7 +16,7 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use agent_ledger::store::ProviderInstance;
+use agent_ledger::store::{ProviderInstance, StoreTx};
 use agent_ledger::{
     CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext, Store, spawn_reactor,
 };
@@ -27,15 +27,20 @@ use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
 use crate::kind::{self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage};
 use crate::message::{
-    ChannelKey, ChannelKind, ComposingUpdate, DeliveryItem, InboundMessage, IngestOutcome,
-    IngestReceipt, Observation, ObserveOutcome, ObservedFact, OutboundReply,
+    Authority, ChannelKey, ChannelKind, ComposingUpdate, DeliveryItem, InboundMessage,
+    IngestOutcome, IngestReceipt, Observation, ObserveOutcome, ObservedFact, OutboundReply,
 };
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::outbound::RULES_ACKNOWLEDGMENT;
+use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::streams::StreamObserver;
 use crate::tools::report::{self, ReportTool};
+use crate::tools::rights::PrivacyTool;
 use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
-use crate::window::{ACKNOWLEDGMENT_WINDOW, AppendWindow, LineWindow, REPORT_WINDOW};
+use crate::window::{
+    ACKNOWLEDGMENT_WINDOW, AppendWindow, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW,
+    REPORT_WINDOW, ReplyWindow,
+};
 use crate::{authorization, identity, mapping, outbound, privacy, streams};
 
 /// The erasure fence, as the shared handle the report tool receives at its
@@ -177,11 +182,12 @@ pub enum DirectChats {
     Off,
 }
 
-/// A scripted pause between the on-delta newest-note read and its append —
-/// the observation race's test seam, mirroring the adapter's injectable
-/// sleep: a suite pins the stamp lock's serialization without racing the
-/// scheduler. Production installs nothing and nothing pauses.
-pub type NoteReadPause = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+/// A scripted pause inside an entry point's read-then-write window — the
+/// race seams' shared shape, mirroring the adapter's injectable sleep: a
+/// suite pins a lock's serialization without racing the scheduler. Two
+/// seams take it — the on-delta note read's, and the pre-lock suppression
+/// read's. Production installs nothing and nothing pauses.
+pub type ScriptedPause = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 /// Everything the embedder decides about the assistant beyond its runtime
 /// wiring: the model binding, the system prompt, the answering budgets, the
@@ -250,17 +256,33 @@ pub struct Assistant {
     /// it; a further rules delta appends its note silently. The window
     /// module states why the bookkeeping is in-memory.
     rules_acknowledged: LineWindow,
-    /// The privacy answer's per-channel window, sharing the acknowledgment
-    /// mechanism (refined 2026-08-23): the command stamp keeps the command
+    /// The privacy notice's per-channel window, sharing the acknowledgment
+    /// mechanism (refined 2026-08-23): the command stamp keeps the notice
     /// out of both budget counts, so without this a quiet channel would
-    /// answer every repeat.
-    command_answered: LineWindow,
+    /// answer every repeat. The notice alone rides here — the four rights
+    /// commands are bounded per person by [`Self::privacy_replies`].
+    notice_answered: LineWindow,
+    /// The rights replies' per-person bound (decided 2026-08-23): the four
+    /// self-service commands and the privacy tool draw at most the cap per
+    /// principal per window, shared with the tool so one person's flood is
+    /// one bound. The budgets never gate the family; this window is the
+    /// whole bound, and a withheld reply withholds its state change too.
+    privacy_replies: Arc<ReplyWindow>,
+    /// The pending deletion confirmations, keyed by principal and shared
+    /// with the privacy tool: `/privacydelete` and the tool's
+    /// `request_deletion` file here, `/confirmdelete` consumes here. Process
+    /// memory, forgotten on restart — deletion is the flow where forgetting
+    /// errs safe.
+    pending_deletions: Arc<PendingDeletions>,
     /// The per-topic note append cap within the window (refined
     /// 2026-08-23): the ledger is bounded like the chat line, and a capped
     /// delta lands on the next observation after the window.
     note_appends: AppendWindow<(i64, NoteTopic)>,
     /// The observation race's test seam; `None` in production.
-    note_read_pause: Option<NoteReadPause>,
+    note_read_pause: Option<ScriptedPause>,
+    /// The suppression race's test seam, run between the pre-lock standing
+    /// read and the stamp lock; `None` in production.
+    standing_read_pause: Option<ScriptedPause>,
     /// The conversations whose stored palette this process already
     /// compared against the registered set — the once-per-process memory
     /// of the on-delta supersession (decided 2026-08-23), bounded by
@@ -334,6 +356,8 @@ impl Assistant {
             });
         }
         let erasure_fence: ErasureFence = Arc::new(RwLock::new(()));
+        let privacy_replies = Arc::new(ReplyWindow::new(PRIVACY_REPLY_WINDOW, PRIVACY_REPLY_CAP));
+        let pending_deletions = Arc::new(PendingDeletions::new());
         // The report tool joins the set here, where the tool set's assembly
         // finishes: its filing window is constructed at this registration
         // and the erasure fence is injected beside it, so the tool never
@@ -351,6 +375,19 @@ impl Assistant {
                 ),
             );
         }
+        // The privacy tool joins unconditionally (decided 2026-08-23): the
+        // rights it reaches exist in every deployment, so no configuration
+        // switches it. The pending memory and the reply bound are shared
+        // with the command family's own handling, injected here so the tool
+        // and the commands act on one state.
+        tools.admit(
+            crate::tools::rights::REQUIRED_AUTHORITY,
+            PrivacyTool::new(
+                Arc::clone(&pending_deletions),
+                Arc::clone(&privacy_replies),
+                Arc::clone(&erasure_fence),
+            ),
+        );
         // One source for what tools exist: the registry the runtime resolves
         // calls against and the palette every new conversation records are
         // both derived from the set right here.
@@ -377,9 +414,12 @@ impl Assistant {
             direct_chats,
             privacy_policy_address,
             rules_acknowledged: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
-            command_answered: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
+            notice_answered: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
+            privacy_replies,
+            pending_deletions,
             note_appends: AppendWindow::new(),
             note_read_pause: None,
+            standing_read_pause: None,
             palette_reconciled: Mutex::new(HashSet::new()),
             stamp_lock: Mutex::new(()),
             erasure_fence,
@@ -390,8 +430,17 @@ impl Assistant {
     /// between the on-delta newest-note read and its append, inside the
     /// stamp lock — which is exactly why a suite can prove the lock holds
     /// the read-then-append window. Production never calls this.
-    pub fn pause_between_note_read_and_append(&mut self, pause: NoteReadPause) {
+    pub fn pause_between_note_read_and_append(&mut self, pause: ScriptedPause) {
         self.note_read_pause = Some(pause);
+    }
+
+    /// Install the suppression race's test seam: the given pause runs
+    /// between the pre-lock standing read and the stamp lock, which is
+    /// exactly the window a peer ingestion's flag write can land in — so a
+    /// suite proves the under-lock re-read drops the racing message.
+    /// Production never calls this.
+    pub fn pause_between_standing_read_and_append(&mut self, pause: ScriptedPause) {
+        self.standing_read_pause = Some(pause);
     }
 
     /// The ingestion edge: record one inbound message and answer with what
@@ -432,13 +481,36 @@ impl Assistant {
     /// whose authority arrived unresolved is refused with the transient
     /// [`CoreError::AuthorityUnresolved`] — never recorded with a default.
     ///
+    /// The ingestion ordering is stated whole (2026-08-23): channel-kind
+    /// mismatch; group authorization; the direct-chat admission; then the
+    /// READ-ONLY identity lookup by adapter and external id, which yields
+    /// the standing suppression flag if any; then the privacy command
+    /// family, exempt from suppression; then, flag standing, the drop —
+    /// [`IngestOutcome::Disregarded`], the full no-write claim. Only past
+    /// all of that does the writing resolution run, the channel map, the
+    /// stamp lock get taken, the palette reconcile — and under the stamp
+    /// lock the standing is read once more for a non-command message
+    /// (2026-08-23), because a peer ingestion's flag write is serialized
+    /// under that very lock and can land after the pre-lock read: the
+    /// re-read drops the racing message before its append, so the flag
+    /// suppresses from the moment it stands. Opt-out does not
+    /// reach backward: what was stored before stands until deletion, keeps
+    /// being projected to the model with later turns, and a pre-flag
+    /// unanswered question may still draw its one answer through a later
+    /// propagated debt.
+    ///
     /// The privacy command's fixed answer rides the returned outcome — the
     /// return-value transport of decision 2026-08-23, never the event edge
     /// — and is granted only while no budget refuses the sender AND the
     /// channel's answer window admits it: the command shares the
     /// acknowledgment-window mechanism (refined 2026-08-23), at most one
     /// answer per channel per window, recorded silence within it — the
-    /// notice discipline of the protection unit.
+    /// notice discipline of the protection unit. The four self-service
+    /// commands answer differently (2026-08-23): never budget-consulted —
+    /// a rights request is answered even from a sender the flood budgets
+    /// have silenced — and bounded per PRINCIPAL by their own reply
+    /// window, with the state change applied exactly when the reply is
+    /// granted.
     ///
     /// A message whose own debt was taken then emits the unlatch intent,
     /// always: a person addressing the assistant IS the deliberate
@@ -458,45 +530,24 @@ impl Assistant {
         let _no_erasure_mid_message = self.erasure_fence.read().await;
         let tx = self.ctx.store().tx();
 
-        // The mapping's stored kind refuses a mis-claimed channel before
-        // anything else: the mapping knows what the channel is, and every
-        // later step decides personal-data handling by the kind.
-        let mapped = mapping::find(&tx, &message.channel).await?;
-        if let Some((_, stored_kind)) = mapped
-            && stored_kind != message.channel_kind
-        {
-            return Err(CoreError::ChannelKindMismatch {
-                stored: stored_kind,
-                claimed: message.channel_kind,
-            });
+        // The channel admission runs whole before the sender is looked at;
+        // its checks and their order are on [`Self::admit_channel`].
+        let (mapped, refused) = self.admit_channel(&tx, &message).await?;
+        if let Some(refusal) = refused {
+            return Ok(refusal);
         }
-        if message.channel_kind == ChannelKind::Group
-            && !authorization::is_authorized(&tx, &message.channel).await?
-        {
-            return Ok(IngestOutcome::Withdraw);
-        }
-        // The direct-chat admission, the same fail-closed shape as the
-        // group check above: refused before the sender's principal exists,
-        // before the channel maps, before any block appends — so a
-        // deployment with the switch off keeps a stranger's direct contact
-        // out of every table, not merely unanswered.
-        if message.channel_kind == ChannelKind::Direct && self.direct_chats == DirectChats::Off {
+        let Some(sender) = self.resolve_writing_sender(&tx, &message).await? else {
             return Ok(IngestOutcome::Disregarded);
-        }
-        // Past admission, the write needs the sender's standing; delivered
-        // unresolved, the message is refused transient and redelivers —
-        // the never-default rule, without letting a stranger group's
-        // failing authority source starve the batch (see the error's doc).
-        let Some(authority) = message.authority else {
-            return Err(CoreError::AuthorityUnresolved);
         };
-
-        let principal_id = identity::resolve_principal(
-            &tx,
-            message.channel.adapter.clone(),
-            message.sender.clone(),
-        )
-        .await?;
+        let WritingSender {
+            principal_id,
+            authority,
+            family,
+            suppressed,
+        } = sender;
+        if let Some(pause) = &self.standing_read_pause {
+            pause().await;
+        }
 
         let conversation_id = match mapped {
             Some((existing, _)) => existing,
@@ -513,14 +564,19 @@ impl Assistant {
         // messages cannot both take the last budget slot. The lock's
         // contract is on its field.
         let _one_stamp_at_a_time = self.stamp_lock.lock().await;
+        // The under-lock re-read closes the suppression race; its whole
+        // reasoning is on [`Self::suppressed_under_lock`]. The command
+        // family stays exempt, exactly as before the lock.
+        if family.is_none() && self.suppressed_under_lock(&tx, &message).await? {
+            return Ok(IngestOutcome::Disregarded);
+        }
         // The palette supersession, on the conversation's first activity
         // per process (decided 2026-08-23): the delta append lands ahead of
         // the message, so this very turn's admission reads the fresh
         // palette.
         self.reconcile_palette(conversation_id).await?;
         let owing_tail = self.owing_tail_debt(conversation_id).await?;
-        let is_command = privacy::is_privacy_command(message.command.as_ref());
-        let limited = if is_command {
+        let limited = if family.is_some() {
             Some(kind::LimitedBy::Command)
         } else if message.addressed {
             self.refusing_budget(principal_id, conversation_id).await?
@@ -530,11 +586,14 @@ impl Assistant {
         // The composition rule and the minimum rule live on the kind, as
         // one pure composition beside the stamp's readers.
         let stamp = kind::Stamp::compose(message.addressed, authority, limited, owing_tail);
-        // The command's budget half is decided inside the stamp
+        // The notice command's budget half is decided inside the stamp
         // serialization, so the consultation it shares with the stamp sees
         // the same recorded history: answered only while every budget
-        // admits the sender — recorded silence otherwise.
-        let command_admitted = is_command
+        // admits the sender — recorded silence otherwise. The notice alone
+        // consults budgets: the four self-service commands are a rights
+        // mechanism, answered even from a sender the flood budgets have
+        // silenced, and bounded by their own per-person window instead.
+        let notice_admitted = family == Some(PrivacyCommand::Notice)
             && self
                 .refusing_budget(principal_id, conversation_id)
                 .await?
@@ -544,13 +603,20 @@ impl Assistant {
         // 0065). A handleless sender stores NULL and projects bare — no
         // substitute identifier is minted (decision 0056) — and the kind's
         // storable-speaker bound refuses a handle whose shape would blur
-        // the projected prefix.
+        // the projected prefix. A suppressed sender's exempt command
+        // records no speaker at all: the freeze covers the delivered
+        // handle too, so after a deletion no command re-materializes the
+        // field the erasure emptied (decided 2026-08-23).
         let fields = ChatMessage::stored_fields(
             &message.text,
             kind::RecordedSender {
                 principal_id,
                 authority,
-                speaker: message.sender.username.as_deref(),
+                speaker: if suppressed {
+                    None
+                } else {
+                    message.sender.username.as_deref()
+                },
             },
             message.origin.as_deref(),
             message.reply_target.as_ref(),
@@ -567,16 +633,23 @@ impl Assistant {
                 None,
             )
             .await?;
-        // The window is consulted last, after the append stands: a
-        // budget-refused command never spends it, and neither does one
-        // whose append failed transiently — a grant spent before the
-        // append would answer the redelivered command with silence.
-        let deliver = if command_admitted && self.command_answered.grants(conversation_id).await {
-            Some(DeliveryItem::CommandAnswer(privacy::privacy_answer(
-                self.privacy_policy_address.as_deref(),
-            )))
-        } else {
-            None
+        // The windows are consulted last, after the append stands: a
+        // budget-refused notice never spends its channel window, a
+        // self-service command whose append failed transiently spends no
+        // per-person slot — a grant spent before the append would answer
+        // the redelivered command with silence — and a self-service state
+        // change applies exactly when its reply is granted, never silently.
+        // The split on the recognized kind is total: the notice keeps its
+        // channel-keyed answer, the rights commands take the per-person
+        // reply path.
+        let deliver = match family {
+            Some(PrivacyCommand::Notice) if notice_admitted => {
+                self.notice_answer(conversation_id).await
+            }
+            Some(PrivacyCommand::SelfService(command)) => {
+                self.rights_reply(&tx, command, principal_id).await
+            }
+            Some(PrivacyCommand::Notice) | None => None,
         };
         if stamp.own_debt_taken() {
             self.ctx
@@ -768,9 +841,14 @@ impl Assistant {
     /// headers keep their positions and references, and an erased message
     /// projects none of its prose to the model), the principal's direct
     /// conversations are removed entirely with their channel mappings, and
-    /// the identity rows are deleted. Reports [`ErasureOutcome::NotFound`]
-    /// — touching nothing — when no identity row matches, a completed
-    /// earlier erasure included.
+    /// the identity rows are concluded — deleted, or emptied to the
+    /// suppression stub when the opt-out flag stands (2026-08-23), so the
+    /// flag survives its own person's deletion. Reports
+    /// [`ErasureOutcome::NotFound`] — touching nothing — when no identity
+    /// row matches, an unflagged person's completed earlier erasure
+    /// included; a flagged person's surviving stub keeps matching, so their
+    /// repeat re-runs over emptiness and reports completion (the
+    /// idempotency refinement recorded on decision 0012).
     ///
     /// A direct conversation showing an open stream — observed on the bus,
     /// or holding a stored streaming tail a gone runtime left behind — is
@@ -794,30 +872,234 @@ impl Assistant {
     /// before the bound; [`CoreError::Store`] if a read, a write or a
     /// deletion fails.
     pub async fn erase_principal(&self, principal_id: i64) -> Result<ErasureOutcome, CoreError> {
-        let _no_ingestion_mid_erasure = self.erasure_fence.write().await;
-        let store = self.ctx.store();
-        let Some(plan) = erasure::plan(store, principal_id).await? else {
-            return Ok(ErasureOutcome::NotFound);
-        };
-        // The plan's conversations are exactly the deletion set, so settling
-        // them is settling everything the execute step will remove.
-        for &conversation_id in plan.direct_conversations() {
-            streams::settle_for_deletion(store, self.ctx.bus(), &self.streams, conversation_id)
-                .await?;
+        erase_behind_the_fence(
+            self.ctx.clone(),
+            Arc::clone(&self.streams),
+            Arc::clone(&self.erasure_fence),
+            principal_id,
+        )
+        .await
+    }
+
+    /// The suppression check and the writing resolution, in the stated
+    /// order (decided 2026-08-23): first the READ-ONLY identity lookup — a
+    /// select, never a write — so the check precedes every write the
+    /// ingestion path can make; then the privacy command family; then, flag
+    /// standing, the drop, answered as `None` — no message row, no identity
+    /// refresh, no principal write, no conversation creation, no palette
+    /// append, no mapping, no answer; the adapter acknowledges and its
+    /// offset advances. The family alone is exempt from the drop: an
+    /// opted-out person's `/unblockprivacy` must work, or the door never
+    /// reopens from inside, and their `/privacy` keeps answering. An
+    /// exempted command resolves its principal through the read-only
+    /// standing — the request itself is the lawful processing of honoring
+    /// it, recorded with the display fields frozen, so after a deletion no
+    /// command re-materializes the emptied fields — while every unflagged
+    /// sender takes the resolving lookup as ever.
+    ///
+    /// Past suppression, the write needs the sender's authority; delivered
+    /// unresolved, the message is refused transient and redelivers — the
+    /// never-default rule, without letting a stranger group's failing
+    /// authority source starve the batch (see the error's doc).
+    async fn resolve_writing_sender(
+        &self,
+        tx: &StoreTx,
+        message: &InboundMessage,
+    ) -> Result<Option<WritingSender>, CoreError> {
+        let standing = identity::find_standing(
+            tx,
+            message.channel.adapter.clone(),
+            message.sender.external_id.clone(),
+        )
+        .await?;
+        let family = privacy::family_command(message.command.as_ref());
+        let suppressed = standing.is_some_and(|standing| standing.opted_out);
+        if suppressed && family.is_none() {
+            return Ok(None);
         }
-        let outcome = erasure::execute(store, plan).await?;
-        if let ErasureOutcome::Erased {
-            deleted_conversations,
-        } = &outcome
+        let Some(authority) = message.authority else {
+            return Err(CoreError::AuthorityUnresolved);
+        };
+        let principal_id = match standing {
+            Some(standing) if standing.opted_out => standing.principal_id,
+            _ => {
+                identity::resolve_principal(
+                    tx,
+                    message.channel.adapter.clone(),
+                    message.sender.clone(),
+                )
+                .await?
+            }
+        };
+        Ok(Some(WritingSender {
+            principal_id,
+            authority,
+            family,
+            suppressed,
+        }))
+    }
+
+    /// The channel admission ahead of any write, in the stated order: the
+    /// mapping's stored kind refuses a mis-claimed channel before anything
+    /// else — the mapping knows what the channel is, and every later step
+    /// decides personal-data handling by the kind; an unauthorized group
+    /// is refused with the withdraw directive; a direct channel with the
+    /// switch off is refused the same fail-closed way, before the sender's
+    /// principal exists, before the channel maps, before any block appends
+    /// — so a deployment with the switch off keeps a stranger's direct
+    /// contact out of every table, not merely unanswered. Returns the
+    /// mapping read alongside the refusal, if any, so the entry point
+    /// reads the mapping exactly once.
+    async fn admit_channel(
+        &self,
+        tx: &StoreTx,
+        message: &InboundMessage,
+    ) -> Result<(Option<(i64, ChannelKind)>, Option<IngestOutcome>), CoreError> {
+        let mapped = mapping::find(tx, &message.channel).await?;
+        if let Some((_, stored_kind)) = mapped
+            && stored_kind != message.channel_kind
         {
-            // The store reissues conversation ids: a deleted conversation's
-            // stream observation must not survive to shadow the id's next
-            // holder.
-            for &deleted in deleted_conversations {
-                self.streams.forget(deleted);
+            return Err(CoreError::ChannelKindMismatch {
+                stored: stored_kind,
+                claimed: message.channel_kind,
+            });
+        }
+        if message.channel_kind == ChannelKind::Group
+            && !authorization::is_authorized(tx, &message.channel).await?
+        {
+            return Ok((mapped, Some(IngestOutcome::Withdraw)));
+        }
+        if message.channel_kind == ChannelKind::Direct && self.direct_chats == DirectChats::Off {
+            return Ok((mapped, Some(IngestOutcome::Disregarded)));
+        }
+        Ok((mapped, None))
+    }
+
+    /// The under-lock suppression re-read (2026-08-23): whether the
+    /// sender's standing flag stands NOW, consulted while the caller holds
+    /// the stamp lock. The pre-lock standing is read outside that lock,
+    /// and a peer ingestion's flag write — a rights reply, serialized
+    /// under the stamp lock — can land between the pre-lock read and the
+    /// append; once the lock is held the flag is settled, so this second
+    /// read is what makes "from the moment it stands" hold against the
+    /// race, with the pre-lock check kept as the cheap early path that
+    /// spares a suppressed flood the writing resolution. Only a
+    /// non-command message consults it: the family is exempt.
+    async fn suppressed_under_lock(
+        &self,
+        tx: &StoreTx,
+        message: &InboundMessage,
+    ) -> Result<bool, CoreError> {
+        Ok(identity::find_standing(
+            tx,
+            message.channel.adapter.clone(),
+            message.sender.external_id.clone(),
+        )
+        .await?
+        .is_some_and(|standing| standing.opted_out))
+    }
+
+    /// The admitted notice's channel-windowed answer: the fixed policy
+    /// pointer, at most once per channel per window — recorded silence
+    /// within it.
+    async fn notice_answer(&self, conversation_id: i64) -> Option<DeliveryItem> {
+        self.notice_answered.grants(conversation_id).await.then(|| {
+            DeliveryItem::CommandAnswer(privacy::privacy_answer(
+                self.privacy_policy_address.as_deref(),
+            ))
+        })
+    }
+
+    /// One rights command's reply, with its state change applied exactly
+    /// when the reply is granted (decided 2026-08-23), through the reply
+    /// window's one grant-with-the-change operation: a withheld reply
+    /// withholds the change — a destructive action never runs into recorded
+    /// silence — and a state-change write that fails has its grant handed
+    /// back before it is logged and answered with nothing: the command is
+    /// idempotent and re-asking works. The confirm's consumed pending
+    /// spawns the erasure as its own task, so it runs after this ingestion
+    /// returns — the ingestion path holds the erasure fence for reading,
+    /// the erasure takes it for writing, and running it inline would
+    /// deadlock on this very call.
+    async fn rights_reply(
+        &self,
+        tx: &StoreTx,
+        command: RightsCommand,
+        principal_id: i64,
+    ) -> Option<DeliveryItem> {
+        let change = async {
+            match command {
+                RightsCommand::OptOut => {
+                    identity::set_opt_out(tx, principal_id).await.map(|raised| {
+                        if raised {
+                            privacy::OPT_OUT_DONE
+                        } else {
+                            privacy::OPT_OUT_ALREADY
+                        }
+                    })
+                }
+                RightsCommand::OptIn => {
+                    identity::clear_opt_out(tx, principal_id)
+                        .await
+                        .map(|cleared| {
+                            if cleared {
+                                privacy::OPT_IN_DONE
+                            } else {
+                                privacy::OPT_IN_ALREADY
+                            }
+                        })
+                }
+                RightsCommand::Delete => {
+                    self.pending_deletions.file(principal_id).await;
+                    Ok(privacy::CONFIRM_INSTRUCTION)
+                }
+                RightsCommand::Confirm => {
+                    if self.pending_deletions.take(principal_id).await {
+                        let ctx = self.ctx.clone();
+                        let streams = Arc::clone(&self.streams);
+                        let fence = Arc::clone(&self.erasure_fence);
+                        tokio::spawn(async move {
+                            match erase_behind_the_fence(ctx, streams, fence, principal_id).await {
+                                Ok(outcome) => {
+                                    tracing::info!(
+                                        principal_id,
+                                        ?outcome,
+                                        "the confirmed erasure ran"
+                                    );
+                                }
+                                Err(error) => {
+                                    tracing::warn!(
+                                        principal_id,
+                                        %error,
+                                        "the confirmed erasure failed; the stored data stands, \
+                                         and a fresh /privacydelete re-asks"
+                                    );
+                                }
+                            }
+                        });
+                        Ok(privacy::DELETION_STARTED)
+                    } else {
+                        Ok(privacy::NOTHING_PENDING)
+                    }
+                }
+            }
+        };
+        match self
+            .privacy_replies
+            .grant_with(principal_id, change)
+            .await?
+        {
+            Ok(line) => Some(DeliveryItem::CommandAnswer(line.to_owned())),
+            Err(error) => {
+                tracing::warn!(
+                    principal_id,
+                    ?command,
+                    %error,
+                    "the rights command's write failed; nothing changed"
+                );
+                None
             }
         }
-        Ok(outcome)
     }
 
     /// First message on a channel: create the conversation under the
@@ -1007,4 +1289,62 @@ impl Assistant {
         }
         Ok(None)
     }
+}
+
+/// What the writing path knows about an admitted sender: the resolved
+/// principal, the delivered authority, the privacy command family member
+/// the message invokes, if any, and whether the suppression flag stands —
+/// the facts [`Assistant::resolve_writing_sender`] hands the stamp, the
+/// stored fields and the delivery.
+struct WritingSender {
+    principal_id: i64,
+    authority: Authority,
+    family: Option<PrivacyCommand>,
+    /// The standing suppression flag: `true` only on an exempt command,
+    /// since every other suppressed message was dropped before this. The
+    /// stored fields read it — a suppressed sender's command records no
+    /// speaker, so after a deletion no command re-materializes the emptied
+    /// handle.
+    suppressed: bool,
+}
+
+/// The one erasure body, behind the fence taken for writing: what
+/// [`Assistant::erase_principal`] runs inline and what a confirmed
+/// `/confirmdelete` spawns as its own task after its ingestion returned —
+/// the spawn-outside-the-fence execution model (decided 2026-08-23). The
+/// ingestion path holds the fence for reading, this takes it for writing,
+/// so an erasure run inline from ingestion would deadlock on itself; a
+/// spawned run simply waits for the ingestion's read hold to release. The
+/// arguments are the owned handles a detached task needs — the runtime
+/// context, the stream observer and the fence — so the task outlives the
+/// call that spawned it without borrowing the assembly.
+async fn erase_behind_the_fence(
+    ctx: RuntimeContext<AssistantKind, CoreEvent>,
+    streams: Arc<StreamObserver>,
+    fence: ErasureFence,
+    principal_id: i64,
+) -> Result<ErasureOutcome, CoreError> {
+    let _no_ingestion_mid_erasure = fence.write().await;
+    let store = ctx.store();
+    let Some(plan) = erasure::plan(store, principal_id).await? else {
+        return Ok(ErasureOutcome::NotFound);
+    };
+    // The plan's conversations are exactly the deletion set, so settling
+    // them is settling everything the execute step will remove.
+    for &conversation_id in plan.direct_conversations() {
+        streams::settle_for_deletion(store, ctx.bus(), &streams, conversation_id).await?;
+    }
+    let outcome = erasure::execute(store, plan).await?;
+    if let ErasureOutcome::Erased {
+        deleted_conversations,
+    } = &outcome
+    {
+        // The store reissues conversation ids: a deleted conversation's
+        // stream observation must not survive to shadow the id's next
+        // holder.
+        for &deleted in deleted_conversations {
+            streams.forget(deleted);
+        }
+    }
+    Ok(outcome)
 }

@@ -31,7 +31,9 @@
 //!   kinds through the derive.
 //! - [`note`] — the context-note kind carrying a group's observed facts,
 //!   and the rules contract that reads the pinned announcement.
-//! - [`privacy`] — the privacy command's recognition and its fixed answer.
+//! - [`privacy`] — the privacy command family's recognition and its fixed
+//!   lines: the notice, the opt-out and opt-in, and the deletion with its
+//!   programmatic confirm.
 //! - [`schema`] — the store configuration and the domain tables; identity
 //!   lives apart from the ledger so erasure never touches a block.
 //! - [`tools`] — the project lookups, the palette kind that gates their
@@ -63,8 +65,8 @@ pub mod tools;
 mod window;
 
 pub use assembly::{
-    AssemblyConfig, Assistant, Budget, DirectChats, ModelBinding, NoteReadPause, OperatorConfig,
-    ProtectionConfig,
+    AssemblyConfig, Assistant, Budget, DirectChats, ModelBinding, OperatorConfig, ProtectionConfig,
+    ScriptedPause,
 };
 pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
@@ -76,4 +78,7 @@ pub use message::{
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
 };
-pub use window::{ACKNOWLEDGMENT_WINDOW, NOTE_TOPIC_APPEND_CAP, REPORT_WINDOW};
+pub use window::{
+    ACKNOWLEDGMENT_WINDOW, NOTE_TOPIC_APPEND_CAP, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW,
+    REPORT_WINDOW,
+};

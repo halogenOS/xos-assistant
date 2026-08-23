@@ -104,7 +104,11 @@ No advertising is displayed. No web analytics, tracking or profiling takes place
 you write is sold, rented or passed on for marketing. Nothing you write is used to train a
 language model, by us or by our processor; what the model provider behind the processor does
 is set out in the table below. The assistant builds no profile of anybody and makes no
-automated decision within the meaning of Article 22 GDPR. It does not moderate: it cannot
+automated decision within the meaning of Article 22 GDPR. One step does run by machine
+(added 23 August 2026): when you command a deletion with `/privacydelete` and confirm it
+with `/confirmdelete`, the deletion runs without a person in between — that is your own
+decision carried out, not the machine's, and the same holds for the opt-out and opt-in
+commands under your rights below. It does not moderate: it cannot
 warn, remove or ban anybody, and it watches nobody. It can pass a report to the group's
 moderation bot when a member replies to a message and asks for one, and the group's
 administrators decide what happens. That step is written by the same language model that
@@ -175,11 +179,14 @@ Our processor has nothing to delete, because zero data retention is configured a
 no message. A model provider behind it can keep a request under its own terms, and we cannot
 delete anything there.
 
-Three things deletion does not reach: records of the assistant's lookups, which hold the
-query and its result; the group's title and pinned rules text, which are stored with no link
-to any person; and, on somebody else's reply to you, a stored copy of your message's
-identifier in the cases where it no longer matches anything of yours. A query or a rules
-text can quote your words or name you.
+Four things deletion does not reach (the fourth added 23 August 2026): records of the
+assistant's lookups, which hold the query and its result; the group's title and pinned
+rules text, which are stored with no link to any person; on somebody else's reply to you,
+a stored copy of your message's identifier in the cases where it no longer matches
+anything of yours; and, if you opted out with `/privacyout`, one emptied identity row
+keeping only your account identifier and the opt-out mark itself — remembering that you
+objected is what it costs to keep honoring the objection, and it goes when you opt back
+in and ask for deletion again. A query or a rules text can quote your words or name you.
 
 **Your rights**
 
@@ -188,6 +195,15 @@ processed and to access it (Article 15), to rectification (Article 16), to erasu
 (Article 17), and to restriction of processing (Article 18). Data portability under
 Article 20 does not apply here: it covers data processed on consent or for a contract, and
 everything described here rests on legitimate interest.
+
+Erasure, and the objection described below, work in the chat itself, without writing to
+us (added 23 August 2026). In any group the assistant serves — direct chats with the
+assistant are switched off today, so the groups are where these commands are reached —
+`/privacyout` stops your new messages from being collected or answered on that platform
+and `/unblockprivacy` turns collection back on, and `/privacydelete` followed by
+`/confirmdelete` within five minutes deletes your stored data. The assistant honors these
+directly, as your own commands; the address below remains open for everything, including
+these.
 
 To exercise any of these, write to
 [privacy@halogenos.org](mailto:privacy@halogenos.org). Tell us your username and the group,
@@ -204,11 +220,13 @@ be raised against all of it. Write to
 [privacy@halogenos.org](mailto:privacy@halogenos.org).
 
 We then stop processing your data unless we can show compelling legitimate reasons that
-override your interests, rights and freedoms, or unless we need it for legal claims. In
-practice an objection is answered by deleting your data on the path described above. One
-thing an objection cannot do is keep the group's conversation from being stored while you
-keep writing in it: each new message is stored as it arrives. Where that is the case we say
-so, and we say what we can do instead.
+override your interests, rights and freedoms, or unless we need it for legal claims.
+Updated 23 August 2026: objecting to collection going forward is honored in place — send
+`/privacyout` in the group, or write to the address, and your new messages on that
+platform are no longer stored and no longer answered, from that moment on. What was
+stored before stays until you ask for deletion on the path described above, and the
+system keeps an opt-out mark on your identity row so that it remembers your objection;
+the deletion section says what remains of that row after a deletion.
 
 **Right to lodge a complaint**
 

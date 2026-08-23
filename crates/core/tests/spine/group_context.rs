@@ -347,6 +347,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
                 "DROP TABLE {note};
                  DROP TABLE group_authorizations;
                  DROP TABLE {report};
+                 ALTER TABLE principals DROP COLUMN opted_out;
                  {V5_CHAT_MESSAGE_DDL}",
                 note = assistant_core::note::CONTEXT_NOTE_TABLE,
                 report = assistant_core::tools::report::REPORT_TABLE,
@@ -378,7 +379,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             .expect("the version-five store reopens under the shipped configuration");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            11,
+            12,
             "the appended steps advanced the domain's version"
         );
         let fixture = support::start_assistant_on(store.clone(), None).await;

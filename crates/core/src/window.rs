@@ -1,17 +1,27 @@
-//! The shared acknowledgment-window mechanism (decided 2026-08-23, refined
-//! at the unit's close): every fixed line a non-operator can trigger goes
-//! out at most once per channel per window, and note appends of one topic
-//! are capped within the same window. One window length binds both — the
-//! flood-amplifier discipline the protection unit recorded for notices,
-//! applied to chat lines and ledger growth alike.
+//! The shared windowed bounds (decided 2026-08-23, refined at each unit's
+//! close): every structure here answers one question — "may this go out
+//! now" — over a named window length, and nothing here is a feature's own
+//! state. Three bounds live in this module:
 //!
-//! The bookkeeping is in-memory on purpose: the bounded lines are courtesy
-//! and legal-pointer lines with at-most-once intent per window, and a
-//! restart forgetting the windows costs at most one extra line and one
-//! burst of capped appends. Expired entries are swept on every access, so
-//! neither map outlives its own window.
+//! - [`LineWindow`] — at most one fixed line per channel per window: the
+//!   rules acknowledgment, the privacy notice's answer, and the report
+//!   filing each keep an instance.
+//! - [`AppendWindow`] — note appends of one topic capped per conversation
+//!   within the acknowledgment window.
+//! - [`ReplyWindow`] — up to a cap of replies per key per window, the
+//!   privacy family's per-person bound, carrying the one writing of the
+//!   grant-exactly-with-the-action protocol in [`ReplyWindow::grant_with`].
+//!
+//! The flood-amplifier discipline the protection unit recorded for notices
+//! applies to chat lines and ledger growth alike. The bookkeeping is
+//! in-memory on purpose: a restart forgetting the windows costs at most one
+//! window of extra lines and one burst of capped appends. Expired entries
+//! are swept on every access, so no map outlives its own window. Domain
+//! state with a window of its own — the deletion flow's pending memory —
+//! lives with its feature, not here.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::hash::Hash;
 use std::time::Duration;
 
@@ -41,6 +51,22 @@ pub const REPORT_WINDOW: Duration = Duration::from_mins(5);
 /// window re-reads the stored newest note and appends the still-standing
 /// delta then.
 pub const NOTE_TOPIC_APPEND_CAP: u32 = 3;
+
+/// The rights replies' own per-person window (decided 2026-08-23), the same
+/// length as the acknowledgment window: the four privacy commands and the
+/// privacy tool's deterministic replies are bounded per PRINCIPAL inside
+/// it, so one person's flood bounds that person alone and a neighbor's
+/// commands starve nobody's right.
+pub const PRIVACY_REPLY_WINDOW: Duration = Duration::from_mins(5);
+
+/// How many rights replies one person draws inside one
+/// [`PRIVACY_REPLY_WINDOW`]. The unit spec names the window and keys it by
+/// principal; the count that makes it a bound is fixed here: eight covers a
+/// person's whole flow with repeats — opt out, ask, confirm, undo, and the
+/// already-so answers between — while a flood past it draws recorded
+/// silence, and the state change a silenced command would make is withheld
+/// with the reply, never applied silently.
+pub const PRIVACY_REPLY_CAP: u32 = 8;
 
 /// The at-most-once-per-window bookkeeping of one fixed line, keyed by
 /// conversation, over the window length it is constructed with. The window
@@ -133,6 +159,91 @@ impl<K: Eq + Hash> AppendWindow<K> {
     }
 }
 
+/// The per-key reply bound of one window: up to `cap` grants per key inside
+/// the window it is constructed with, the first grant opening the key's
+/// window and its expiry resetting the count whole. The check and the spend
+/// are one atomic step under the lock, like [`LineWindow::grants`], and
+/// [`Self::revoke`] hands one grant back when the granted action failed
+/// before it stood. Keys are the privacy family's principal ids; the
+/// bookkeeping is in-memory on purpose, under the same reasoning as the
+/// module's other windows — a restart forgives at most one window of
+/// extra replies.
+pub(crate) struct ReplyWindow {
+    window: Duration,
+    cap: u32,
+    spent: Mutex<HashMap<i64, (Instant, u32)>>,
+}
+
+impl ReplyWindow {
+    pub(crate) fn new(window: Duration, cap: u32) -> Self {
+        Self {
+            window,
+            cap,
+            spent: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Whether one more reply goes out now for this key: `true` counts the
+    /// grant, `false` is the recorded silence of an exhausted window.
+    /// Expired windows are swept here, so the map holds only keys inside a
+    /// live window.
+    pub(crate) async fn grants(&self, key: i64) -> bool {
+        let mut spent = self.spent.lock().await;
+        let now = Instant::now();
+        spent.retain(|_, (start, _)| now.duration_since(*start) < self.window);
+        match spent.get_mut(&key) {
+            Some((_, count)) if *count >= self.cap => false,
+            Some((_, count)) => {
+                *count += 1;
+                true
+            }
+            None => {
+                spent.insert(key, (now, 1));
+                true
+            }
+        }
+    }
+
+    /// Hand one grant back: the granted action failed transiently before it
+    /// stood, so the spent slot reopens and a redelivered ask is not
+    /// silenced by a failure that delivered nothing.
+    pub(crate) async fn revoke(&self, key: i64) {
+        let mut spent = self.spent.lock().await;
+        if let Some((_, count)) = spent.get_mut(&key) {
+            *count = count.saturating_sub(1);
+        }
+    }
+
+    /// Spend one grant on a fallible change, as one operation — the one
+    /// writing of the grant-exactly-with-the-reply protocol the command
+    /// path and the privacy tool both ride (decided 2026-08-23). The grant
+    /// is taken first, so a concurrent ask is bounded; the change runs only
+    /// when granted, so a state change never lands into recorded silence;
+    /// and a failed change hands the grant back before it is reported, so a
+    /// redelivered ask is not silenced by a failure that delivered nothing.
+    ///
+    /// `None` is the exhausted window — the change never ran. `Some(Ok(_))`
+    /// is the change standing with its grant. `Some(Err(_))` is the failed
+    /// change after the revoke; the caller supplies its own wording for
+    /// each.
+    pub(crate) async fn grant_with<T, E>(
+        &self,
+        key: i64,
+        change: impl Future<Output = Result<T, E>>,
+    ) -> Option<Result<T, E>> {
+        if !self.grants(key).await {
+            return None;
+        }
+        match change.await {
+            Ok(value) => Some(Ok(value)),
+            Err(error) => {
+                self.revoke(key).await;
+                Some(Err(error))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,10 +268,13 @@ mod tests {
     /// The report window's own reopening, under paused time: one grant per
     /// channel inside [`REPORT_WINDOW`], and the expired window grants
     /// again. Pinned on the primitive because the assembly injects exactly
-    /// this instance into the report tool — and because a paused full
-    /// assembly is unsound: the store's actor is an external thread, and
-    /// the paused clock auto-advances past every deadline while a task
-    /// awaits it.
+    /// this instance into the report tool — and because the window
+    /// arithmetic stays exact here: the store's actor is an external
+    /// thread, so under a paused full assembly the auto-advancing clock
+    /// can jump while a store roundtrip is in flight and expire a window
+    /// mid-operation. A paused full assembly itself works — the confirm
+    /// window's spine pin runs one — but its clock cannot be trusted to
+    /// sit still between two store reads.
     #[tokio::test(start_paused = true)]
     async fn the_report_window_declines_within_and_reopens_past_its_length() {
         let window = LineWindow::new(REPORT_WINDOW);
@@ -222,6 +336,60 @@ mod tests {
         assert!(
             window.admits(1).await,
             "the expired window resets the count"
+        );
+    }
+
+    /// The one-operation protocol over the reply bound: an exhausted window
+    /// never runs the change, a granted change spends its slot, and a
+    /// failed change hands the grant back — so a redelivery is not silenced
+    /// by a failure that delivered nothing.
+    #[tokio::test(start_paused = true)]
+    async fn a_granted_change_spends_and_a_failed_one_hands_the_grant_back() {
+        let window = ReplyWindow::new(PRIVACY_REPLY_WINDOW, 1);
+        let failed: Option<Result<&str, &str>> = window.grant_with(1, async { Err("down") }).await;
+        assert_eq!(
+            failed,
+            Some(Err("down")),
+            "the failed change is reported after the revoke"
+        );
+        let granted: Option<Result<&str, &str>> = window.grant_with(1, async { Ok("stood") }).await;
+        assert_eq!(
+            granted,
+            Some(Ok("stood")),
+            "the handed-back grant is spendable again"
+        );
+        let exhausted: Option<Result<&str, &str>> = window
+            .grant_with(1, async {
+                panic!("an exhausted window never runs the change")
+            })
+            .await;
+        assert_eq!(exhausted, None, "the exhausted window is recorded silence");
+    }
+
+    /// The per-person reply bound under paused time (AC5): one key's cap
+    /// exhausts without touching another key, a revoked grant reopens its
+    /// slot, and the expired window resets the count whole.
+    #[tokio::test(start_paused = true)]
+    async fn the_reply_window_caps_per_key_and_resets_past_the_window() {
+        let window = ReplyWindow::new(PRIVACY_REPLY_WINDOW, PRIVACY_REPLY_CAP);
+        for _ in 0..PRIVACY_REPLY_CAP {
+            assert!(window.grants(1).await, "grants inside the cap");
+        }
+        assert!(!window.grants(1).await, "the exhausted key is silence");
+        assert!(
+            window.grants(2).await,
+            "another person's replies are bounded independently"
+        );
+        window.revoke(1).await;
+        assert!(
+            window.grants(1).await,
+            "a revoked grant reopens the slot it spent"
+        );
+        assert!(!window.grants(1).await, "the re-spent cap holds again");
+        tokio::time::advance(PRIVACY_REPLY_WINDOW + Duration::from_secs(1)).await;
+        assert!(
+            window.grants(1).await,
+            "the expired window resets the count whole"
         );
     }
 

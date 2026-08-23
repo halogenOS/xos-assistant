@@ -111,9 +111,29 @@ pub(crate) fn newest_co_summoner_reply(
     ledger: &[Block],
     call_block_id: i64,
 ) -> Option<StoredReply> {
-    let call = ledger.iter().find(|block| block.id == call_block_id)?;
-    let anchor = call.dispatch_anchor?;
-    let anchor_index = ledger.iter().position(|block| block.id == anchor)?;
+    co_summoners(ledger, call_block_id)
+        .iter()
+        .find_map(stored_reply)
+}
+
+/// The turn's co-summoners as loaded rows, newest first: the span's
+/// own-debt-takers between the anchor and the call, then the origin set's
+/// takers in the anchor's chain — the one walk behind the report tool's
+/// reply resolution and the privacy tool's principal resolution (2026-08-23,
+/// the privacy-self-service unit). Empty for every unloadable shape — a
+/// null anchor, a call or anchor missing from the vector, a non-message
+/// frontier, a chain of pure propagators — each one more absence folded to
+/// the refusing side, exactly as the reading folds them downward.
+pub(crate) fn co_summoners(ledger: &[Block], call_block_id: i64) -> Vec<ChatMessage> {
+    let Some(call) = ledger.iter().find(|block| block.id == call_block_id) else {
+        return Vec::new();
+    };
+    let Some(anchor) = call.dispatch_anchor else {
+        return Vec::new();
+    };
+    let Some(anchor_index) = ledger.iter().position(|block| block.id == anchor) else {
+        return Vec::new();
+    };
     let span = ledger
         .iter()
         .rev()
@@ -144,7 +164,7 @@ pub(crate) fn newest_co_summoner_reply(
     })
     .into_iter()
     .flatten();
-    span.chain(chain).find_map(|message| stored_reply(&message))
+    span.chain(chain).collect()
 }
 
 /// One co-summoner's stored reply fact, if it carries one.

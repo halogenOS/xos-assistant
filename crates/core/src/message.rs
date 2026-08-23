@@ -298,11 +298,13 @@ pub enum IngestOutcome {
     /// admitted. Nothing touched the ledger; the adapter performs the
     /// withdrawal.
     Withdraw,
-    /// Refused fail-closed: the channel is direct and the assembly's
-    /// configuration serves no direct chats. Nothing touched the ledger or
-    /// the identity tables, and nothing is delivered — there is no
-    /// directive to perform, so the adapter simply acknowledges the
-    /// message and moves on.
+    /// Refused without effect at the person's own ask or the operator's
+    /// switch (widened 2026-08-23): the channel is direct and the
+    /// assembly's configuration serves no direct chats, or the sender's
+    /// standing suppression flag drops the message at ingestion. Nothing
+    /// touched the ledger or the identity tables, and nothing is delivered
+    /// — there is no directive to perform, so the adapter simply
+    /// acknowledges the message and moves on.
     Disregarded,
 }
 

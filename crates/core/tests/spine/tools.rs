@@ -610,8 +610,11 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
         serde_json::from_str(&field(&blocks[1], "tools")).expect("the stored list parses");
     assert_eq!(
         names,
-        vec![commit::NAME.to_owned()],
-        "the appended palette names the registered set"
+        vec![
+            commit::NAME.to_owned(),
+            assistant_core::tools::rights::NAME.to_owned()
+        ],
+        "the appended palette names the registered set, the privacy tool included"
     );
     assert_eq!(field(&blocks[4], "content"), forge_compact_result());
     assert_eq!(
@@ -622,10 +625,11 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
     assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
 }
 
-/// A created conversation's palette names exactly the three lookups, and a
-/// direct and a group conversation get the identical palette.
+/// A created conversation's palette names exactly the registered set — the
+/// three lookups plus the always-registered privacy tool — and a direct and
+/// a group conversation get the identical palette.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_created_conversation_names_exactly_the_three_lookups_direct_and_group_alike() {
+async fn a_created_conversation_names_exactly_the_registered_set_direct_and_group_alike() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
@@ -670,9 +674,10 @@ async fn a_created_conversation_names_exactly_the_three_lookups_direct_and_group
             vec![
                 commit::NAME.to_owned(),
                 release::NAME.to_owned(),
-                assistant_core::tools::wiki::NAME.to_owned()
+                assistant_core::tools::wiki::NAME.to_owned(),
+                assistant_core::tools::rights::NAME.to_owned()
             ],
-            "the palette names exactly the three lookups"
+            "the palette names the three lookups and the always-registered privacy tool"
         );
         palettes.push(names);
     }

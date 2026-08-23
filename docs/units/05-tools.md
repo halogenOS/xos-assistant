@@ -125,6 +125,11 @@ anywhere.
 > Amended 2026-08-23 (unit 8, decision 0060): the no-write rule above gains its
 > dated exception — a tool may append blocks of kinds that exist for tool-driven
 > delivery, which the report tool's filed block is. Lookups still write nothing.
+>
+> Amended 2026-08-23, second clause (unit 11, decision 0075): a tool may also
+> write the consumer's own identity-table fact when the write IS the honored
+> right — the privacy tool's opt-out flag is that write. Lookups still write
+> nothing.
 
 ### The palette kind and registration
 
