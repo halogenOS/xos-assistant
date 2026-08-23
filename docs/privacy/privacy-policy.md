@@ -34,10 +34,10 @@ When the assistant looks something up in the project's public sources to answer,
 it sent and the result it received are stored with the conversation.
 
 The assistant does not look for sensitive content and cannot recognise it; whatever a
-message carries is stored and sent on like any other text. If a message says something
-about you that you want gone, whether you wrote it or somebody else did, ask and it is
-taken up by a person: your own messages go on request, and a message of somebody else's
-that names you is reviewed and acted on the same way.
+message carries is stored and sent on like any other text. If a stored message concerns
+you and you wish it removed, whether you wrote it or somebody else did, it is removed on
+request: your own messages are deleted as described below, and a message of somebody
+else's that names you is reviewed by a person and acted on the same way.
 
 _Purpose:_ answering questions in the group and in a direct chat, reading enough of the
 conversation to answer in context, keeping the assistant available by limiting how much it
@@ -191,7 +191,7 @@ processed and to access it (Article 15), to rectification (Article 16), to erasu
 Article 20 does not apply here: it covers data processed on consent or for a contract, and
 everything described here rests on legitimate interest.
 
-You can exercise deletion and objection directly in the group, no email needed: send
+Deletion and objection can be exercised directly in the group, without writing to us: send
 `/privacyout` and the assistant stops collecting and answering your messages from that
 moment; send `/privacydelete` and confirm with `/confirmdelete`, and your stored data is
 removed; `/unblockprivacy` turns collection back on. These commands act on the account
@@ -217,9 +217,9 @@ be raised against all of it. Write to
 
 We then stop processing your data unless we can show compelling legitimate reasons that
 override your interests, rights and freedoms, or unless we need it for legal claims. In
-practice an objection is honored in place: `/privacyout` stops collection of your
-messages from that moment on, and deletion removes what was stored before. Nothing needs
-arguing for that; you ask, it happens.
+practice an objection is honored without any weighing of interests: `/privacyout` stops
+collection of your messages from that moment on, and deletion removes what was stored
+before. No justification is required for either.
 
 **Right to lodge a complaint**
 
