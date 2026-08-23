@@ -179,7 +179,9 @@ Three things deletion does not reach: records of the assistant's lookups, which 
 query and its result; the group's title and pinned rules text, which are stored with no link
 to any person; and, on somebody else's reply to you, a stored copy of your message's
 identifier in the cases where it no longer matches anything of yours. A query or a rules
-text can quote your words or name you.
+text can quote your words or name you. And if you opted out, one small thing survives
+deletion on purpose: your account identifier with the opt-out mark, because forgetting it
+would mean collecting your messages again.
 
 **Your rights**
 
@@ -189,12 +191,22 @@ processed and to access it (Article 15), to rectification (Article 16), to erasu
 Article 20 does not apply here: it covers data processed on consent or for a contract, and
 everything described here rests on legitimate interest.
 
-To exercise any of these, write to
+You can exercise deletion and objection directly in the group, no email needed: send
+`/privacyout` and the assistant stops collecting and answering your messages from that
+moment; send `/privacydelete` and confirm with `/confirmdelete`, and your stored data is
+removed; `/unblockprivacy` turns collection back on. These commands act on the account
+that sends them, immediately, by machine, because you asked and confirmed. Asking in
+plain words works too: tell the assistant clearly to stop collecting your data or to
+delete it, and it honors that the same way. To remember an opt-out, one thing is kept:
+your account identifier with the opt-out mark, and nothing else.
+
+For everything else, or if you prefer a person, write to
 [privacy@halogenos.org](mailto:privacy@halogenos.org). Tell us your username and the group,
 so that your data can be found. A handle is visible to everyone in the group, so we may ask
 you to show that the request comes from that account before we act on it, and we ask for
-nothing beyond that. Requests are free and are answered within one month. Every request is
-answered by a person, and no decision here is automated.
+nothing beyond that. Requests are free and are answered within one month. Requests by mail
+are answered by a person; the chat commands are the one place a machine acts, and it acts
+only on your own confirmed instruction.
 
 **Your right to object**
 
@@ -205,10 +217,9 @@ be raised against all of it. Write to
 
 We then stop processing your data unless we can show compelling legitimate reasons that
 override your interests, rights and freedoms, or unless we need it for legal claims. In
-practice an objection is answered by deleting your data on the path described above. One
-thing an objection cannot do is keep the group's conversation from being stored while you
-keep writing in it: each new message is stored as it arrives. Where that is the case we say
-so, and we say what we can do instead.
+practice an objection is honored in place: `/privacyout` stops collection of your
+messages from that moment on, and deletion removes what was stored before. Nothing needs
+arguing for that; you ask, it happens.
 
 **Right to lodge a complaint**
 
