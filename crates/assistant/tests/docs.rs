@@ -94,7 +94,7 @@ fn the_four_privacy_drafts_carry_their_dated_report_updates() {
     for (draft, marker) in [
         (
             "docs/privacy/privacy-policy.md",
-            "It does not moderate: it cannot",
+            "It can pass a report to the group's\nmoderation bot when a member replies to a message and asks for one",
         ),
         (
             "docs/privacy/dpia.md",

@@ -31,8 +31,12 @@ pub struct MemoryConfiguredProvider {
 
 impl MemoryConfiguredProvider {
     /// Wrap the framework's `OpenRouter` module around an in-memory
-    /// configuration: the key, and the base URL where a test points it at a
-    /// loopback server (`None` keeps the module's real host).
+    /// configuration: the key; the base URL where a test points it at a
+    /// loopback server (`None` keeps the module's real host); and the title
+    /// model — the module's `lightweight_model`, the slug conversation
+    /// titles are derived with (`None` derives them on each conversation's
+    /// own main model, so title traffic never reaches a model the
+    /// deployment did not name).
     ///
     /// The wrapped module creates its configuration table on construction;
     /// the table stays empty for the process's whole life, because the save
@@ -42,11 +46,19 @@ impl MemoryConfiguredProvider {
     ///
     /// If the wrapped module's configuration table cannot be created — a
     /// broken store, not a runtime condition.
-    pub async fn new(store: &Store, api_key: String, base_url: Option<String>) -> Self {
+    pub async fn new(
+        store: &Store,
+        api_key: String,
+        base_url: Option<String>,
+        title_model: Option<String>,
+    ) -> Self {
         let inner = OpenRouterModule::new(store.tx()).await;
         let mut config = json!({ "api_key": api_key });
         if let Some(base_url) = base_url {
             config["base_url"] = json!(base_url);
+        }
+        if let Some(title_model) = title_model {
+            config["lightweight_model"] = json!(title_model);
         }
         Self { inner, config }
     }
@@ -107,5 +119,47 @@ impl ProviderModule for MemoryConfiguredProvider {
 
     fn list_models(&self, config: Value) -> BoxFuture<'_, Result<Vec<ModelInfo>, LlmError>> {
         self.inner.list_models(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The configured title model flows into the provider configuration the
+    /// framework binds with, under the module's own `lightweight_model` key —
+    /// and an absent title model leaves the key absent, under which the
+    /// framework derives each conversation's title on that conversation's
+    /// own main model.
+    #[tokio::test]
+    async fn the_title_model_flows_into_the_provider_configuration() {
+        let store = Store::in_memory().expect("an in-memory store opens");
+
+        let provider = MemoryConfiguredProvider::new(
+            &store,
+            "a-test-key".into(),
+            None,
+            Some("cheap-vendor/title-model".into()),
+        )
+        .await;
+        let config = provider
+            .get_config("openrouter-1".into())
+            .await
+            .expect("the in-memory configuration reads")
+            .expect("the configuration is present");
+        assert_eq!(config["lightweight_model"], "cheap-vendor/title-model");
+        assert_eq!(config["api_key"], "a-test-key");
+
+        let provider = MemoryConfiguredProvider::new(&store, "a-test-key".into(), None, None).await;
+        let config = provider
+            .get_config("openrouter-1".into())
+            .await
+            .expect("the in-memory configuration reads")
+            .expect("the configuration is present");
+        assert!(
+            config.get("lightweight_model").is_none(),
+            "no configured title model means no key at all — the framework's \
+             main-model fallback stands"
+        );
     }
 }
