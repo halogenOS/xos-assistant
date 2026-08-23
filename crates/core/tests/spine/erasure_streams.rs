@@ -184,6 +184,9 @@ async fn a_stream_that_never_settles_fails_the_erasure_loudly_deleting_nothing()
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -284,6 +287,9 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
             assistant_core::AssemblyConfig {
                 binding: support::binding(),
                 system_prompt: support::SYSTEM_PROMPT.into(),
+                answering: support::FIXTURE_ANSWERING,
+                name: support::NAME.into(),
+                disclosure: None,
                 protection: assistant_core::ProtectionConfig::default(),
                 operators: support::operator_config(),
                 direct_chats: assistant_core::DirectChats::default(),
@@ -319,6 +325,9 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),

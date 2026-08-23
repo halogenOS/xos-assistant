@@ -55,7 +55,7 @@
 use agent_ledger::agency::Status;
 use agent_ledger::{Block, BlockKind, FromBlock};
 
-use crate::kind::{AssistantKind, ChatMessage};
+use crate::kind::{AssistantKind, ChatMessage, FrameworkKind};
 use crate::message::Authority;
 
 /// The floor every unreadable shape folds to: the lowest authority, so a
@@ -269,7 +269,9 @@ fn chain_step(block: &Block, ledger: &[Block]) -> ChainStep {
             }
         }
         AssistantKind::ChatMessage(_) => ChainStep::Ends,
-        AssistantKind::Core(BlockKind::Text(_)) if !turn_died(block, ledger) => ChainStep::Ends,
+        AssistantKind::Core(FrameworkKind(BlockKind::Text(_))) if !turn_died(block, ledger) => {
+            ChainStep::Ends
+        }
         // The report block extends explicitly, not by the default (decided
         // 2026-08-23): the kind is written INTO a live turn's window by the
         // report tool itself, so its classification decides admission on the
@@ -303,7 +305,7 @@ fn turn_died(narration: &Block, ledger: &[Block]) -> bool {
 fn turn_end_marker(block: &Block) -> bool {
     matches!(
         AssistantKind::from_block(block),
-        AssistantKind::Core(BlockKind::Status(status))
+        AssistantKind::Core(FrameworkKind(BlockKind::Status(status)))
             if status.status == Status::TURN_ENDED_CLOSED
                 || status.status == Status::TURN_ENDED_ERRORED
     )

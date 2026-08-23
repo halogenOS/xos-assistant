@@ -1,12 +1,20 @@
 # Unit 14 — helpful mode, the name, and the configurable disclosure
 
-Date: 2026-08-23. Revision 1. The operator's design across several messages: the
+Date: 2026-08-23. Revision 2. The operator's design across several messages: the
 assistant should help with a question asked into the group even when nobody
 mentioned it, abstaining freely when it has nothing to add; its name and its
 disclosure line should be configurable; and it should also wake to its name.
 The economics are the operator's stated call — a cheap cached read per message,
 acceptable at the community's traffic — so helpful behavior is the default and
 the quiet "addressed only" mode is the option.
+
+Revision 2 (2026-08-23) recasts the mechanism onto the debt spine, changing
+no decision: an unlimited group message OPENS A DEBT when it is addressed or
+the mode is helpful — the summons resolved once at the entry point and
+stamped at the write, never a second trigger beside the addressed one. The
+stamp's readers — the unlatch emission, the budget counts, the co-summoner
+rule, the disclosure fold, mid-turn absorption — then work unchanged and
+mode-free, which is the recast's whole point.
 
 ## Decisions taken with this unit
 
@@ -74,10 +82,12 @@ the quiet "addressed only" mode is the option.
 
 The `answering` mode key, the `name` key, the `disclosure` key — all optional,
 refused-unknown-keys, validated (empty rejected, name trimmed). The helpful
-turn-summoning in the core keyed on the mode: an unlimited group message opens
-a turn regardless of addressing when the mode is helpful. The abstention
+debt-opening in the core keyed on the mode at exactly one place: an unlimited
+group message opens a debt when addressed or when the mode is helpful, the
+summons stamped at the write (revision 2). The abstention
 sentinel constant and its recognition at the outbound edge, delivering nothing
-and spending no window. The prompt's helpful/abstain teaching and its name
+and spending no window; the recognized abstention kept out of the projection.
+The prompt's helpful/abstain teaching and its name
 identity, composed at assembly from the config. The adapter's name-trigger in
 `addressed` mode, whole-word case-insensitive, beside the mention. The
 disclosure fill from the name. Decisions recorded; the compliance page notes

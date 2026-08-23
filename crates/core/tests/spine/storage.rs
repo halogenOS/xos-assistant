@@ -6,7 +6,9 @@ use agent_ledger::{
     Agency, Awaiting, Block, BlockKind, ContentPart, FromBlock, Projection, Role, Store,
 };
 use assistant_core::Authority;
-use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ERASED_MARKER};
+use assistant_core::kind::{
+    AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ERASED_MARKER, FrameworkKind,
+};
 use assistant_core::schema::store_config;
 use serde_json::json;
 
@@ -72,7 +74,7 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
     assert!(
         matches!(
             AssistantKind::from_block(&framework_kind),
-            AssistantKind::Core(BlockKind::Text(_))
+            AssistantKind::Core(FrameworkKind(BlockKind::Text(_)))
         ),
         "a framework kind resolves through the delegate, untouched"
     );
@@ -336,5 +338,20 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
     assert_eq!(
         receipt.principal_id, 1,
         "the stored principal resolved over the upgraded table"
+    );
+}
+
+/// AC1 of the helpful-mode unit (unit 14): the unit appends no migration
+/// step — a store the previous unit's binary wrote already carries this
+/// build's recorded version, so it reopens with no schema change at all.
+/// The pinned number is the shipped step count; a unit that appends a step
+/// updates this pin deliberately, beside its own upgrade test.
+#[tokio::test]
+async fn the_helpful_mode_unit_appends_no_migration_step() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    assert_eq!(
+        support::domain_migration_version(&store).await,
+        13,
+        "the domain's recorded version is the deletion-mirror unit's"
     );
 }

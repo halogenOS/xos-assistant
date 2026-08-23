@@ -40,8 +40,42 @@ pub const TITLE_INSTRUCTION_MARK: &str = "Generate a concise title";
 pub const DEADLINE: Duration = Duration::from_secs(10);
 
 /// The system prompt every test assembly is started with — a fixed fixture
-/// string the prompt-recording assertions match against.
+/// string. The assembly records it with the composed identity and
+/// answering sections behind it, so the prompt-recording assertions match
+/// against [`composed_prompt`].
 pub const SYSTEM_PROMPT: &str = "You are the suite's scripted assistant fixture.";
+
+/// The assistant name every test assembly resolves — what the composed
+/// prompt identity and the default disclosure line carry.
+pub const NAME: &str = "Scripted";
+
+/// The answering mode the shared fixtures run under: addressed, the quiet
+/// shape, so the suite's standing pins — unaddressed messages rest, budgets
+/// spend on addressed ones — keep their meaning. Helpful-mode tests choose
+/// the mode through [`start_assistant_answering`].
+pub const FIXTURE_ANSWERING: assistant_core::AnsweringMode =
+    assistant_core::AnsweringMode::Addressed;
+
+/// The whole system prompt a fixture assembly records, as the core
+/// composes it.
+#[must_use]
+pub fn composed_prompt() -> String {
+    assistant_core::composed_system_prompt(SYSTEM_PROMPT, NAME, FIXTURE_ANSWERING)
+}
+
+/// The fixture's resolved disclosure: the line composed from [`NAME`],
+/// exactly as the assembly resolves it with no `disclosure` override.
+#[must_use]
+pub fn fixture_disclosure() -> assistant_core::Disclosure {
+    assistant_core::Disclosure::resolve(None, NAME)
+}
+
+/// An answer as its first delivery to someone carries it: the fixture's
+/// disclosure line, a blank line, then the answer.
+#[must_use]
+pub fn disclosed(answer: &str) -> String {
+    fixture_disclosure().disclosed(answer)
+}
 
 /// The answer the script streams for a turn whose newest projected message
 /// carries this text. Deriving the answer from the request is what lets a
@@ -53,12 +87,17 @@ pub fn answer_to(text: &str) -> String {
     format!("The scripted answer to: {text}")
 }
 
+/// The cue that scripts an abstention: a turn whose newest projected
+/// message carries this text answers with the abstention sentinel as its
+/// whole answer, the way the prompt teaches the model to stay silent.
+pub const ABSTAIN_CUE: &str = "(the quiet cue)";
+
 /// The first answer a person is delivered, as the edge stores and sends it:
 /// the disclosure line, a blank line, then the scripted answer to the given
 /// text.
 #[must_use]
 pub fn first_answer_to(text: &str) -> String {
-    assistant_core::disclosed(&answer_to(text))
+    disclosed(&answer_to(text))
 }
 
 /// A file path for one test's store, deleted with its sidecar files when this
@@ -283,7 +322,12 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                     let _ = response_tx.send(ProviderResponse::Error(failure));
                     continue;
                 }
-                let answer = answer_to(&messages.last().map(message_text).unwrap_or_default());
+                let newest = messages.last().map(message_text).unwrap_or_default();
+                let answer = if newest.contains(ABSTAIN_CUE) {
+                    assistant_core::ABSTENTION_SENTINEL.to_owned()
+                } else {
+                    answer_to(&newest)
+                };
                 let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                 seen.lock().unwrap().push(messages);
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
@@ -744,10 +788,43 @@ pub async fn start_assistant_operators(
         assistant_core::AssemblyConfig {
             binding: binding(),
             system_prompt: SYSTEM_PROMPT.into(),
+            answering: FIXTURE_ANSWERING,
+            name: NAME.into(),
+            disclosure: None,
             protection,
             operators,
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address,
+            moderation_handle: None,
+        },
+    )
+    .await
+}
+
+/// Assemble a running assistant under the given answering mode, everything
+/// else the suite's defaults — the seam of the helpful-mode pins.
+pub async fn start_assistant_answering(
+    store: Store,
+    hold: Option<Arc<TurnHold>>,
+    protection: ProtectionConfig,
+    answering: assistant_core::AnsweringMode,
+) -> Fixture {
+    let (provider, script) = scripted_provider(hold);
+    start_assistant_config(
+        store,
+        provider,
+        script,
+        production_toolset(),
+        assistant_core::AssemblyConfig {
+            binding: binding(),
+            system_prompt: SYSTEM_PROMPT.into(),
+            answering,
+            name: NAME.into(),
+            disclosure: None,
+            protection,
+            operators: operator_config(),
+            direct_chats: assistant_core::DirectChats::default(),
+            privacy_policy_address: None,
             moderation_handle: None,
         },
     )
@@ -776,6 +853,9 @@ pub async fn start_assistant_reporting(
         assistant_core::AssemblyConfig {
             binding: binding(),
             system_prompt: SYSTEM_PROMPT.into(),
+            answering: FIXTURE_ANSWERING,
+            name: NAME.into(),
+            disclosure: None,
             protection,
             operators: operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -784,6 +864,24 @@ pub async fn start_assistant_reporting(
         },
     )
     .await
+}
+
+/// The suite's default assembly configuration whole — the fixture binding,
+/// prompt, answering mode, name, budgets and operator wiring — for a test
+/// that assembles by hand and varies nothing.
+pub fn assembly_config() -> assistant_core::AssemblyConfig {
+    assistant_core::AssemblyConfig {
+        binding: binding(),
+        system_prompt: SYSTEM_PROMPT.into(),
+        answering: FIXTURE_ANSWERING,
+        name: NAME.into(),
+        disclosure: None,
+        protection: ProtectionConfig::default(),
+        operators: operator_config(),
+        direct_chats: assistant_core::DirectChats::default(),
+        privacy_policy_address: None,
+        moderation_handle: None,
+    }
 }
 
 /// The one assembly call every seam above funnels into.

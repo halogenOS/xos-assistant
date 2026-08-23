@@ -110,8 +110,8 @@ async fn the_system_prompt_is_recorded_and_projected() {
     );
     assert_eq!(
         blocks[0].fields["content"],
-        json!(support::SYSTEM_PROMPT),
-        "the recorded prompt is the assembly's own"
+        json!(support::composed_prompt()),
+        "the recorded prompt is the assembly's own composition"
     );
 
     let requests = fixture.script.seen.lock().unwrap();
@@ -276,6 +276,9 @@ async fn the_stamp_propagates_an_unanswered_debt_at_the_write() {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -334,6 +337,9 @@ async fn an_erased_tail_propagates_no_debt() {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),

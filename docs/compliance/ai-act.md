@@ -56,16 +56,28 @@ field or a policy page is not the system informing anyone. Para 34 asks
 for wording accessible to vulnerable readers, children included.
 
 Discharged by the first-interaction disclosure: the assistant's first
-answer to each natural person opens with the fixed line
+answer to each natural person opens with the disclosure line
 
-> Hi, I'm Xenia, the halogenOS Assistant Bot, an AI system, made to
-> assist members of the community.
+> Hi, I'm <name>, an AI system, made to assist members of the
+> community.
 
 stored into the answer itself, resolved per person from the ledger's own
 memory, shown again to a person the store no longer knows after their
 deletion. Plain words a young reader understands, no legalese. Beside the
 mechanical line, the system prompt teaches the model to say plainly that
 it is an AI whenever asked, and never to claim to be human.
+
+Amended 2026-08-23, with the helpful-mode unit: the line is a
+configuration value — the `disclosure` key overrides the text whole, and
+an unset key composes the shown default from the assistant's resolved
+name, so the line is never absent; the original adopted copy ("Hi, I'm
+Xenia, the halogenOS Assistant Bot, an AI system, made to assist members
+of the community.") remains a valid configured value. The duty holds
+under every answering mode: whether the assistant answers only when
+addressed or offers help on unaddressed messages, the first SPOKEN answer
+to a person still carries the line, and an abstained turn speaks nothing
+and therefore introduces no one — silence discharges nothing and owes
+nothing.
 
 ## 4. Article 50(2): marking of generated text
 

@@ -728,6 +728,9 @@ async fn debt_propagation_reads_through_a_note_at_the_stamp() {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -953,6 +956,9 @@ async fn a_pending_tail_debt_is_preserved_past_the_privacy_command() {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -1362,6 +1368,9 @@ async fn a_failed_turns_closure_marker_does_not_widen_debt_propagation() {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -1438,6 +1447,9 @@ async fn a_note_over_a_failed_turns_marker_stays_a_settled_tail() {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -1586,7 +1598,10 @@ async fn an_observation_created_conversation_carries_the_prompt_and_the_palette(
         vec!["system_prompt", "tool_palette", CONTEXT_NOTE_KIND],
         "prompt and palette first, the note behind them"
     );
-    assert_eq!(blocks[0].fields["content"], json!(support::SYSTEM_PROMPT));
+    assert_eq!(
+        blocks[0].fields["content"],
+        json!(support::composed_prompt())
+    );
 }
 
 /// An observation racing an erasure respects the fence: while the erasure
@@ -1606,6 +1621,9 @@ async fn an_observation_racing_an_erasure_respects_the_fence() {
             assistant_core::AssemblyConfig {
                 binding: support::binding(),
                 system_prompt: support::SYSTEM_PROMPT.into(),
+                answering: support::FIXTURE_ANSWERING,
+                name: support::NAME.into(),
+                disclosure: None,
                 protection: assistant_core::ProtectionConfig::default(),
                 operators: support::operator_config(),
                 direct_chats: assistant_core::DirectChats::default(),

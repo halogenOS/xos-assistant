@@ -38,12 +38,27 @@
 //! derivation the metadata worker runs never finalizes an answer block in
 //! the conversation ledger, so it never appears here.
 //!
+//! # A recognized abstention delivers nothing (unit 14, 2026-08-23)
+//!
+//! The model chooses silence by emitting the abstention sentinel as its
+//! whole answer, and this edge is where the choice takes effect: an
+//! undelivered answer whose RAW stored text is the recognized sentinel —
+//! judged on the trimmed content, before any disclosure resolution — is
+//! accounted delivered and yields nothing: no send, no first-interaction
+//! introduction, the turn already closed by its own committed answer. The
+//! recognition precedes the disclosure prepend on purpose: a prepended
+//! line would both un-recognize the sentinel and record an introduction
+//! nobody received. An ordinary answer that merely contains the sentinel's
+//! words as prose is delivered untouched — the sentinel is the whole
+//! answer or nothing.
+//!
 //! # The first delivery introduces the assistant (2026-08-23)
 //!
 //! An undelivered answer whose summoning people include anyone never yet
 //! introduced has the disclosure line written into its stored block before
-//! the send — the disclosure module owns the resolution and the receipt —
-//! so the ledger, the model's history and the channel carry one text. The
+//! the send — the disclosure module owns the resolution and the receipt,
+//! and the resolved [`Disclosure`] value arrives with the edge — so the
+//! ledger, the model's history and the channel carry one text. The
 //! notice and the report line are fixed texts a person wrote and are never
 //! touched.
 //!
@@ -71,12 +86,15 @@
 //! skipped as undeliverable.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use agent_ledger::{Block, BlockKind, CoreEvent, FromBlock, Role, RuntimeContext, StoreError};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
-use crate::kind::AssistantKind;
+use crate::abstention;
+use crate::disclosure::Disclosure;
+use crate::kind::{AssistantKind, FrameworkKind};
 use crate::mapping;
 use crate::message::{OutboundReply, ReplyKind};
 
@@ -155,6 +173,7 @@ type DeliveryCursors = HashMap<i64, i64>;
 pub(crate) async fn spawn_edge(
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
     adapter: String,
+    disclosure: Arc<Disclosure>,
 ) -> Result<mpsc::UnboundedReceiver<OutboundReply>, StoreError> {
     let mut events = ctx.bus().subscribe();
     let mut cursors = seed_cursors(&ctx, &adapter).await?;
@@ -174,6 +193,7 @@ pub(crate) async fn spawn_edge(
                     if let Err(error) = deliver_answers_and_reports(
                         &ctx,
                         &adapter,
+                        &disclosure,
                         conversation_id,
                         &mut cursors,
                         &replies,
@@ -202,6 +222,7 @@ pub(crate) async fn spawn_edge(
                     if let Err(error) = deliver_answers_and_reports(
                         &ctx,
                         &adapter,
+                        &disclosure,
                         conversation_id,
                         &mut cursors,
                         &replies,
@@ -226,7 +247,7 @@ pub(crate) async fn spawn_edge(
                 Err(RecvError::Lagged(missed)) => {
                     tracing::warn!(missed, "outbound edge lagged; re-reading stored state");
                     if let Err(error) =
-                        recover_from_lag(&ctx, &adapter, &mut cursors, &replies).await
+                        recover_from_lag(&ctx, &adapter, &disclosure, &mut cursors, &replies).await
                     {
                         tracing::error!(%error, "outbound lag recovery failed");
                     }
@@ -281,6 +302,7 @@ async fn seed_cursors(
 async fn deliver_answers_and_reports(
     ctx: &RuntimeContext<AssistantKind, CoreEvent>,
     adapter: &str,
+    disclosure: &Disclosure,
     conversation_id: i64,
     cursors: &mut DeliveryCursors,
     replies: &mpsc::UnboundedSender<OutboundReply>,
@@ -308,6 +330,20 @@ async fn deliver_answers_and_reports(
                 kind,
                 reply_target,
             } => {
+                // The abstention recognition comes FIRST, on the raw stored
+                // text (unit 14): the model chose silence, so the answer is
+                // accounted delivered and yields nothing — and no disclosure
+                // resolution runs, since a spoken-to-nobody answer
+                // introduces nobody.
+                if kind == ReplyKind::Answer && abstention::is_abstention(&text) {
+                    tracing::debug!(
+                        conversation_id,
+                        block_id,
+                        "the model abstained; the turn speaks nothing"
+                    );
+                    *cursor = block_id;
+                    continue;
+                }
                 // An answer's first delivery resolves the first-interaction
                 // disclosure (decision 0079): the line is written into the
                 // stored block before the send, so the ledger carries what
@@ -315,13 +351,9 @@ async fn deliver_answers_and_reports(
                 // the notice, the report line and every other deterministic
                 // reply stays exactly the fixed text a person wrote.
                 let text = if kind == ReplyKind::Answer {
-                    crate::disclosure::deliverable_answer(
-                        ctx.store(),
-                        conversation_id,
-                        &mut blocks,
-                        index,
-                    )
-                    .await?
+                    disclosure
+                        .deliverable_answer(ctx.store(), conversation_id, &mut blocks, index)
+                        .await?
                 } else {
                     text
                 };
@@ -387,6 +419,7 @@ async fn deliver_notice(
 async fn recover_from_lag(
     ctx: &RuntimeContext<AssistantKind, CoreEvent>,
     adapter: &str,
+    disclosure: &Disclosure,
     cursors: &mut DeliveryCursors,
     replies: &mpsc::UnboundedSender<OutboundReply>,
 ) -> Result<(), StoreError> {
@@ -395,9 +428,15 @@ async fn recover_from_lag(
         if record.adapter != adapter {
             continue;
         }
-        if let Err(error) =
-            deliver_answers_and_reports(ctx, adapter, record.conversation_id, cursors, replies)
-                .await
+        if let Err(error) = deliver_answers_and_reports(
+            ctx,
+            adapter,
+            disclosure,
+            record.conversation_id,
+            cursors,
+            replies,
+        )
+        .await
         {
             tracing::error!(
                 conversation_id = record.conversation_id,
@@ -433,7 +472,9 @@ enum Deliverable {
 /// report's delivery threads.
 fn deliverable_of(block: &Block) -> Option<Deliverable> {
     match AssistantKind::from_block(block) {
-        AssistantKind::Core(BlockKind::Text(text)) if text.role == Some(Role::Assistant) => {
+        AssistantKind::Core(FrameworkKind(BlockKind::Text(text)))
+            if text.role == Some(Role::Assistant) =>
+        {
             Some(Deliverable::Reply {
                 text: text.content,
                 kind: ReplyKind::Answer,
@@ -548,7 +589,8 @@ mod tests {
             .await
             .expect("the mapping claims");
 
-        let mut replies = spawn_edge(ctx.clone(), "quiet".into())
+        let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
+        let mut replies = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
             .await
             .expect("the edge opens");
 
@@ -576,7 +618,7 @@ mod tests {
             .expect("the lag recovery delivers before the deadline")
             .expect("the edge outlives the test");
         assert_eq!(reply.channel, key);
-        assert_eq!(reply.text, crate::disclosure::disclosed("the owed answer"));
+        assert_eq!(reply.text, disclosure.disclosed("the owed answer"));
     }
 
     /// Dropping the receiver ends the edge task even though the bus stays
@@ -588,9 +630,13 @@ mod tests {
         let ctx = quiet_ctx(store);
         let bus = Arc::clone(ctx.bus());
 
-        let replies = spawn_edge(ctx, "quiet".into())
-            .await
-            .expect("the edge opens");
+        let replies = spawn_edge(
+            ctx,
+            "quiet".into(),
+            Arc::new(Disclosure::resolve(None, "Probe")),
+        )
+        .await
+        .expect("the edge opens");
         drop(replies);
 
         // The bus handle count proves the task's exit: the edge task owns

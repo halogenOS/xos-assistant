@@ -15,13 +15,14 @@
 //! that write is part of the kind's own contract, it lives here too, as the
 //! crate-private `erase_principal_content` the erasure operation composes.
 
+use std::future::Future;
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
 
 use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{
-    Agency, Awaiting, Block, BlockKind, Column, ColumnType, ContentDescriptor, ContentPart,
-    LeafKind, Projection, Role, StoreError,
+    Agency, AgencyCtx, Awaiting, Block, BlockKind, Column, ColumnType, ContentDescriptor,
+    ContentPart, FromBlock, GateDecision, LeafKind, Projection, Role, RuntimeEvent, StoreError,
 };
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
@@ -49,14 +50,22 @@ pub const COLUMN_ORIGIN: &str = "origin";
 /// own `created_at` is the store's insertion time, so the ledger keeps both:
 /// the platform's send time here, the store's receipt time on the header.
 pub const COLUMN_SENT_AT: &str = "sent_at";
-/// Whether the message addressed the assistant, as the adapter resolved it.
+/// Whether the message summoned the assistant, as the entry point resolved
+/// it at the write (recast 2026-08-23, the helpful-mode unit): the adapter's
+/// addressed fact — a mention, a reply to the assistant, its name, a direct
+/// chat — or the helpful answering mode, under which every group message is
+/// summoned for the model's own judgment. The column keeps its original
+/// name; the recast is what lets the debt spine — the budget counts, the
+/// unlatch emission, the co-summoner rule and the disclosure fold — read one
+/// stored fact under both answering modes, stamped once instead of
+/// re-derived against a configuration that can change between runs.
 /// Structure, not personal data: erasure leaves it.
 pub const COLUMN_ADDRESSED: &str = "addressed";
 /// Whether the message owes the model a turn — the write-time stamp the
-/// entry point decides once at insert: true when the message is addressed
+/// entry point decides once at insert: true when the message is summoned
 /// and no budget refused it, or when the block behind it carries an
-/// unanswered answer-due, so a message arriving on the heels of an
-/// addressed one propagates the debt instead of cancelling it. Structure,
+/// unanswered answer-due, so a message arriving on the heels of a
+/// summoning one propagates the debt instead of cancelling it. Structure,
 /// not personal data: erasure leaves it. A decision recorded at the write,
 /// not a derivable-fact column — the per-block hook that consumes it cannot
 /// fold history.
@@ -224,7 +233,9 @@ pub struct RecordedSender<'a> {
 /// call directly.
 #[derive(Debug, Clone, Copy)]
 pub struct Stamp {
-    /// Whether the message addressed the assistant.
+    /// Whether the message summoned the assistant — the entry point's
+    /// resolution of the adapter's addressed fact and the answering mode,
+    /// stored under [`COLUMN_ADDRESSED`].
     pub addressed: bool,
     /// Which budget refused the message's own debt, if any.
     pub limited: Option<LimitedBy>,
@@ -237,29 +248,30 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    /// Compose the stamp from the write's inputs: the message's addressed
-    /// fact, its sender's authority, the first refusing budget (already
-    /// `None` for unaddressed messages — budgets are consulted for
-    /// addressed ones only), and the owing tail's debt if the conversation
-    /// carries one.
+    /// Compose the stamp from the write's inputs: the message's summons
+    /// fact — addressed, or evaluated under helpful answering; the entry
+    /// point resolves it before this call — its sender's authority, the
+    /// first refusing budget (already `None` for unsummoned messages —
+    /// budgets are consulted for summoned ones only), and the owing tail's
+    /// debt if the conversation carries one.
     ///
-    /// The composition rule: answer-due = (addressed and not limited) or
+    /// The composition rule: answer-due = (summoned and not limited) or
     /// tail-owes — a refused own debt never cancels a propagated one. The
     /// minimum rule (decision 0036): a carried debt takes the lowest
     /// authority that contributed to summoning the turn — the tail's debt
     /// authority against the incoming sender's, regardless of the incoming
-    /// message's own addressed fact — and a fresh taken debt opens at its
+    /// message's own summons fact — and a fresh taken debt opens at its
     /// sender's own authority.
     #[must_use]
     pub fn compose(
-        addressed: bool,
+        summoned: bool,
         sender: Authority,
         limited: Option<LimitedBy>,
         owing_tail: Option<TailDebt>,
     ) -> Self {
-        let own_debt_taken = addressed && limited.is_none();
+        let own_debt_taken = summoned && limited.is_none();
         Self {
-            addressed,
+            addressed: summoned,
             limited,
             answer_due: own_debt_taken || owing_tail.is_some(),
             debt_authority: match owing_tail {
@@ -269,7 +281,7 @@ impl Stamp {
         }
     }
 
-    /// Whether this message's own debt was taken — addressed and no budget
+    /// Whether this message's own debt was taken — summoned and no budget
     /// refused. The same conjunction [`Self::compose`] feeds the
     /// composition rule; restated here for readers of a composed stamp,
     /// like the unlatch emission: only a taken debt is re-engagement.
@@ -323,7 +335,8 @@ pub struct ChatMessage {
     /// on the block header. `None` only for a block the store did not
     /// produce.
     pub sent_at: Option<String>,
-    /// Whether the message addressed the assistant. `None` only for a block
+    /// Whether the message summoned the assistant, per
+    /// [`COLUMN_ADDRESSED`]'s recast. `None` only for a block
     /// the store did not produce (the schema stores it NOT NULL).
     pub addressed: Option<bool>,
     /// Whether the message owes the model a turn, stamped at the write.
@@ -436,13 +449,15 @@ impl ChatMessage {
     }
 
     /// Whether this message's own debt was taken — the row-side reading of
-    /// the opened-debt predicate: addressed, and no budget refused. One
+    /// the opened-debt predicate: summoned, and no budget refused. One
     /// predicate, three spellings that must agree: [`Stamp::own_debt_taken`]
     /// at the write, the budget counts' SQL fragment over the stored rows,
     /// and this reading of one loaded row — which is also decision 0043's
     /// co-summoner rule, since exactly the messages this predicate affirms
-    /// join a turn's provenance when absorbed into its span. A row the
-    /// store did not produce reads `None` for `addressed` and answers
+    /// join a turn's provenance when absorbed into its span; the summons
+    /// recast is what makes an unaddressed message under helpful answering
+    /// a co-summoner without this reading ever consulting the mode. A row
+    /// the store did not produce reads `None` for the summons and answers
     /// false: a message that provably opened nothing joins nothing.
     #[must_use]
     pub fn own_debt_taken(&self) -> bool {
@@ -787,7 +802,7 @@ pub(crate) async fn newest_block_id_past_erased(
 // these names — the coupling is deliberate, recorded with its risk in
 // decision 0032, and surfaced to the framework's improvements list.
 //
-// The counted predicate is opened debts: addressed, not limited. A refused
+// The counted predicate is opened debts: summoned, not limited. A refused
 // debt consumed no spend, so it never consumes budget either; a propagated
 // debt is the same debt carried forward, not a second spend intent. The
 // window anchors at `datetime('now')` evaluated inside the count — the
@@ -799,16 +814,40 @@ pub(crate) async fn newest_block_id_past_erased(
 // comparison. Comparing the raw text instead would order the two encodings
 // by their differing tenth byte and degrade the window into a
 // calendar-date test.
+//
+// A debt answered by a recognized abstention is excluded (unit 14,
+// 2026-08-23): the window bounds what the assistant SAYS, and an abstained
+// turn said nothing — so the count subtracts every debt whose stored
+// answer is exactly the sentinel, matched through the answer's dispatch
+// anchor, the id of the summoning frontier every block a turn writes
+// carries. The reach is exactly the anchor's: a co-summoner absorbed into
+// an abstained turn keeps its own row's slot spent, because the anchor
+// names the frontier alone — accepted, recorded with the decision. The
+// `blocks` and `block_text` names are the framework's, the deliberate
+// coupling decisions 0032 and 0079 record. The SQL trims the ASCII
+// whitespace the wire realistically wraps an answer in; the edge's own
+// recognition trims the full whitespace class, and the one divergence — a
+// sentinel wrapped in exotic whitespace — errs toward counting, the
+// limiting direction.
 
 /// The counted-debt predicate both budget counts share, over the message
-/// alias `m` and the block-header alias `b`: an opened debt — addressed,
+/// alias `m` and the block-header alias `b`: an opened debt — summoned,
 /// not limited — younger than the window, whose modifier arrives as the
-/// query's second parameter. One fragment on purpose: what consumes budget
-/// is one definition, and two spellings of it could drift apart.
+/// query's second parameter, and not answered by a recognized abstention,
+/// whose sentinel arrives as the third. One fragment on purpose: what
+/// consumes budget is one definition, and two spellings of it could drift
+/// apart.
 static COUNTED_DEBT_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "m.{COLUMN_ADDRESSED} = 1 AND m.{COLUMN_LIMITED} IS NULL \
-         AND datetime(b.created_at) > datetime('now', ?2)"
+         AND datetime(b.created_at) > datetime('now', ?2) \
+         AND NOT EXISTS (\
+           SELECT 1 FROM blocks ab \
+           JOIN block_text at ON at.block_id = ab.id \
+           WHERE ab.dispatch_anchor = m.block_id \
+           AND at.role = 'assistant' \
+           AND trim(at.content, ' ' || char(9) || char(10) || char(13)) = ?3\
+         )"
     )
 });
 
@@ -834,7 +873,7 @@ pub(crate) async fn opened_debts_by_principal(
                  WHERE m.{COLUMN_PRINCIPAL_ID} = ?1 AND {counted}",
                 counted = COUNTED_DEBT_SQL.as_str(),
             ),
-            (principal_id, cutoff),
+            (principal_id, cutoff, crate::abstention::ABSTENTION_SENTINEL),
             |row| row.get(0),
         )?)
     })
@@ -863,7 +902,11 @@ pub(crate) async fn opened_debts_in_conversation(
                  WHERE cb.conversation_id = ?1 AND {counted}",
                 counted = COUNTED_DEBT_SQL.as_str(),
             ),
-            (conversation_id, cutoff),
+            (
+                conversation_id,
+                cutoff,
+                crate::abstention::ABSTENTION_SENTINEL,
+            ),
             |row| row.get(0),
         )?)
     })
@@ -905,13 +948,128 @@ pub(crate) async fn conversations_of_principal(
     .await
 }
 
+/// The framework's kinds as this consumer composes them: a transparent
+/// delegation on every hook, with exactly one representation judgment of
+/// its own — a recognized abstention answer is invisible to the model
+/// (unit 14, 2026-08-23). The model chose silence by emitting the fixed
+/// sentinel as its whole answer; the stored block is the honest record of
+/// that turn, but projecting it into later requests would hand the model
+/// its own machinery token as prose. The kind level is the one seam the
+/// projection fold offers a consumer, the same seam decision 0027 used,
+/// so the judgment lives here instead of anywhere in the machinery.
+///
+/// The invisibility is boundary-invisible on purpose: the two user runs
+/// around a skipped abstention project as two same-role messages, the
+/// shape decision 0027's erased-run closure avoids for FORCED history.
+/// An abstention is this deployment's own design, its answering flows
+/// through one vendor wire that accepts same-role adjacency, and the
+/// alternative — a non-empty placeholder — would put a machinery marker
+/// into the model's mouth; the residual is recorded with the unit's
+/// sentinel decision.
+///
+/// Delegation is spelled per hook because the field is a wrapper, not the
+/// derive's delegate directly; a framework hook added later lands here as
+/// a compile-time absence only if it has no default, so the frontier
+/// transparency pin in the provenance tests stands watch over the one
+/// defaulted hook whose silent loss would change behavior.
+pub struct FrameworkKind(pub BlockKind);
+
+impl FrameworkKind {
+    /// Whether this is a finalized assistant answer that is a recognized
+    /// abstention — the projection's one override.
+    fn recognized_abstention(&self) -> bool {
+        matches!(
+            &self.0,
+            BlockKind::Text(text)
+                if text.role == Some(Role::Assistant)
+                    && crate::abstention::is_abstention(&text.content)
+        )
+    }
+}
+
+impl FromBlock for FrameworkKind {
+    const DESCRIPTORS: &'static [ContentDescriptor] = BlockKind::DESCRIPTORS;
+    const CLAIMED_KINDS: &'static [&'static str] = BlockKind::CLAIMED_KINDS;
+
+    fn from_block(block: &Block) -> Self {
+        Self(BlockKind::from_block(block))
+    }
+}
+
+impl Agency for FrameworkKind {
+    fn awaiting(&self) -> Option<Awaiting> {
+        self.0.awaiting()
+    }
+
+    fn durable(&self) -> bool {
+        self.0.durable()
+    }
+
+    fn frontier_transparent(&self) -> bool {
+        self.0.frontier_transparent()
+    }
+
+    fn gate<E: RuntimeEvent>(
+        &self,
+        ctx: &AgencyCtx<E>,
+    ) -> impl Future<Output = GateDecision> + Send {
+        self.0.gate(ctx)
+    }
+
+    fn run<E: RuntimeEvent>(
+        &self,
+        ctx: &AgencyCtx<E>,
+    ) -> impl Future<Output = Result<bool, StoreError>> + Send {
+        self.0.run(ctx)
+    }
+
+    fn post_gate_id(&self, ledger: &[Block]) -> Option<i64> {
+        self.0.post_gate_id(ledger)
+    }
+
+    fn run_post_gate<E: RuntimeEvent>(
+        &self,
+        ctx: &AgencyCtx<E>,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send {
+        self.0.run_post_gate(ctx)
+    }
+}
+
+impl Projection for FrameworkKind {
+    fn group_role(&self) -> Option<Role> {
+        if self.recognized_abstention() {
+            return None;
+        }
+        self.0.group_role()
+    }
+
+    fn llm_parts(&self) -> Option<Vec<ContentPart>> {
+        if self.recognized_abstention() {
+            return None;
+        }
+        self.0.llm_parts()
+    }
+
+    fn llm_text(&self) -> Option<String> {
+        if self.recognized_abstention() {
+            return None;
+        }
+        self.0.llm_text()
+    }
+
+    fn forces_parts(&self) -> bool {
+        self.0.forces_parts()
+    }
+}
+
 /// The composed kind set the runtime is instantiated over: the framework's
 /// kinds through the delegate, the assistant's beside them.
 #[derive(Agency)]
 pub enum AssistantKind {
-    /// The framework's own kinds, resolved through the delegate.
+    /// The framework's own kinds, resolved through the wrapping delegate
+    /// that silences a recognized abstention in projection.
     #[agency(delegate)]
-    Core(BlockKind),
+    Core(FrameworkKind),
     /// The assistant's recorded channel message.
     ChatMessage(ChatMessage),
     /// The conversation's tool admission record (the tools module owns the
@@ -942,7 +1100,165 @@ mod tests {
     use agent_ledger::Store;
 
     use super::*;
+    use crate::abstention::ABSTENTION_SENTINEL;
     use crate::note::{CONTEXT_NOTE_KIND, ContextNote, NoteTopic};
+
+    /// One summoned member message appended through the consumer write
+    /// path, answering its block id.
+    async fn summoned_message(store: &Store, conversation: i64, text: &str) -> i64 {
+        store
+            .append_consumer_block(
+                conversation,
+                Some(Role::User),
+                CHAT_MESSAGE_KIND,
+                ChatMessage::stored_fields(
+                    text,
+                    RecordedSender {
+                        principal_id: 7,
+                        authority: Authority::Member,
+                        speaker: None,
+                    },
+                    None,
+                    None,
+                    "2026-08-23T00:00:00Z",
+                    Stamp::compose(true, Authority::Member, None, None),
+                ),
+                None,
+            )
+            .await
+            .expect("the message appends")
+    }
+
+    /// One finalized assistant answer, anchored on the given summons the
+    /// way the framework's dispatch writes it — the anchor set through the
+    /// domain seam, since the anchored destination is the framework's own.
+    async fn anchored_answer(store: &Store, conversation: i64, anchor: i64, content: &str) {
+        let answer = store
+            .insert_final_text_block(conversation, Role::Assistant, content.into(), None)
+            .await
+            .expect("the answer inserts");
+        domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
+            conn.execute(
+                "UPDATE blocks SET dispatch_anchor = ?2 WHERE id = ?1",
+                [answer, anchor],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the anchor writes");
+    }
+
+    /// The window's abstention exclusion (unit 14): a debt whose anchored
+    /// answer is exactly the sentinel — surrounding whitespace tolerated —
+    /// stops counting in both budget counts, while a debt answered with
+    /// prose that merely quotes the sentinel keeps its slot spent. The
+    /// window bounds what the assistant SAYS.
+    #[tokio::test]
+    async fn a_debt_answered_by_an_abstention_stops_counting() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let tx = store.tx();
+        let window = NonZeroU64::new(600).expect("a nonzero window");
+
+        let first = summoned_message(&store, conversation, "the abstained ask").await;
+        assert_eq!(
+            opened_debts_by_principal(&tx, 7, window)
+                .await
+                .expect("the count runs"),
+            1,
+            "an unanswered debt counts"
+        );
+
+        anchored_answer(
+            &store,
+            conversation,
+            first,
+            &format!("  {ABSTENTION_SENTINEL}\n"),
+        )
+        .await;
+        assert_eq!(
+            opened_debts_by_principal(&tx, 7, window)
+                .await
+                .expect("the count runs"),
+            0,
+            "the abstained debt spends no slot"
+        );
+        assert_eq!(
+            opened_debts_in_conversation(&tx, conversation, window)
+                .await
+                .expect("the count runs"),
+            0,
+            "the channel count excludes it the same way"
+        );
+
+        let second = summoned_message(&store, conversation, "the answered ask").await;
+        anchored_answer(
+            &store,
+            conversation,
+            second,
+            &format!("the model may reply {ABSTENTION_SENTINEL} to stay silent"),
+        )
+        .await;
+        assert_eq!(
+            opened_debts_by_principal(&tx, 7, window)
+                .await
+                .expect("the count runs"),
+            1,
+            "a spoken answer quoting the sentinel keeps its slot spent"
+        );
+    }
+
+    /// The delegate's one projection judgment (unit 14): a finalized
+    /// assistant answer that is exactly the sentinel — trimmed — projects
+    /// nothing and opens no message boundary, while an answer quoting the
+    /// sentinel as prose, a user message carrying it whole, and every
+    /// ordinary answer project exactly as the framework states them.
+    #[test]
+    fn a_recognized_abstention_is_invisible_to_the_model() {
+        let text_block = |role: Role, content: &str| {
+            let mut fields = serde_json::Map::new();
+            fields.insert("role".into(), json!(role.as_str()));
+            fields.insert("content".into(), json!(content));
+            Block {
+                id: 1,
+                role: Some(role),
+                block_type: "text".into(),
+                created_at: String::new(),
+                dispatch_anchor: None,
+                fields,
+            }
+        };
+        let abstained = AssistantKind::from_block(&text_block(
+            Role::Assistant,
+            &format!(" {ABSTENTION_SENTINEL}\n"),
+        ));
+        assert_eq!(abstained.group_role(), None, "no boundary opens");
+        assert_eq!(abstained.llm_text(), None, "no text contribution");
+        assert!(abstained.llm_parts().is_none(), "no parts contribution");
+
+        let quoting = AssistantKind::from_block(&text_block(
+            Role::Assistant,
+            &format!("reply {ABSTENTION_SENTINEL} to stay silent"),
+        ));
+        assert_eq!(quoting.group_role(), Some(Role::Assistant));
+        assert!(
+            quoting
+                .llm_text()
+                .is_some_and(|t| t.contains(ABSTENTION_SENTINEL)),
+            "prose quoting the sentinel projects whole"
+        );
+
+        let user_sentinel = AssistantKind::from_block(&text_block(Role::User, ABSTENTION_SENTINEL));
+        assert_eq!(
+            user_sentinel.group_role(),
+            Some(Role::User),
+            "only the assistant's own voice abstains"
+        );
+    }
 
     /// A tail that is a run of read-through kinds and erased chat rows
     /// answers the block behind the whole run in one query; an empty kind

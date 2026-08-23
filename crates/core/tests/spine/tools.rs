@@ -236,7 +236,7 @@ async fn the_commit_lookup_decodes_the_forge_answer() {
 
     // The chat receives the model's answer alone — never the tool result.
     let reply = recv_reply(&mut replies).await;
-    assert_eq!(reply.text, assistant_core::disclosed(CLOSING_ANSWER));
+    assert_eq!(reply.text, support::disclosed(CLOSING_ANSWER));
     let extra = replies.try_recv();
     assert!(extra.is_err(), "one turn, one chat answer; got {extra:?}");
 }
@@ -330,7 +330,7 @@ async fn the_release_lookup_decodes_the_mirror_answer_and_sends_the_token() {
 
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -367,7 +367,7 @@ async fn an_absent_token_sends_no_header_and_the_default_is_the_latest_release()
     .await;
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 
     let requests = mirror.requests();
@@ -473,7 +473,7 @@ async fn an_error_status_and_a_timeout_become_tool_errors_the_model_sees() {
             // answered call, and the chat received only the model's answer.
             assert_eq!(
                 recv_reply(&mut replies).await.text,
-                assistant_core::disclosed(CLOSING_ANSWER)
+                support::disclosed(CLOSING_ANSWER)
             );
             let extra = replies.try_recv();
             assert!(
@@ -534,7 +534,7 @@ async fn a_redirect_answer_is_a_tool_error_and_is_not_followed() {
     );
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -642,7 +642,7 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
     );
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -756,7 +756,7 @@ async fn a_member_call_is_admitted_for_a_member_level_tool() {
     assert_eq!(field(&blocks[4], "content"), "the probe ran");
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -810,7 +810,7 @@ async fn an_admin_summoned_turn_admits_an_admin_tool() {
     );
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -873,7 +873,7 @@ async fn a_member_summoned_turn_declines_an_admin_tool() {
     );
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -1123,7 +1123,7 @@ async fn a_resting_member_before_the_summons_lies_outside_the_interval() {
     );
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -1451,15 +1451,7 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
             Arc::new(EventBus::new()),
             support::registry_of(support::silent_provider()),
             tools,
-            assistant_core::AssemblyConfig {
-                binding: support::binding(),
-                system_prompt: support::SYSTEM_PROMPT.into(),
-                protection: ProtectionConfig::default(),
-                operators: support::operator_config(),
-                direct_chats: assistant_core::DirectChats::default(),
-                privacy_policy_address: None,
-                moderation_handle: None,
-            },
+            support::assembly_config(),
         )
         .await
         .expect("the first assembly starts");
@@ -1537,7 +1529,7 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
         assert!(executed.load(Ordering::SeqCst), "the admin body ran");
         assert_eq!(field(&blocks[5], "content"), "the probe ran");
         let closing = recv_reply(&mut replies).await.text;
-        assert_eq!(closing, assistant_core::disclosed(CLOSING_ANSWER));
+        assert_eq!(closing, support::disclosed(CLOSING_ANSWER));
     });
 }
 
@@ -1738,7 +1730,7 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
     .await;
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
     let settled = settle_shape(
         &fixture.store,
@@ -1871,7 +1863,7 @@ async fn the_wiki_lookup_reads_a_page_end_to_end() {
     assert_eq!(requests[0].path, "/wiki/halogenOS/android_manifest/Home.md");
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        assistant_core::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER)
     );
 }
 
@@ -1937,7 +1929,7 @@ async fn a_missing_wiki_page_and_a_timeout_become_tool_errors() {
         );
         assert_eq!(
             recv_reply(&mut replies).await.text,
-            assistant_core::disclosed(CLOSING_ANSWER)
+            support::disclosed(CLOSING_ANSWER)
         );
         let extra = replies.try_recv();
         assert!(

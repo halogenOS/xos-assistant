@@ -53,6 +53,9 @@ async fn start_assistant_direct_off() -> support::Fixture {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: DirectChats::Off,

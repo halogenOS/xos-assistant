@@ -29,6 +29,9 @@ async fn a_binding_with_an_unregistered_vendor_is_refused_at_start() {
         assistant_core::AssemblyConfig {
             binding,
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -63,6 +66,9 @@ async fn a_store_opened_without_the_configuration_is_refused_at_start() {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),

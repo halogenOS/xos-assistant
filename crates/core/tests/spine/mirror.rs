@@ -841,6 +841,9 @@ async fn the_direct_channel_admission_precedes_the_mirror() {
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: ProtectionConfig::default(),
             operators: support::operator_config(),
             direct_chats: DirectChats::Off,

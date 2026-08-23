@@ -74,6 +74,22 @@ file path per secret — and never appear in the file itself:
     # nothing is recorded, nothing is answered. Groups are unaffected.
     #direct_chats = "off"
 
+    # Optional: how group messages summon a turn — "helpful" (the default:
+    # every group message reaches the model, which decides whether to
+    # speak and abstains silently otherwise) or "addressed" (only a
+    # mention, a reply to the assistant, or its name summons a turn).
+    #answering = "addressed"
+
+    # Optional: the assistant's name. Absent, the display name read from
+    # the platform at startup is used. The name feeds the prompt identity,
+    # the default disclosure line, and the group wake word.
+    #name = "Xenia"
+
+    # Optional: the first-interaction disclosure line, sent ahead of the
+    # first answer to each person. Absent, a line naming the assistant an
+    # AI system is composed from the name — the line is never absent.
+    #disclosure = "Hi, I'm Xenia, an AI system."
+
     [secrets.bot_token]
     env = "ASSISTANT_BOT_TOKEN"
 
@@ -158,6 +174,21 @@ Direct chats are served by default and can be switched off with `direct_chats =
 row, no conversation, no answer, the `/privacy` command included — while groups are
 served as ever. The two spelled values are the whole vocabulary; anything else
 refuses the start.
+
+Answering is a mode (decisions 0087 and 0088): under the default `helpful` every
+group message summons a model turn and the model decides whether to speak — it
+answers when it can genuinely help and otherwise emits a fixed abstention
+sentinel, which the process swallows: nothing reaches the chat, the turn is
+closed, and no answer-window slot is spent, since the window bounds what the
+assistant says. A rate-limited member's message opens no turn at all, so a flood
+still costs nothing. Under `answering = "addressed"` only a mention, a reply to
+the assistant, its name, or a direct chat summons a turn. The name (decision
+0089) defaults to the platform display name read once at startup, feeds the
+prompt's identity and the disclosure line's default, and — as one whole word,
+case-insensitively — wakes the assistant in groups; a name that cannot form a
+clean trigger word falls back to mention-and-reply, logged. The disclosure line
+(decision 0090) can be overridden whole with `disclosure`; unset composes it
+from the name and it is never absent.
 
 The process logs its startup facts — never a secret — and stops cleanly on SIGTERM.
 Deployment wiring, including the group-privacy platform setting the record-all

@@ -165,6 +165,26 @@ pub struct OperatorConfig {
     pub by_adapter: HashMap<String, String>,
 }
 
+/// How the assistant decides which group messages summon a turn (unit 14,
+/// 2026-08-23): the embedder's `answering` key. Helpful is the default —
+/// the operator's stated economics: with prompt caching the marginal read
+/// is cheap at the community's traffic, so every group message reaches the
+/// model and the model decides whether to speak, abstaining through the
+/// sentinel. A deployment that wants the quiet shape sets `addressed`.
+/// The mode enters the machinery at exactly one place: the entry point's
+/// summons resolution ahead of the write-time stamp — everything past the
+/// stamp reads the stored summons fact and stays mode-free.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AnsweringMode {
+    /// Every group message summons a turn; the model decides whether to
+    /// speak and abstains through the sentinel.
+    #[default]
+    Helpful,
+    /// A group message summons a turn only when it addresses the
+    /// assistant: a mention, a reply to its message, its name.
+    Addressed,
+}
+
 /// Whether the assembly serves direct channels (decided 2026-08-23): the
 /// embedder's one switch for the whole direct-chat surface. Off, the entry
 /// point refuses a direct-channel inbound before anything is written — no
@@ -197,9 +217,23 @@ pub type ScriptedPause = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>
 pub struct AssemblyConfig {
     /// The model every new conversation is created under.
     pub binding: ModelBinding,
-    /// The system prompt recorded into every conversation at its creation.
+    /// The embedder's prompt prose. The assembly records it with the
+    /// composed identity and answering sections behind it
+    /// ([`crate::teaching::composed_system_prompt`]); a conversation gets
+    /// the composition current at its creation.
     pub system_prompt: String,
-    /// The answering budgets the stamp consults for addressed messages.
+    /// How group messages summon a turn: helpful by default, addressed for
+    /// the quiet shape.
+    pub answering: AnsweringMode,
+    /// The assistant's resolved name — the configured `name` key, or the
+    /// display name the embedder read from the platform at startup. Already
+    /// trimmed and non-empty by the embedder's validation; it feeds the
+    /// prompt identity and the disclosure fill.
+    pub name: String,
+    /// The disclosure line override; absent composes the line from the
+    /// name. Already trimmed and non-empty by the embedder's validation.
+    pub disclosure: Option<String>,
+    /// The answering budgets the stamp consults for summoned messages.
     pub protection: ProtectionConfig,
     /// The operator wiring: who may admit the assistant into a group.
     pub operators: OperatorConfig,
@@ -224,10 +258,17 @@ pub struct Assistant {
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
     binding: ModelBinding,
     /// The system prompt recorded into every conversation at its creation,
-    /// through the framework's system-prompt kind. The framework records a
-    /// conversation's prompt exactly once, so an edited prompt reaches new
-    /// conversations only.
+    /// through the framework's system-prompt kind — already composed with
+    /// the identity and answering sections. The framework records a
+    /// conversation's prompt exactly once, so an edited prompt, name or
+    /// mode reaches new conversations only.
     system_prompt: String,
+    /// How group messages summon a turn. Read-only after start; consulted
+    /// at exactly one place, the ingest entry point's summons resolution.
+    answering: AnsweringMode,
+    /// The resolved first-interaction disclosure, handed to every outbound
+    /// edge. Read-only after start.
+    disclosure: Arc<crate::disclosure::Disclosure>,
     /// The tool names every new conversation's palette block records —
     /// exactly the set the assembly registered, derived from the one
     /// [`ToolSet`] so the palette and the registry cannot name different
@@ -238,7 +279,7 @@ pub struct Assistant {
     /// The streaming state the erasure ordering reads; the observation's
     /// contract and its lossy edges are stated on the streams module.
     streams: Arc<StreamObserver>,
-    /// The answering budgets the stamp consults for addressed messages.
+    /// The answering budgets the stamp consults for summoned messages.
     /// Read-only after start; the budget counts themselves are derived
     /// from the ledger at every write — the acknowledgment windows below
     /// are the one in-memory tally, and they bound courtesy lines, never
@@ -339,12 +380,24 @@ impl Assistant {
         let AssemblyConfig {
             binding,
             system_prompt,
+            answering,
+            name,
+            disclosure,
             protection,
             operators,
             direct_chats,
             privacy_policy_address,
             moderation_handle,
         } = config;
+        // The two configured-value compositions, resolved once: the prompt
+        // every new conversation records, and the disclosure every outbound
+        // edge introduces with.
+        let system_prompt =
+            crate::teaching::composed_system_prompt(&system_prompt, &name, answering);
+        let disclosure = Arc::new(crate::disclosure::Disclosure::resolve(
+            disclosure.as_deref(),
+            &name,
+        ));
         if !store.content_tables().contains(&CHAT_MESSAGE_TABLE) {
             return Err(CoreError::MissingContentTable {
                 table: CHAT_MESSAGE_TABLE,
@@ -412,6 +465,8 @@ impl Assistant {
             ctx,
             binding,
             system_prompt,
+            answering,
+            disclosure,
             palette,
             streams,
             protection,
@@ -469,14 +524,20 @@ impl Assistant {
     /// binding, with the assembly's system prompt recorded first, on first
     /// message — stamps the message, and appends the message block through
     /// the framework's consumer write path. The stamp order is fixed:
-    /// addressing first; the privacy command — and an administrator's
+    /// the summons first — the adapter's addressed fact, or helpful
+    /// answering's every-message evaluation (unit 14, 2026-08-23),
+    /// resolved here once and stored as one fact; the privacy command —
+    /// and an administrator's
     /// mirrored deletion command (2026-08-23, the deletion mirror) —
     /// stamped with the command kind
     /// ahead of any budget — a command takes no debt by its nature; budgets
-    /// consulted only for addressed non-command messages, principal before
-    /// channel, the first refusing budget naming the limited fact; then
+    /// consulted only for summoned non-command messages, principal before
+    /// channel, the first refusing budget naming the limited fact — under
+    /// helpful answering a rate-limited member's message therefore opens
+    /// no turn and costs no model read, the free quiet of the existing
+    /// mechanism; then
     /// answer-due by the composition rule — due when the message's own debt
-    /// was taken (addressed, not limited) or when the tail owes, so a
+    /// was taken (summoned, not limited) or when the tail owes, so a
     /// refused sender's message can be denied its own answer but can never
     /// cancel a debt it merely propagates; then the debt authority by the
     /// minimum rule. Nothing past admission ever drops a message:
@@ -524,11 +585,14 @@ impl Assistant {
     /// granted.
     ///
     /// A message whose own debt was taken then emits the unlatch intent,
-    /// always: a person addressing the assistant IS the deliberate
-    /// re-engagement, the intent is idempotent, and the same emission
-    /// releases a fresh conversation's boot latch and a stream error's
-    /// re-latch alike. An unaddressed message never unlatches, and neither
-    /// does a limited or command-stamped one — neither is re-engagement.
+    /// always: a summons IS the deliberate re-engagement — a person
+    /// addressing the assistant, or under helpful answering any message
+    /// the mode summons, since the mode's whole point is that every
+    /// message may draw a turn — the intent is idempotent, and the same
+    /// emission releases a fresh conversation's boot latch and a stream
+    /// error's re-latch alike. An unsummoned message never unlatches, and
+    /// neither does a limited or command-stamped one — neither is
+    /// re-engagement.
     ///
     /// # Errors
     ///
@@ -607,16 +671,22 @@ impl Assistant {
                 .await?;
         }
         let owing_tail = self.owing_tail_debt(conversation_id).await?;
+        // The summons resolution — the ONE place the answering mode enters
+        // (unit 14): a message summons the assistant when it addressed it,
+        // or when helpful answering evaluates every message. Everything
+        // below — the budget consultation, the stamp, the unlatch, and
+        // every later reader of the stored fact — is mode-free.
+        let summoned = message.addressed || self.answering == AnsweringMode::Helpful;
         let limited = if family.is_some() || mirrored.is_some() {
             Some(kind::LimitedBy::Command)
-        } else if message.addressed {
+        } else if summoned {
             self.refusing_budget(principal_id, conversation_id).await?
         } else {
             None
         };
         // The composition rule and the minimum rule live on the kind, as
         // one pure composition beside the stamp's readers.
-        let stamp = kind::Stamp::compose(message.addressed, authority, limited, owing_tail);
+        let stamp = kind::Stamp::compose(summoned, authority, limited, owing_tail);
         // The notice command's budget half is decided inside the stamp
         // serialization, so the consultation it shares with the stamp sees
         // the same recorded history: answered only while every budget
@@ -851,7 +921,12 @@ impl Assistant {
         &self,
         adapter: &str,
     ) -> Result<mpsc::UnboundedReceiver<OutboundReply>, CoreError> {
-        Ok(outbound::spawn_edge(self.ctx.clone(), adapter.to_owned()).await?)
+        Ok(outbound::spawn_edge(
+            self.ctx.clone(),
+            adapter.to_owned(),
+            Arc::clone(&self.disclosure),
+        )
+        .await?)
     }
 
     /// The composing edge for one adapter: a subscription yielding the
@@ -1328,7 +1403,7 @@ impl Assistant {
 
     /// The first budget refusing this message's own debt, principal before
     /// channel, or `None` when every enabled budget admits it. Consulted for
-    /// addressed messages only, inside the stamp serialization; each count
+    /// summoned messages only, inside the stamp serialization; each count
     /// is derived from the ledger at this write — no counter table, no
     /// in-memory tally — so the budget's whole state is the recent recorded
     /// history itself.

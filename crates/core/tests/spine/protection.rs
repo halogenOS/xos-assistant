@@ -72,6 +72,9 @@ async fn silent_assistant(
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection,
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -493,6 +496,9 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
         assistant_core::AssemblyConfig {
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
+            answering: support::FIXTURE_ANSWERING,
+            name: support::NAME.into(),
+            disclosure: None,
             protection: budgets(None, Some((1, 600))),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
@@ -893,6 +899,9 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
             assistant_core::AssemblyConfig {
                 binding: support::binding(),
                 system_prompt: support::SYSTEM_PROMPT.into(),
+                answering: support::FIXTURE_ANSWERING,
+                name: support::NAME.into(),
+                disclosure: None,
                 protection: protection.clone(),
                 operators: support::operator_config(),
                 direct_chats: assistant_core::DirectChats::default(),
@@ -922,6 +931,9 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
             assistant_core::AssemblyConfig {
                 binding: support::binding(),
                 system_prompt: support::SYSTEM_PROMPT.into(),
+                answering: support::FIXTURE_ANSWERING,
+                name: support::NAME.into(),
+                disclosure: None,
                 protection,
                 operators: support::operator_config(),
                 direct_chats: assistant_core::DirectChats::default(),

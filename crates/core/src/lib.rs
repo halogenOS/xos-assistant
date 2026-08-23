@@ -47,6 +47,7 @@
 //!   `OpenRouter` module wrapped around an in-memory configuration, so the
 //!   API key never enters the store.
 
+mod abstention;
 mod assembly;
 mod authorization;
 mod composing;
@@ -65,15 +66,17 @@ pub mod privacy;
 pub mod provider;
 pub mod schema;
 mod streams;
+mod teaching;
 pub mod tools;
 mod window;
 
+pub use abstention::{ABSTENTION_SENTINEL, is_abstention};
 pub use assembly::{
-    AssemblyConfig, Assistant, Budget, DirectChats, ModelBinding, OperatorConfig, ProtectionConfig,
-    ScriptedPause,
+    AnsweringMode, AssemblyConfig, Assistant, Budget, DirectChats, ModelBinding, OperatorConfig,
+    ProtectionConfig, ScriptedPause,
 };
 pub use composing::COMPOSING_SIGNAL_LIFETIME;
-pub use disclosure::{DISCLOSURE_LINE, disclosed};
+pub use disclosure::{Disclosure, composed_disclosure_line};
 pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
 pub use message::{
@@ -84,6 +87,7 @@ pub use message::{
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
 };
+pub use teaching::composed_system_prompt;
 pub use window::{
     ACKNOWLEDGMENT_WINDOW, NOTE_TOPIC_APPEND_CAP, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW,
     REPORT_WINDOW,

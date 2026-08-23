@@ -88,6 +88,28 @@ enum StartError {
     )]
     PrivacyPolicyEmpty,
 
+    /// The `name` key is present but empty or whitespace. Omitting the key
+    /// is how the platform display name is chosen.
+    #[error("the name key must carry the assistant's name; omit it for the platform display name")]
+    NameEmpty,
+
+    /// The `disclosure` key is present but empty or whitespace. Omitting
+    /// the key is how the line composed from the name is chosen — the
+    /// disclosure duty is not optional, so there is no way to spell "no
+    /// line".
+    #[error(
+        "the disclosure key must carry the disclosure line; omit it to compose one from the name"
+    )]
+    DisclosureEmpty,
+
+    /// No `name` key is configured and the platform did not answer the
+    /// startup identity read the default needs.
+    #[error(
+        "the assistant's name could not be read from the platform: {0}; \
+         retry, or configure the name key"
+    )]
+    NameUnavailable(String),
+
     /// The `moderation_handle` key is present but empty after trimming and
     /// stripping a leading `@`. Omitting the key is how a deployment
     /// without the report tool is chosen.
@@ -173,6 +195,8 @@ fn run() -> Result<(), StartError> {
     let privacy_policy = configuration.resolve_privacy_policy()?;
     let moderation_handle = configuration.resolve_moderation_handle()?;
     let wiki_endpoint = configuration.resolve_wiki_endpoint()?;
+    let name = configuration.resolve_name()?;
+    let disclosure = configuration.resolve_disclosure()?;
     let bot_token = configuration.secrets.bot_token.resolve("bot_token")?;
     let openrouter_key = configuration
         .secrets
@@ -199,6 +223,8 @@ fn run() -> Result<(), StartError> {
             privacy_policy,
             moderation_handle,
             wiki_endpoint,
+            name,
+            disclosure,
             bot_token,
             openrouter_key,
             mirror_token,
@@ -250,6 +276,8 @@ struct ServeInputs {
     privacy_policy: Option<String>,
     moderation_handle: Option<String>,
     wiki_endpoint: Option<String>,
+    name: Option<String>,
+    disclosure: Option<String>,
     bot_token: String,
     openrouter_key: String,
     mirror_token: Option<String>,
@@ -322,11 +350,41 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         privacy_policy,
         moderation_handle,
         wiki_endpoint,
+        name,
+        disclosure,
         bot_token,
         openrouter_key,
         mirror_token,
         system_prompt,
     } = inputs;
+    // The stop handler installs before anything reaches the network: the
+    // startup identity read below can precede the serve loop by a moment,
+    // and a SIGTERM arriving inside that window must still stop the process
+    // cleanly instead of falling to the default action.
+    let mut sigterm = signal(SignalKind::terminate()).map_err(StartError::Runtime)?;
+    // The adapter configuration comes first because the name's default is
+    // the platform's own display name, read once at startup: a configured
+    // name skips the read entirely, and a failed read refuses the start
+    // loudly — naming both remedies — instead of assembling a nameless
+    // assistant.
+    let mut adapter_config = assistant_adapter_telegram::Config::new(
+        bot_token,
+        configuration.telegram_state_path.clone(),
+    );
+    if let Some(root) = configuration.endpoints.telegram.clone() {
+        adapter_config.api_root = root;
+    }
+    let name = match name {
+        Some(name) => name,
+        None => TelegramAdapter::read_display_name(&adapter_config)
+            .await
+            .map_err(|error| StartError::NameUnavailable(error.to_string()))?
+            .ok_or_else(|| {
+                StartError::NameUnavailable("the platform answered no display name".into())
+            })?,
+    };
+    adapter_config.name = Some(name.clone());
+    let adapter = TelegramAdapter::new(adapter_config);
     let store = Store::open_with(&configuration.store_path, store_config())?;
     let provider = MemoryConfiguredProvider::new(
         &store,
@@ -357,6 +415,9 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         assistant_core::AssemblyConfig {
             binding,
             system_prompt,
+            answering: configuration.answering.resolve(),
+            name,
+            disclosure,
             protection,
             operators,
             direct_chats: configuration.direct_chats.resolve(),
@@ -366,18 +427,8 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     )
     .await?;
 
-    let mut adapter_config = assistant_adapter_telegram::Config::new(
-        bot_token,
-        configuration.telegram_state_path.clone(),
-    );
-    if let Some(root) = configuration.endpoints.telegram.clone() {
-        adapter_config.api_root = root;
-    }
-    let adapter = TelegramAdapter::new(adapter_config);
-
     log_startup(&configuration, wiki_endpoint.as_deref());
 
-    let mut sigterm = signal(SignalKind::terminate()).map_err(StartError::Runtime)?;
     tokio::select! {
         _ = sigterm.recv() => {
             tracing::info!("SIGTERM received; stopping");

@@ -181,7 +181,7 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
     assert_eq!(sends[0].body["chat_id"], json!(42));
     assert_eq!(
         sends[0].body["text"],
-        json!(assistant_core::disclosed(TOOL_CLOSING_ANSWER))
+        json!(support::disclosed(TOOL_CLOSING_ANSWER))
     );
 
     // The ledger, block by block, tool call and result included.
@@ -205,7 +205,7 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
     assert_eq!(field(&blocks[4], "content"), compact_result());
     assert_eq!(
         field(&blocks[5], "content"),
-        assistant_core::disclosed(TOOL_CLOSING_ANSWER)
+        support::disclosed(TOOL_CLOSING_ANSWER)
     );
 
     // The tool executed against the loopback forge, once, at the dialect's
@@ -247,7 +247,7 @@ async fn narration_before_the_call_delivers_both_texts_to_the_chat() {
         .collect();
     // The narration is the person's first answer block and carries the
     // line; the closing answer behind it arrives bare.
-    let introduced = assistant_core::disclosed(NARRATION);
+    let introduced = support::disclosed(NARRATION);
     assert_eq!(texts, vec![introduced.as_str(), TOOL_CLOSING_ANSWER]);
 
     // Both stand in the ledger, in the production order: the message end

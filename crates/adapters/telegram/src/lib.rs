@@ -8,9 +8,11 @@
 //! the core's public edges: the ingestion entry point, the outbound
 //! subscription, and nothing deeper.
 //!
-//! The embedder contract is one constructor and one run entry. The
-//! configuration is the bot token, the API root and the state-file path —
-//! nothing else; the adapter's registered name is the pinned constant
+//! The embedder contract is one constructor, one run entry, and one
+//! startup identity read. The configuration is the bot token, the API
+//! root, the state-file path and the assistant's resolved name — the
+//! name is a translation input for the wake trigger, never behavior; the
+//! adapter's registered name is the pinned constant
 //! [`ADAPTER_NAME`], because it keys channel mappings and principals durably
 //! and is therefore a permanent contract, not a parameter. The token appears
 //! in no log line and no error string anywhere in this crate.
@@ -44,9 +46,10 @@ pub const BOT_API_ROOT: &str = "https://api.telegram.org";
 /// for real.
 pub type Sleep = Arc<dyn Fn(Duration) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
-/// The adapter's whole configuration: the token, where the API lives, and
-/// where the update offset is persisted. Nothing else is configurable — the
-/// adapter's name is pinned, and every HTTP detail lives in the client.
+/// The adapter's whole configuration: the token, where the API lives,
+/// where the update offset is persisted, and the assistant's resolved name
+/// as one more addressing input. The adapter's registered name stays the
+/// pinned constant, and every HTTP detail lives in the client.
 #[derive(Clone)]
 pub struct Config {
     /// The bot token. It authenticates every request and appears in no
@@ -59,15 +62,26 @@ pub struct Config {
     /// absent, empty or malformed file is treated as absent and the
     /// redelivered updates are the accepted duplicates.
     pub state_file: PathBuf,
+    /// The assistant's resolved name (unit 14): one more input to the
+    /// addressing translation — a group message naming the assistant
+    /// addresses it, beside the mention and the reply. Translation input,
+    /// not behavior: what the name IS the embedder decided; this crate only
+    /// matches it, whole-word and case-insensitive, and a name that cannot
+    /// form a clean trigger word falls back to mention-and-reply, logged.
+    /// `None` translates without the name trigger.
+    pub name: Option<String>,
 }
 
 impl Config {
-    /// A configuration against the real Bot API host.
+    /// A configuration against the real Bot API host, without a name
+    /// trigger; the embedder sets [`Config::name`] once the name is
+    /// resolved.
     pub fn new(token: impl Into<String>, state_file: impl Into<PathBuf>) -> Self {
         Self {
             token: token.into(),
             api_root: BOT_API_ROOT.into(),
             state_file: state_file.into(),
+            name: None,
         }
     }
 }
@@ -80,6 +94,7 @@ impl std::fmt::Debug for Config {
             .field("token", &"[redacted]")
             .field("api_root", &self.api_root)
             .field("state_file", &self.state_file)
+            .field("name", &self.name)
             .finish()
     }
 }
@@ -94,6 +109,12 @@ pub enum AdapterError {
     /// answer would be lost, so the adapter refuses to start.
     #[error("the outbound edge could not be taken: {0}")]
     Core(#[from] CoreError),
+
+    /// The startup identity read failed: the platform did not answer the
+    /// one call the display-name default needs. The text carries the wire
+    /// failure's own rendering, never the token.
+    #[error("the platform identity read failed: {0}")]
+    Identity(String),
 }
 
 /// The Telegram adapter, ready to run against a started assembly.
@@ -119,6 +140,25 @@ impl TelegramAdapter {
     #[must_use]
     pub fn with_sleep(config: Config, sleep: Sleep) -> Self {
         Self { config, sleep }
+    }
+
+    /// The one startup identity read the embedder performs when no name is
+    /// configured: the bot's own display name, from the platform. One
+    /// attempt, no retry — the embedder decides whether a failure refuses
+    /// the start — and `None` when the platform's answer carries no
+    /// display name.
+    ///
+    /// # Errors
+    ///
+    /// [`AdapterError::Identity`] when the platform call fails.
+    pub async fn read_display_name(config: &Config) -> Result<Option<String>, AdapterError> {
+        let sleep: Sleep = Arc::new(|wait| Box::pin(tokio::time::sleep(wait)) as Pin<Box<_>>);
+        let client = client::BotClient::new(&config.api_root, &config.token, sleep);
+        let me = client
+            .get_me()
+            .await
+            .map_err(|error| AdapterError::Identity(error.to_string()))?;
+        Ok(me.first_name)
     }
 
     /// The run entry: take the outbound edge, then long-poll, translate,

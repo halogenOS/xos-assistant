@@ -38,6 +38,20 @@ pub const MIRROR_TOKEN: &str = "ghp-FAKE-PROCESS-TEST-MIRROR-TOKEN";
 /// The one answer the scripted completions server streams.
 pub const ANSWER: &str = "The scripted process answer.";
 
+/// The display name the scripted `getMe` answers — with no `name` key in
+/// the fixture configuration, the binary's startup read resolves the
+/// assistant's name to exactly this, so the disclosure pins below prove
+/// the display-name default end to end.
+pub const DISPLAY_NAME: &str = "Fixture";
+
+/// An answer as its first delivery to someone carries it: the disclosure
+/// line composed from the platform display name, a blank line, then the
+/// answer.
+#[must_use]
+pub fn disclosed(answer: &str) -> String {
+    assistant_core::Disclosure::resolve(None, DISPLAY_NAME).disclosed(answer)
+}
+
 /// A loopback address nothing listens on: what a configuration names for a
 /// lookup host its run never calls, so an accidental call fails fast on the
 /// loopback instead of reaching a real host.
@@ -213,7 +227,7 @@ async fn serve_telegram(state: Arc<TelegramState>, mut stream: TcpStream) {
             "getMe" => json!({ "ok": true, "result": {
                 "id": 999_000,
                 "is_bot": true,
-                "first_name": "Fixture",
+                "first_name": DISPLAY_NAME,
                 "username": "assistant_process_bot",
             } }),
             "getUpdates" => get_updates(&state, &body).await,
