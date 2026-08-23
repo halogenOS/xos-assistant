@@ -61,7 +61,7 @@ pub mod tools;
 mod window;
 
 pub use assembly::{
-    AssemblyConfig, Assistant, Budget, ModelBinding, NoteReadPause, OperatorConfig,
+    AssemblyConfig, Assistant, Budget, DirectChats, ModelBinding, NoteReadPause, OperatorConfig,
     ProtectionConfig,
 };
 pub use erasure::ErasureOutcome;

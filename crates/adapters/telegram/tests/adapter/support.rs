@@ -350,12 +350,48 @@ pub async fn start_assistant_with_tools(
 /// line's `/report@` suffix under test.
 pub const MODERATION_HANDLE: &str = "moderation_fixture_bot";
 
-/// The widest seam: the tool script, the tool set, and an optional
+/// Assemble a running assistant that serves no direct chats, under the
+/// suites' shared default tool set — the fixture behind the direct-chat
+/// switch pins.
+pub async fn start_assistant_direct_off() -> Fixture {
+    assemble(
+        None,
+        assistant_core::tools::ToolSet::production_lookups(
+            assistant_core::tools::LookupEndpoints {
+                forge: UNROUTABLE.into(),
+                mirror: UNROUTABLE.into(),
+                mirror_token: None,
+                wiki: UNROUTABLE.into(),
+            },
+        ),
+        None,
+        assistant_core::DirectChats::Off,
+    )
+    .await
+}
+
+/// The widest named seam: the tool script, the tool set, and an optional
 /// moderation handle whose presence registers the report tool.
 pub async fn start_assistant_moderating(
     tool_script: Option<ToolScript>,
     tools: assistant_core::tools::ToolSet,
     moderation_handle: Option<String>,
+) -> Fixture {
+    assemble(
+        tool_script,
+        tools,
+        moderation_handle,
+        assistant_core::DirectChats::default(),
+    )
+    .await
+}
+
+/// The one assembly every seam above funnels into.
+async fn assemble(
+    tool_script: Option<ToolScript>,
+    tools: assistant_core::tools::ToolSet,
+    moderation_handle: Option<String>,
+    direct_chats: assistant_core::DirectChats,
 ) -> Fixture {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let failures = Arc::new(AtomicUsize::new(0));
@@ -382,6 +418,7 @@ pub async fn start_assistant_moderating(
             system_prompt: "You are the adapter suite's scripted assistant fixture.".into(),
             protection: assistant_core::ProtectionConfig::default(),
             operators: operator_config(),
+            direct_chats,
             privacy_policy_address: None,
             moderation_handle,
         },

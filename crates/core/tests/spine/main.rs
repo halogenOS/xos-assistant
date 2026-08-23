@@ -7,6 +7,8 @@
 //! assembly (the wiring contract), storage (the composed kind and the durable
 //! registry), addressing (the answer-due stamp, the notice, re-engagement),
 //! protection (the budgets, the limited stamp, the debt authority),
+//! `direct_chats` (the configuration switch refusing direct channels
+//! before any write),
 //! projection (role alternation under erasure), erasure with its stream
 //! ordering, the end-to-end turn, tools (the lookups against the scripted
 //! forge and mirror in `lookup_wire`, the palette, the anchor gate over
@@ -15,6 +17,7 @@
 
 mod addressing;
 mod assembly;
+mod direct_chats;
 mod end_to_end;
 mod erasure;
 mod erasure_streams;

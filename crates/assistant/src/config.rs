@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 
-use assistant_core::{Budget, OperatorConfig, ProtectionConfig};
+use assistant_core::{Budget, DirectChats, OperatorConfig, ProtectionConfig};
 use serde::Deserialize;
 
 use crate::StartError;
@@ -41,6 +41,12 @@ pub struct Configuration {
     /// Absent by default, under which every group add fails closed.
     #[serde(default)]
     pub operators: OperatorsTable,
+    /// Whether direct chats are served: the closed words `on` and `off`,
+    /// any other value refused at the load. Absent means on, so the
+    /// repository's generic behavior is unchanged; a deployment spells
+    /// `off` until its direct-chat feature set ships.
+    #[serde(default)]
+    pub direct_chats: DirectChatsKey,
     /// The address the privacy command answers with; absent answers the
     /// not-yet-published line. Resolved through
     /// [`Configuration::resolve_privacy_policy`], which refuses an empty
@@ -93,6 +99,31 @@ impl OperatorsTable {
             by_adapter.insert(adapter.clone(), external_id.to_owned());
         }
         Ok(OperatorConfig { by_adapter })
+    }
+}
+
+/// The direct-chat key's closed word list: decoding is the validation, so
+/// a misspelled value refuses the load with the failing place named —
+/// never a silently-on deployment that meant to be off.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DirectChatsKey {
+    /// Direct chats are served — the absent key's meaning, so the generic
+    /// behavior stands unless a deployment says otherwise.
+    #[default]
+    On,
+    /// Direct chats are refused fail-closed before any write.
+    Off,
+}
+
+impl DirectChatsKey {
+    /// The core's direct-chat switch this key names.
+    #[must_use]
+    pub fn resolve(self) -> DirectChats {
+        match self {
+            Self::On => DirectChats::On,
+            Self::Off => DirectChats::Off,
+        }
     }
 }
 
@@ -747,6 +778,46 @@ mod tests {
         match refused {
             StartError::OperatorUnknownAdapter { adapter } => assert_eq!(adapter, "telegrm"),
             other => panic!("the refusal names the unknown key; got {other}"),
+        }
+    }
+
+    // ─── The direct-chat switch ──────────────────────────────────────────
+
+    #[test]
+    fn the_direct_chat_key_decodes_its_two_words_and_defaults_on() {
+        assert!(
+            matches!(
+                loaded("log = \"stderr\"", "").direct_chats.resolve(),
+                DirectChats::On
+            ),
+            "the absent key means on — the generic behavior is unchanged"
+        );
+        assert!(matches!(
+            loaded("log = \"stderr\"", "direct_chats = \"on\"\n")
+                .direct_chats
+                .resolve(),
+            DirectChats::On
+        ));
+        assert!(matches!(
+            loaded("log = \"stderr\"", "direct_chats = \"off\"\n")
+                .direct_chats
+                .resolve(),
+            DirectChats::Off
+        ));
+    }
+
+    #[test]
+    fn a_direct_chat_value_outside_the_two_words_is_refused_at_the_load() {
+        for spelling in [
+            "direct_chats = \"maybe\"\n",
+            "direct_chats = \"OFF\"\n",
+            "direct_chats = \"\"\n",
+            "direct_chats = true\n",
+        ] {
+            assert!(
+                load(&full("log = \"stderr\"", spelling)).is_err(),
+                "the value must be exactly `on` or `off`; {spelling:?} decoded"
+            );
         }
     }
 

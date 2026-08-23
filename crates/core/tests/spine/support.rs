@@ -736,6 +736,7 @@ pub async fn start_assistant_operators(
             system_prompt: SYSTEM_PROMPT.into(),
             protection,
             operators,
+            direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address,
             moderation_handle: None,
         },
@@ -767,6 +768,7 @@ pub async fn start_assistant_reporting(
             system_prompt: SYSTEM_PROMPT.into(),
             protection,
             operators: operator_config(),
+            direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: Some(MODERATION_HANDLE.into()),
         },
@@ -866,6 +868,9 @@ pub async fn ingest_recorded(assistant: &Assistant, message: InboundMessage) -> 
         assistant_core::IngestOutcome::Recorded { receipt, .. } => receipt,
         assistant_core::IngestOutcome::Withdraw => {
             panic!("the message was refused; the test channel is not authorized")
+        }
+        assistant_core::IngestOutcome::Disregarded => {
+            panic!("the message was disregarded; the fixture serves no direct chats")
         }
     }
 }
