@@ -22,3 +22,10 @@ the ledger.
 - **A separate registration call before ingestion.** Two calls that must agree, and a
   message from an unseen sender would still need the create-on-first-contact fallback, so
   the second call buys nothing.
+
+## Narrowed 2026-08-23
+
+Decision 0077 removes the display name from the crossing identity: the
+inbound message carries the opaque external id and the username, and the
+core refreshes the username alone. The boundary shape and the
+resolve-on-entry rule above are unchanged.

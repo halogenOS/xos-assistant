@@ -59,7 +59,7 @@ erasure path are written to that standard.
 | # | Category | Content | Where it is stored |
 |---|---|---|---|
 | D1 | Message content | The text of a message, including the caption of a media message. No media, no files, no voice, no stickers. Edits are not collected. | Content table of the message block kind |
-| D2 | Identity | The platform's opaque account identifier, display name, username. The username is transmitted to the processor with each request, by the operator's decision of 2026-08-23, so the assistant can address people by their handle. The account identifier and the display name are not transmitted. | Identity tables of their own, never inline in the ledger |
+| D2 | Identity | The platform's opaque account identifier and username. The username is transmitted to the processor with each request, by the operator's decision of 2026-08-23, so the assistant can address people by their handle. The account identifier is not transmitted. Narrowed 2026-08-23 (decision 0077): the display name is no longer collected or stored — its column was dropped with its values, and the adapter stops decoding it. | Identity tables of their own, never inline in the ledger |
 | D3 | Circumstance | Arrival time, platform send time, reply reference, whether the message was addressed to the assistant, the authority held in that chat at that moment | Content table of the message block kind |
 | D4 | Group facts | Channel title, pinned rules text, stored as context notes | Note table |
 | D5 | Derived state | Conversation membership and order, answering counters, tool palette, group authorization | Ledger and its side tables |
@@ -78,7 +78,7 @@ the platform hides the real author (decision 0016).
 
 | # | Recipient | Role | What it receives |
 |---|---|---|---|
-| R1 | Requesty Ltd, London, United Kingdom (entity corrected 2026-08-23 from Requesty Inc.) | Processor under Article 28, on the controller's instruction only | The conversation's text and the public username of each speaker, plus the system prompt and the group's context notes. The account identifier and the display name are not sent. Requests enter through its European endpoint, and what it stores it stores in Frankfurt, Germany (AWS eu-central-1). Zero data retention is configured: it writes no message and no answer to storage and uses none of it for training. It keeps billing telemetry carrying no content, meaning token counts, the model identifier and a timestamp. |
+| R1 | Requesty Ltd, London, United Kingdom (entity corrected 2026-08-23 from Requesty Inc.) | Processor under Article 28, on the controller's instruction only | The conversation's text and the public username of each speaker, plus the system prompt and the group's context notes. The account identifier is not sent, and no display name exists to send (decision 0077). Requests enter through its European endpoint, and what it stores it stores in Frankfurt, Germany (AWS eu-central-1). Zero data retention is configured: it writes no message and no answer to storage and uses none of it for training. It keeps billing telemetry carrying no content, meaning token counts, the model identifier and a timestamp. |
 | R2 | Sub-processors engaged by R1, in two layers: the infrastructure it runs on, Amazon Web Services in Frankfurt, and the model providers it routes to, Google today | Sub-processors under R1's own agreements. R1 stays answerable for the infrastructure layer, and for the provider layer it answers for the choice, for the written terms and for reporting the provider's published position accurately, not for that provider's own breach of it | The same request. Corrected 2026-08-23: zero data retention binds R1 alone, so whether a model provider keeps a request or trains on it follows the terms of the model chosen. Individual models are not named in this record, because what the record states is the chain, the region a deployment sits in and where the retention promise ends. |
 | R3 | Public project sources | Not a recipient of personal data | A commit lookup queries the halogenOS forge and a release lookup queries the builds repository's public interface. A query carries a repository name and a reference or tag. |
 | R4 | The chat platform | Independent controller of its own delivery and storage, not a processor of the controller | Its own handling of the same messages, under its own policy, unchanged by the assistant. |
@@ -98,7 +98,7 @@ for any secondary purpose, and not used to train any model.
 |---|---|
 | Transfers, rewritten 2026-08-23 | The earlier entry stating that no transfer is intended was wrong. The store is held on a server run for the project in Germany, and data leaves the EEA in three places, each listed below. |
 | The processor itself | Requesty Ltd is a company in the United Kingdom, although it stores and serves in Frankfurt. Covered by the European Commission's adequacy decision for the United Kingdom under Article 45 GDPR, so no further safeguard is required. |
-| Model deployments outside the EEA | Where a deployment sits outside the EEA, the request reaches it there. Covered by the European Commission's standard contractual clauses in the processor agreement, under Article 46(2)(c) GDPR. Live today for the conversation-naming step, which reaches a lightweight model hardcoded in the framework outside the EEA. That is a defect, its fix is in flight, and the naming step will follow the same configured model as the answers. Recorded 2026-08-23. |
+| Model deployments outside the EEA | Where a deployment sits outside the EEA, the request reaches it there. Covered by the European Commission's standard contractual clauses in the processor agreement, under Article 46(2)(c) GDPR. Recorded 2026-08-23 as live for the conversation-naming step, which reached a lightweight model hardcoded in the framework outside the EEA; closed the same day by decision 0077 — title derivation is switched off entirely, so no naming request exists and the entry covers the answering model's routing alone. |
 | The chat platform | Sits outside the EU/EEA and receives every message and every answer as part of delivering them, as its own controller under its own policy, not on the controller's instruction. |
 | Documentation | The processor agreement and its clauses are on file with the controller. The countersigned copy is outstanding, listed as an open dependency in section 10. |
 
@@ -107,7 +107,7 @@ for any secondary purpose, and not used to train any model.
 | # | Data | Time limit |
 |---|---|---|
 | D1, D3 | Message content and circumstance | No scheduled expiry. Kept until erasure is requested, and erased on request. The reasoning is recorded in decision 0003 and assessed in the impact assessment. |
-| D2 | Identity | Deleted on erasure of the person. Display fields are refreshed from the platform on each later message and never accumulate a history. |
+| D2 | Identity | Deleted on erasure of the person. The username is refreshed from the platform on each later message and never accumulates a history; the display name is not stored at all (decision 0077). |
 | D4 | Group facts | Kept while the group is served. A note is superseded when the group's rules are pinned anew. |
 | D5 | Derived state | Answering counters age out of their window by use. Conversation state follows the messages it derives from. A direct conversation is removed whole on erasure. |
 | Direct chats | Whole conversations with the assistant | Removed entirely on erasure, mappings included, because a two-party chat that lost its human still identifies the person (decisions 0011, 0012). |
@@ -141,7 +141,7 @@ A general description under Article 30(1)(g), mapped to the mechanisms that ship
 |---|---|
 | Separation | Personal data in tables of its own, referenced by key, never inline in the ledger (decisions 0003, 0006, 0012). |
 | Data minimisation | Text only, no media, no files, no voice, no stickers, no edits (decision 0017). Anonymous stand-in senders skipped (decision 0016). No profiling, no scoring, no secondary use. |
-| Minimisation at the boundary | One identifier is transmitted to the processor, the public username, decided by the operator on 2026-08-23 so the assistant can address people by their handle. The display name and the numeric account identifier stay on the machine, and no other attribute of a person is attached to a request. |
+| Minimisation at the boundary | One identifier is transmitted to the processor, the public username, decided by the operator on 2026-08-23 so the assistant can address people by their handle. The numeric account identifier stays on the machine, the display name is not stored at all (decision 0077), and no other attribute of a person is attached to a request. |
 | Processor control | Article 28 agreement with standard contractual clauses, European endpoint, storage in Frankfurt, the United Kingdom's adequacy decision for the processor relationship, zero data retention at the processor and no training there, and sub-processors engaged by the processor under its own agreements. Corrected 2026-08-23: the retention promise reaches the processor and stops, so the provider layer is governed by the terms of the chosen model, and the Approved-Models restriction that would bind it contractually is not configured. |
 | Secret handling | The provider key is held in memory and never written to storage (decision 0020). Secrets are referenced indirectly in configuration, by environment variable name or file path, and never appear in it. |
 | Access control | Group admission is a stored authorization written only by the operator's own invitation. Every other contact is refused without touching the ledger, and the assistant withdraws (decision 0052). |
@@ -169,7 +169,8 @@ claim a measure that is not yet in place:
    training terms. Not configured today. Added 2026-08-23 with the correction that zero
    data retention binds the processor alone.
 4. **The non-EEA conversation-naming model**, the framework defect described in section 7,
-   with its fix in flight.
+   with its fix in flight. Closed 2026-08-23: title derivation is switched off entirely
+   (decision 0077), so no naming request exists to cross anywhere.
 
 ## 11. Keeping this record current
 

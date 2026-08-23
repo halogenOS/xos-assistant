@@ -29,13 +29,13 @@ pub struct Configuration {
     /// Where log lines go.
     pub log: LogDestination,
     /// The provider's identifier for the model every conversation is
-    /// created under.
+    /// created under. There is no title-model key beside it (decision
+    /// 0077): title derivation is off in the assembly, and a config key
+    /// naming a model for it would decode into dead configuration — a
+    /// leftover `title_model` line is refused at the load like every other
+    /// unknown key, so a stale file fails loudly instead of implying a
+    /// feature that no longer exists.
     pub model: String,
-    /// The provider's identifier for the model conversation titles are
-    /// derived with; absent, titles derive on the main model. Resolved
-    /// through [`Configuration::resolve_title_model`], which trims and
-    /// refuses an empty value.
-    pub title_model: Option<String>,
     /// The endpoint overrides; omitted entries keep the real hosts.
     #[serde(default)]
     pub endpoints: Endpoints,
@@ -306,28 +306,6 @@ impl Configuration {
                 }
                 Ok(Some(handle.to_owned()))
             }
-            None => Ok(None),
-        }
-    }
-
-    /// The model id conversation titles are derived with, `None` when the
-    /// key is absent — under which titles derive on the main model, so a
-    /// deployment pinned to one model never has its title traffic sent to a
-    /// model nobody named.
-    ///
-    /// # Errors
-    ///
-    /// [`StartError::TitleModelEmpty`] when the key is present but empty or
-    /// whitespace — an empty id would name no model and fail every title
-    /// derivation silently; omitting the key is how the main-model default
-    /// is chosen. A surviving id resolves trimmed: the pad is file
-    /// formatting, never identity.
-    pub fn resolve_title_model(&self) -> Result<Option<String>, StartError> {
-        match &self.title_model {
-            Some(model) => match model.trim() {
-                "" => Err(StartError::TitleModelEmpty),
-                trimmed => Ok(Some(trimmed.to_owned())),
-            },
             None => Ok(None),
         }
     }
@@ -928,42 +906,22 @@ mod tests {
         );
     }
 
-    // ─── The title model ─────────────────────────────────────────────────
+    // ─── The retired title-model key ─────────────────────────────────────
 
+    /// Decision 0077's config pin: `title_model` is no key of this file.
+    /// A stale deployment file still naming it is refused at the load —
+    /// the unknown-key rule doing its job — instead of decoding into
+    /// configuration for a feature that no longer exists.
     #[test]
-    fn the_title_model_resolves_trimmed_and_absent_means_the_main_model() {
-        let configuration = loaded(
-            "log = \"stderr\"",
-            "title_model = \" cheap/title-model \"\n",
+    fn a_leftover_title_model_key_is_refused_at_the_load() {
+        assert!(
+            load(&full(
+                "log = \"stderr\"",
+                "title_model = \"cheap/title-model\"\n"
+            ))
+            .is_err(),
+            "the retired key is refused like any unknown key"
         );
-        assert_eq!(
-            configuration
-                .resolve_title_model()
-                .expect("the model id resolves")
-                .as_deref(),
-            Some("cheap/title-model"),
-            "the pad is file formatting, never identity"
-        );
-        assert_eq!(
-            loaded("log = \"stderr\"", "")
-                .resolve_title_model()
-                .expect("the absent key resolves"),
-            None,
-            "no title model by default — titles derive on the main model"
-        );
-    }
-
-    #[test]
-    fn an_empty_or_whitespace_title_model_is_refused() {
-        for spelling in ["title_model = \"\"\n", "title_model = \"   \"\n"] {
-            let refused = loaded("log = \"stderr\"", spelling)
-                .resolve_title_model()
-                .expect_err("an empty model id must be refused");
-            assert!(
-                matches!(refused, StartError::TitleModelEmpty),
-                "the refusal names the empty model id; got {refused}"
-            );
-        }
     }
 
     #[test]

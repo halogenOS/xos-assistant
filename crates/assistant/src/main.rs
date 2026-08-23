@@ -102,13 +102,6 @@ enum StartError {
     #[error("the endpoints.wiki key must carry an address; omit it for the real host")]
     WikiEndpointEmpty,
 
-    /// The `title_model` key is present but empty or whitespace. Omitting
-    /// the key is how titles derive on the main model.
-    #[error(
-        "the title_model key must carry a model id; omit it to derive titles with the main model"
-    )]
-    TitleModelEmpty,
-
     /// A secret reference names both sources or neither.
     #[error("the secret `{key}` must name exactly one of `env` or `file`")]
     SecretRef { key: &'static str },
@@ -180,7 +173,6 @@ fn run() -> Result<(), StartError> {
     let privacy_policy = configuration.resolve_privacy_policy()?;
     let moderation_handle = configuration.resolve_moderation_handle()?;
     let wiki_endpoint = configuration.resolve_wiki_endpoint()?;
-    let title_model = configuration.resolve_title_model()?;
     let bot_token = configuration.secrets.bot_token.resolve("bot_token")?;
     let openrouter_key = configuration
         .secrets
@@ -207,7 +199,6 @@ fn run() -> Result<(), StartError> {
             privacy_policy,
             moderation_handle,
             wiki_endpoint,
-            title_model,
             bot_token,
             openrouter_key,
             mirror_token,
@@ -259,7 +250,6 @@ struct ServeInputs {
     privacy_policy: Option<String>,
     moderation_handle: Option<String>,
     wiki_endpoint: Option<String>,
-    title_model: Option<String>,
     bot_token: String,
     openrouter_key: String,
     mirror_token: Option<String>,
@@ -292,17 +282,12 @@ fn resolved_lookup_endpoints(
 
 /// One startup line naming every resolved path and endpoint — never a
 /// secret.
-fn log_startup(
-    configuration: &Configuration,
-    wiki_endpoint: Option<&str>,
-    title_model: Option<&str>,
-) {
+fn log_startup(configuration: &Configuration, wiki_endpoint: Option<&str>) {
     tracing::info!(
         store = %configuration.store_path.display(),
         telegram_state = %configuration.telegram_state_path.display(),
         prompt_dir = %configuration.prompt_dir.display(),
         model = %configuration.model,
-        title_model = %title_model.unwrap_or("the main model"),
         telegram_endpoint = %configuration
             .endpoints
             .telegram
@@ -337,7 +322,6 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         privacy_policy,
         moderation_handle,
         wiki_endpoint,
-        title_model,
         bot_token,
         openrouter_key,
         mirror_token,
@@ -348,7 +332,6 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         &store,
         openrouter_key,
         configuration.endpoints.openrouter.clone(),
-        title_model.clone(),
     )
     .await;
     let vendor = ProviderModule::type_id(&provider).to_owned();
@@ -392,11 +375,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     }
     let adapter = TelegramAdapter::new(adapter_config);
 
-    log_startup(
-        &configuration,
-        wiki_endpoint.as_deref(),
-        title_model.as_deref(),
-    );
+    log_startup(&configuration, wiki_endpoint.as_deref());
 
     let mut sigterm = signal(SignalKind::terminate()).map_err(StartError::Runtime)?;
     tokio::select! {

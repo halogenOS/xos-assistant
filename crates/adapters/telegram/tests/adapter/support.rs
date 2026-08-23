@@ -29,16 +29,13 @@ use tokio::sync::mpsc;
 
 use crate::server::BotApiServer;
 
-/// The scripted title every derivation streams.
-pub const TITLE: &str = "A derived title";
-
 /// The provider module's type id — the binding's vendor.
 pub const VENDOR: &str = "scripted";
 
-/// The marker that tells a title derivation from a turn. The text mirrors
-/// the framework's title instruction; if that wording changes, this suite
-/// fails loudly on an unanswered title instead of silently miscounting
-/// turns.
+/// The marker that tells a title derivation from a turn. Title derivation
+/// is off in the assembly (decision 0077), so a request carrying this mark
+/// is a regression: the scripted provider counts it instead of answering
+/// it. The text mirrors the framework's title instruction wording.
 pub const TITLE_INSTRUCTION_MARK: &str = "Generate a concise title";
 
 /// How long a poll or an awaited condition may take before the test names a
@@ -123,10 +120,11 @@ pub struct ToolScript {
 pub const TOOL_CLOSING_ANSWER: &str = "The scripted closing answer.";
 
 /// The scripted provider: answers every turn with [`answer_to`] the newest
-/// projected message's text and every title derivation with [`TITLE`],
-/// deterministically. A scripted failure count makes the next turns fail
-/// with a stream error instead; a tool script replaces the prose turns with
-/// the call-then-close shape.
+/// projected message's text, deterministically. A scripted failure count
+/// makes the next turns fail with a stream error instead; a tool script
+/// replaces the prose turns with the call-then-close shape. A title
+/// derivation request is counted, never answered — titles are off
+/// (decision 0077).
 struct ScriptedChat {
     failures: Arc<AtomicUsize>,
     /// Every turn request's projected messages, for the projection pins.
@@ -134,12 +132,14 @@ struct ScriptedChat {
     tool_script: Option<ToolScript>,
     /// When set, every chat turn awaits one release before it streams —
     /// the composing pins' fixture: the held turn keeps the answer out of
-    /// the wire while the typing action is asserted. Title derivations
-    /// never wait.
+    /// the wire while the typing action is asserted.
     turn_hold: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
     /// The error text a scripted failure streams; see
     /// [`Fixture::word_failures_as`].
     failure_text: Arc<Mutex<String>>,
+    /// Every title derivation request that reached the provider — asserted
+    /// zero, since the assembly switched titles off.
+    title_requests: Arc<AtomicUsize>,
 }
 
 impl ProviderModule for ScriptedChat {
@@ -185,16 +185,17 @@ impl ProviderModule for ScriptedChat {
         let tool_script = self.tool_script.clone();
         let turn_hold = Arc::clone(&self.turn_hold);
         let failure_text = Arc::clone(&self.failure_text);
+        let title_requests = Arc::clone(&self.title_requests);
         tokio::spawn(async move {
             let mut calls = 0_usize;
             while let Some(request) = requests.recv().await {
                 let ProviderRequest::Stream { messages, .. } = request else {
                     continue;
                 };
+                // Titles are off (decision 0077): count the regression,
+                // answer nothing.
                 if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
-                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                        text: TITLE.into(),
-                    }));
+                    title_requests.fetch_add(1, Ordering::SeqCst);
                     let _ = response_tx.send(ProviderResponse::Done);
                     continue;
                 }
@@ -331,6 +332,10 @@ pub struct Fixture {
     /// The error text a scripted failure streams; see
     /// [`Fixture::word_failures_as`].
     failure_text: Arc<Mutex<String>>,
+    /// Every title derivation request that reached the provider — asserted
+    /// zero by the end-to-end pin, since the assembly switched titles off
+    /// (decision 0077).
+    pub title_requests: Arc<AtomicUsize>,
 }
 
 impl Fixture {
@@ -439,6 +444,7 @@ async fn assemble(
     let seen = Arc::new(Mutex::new(Vec::new()));
     let turn_hold = Arc::new(Mutex::new(None));
     let failure_text = Arc::new(Mutex::new("scripted stream failure".to_owned()));
+    let title_requests = Arc::new(AtomicUsize::new(0));
     let mut providers = ProviderRegistry::new();
     providers.register(Box::new(ScriptedChat {
         failures: Arc::clone(&failures),
@@ -446,6 +452,7 @@ async fn assemble(
         tool_script,
         turn_hold: Arc::clone(&turn_hold),
         failure_text: Arc::clone(&failure_text),
+        title_requests: Arc::clone(&title_requests),
     }));
     let assistant = Assistant::start(
         store.clone(),
@@ -477,6 +484,7 @@ async fn assemble(
         seen,
         turn_hold,
         failure_text,
+        title_requests,
     }
 }
 
@@ -512,7 +520,6 @@ pub async fn authorize_group(assistant: &Assistant, chat_id: i64) {
             fact: ObservedFact::Added {
                 by: Some(SenderIdentity {
                     external_id: OPERATOR_ID.to_string(),
-                    display_name: "The Operator".into(),
                     username: None,
                 }),
             },

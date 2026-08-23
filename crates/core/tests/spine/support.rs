@@ -23,18 +23,16 @@ use assistant_core::{
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc};
 
-/// The scripted title every derivation streams.
-pub const TITLE: &str = "A derived title";
-
 /// The provider module's type id — the binding's vendor.
 pub const VENDOR: &str = "scripted";
 
-/// The marker that tells a title derivation from a turn. With no tools
-/// registered in this unit, the request content is the one discriminator: the
-/// framework's title request appends its title instruction to the
-/// conversation's prose, a turn does not. The text mirrors the framework's
-/// instruction; if that wording changes, this suite fails loudly on an
-/// unanswered title instead of silently miscounting turns.
+/// The marker that tells a title derivation from a turn — the framework's
+/// title request appends its title instruction to the conversation's prose,
+/// a turn does not. The assembly switches title derivation off (decision
+/// 0077), so a request carrying this mark is a regression: every scripted
+/// provider counts it on [`ScriptHandle::title_requests`] instead of
+/// answering it, and the zero pin fails loudly on the count. The text
+/// mirrors the framework's instruction wording.
 pub const TITLE_INSTRUCTION_MARK: &str = "Generate a concise title";
 
 /// How long a poll or an awaited event may take before the test names a
@@ -138,15 +136,20 @@ pub struct ScriptHandle {
     /// failure, so a test that pins a classification has to say which text
     /// arrives.
     pub failures: Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    /// Every title derivation request that reached the provider. The
+    /// assembly switches titles off (decision 0077), so the pins assert
+    /// zero here; any count above it is a regression.
+    pub title_requests: Arc<AtomicUsize>,
 }
 
 impl ScriptHandle {
     /// A fresh handle, all observations at zero.
-    fn fresh() -> Self {
+    pub fn fresh() -> Self {
         Self {
             turns: Arc::new(AtomicUsize::new(0)),
             seen: Arc::new(std::sync::Mutex::new(Vec::new())),
             failures: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+            title_requests: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -238,8 +241,10 @@ where
 
 /// Build the scripted provider and the handle a test observes it through:
 /// every turn answers with [`answer_to`] the newest projected message's
-/// text, every title derivation with [`TITLE`], deterministically, so
-/// turn-count and block-by-block assertions stay exact.
+/// text, deterministically, so turn-count and block-by-block assertions
+/// stay exact. A title derivation request is counted, never answered —
+/// titles are off (decision 0077), so one arriving is the regression the
+/// zero pin exists for.
 pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule>, ScriptHandle) {
     let handle = ScriptHandle::fresh();
     let script = handle.clone();
@@ -249,6 +254,7 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
         let turns = Arc::clone(&script.turns);
         let seen = Arc::clone(&script.seen);
         let failures = Arc::clone(&script.failures);
+        let title_requests = Arc::clone(&script.title_requests);
         let hold = hold.clone();
         tokio::spawn(async move {
             while let Some(request) = requests.recv().await {
@@ -256,9 +262,7 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                     continue;
                 };
                 if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
-                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                        text: TITLE.into(),
-                    }));
+                    title_requests.fetch_add(1, Ordering::SeqCst);
                     let _ = response_tx.send(ProviderResponse::Done);
                     continue;
                 }
@@ -385,6 +389,7 @@ pub fn tool_scripted_provider(
             let (response_tx, responses) = mpsc::unbounded_channel();
             let turns = Arc::clone(&observed.turns);
             let seen = Arc::clone(&observed.seen);
+            let title_requests = Arc::clone(&observed.title_requests);
             let script = script.clone();
             let hold = hold.clone();
             tokio::spawn(async move {
@@ -393,9 +398,7 @@ pub fn tool_scripted_provider(
                         continue;
                     };
                     if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: TITLE.into(),
-                        }));
+                        title_requests.fetch_add(1, Ordering::SeqCst);
                         let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
@@ -519,6 +522,7 @@ pub fn round_scripted_provider(
             let (response_tx, responses) = mpsc::unbounded_channel();
             let turns = Arc::clone(&observed.turns);
             let seen = Arc::clone(&observed.seen);
+            let title_requests = Arc::clone(&observed.title_requests);
             let rounds = Arc::clone(&rounds);
             let hold = Arc::clone(&hold);
             tokio::spawn(async move {
@@ -527,9 +531,7 @@ pub fn round_scripted_provider(
                         continue;
                     };
                     if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: TITLE.into(),
-                        }));
+                        title_requests.fetch_add(1, Ordering::SeqCst);
                         let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
@@ -823,7 +825,6 @@ pub fn added_by(channel: &ChannelKey, external_id: &str) -> Observation {
         fact: ObservedFact::Added {
             by: Some(SenderIdentity {
                 external_id: external_id.into(),
-                display_name: format!("Sender {external_id}"),
                 username: None,
             }),
         },
@@ -1053,7 +1054,6 @@ pub fn inbound_as(
         channel_kind: kind,
         sender: SenderIdentity {
             external_id: sender_external_id.into(),
-            display_name: format!("Sender {sender_external_id}"),
             username: None,
         },
         authority: Some(authority),

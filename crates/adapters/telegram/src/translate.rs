@@ -179,7 +179,6 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity) -> Translation {
         command: invoked_command(text, me),
         sender: SenderIdentity {
             external_id: from.id.to_string(),
-            display_name: display_name(&from.first_name, from.last_name.as_deref()),
             username: from.username.clone(),
         },
         sender_id: from.id,
@@ -211,7 +210,6 @@ fn translate_membership(member: &MemberUpdate) -> Translation {
         fact: ObservedFact::Added {
             by: member.from.as_ref().map(|from| SenderIdentity {
                 external_id: from.id.to_string(),
-                display_name: display_name(&from.first_name, from.last_name.as_deref()),
                 username: from.username.clone(),
             }),
         },
@@ -421,15 +419,6 @@ fn text_of(message: &Incoming) -> Option<&str> {
         .filter(|text| !text.is_empty())
 }
 
-/// The name a person displays: the first name, with the last name appended
-/// where the platform carries one.
-fn display_name(first: &str, last: Option<&str>) -> String {
-    match last {
-        Some(last) => format!("{first} {last}"),
-        None => first.to_owned(),
-    }
-}
-
 impl std::fmt::Display for Skip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let reason = match self {
@@ -515,20 +504,13 @@ mod tests {
                 },
                 from: Some(User {
                     id: 7,
-                    first_name: "Ada".into(),
-                    last_name: None,
                     username: None,
                 }),
                 sender_chat: None,
                 text: Some(text.into()),
                 caption: None,
                 reply_to_message: replied_author.map(|id| RepliedTo {
-                    from: Some(User {
-                        id,
-                        first_name: "Bot".into(),
-                        last_name: None,
-                        username: None,
-                    }),
+                    from: Some(User { id, username: None }),
                     message_id: Some(19),
                 }),
                 pinned_message: None,
@@ -545,8 +527,6 @@ mod tests {
         assert!(
             recorded(&update_with_sender(User {
                 id: 5,
-                first_name: "Ada".into(),
-                last_name: None,
                 username: None,
             }))
             .addressed
@@ -626,33 +606,35 @@ mod tests {
         );
     }
 
-    /// The display name composes the first and last names, and a username
-    /// the platform carries is kept on the identity.
+    /// The identity crossing the boundary is the external id and the
+    /// username, nothing more (decision 0077): the platform's name fields
+    /// are not translated at all, so a display name cannot even reach the
+    /// core to be discarded there.
     #[test]
-    fn a_sender_with_a_last_name_and_a_username_translates_whole() {
+    fn a_sender_translates_to_the_external_id_and_the_username_alone() {
         let pending = recorded(&update_with_sender(User {
             id: 5,
-            first_name: "Ada".into(),
-            last_name: Some("Lovelace".into()),
             username: Some("ada".into()),
         }));
-        assert_eq!(pending.sender.display_name, "Ada Lovelace");
-        assert_eq!(pending.sender.username.as_deref(), Some("ada"));
-        assert_eq!(pending.sender.external_id, "5");
+        assert_eq!(
+            pending.sender,
+            SenderIdentity {
+                external_id: "5".into(),
+                username: Some("ada".into()),
+            },
+            "the whole identity is the id and the handle — no name fields"
+        );
     }
 
-    /// A bare first name stands alone — no separator artifact — and an
-    /// absent username stays absent instead of becoming an empty one.
+    /// An absent username stays absent instead of becoming an empty one.
     #[test]
-    fn a_sender_with_only_a_first_name_translates_bare() {
+    fn a_sender_without_a_username_translates_bare() {
         let pending = recorded(&update_with_sender(User {
             id: 6,
-            first_name: "Ada".into(),
-            last_name: None,
             username: None,
         }));
-        assert_eq!(pending.sender.display_name, "Ada");
         assert_eq!(pending.sender.username, None);
+        assert_eq!(pending.sender.external_id, "6");
     }
 
     // ─── Membership translation ──────────────────────────────────────────
@@ -671,8 +653,6 @@ mod tests {
                 },
                 from: Some(User {
                     id: 77,
-                    first_name: "Op".into(),
-                    last_name: None,
                     username: None,
                 }),
                 old_chat_member: old,

@@ -5,7 +5,6 @@
 //! carries the new tools into existing conversations.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 
 use agent_ledger::{
     Block, CoreEvent, ProviderModule, ProviderRequest, ProviderResponse, Store, StreamEvent,
@@ -88,17 +87,14 @@ async fn report_fixture(
 /// stories is exactly one call round and one closing round, filed or
 /// refused alike, so the alternation is the turn structure itself.
 fn repeating_report_provider() -> (Box<dyn ProviderModule>, ScriptHandle) {
-    let handle = ScriptHandle {
-        turns: Arc::new(AtomicUsize::new(0)),
-        seen: Arc::new(std::sync::Mutex::new(Vec::new())),
-        failures: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
-    };
+    let handle = fresh_handle();
     let observed = handle.clone();
     let provider = provider_stub("Repeating reporter", "calls the report tool every turn", {
         move || {
             let (request_tx, mut requests) = mpsc::unbounded_channel();
             let (response_tx, responses) = mpsc::unbounded_channel();
             let turns = Arc::clone(&observed.turns);
+            let title_requests = Arc::clone(&observed.title_requests);
             tokio::spawn(async move {
                 let mut calls = 0_usize;
                 let mut close_next = false;
@@ -106,13 +102,13 @@ fn repeating_report_provider() -> (Box<dyn ProviderModule>, ScriptHandle) {
                     let ProviderRequest::Stream { messages, .. } = request else {
                         continue;
                     };
+                    // Titles are off (decision 0077): count the regression,
+                    // answer nothing.
                     if messages
                         .iter()
                         .any(|m| support::carries(m, support::TITLE_INSTRUCTION_MARK))
                     {
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: support::TITLE.into(),
-                        }));
+                        title_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
@@ -709,24 +705,26 @@ fn files_then_dies_provider(
     narration: Option<&'static str>,
 ) -> (Box<dyn ProviderModule>, ScriptHandle) {
     let handle = fresh_handle();
+    let observed = handle.clone();
     let provider = provider_stub(
         "Files then dies",
         "files a report, then errors",
         move || {
             let (request_tx, mut requests) = mpsc::unbounded_channel();
             let (response_tx, responses) = mpsc::unbounded_channel();
+            let title_requests = Arc::clone(&observed.title_requests);
             tokio::spawn(async move {
                 while let Some(request) = requests.recv().await {
                     let ProviderRequest::Stream { messages, .. } = request else {
                         continue;
                     };
+                    // Titles are off (decision 0077): count the regression,
+                    // answer nothing.
                     if messages
                         .iter()
                         .any(|m| support::carries(m, support::TITLE_INSTRUCTION_MARK))
                     {
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: support::TITLE.into(),
-                        }));
+                        title_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
@@ -1184,6 +1182,7 @@ fn racing_report_provider() -> (
             let (request_tx, mut requests) = mpsc::unbounded_channel();
             let (response_tx, responses) = mpsc::unbounded_channel();
             let turns = Arc::clone(&observed.turns);
+            let title_requests = Arc::clone(&observed.title_requests);
             let started_tx = started_tx.clone();
             let permits = Arc::clone(&permits);
             tokio::spawn(async move {
@@ -1191,13 +1190,13 @@ fn racing_report_provider() -> (
                     let ProviderRequest::Stream { messages, .. } = request else {
                         continue;
                     };
+                    // Titles are off (decision 0077): count the regression,
+                    // answer nothing.
                     if messages
                         .iter()
                         .any(|m| support::carries(m, support::TITLE_INSTRUCTION_MARK))
                     {
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: support::TITLE.into(),
-                        }));
+                        title_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
@@ -1371,11 +1370,7 @@ fn palette_names(block: &Block) -> Vec<String> {
 
 /// A fresh observation handle for the providers this module builds itself.
 fn fresh_handle() -> ScriptHandle {
-    ScriptHandle {
-        turns: Arc::new(AtomicUsize::new(0)),
-        seen: Arc::new(std::sync::Mutex::new(Vec::new())),
-        failures: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
-    }
+    ScriptHandle::fresh()
 }
 
 /// The full registered set of a reporting deployment, sorted as the

@@ -141,6 +141,13 @@ controller, and anything the project does outside the assistant.
   > the one stored with the message at receipt — a person who later changes their
   > handle is projected under the handle they spoke with, and a person the platform
   > gives no handle is projected with no identifier at all.
+
+  > Amended 2026-08-23, later the same day: the identity category shrinks. The display
+  > name is no longer collected or stored at all (decision 0077) — the adapter stops
+  > decoding it, the identity table's column is dropped with its values by an appended
+  > migration step, and the category is the account identifier and the username. Every
+  > sentence in this document saying the display name "stays on the machine" or "does
+  > not cross" now holds trivially: there is no stored display name to stay anywhere.
 - **Circumstance.** Arrival time, the platform send time, the reply reference, whether the
   message was addressed to the assistant, and the authority the person held in that chat
   at that moment (member or administrator).
@@ -235,6 +242,15 @@ EEA. It is a framework defect, not a configuration choice, and the fix is in fli
 naming step will follow the same configured model as the answers. Until it merges, case 2
 above is live on every new conversation, and no claim in this document that requests stay
 in the EU may be read without it. The public policy carries the same qualification.
+
+> Closed 2026-08-23: the conversation-naming feature is switched off entirely (decision
+> 0077) — no surface reads a derived title, so the assembly disables the derivation at
+> construction and no naming request goes out to any model, in any region, ever. The
+> configured-model fix of decision 0068 shipped first and is now moot for this
+> deployment. Case 2 above remains stated because the answering model's own deployment
+> region follows the processor's routing; the naming step no longer contributes to it.
+> Titles derived before the switch-off persist in upgraded stores as stored metadata;
+> nothing new joins them.
 
 ### 3.6 Storage and deletion
 
@@ -466,6 +482,8 @@ open items in section 9 being closed, meaning the countersigned agreement, stora
 protection at rest, the Approved-Models restriction and the non-EEA naming model. If any of
 them stays open, the judgment is re-taken before the assistant enters the main community
 group. It does not depend on the officer question, which section 9 records as decided.
+Amended 2026-08-23: the naming-model item is closed by decision 0077 — the derivation is
+off, so the judgment now depends on the three remaining items.
 
 ## 9. Open items this assessment depends on
 
@@ -506,7 +524,9 @@ it.
    correction that zero data retention binds the processor alone.
 4. **The non-EEA conversation-naming model**, a framework defect with the fix in flight,
    described in section 3.5. Until it merges, a piece of every new conversation reaches a
-   deployment outside the EEA under the standard contractual clauses.
+   deployment outside the EEA under the standard contractual clauses. Closed 2026-08-23:
+   title derivation is switched off entirely (decision 0077), so no naming request exists
+   to cross anywhere — this item no longer conditions the overall judgment.
 5. **Records of processing** under Article 30, drafted 2026-08-23 and kept beside this
    document.
 6. **The deletion gaps** recorded in decisions 0045 and 0055, waiting on the storage

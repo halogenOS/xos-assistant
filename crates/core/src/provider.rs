@@ -31,12 +31,11 @@ pub struct MemoryConfiguredProvider {
 
 impl MemoryConfiguredProvider {
     /// Wrap the framework's `OpenRouter` module around an in-memory
-    /// configuration: the key; the base URL where a test points it at a
-    /// loopback server (`None` keeps the module's real host); and the title
-    /// model — the module's `lightweight_model`, the slug conversation
-    /// titles are derived with (`None` derives them on each conversation's
-    /// own main model, so title traffic never reaches a model the
-    /// deployment did not name).
+    /// configuration: the key, and the base URL where a test points it at a
+    /// loopback server (`None` keeps the module's real host). No title
+    /// model rides here (decision 0077): the assembly switches title
+    /// derivation off entirely, so the module's `lightweight_model` key
+    /// would configure a request that never goes out.
     ///
     /// The wrapped module creates its configuration table on construction;
     /// the table stays empty for the process's whole life, because the save
@@ -46,19 +45,11 @@ impl MemoryConfiguredProvider {
     ///
     /// If the wrapped module's configuration table cannot be created — a
     /// broken store, not a runtime condition.
-    pub async fn new(
-        store: &Store,
-        api_key: String,
-        base_url: Option<String>,
-        title_model: Option<String>,
-    ) -> Self {
+    pub async fn new(store: &Store, api_key: String, base_url: Option<String>) -> Self {
         let inner = OpenRouterModule::new(store.tx()).await;
         let mut config = json!({ "api_key": api_key });
         if let Some(base_url) = base_url {
             config["base_url"] = json!(base_url);
-        }
-        if let Some(title_model) = title_model {
-            config["lightweight_model"] = json!(title_model);
         }
         Self { inner, config }
     }
@@ -126,40 +117,23 @@ impl ProviderModule for MemoryConfiguredProvider {
 mod tests {
     use super::*;
 
-    /// The configured title model flows into the provider configuration the
-    /// framework binds with, under the module's own `lightweight_model` key —
-    /// and an absent title model leaves the key absent, under which the
-    /// framework derives each conversation's title on that conversation's
-    /// own main model.
+    /// The in-memory configuration carries the key and nothing about titles
+    /// (decision 0077): no `lightweight_model` key exists to name a model
+    /// for a derivation the assembly switched off.
     #[tokio::test]
-    async fn the_title_model_flows_into_the_provider_configuration() {
+    async fn the_configuration_carries_the_key_and_no_title_model() {
         let store = Store::in_memory().expect("an in-memory store opens");
 
-        let provider = MemoryConfiguredProvider::new(
-            &store,
-            "a-test-key".into(),
-            None,
-            Some("cheap-vendor/title-model".into()),
-        )
-        .await;
+        let provider = MemoryConfiguredProvider::new(&store, "a-test-key".into(), None).await;
         let config = provider
             .get_config("openrouter-1".into())
             .await
             .expect("the in-memory configuration reads")
             .expect("the configuration is present");
-        assert_eq!(config["lightweight_model"], "cheap-vendor/title-model");
         assert_eq!(config["api_key"], "a-test-key");
-
-        let provider = MemoryConfiguredProvider::new(&store, "a-test-key".into(), None, None).await;
-        let config = provider
-            .get_config("openrouter-1".into())
-            .await
-            .expect("the in-memory configuration reads")
-            .expect("the configuration is present");
         assert!(
             config.get("lightweight_model").is_none(),
-            "no configured title model means no key at all — the framework's \
-             main-model fallback stands"
+            "no title model is configured for a derivation that never runs"
         );
     }
 }

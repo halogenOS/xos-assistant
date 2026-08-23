@@ -48,9 +48,8 @@ The file names the store path, the Telegram state-file path, the prompt director
 (the repository's `prompts` directory holds the assistant's system prompt), the log
 destination (the bare word `stderr` for the console, or a file path — as a bare
 string, or as `log = { file = "..." }` for a file whose name collides with the
-console word — the console word matches exactly and lowercase), the model id (with an
-optional `title_model` conversation titles are derived with — absent, titles derive
-on the main model), and optional endpoint overrides for tests. Secrets are
+console word — the console word matches exactly and lowercase), the model id, and
+optional endpoint overrides for tests. Secrets are
 referenced indirectly — an
 environment variable name or a
 file path per secret — and never appear in the file itself:
@@ -70,10 +69,6 @@ file path per secret — and never appear in the file itself:
     # registered and the assistant cannot file reports.
     #moderation_handle = "moderation_bot"
 
-    # Optional: the model conversation titles are derived with. Absent,
-    # titles derive on the main model above — never on a model the file
-    # does not name.
-    #title_model = "<the provider's id for the title model>"
     # Optional: whether direct chats are served — "on" (the default) or
     # "off". Off, a direct message is refused before anything is written:
     # nothing is recorded, nothing is answered. Groups are unaffected.

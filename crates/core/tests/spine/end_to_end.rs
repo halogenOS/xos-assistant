@@ -12,7 +12,7 @@ use assistant_core::{Authority, ChannelKind};
 use serde_json::json;
 
 use crate::support;
-use crate::support::{TITLE, answer_to, await_ledger, carries, channel, inbound, recv_reply};
+use crate::support::{answer_to, await_ledger, carries, channel, inbound, recv_reply};
 
 /// The wake, proven on the bus: the append put the assistant's kind at the
 /// frontier, and the runtime's own conversation state must say so — work due,
@@ -54,7 +54,7 @@ async fn assert_wake_precedes_turn_end(
 /// AC4: one inbound message through the public entry point wakes the runtime,
 /// the scripted provider streams the answer, and the outbound edge yields it
 /// bound to the correct channel key — asserted on the ledger block by block,
-/// with the title derivation accounted for and excluded from the edge.
+/// with the switched-off title derivation pinned silent (decision 0077).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_inbound_message_becomes_an_outbound_reply() {
     let fixture = support::start_assistant(None).await;
@@ -144,55 +144,53 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
         );
     }
 
-    assert_title_derived_and_off_the_edge(&fixture, conv, &mut replies).await;
+    assert_no_title_derivation(&fixture, conv, &mut replies).await;
 }
 
-/// The title derivation, accounted for: it runs on the young conversation
-/// and settles as the stored title, draws no turn, adds no ledger block, and
-/// never reaches the outbound edge.
-async fn assert_title_derived_and_off_the_edge(
+/// Decision 0077's zero pin over the full conversation flow: the answered
+/// turn is done, and title derivation — switched off in the assembly —
+/// dispatched NOTHING. The window a derivation would fire in is held open,
+/// then every surface is read: no title request reached the provider, the
+/// conversation's title stays as creation left it, the ledger holds only
+/// the turn's own blocks, and nothing leaked onto the outbound edge.
+async fn assert_no_title_derivation(
     fixture: &support::Fixture,
     conv: i64,
     replies: &mut tokio::sync::mpsc::UnboundedReceiver<assistant_core::OutboundReply>,
 ) {
-    let deadline = std::time::Instant::now() + support::DEADLINE;
-    loop {
-        let conversation = fixture
-            .store
-            .find_conversation(conv)
-            .await
-            .expect("the conversation reads")
-            .expect("the conversation exists");
-        if conversation.title.as_deref() == Some(TITLE) {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out awaiting the derived title"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        fixture.script.title_requests.load(Ordering::SeqCst),
+        0,
+        "a full conversation flow dispatches zero title requests"
+    );
+    let conversation = fixture
+        .store
+        .find_conversation(conv)
+        .await
+        .expect("the conversation reads")
+        .expect("the conversation exists");
+    assert_eq!(
+        conversation.title, None,
+        "the conversation keeps its unset title"
+    );
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
         1,
-        "a title derivation is not a turn"
+        "the answered turn stays the only request of any kind"
     );
     let blocks = fixture
         .store
         .list_blocks(conv)
         .await
         .expect("the ledger reads");
-    assert_eq!(
-        blocks.len(),
-        4,
-        "the title lives outside the conversation ledger"
-    );
+    assert_eq!(blocks.len(), 4, "no derivation artifact joins the ledger");
     assert!(
         matches!(
             replies.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ),
-        "the title derivation never reaches the outbound edge"
+        "nothing further reaches the outbound edge"
     );
 }
 

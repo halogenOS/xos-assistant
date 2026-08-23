@@ -67,7 +67,9 @@ static CHAT_MESSAGE_SCHEMA: LazyLock<String> = LazyLock::new(|| {
 
 /// Sender identity, keyed by principal id — the only place personal identity
 /// lives. A principal is scoped to one adapter: the same external id on two
-/// adapters is two people until proven otherwise.
+/// adapters is two people until proven otherwise. The `display_name` column
+/// this shipped CREATE still names is dropped by the appended retirement
+/// step below (decision 0077); the CREATE itself stays frozen as it shipped.
 ///
 /// The id column is AUTOINCREMENT because erasure hard-deletes rows here
 /// while ledger blocks keep their principal id forever: a bare rowid key
@@ -319,6 +321,15 @@ static SPEAKER_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The display name's retirement — the appended migration step of the
+/// minimization ruling (decision 0077). The column was written on every
+/// refresh and read by nothing, so the step deletes the stored values and
+/// the surface that would accumulate them in one move; identity resolution
+/// stopped naming the column in the same change. A fresh store runs the
+/// shipped CREATE and this drop in order and ends at the same schema as an
+/// upgraded one. No frozen vocabulary list: the step quotes no enum.
+const DISPLAY_NAME_DROP_MIGRATION: &str = "ALTER TABLE principals DROP COLUMN display_name;";
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -340,6 +351,7 @@ pub fn store_config() -> StoreConfig {
                 REPLY_TARGET_MIGRATION.as_str(),
                 REPORT_MIGRATION.as_str(),
                 SPEAKER_MIGRATION.as_str(),
+                DISPLAY_NAME_DROP_MIGRATION,
             ],
         }],
     }

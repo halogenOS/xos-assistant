@@ -90,7 +90,6 @@ mod tests {
     fn only_a_named_adder_matching_the_configured_operator_admits() {
         let adder = |external_id: &str| SenderIdentity {
             external_id: external_id.into(),
-            display_name: "Someone".into(),
             username: None,
         };
         assert!(operator_admits(Some("op-1"), Some(&adder("op-1"))));
