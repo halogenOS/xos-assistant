@@ -186,7 +186,7 @@ fn the_four_privacy_drafts_carry_their_dated_report_updates() {
     ] {
         let content = repo_file(draft);
         assert!(
-            content.contains(marker),
+            flattened(&content).contains(&flattened(marker)),
             "{draft} carries its dated update: expected {marker:?}"
         );
     }
