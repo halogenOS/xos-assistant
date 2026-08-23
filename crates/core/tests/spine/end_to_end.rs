@@ -424,17 +424,6 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
     );
 }
 
-/// One process of the restart test: its own runtime, dropped at the end of
-/// the phase so every task the assembly spawned dies with it — the store is
-/// shared state on disk, the runtime is not.
-fn process_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .enable_time()
-        .build()
-        .expect("a runtime for one simulated process")
-}
-
 /// The restarted process: a channel mapped by an earlier process is answered
 /// again, because the ingestion edge releases the per-process boot latch on
 /// its first ingestion into the pre-existing conversation — and the stored
@@ -448,7 +437,7 @@ fn a_restarted_process_answers_a_known_channel() {
     let db = support::TempDb::new("restart");
     let key = channel("dm-restart");
 
-    process_runtime().block_on(async {
+    support::process_runtime().block_on(async {
         let store = Store::open_with(db.path(), store_config()).expect("the first store opens");
         let fixture = support::start_assistant_on(store, None).await;
         let mut replies = fixture
@@ -473,7 +462,7 @@ fn a_restarted_process_answers_a_known_channel() {
     // The next process over the same file: the conversation exists in the
     // durable mapping, its actor boots latched, and only the ingestion
     // edge's unlatch lets a turn fire.
-    process_runtime().block_on(async {
+    support::process_runtime().block_on(async {
         let store = Store::open_with(db.path(), store_config()).expect("the store reopens");
         let fixture = support::start_assistant_on(store, None).await;
         let mut replies = fixture

@@ -306,12 +306,29 @@ impl ChatMessage {
     /// stored debt authority, with the pre-migration fold: a row written
     /// before the protection migration carries NULL there while every
     /// pre-migration row does carry its sender's authority, so that stored
-    /// standing answers for the missing stamp. Meaningful only on a tail
+    /// standing answers for the missing stamp. Read on a tail
     /// [`Self::owes_answer`] affirms; a debt-free row's absent stamp folds
-    /// to its sender's authority too, which no caller reads.
+    /// to its sender's own authority, the row's only stored voice. Tool
+    /// admission never reads this fold: the carried stamp is the ANSWERING
+    /// fact, and the anchor gate walks the debt's origin set instead
+    /// (decision 0043, refined 2026-08-22).
     #[must_use]
     pub fn carried_debt_authority(&self) -> Option<Authority> {
         self.debt_authority.or(self.authority)
+    }
+
+    /// Whether this message's own debt was taken — the row-side reading of
+    /// the opened-debt predicate: addressed, and no budget refused. One
+    /// predicate, three spellings that must agree: [`Stamp::own_debt_taken`]
+    /// at the write, the budget counts' SQL fragment over the stored rows,
+    /// and this reading of one loaded row — which is also decision 0043's
+    /// co-summoner rule, since exactly the messages this predicate affirms
+    /// join a turn's provenance when absorbed into its span. A row the
+    /// store did not produce reads `None` for `addressed` and answers
+    /// false: a message that provably opened nothing joins nothing.
+    #[must_use]
+    pub fn own_debt_taken(&self) -> bool {
+        self.addressed == Some(true) && self.limited.is_none()
     }
 
     /// The message's projected contribution: its text, or [`ERASED_MARKER`]

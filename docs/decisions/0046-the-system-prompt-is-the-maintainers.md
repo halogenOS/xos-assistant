@@ -22,10 +22,17 @@ the line returns to the prompt verbatim:
 1. Under rule enforcement, after the light-reminder bullet:
    `* /warn command when replying to the flagged user message.`
    Trigger: the warn path is implemented with its permission checks.
-2. Under rule enforcement, after the /report bullet:
+2. Under rule enforcement, after the light-reminder bullet (and after the /warn
+   bullet once that returns):
+   `* /report when it needs human judgment`
+   Trigger: unit 6b ships the report tool. Moved into this set 2026-08-22: the
+   prompt can now reach production before the tool, so the bullet waits with the
+   others instead of instructing the model toward a command that does not exist yet.
+3. Under rule enforcement, after the light-reminder bullet (and after the /warn
+   and /report bullets once those return):
    `* /dban for permanent ban for clear violations of our no-tolerance policies.`
    Trigger: the ban path is implemented with its permission checks.
-3. At the end of the tool-failure paragraph:
+4. At the end of the tool-failure paragraph:
    `If you're genuinely encountering a situation you can't fix and believe it is a
    harness bug, please submit a model report through the feedback tools.`
    Trigger: the feedback tools exist; the maintainer offered their rough shape on
@@ -33,6 +40,12 @@ the line returns to the prompt verbatim:
 
 The /report bullet stays in the prompt: the reporting tool is the next unit's named
 scope, and the prompt reaches production no earlier than that unit.
+
+> Superseded 2026-08-22, and restored the same day with this note: the paragraph
+> above was this record's original text, and the move of the /report bullet into the
+> gated set (item 2, with its dated note) was written by deleting it in place — an
+> edit the append-only convention for decision records forbids. The standing rule is
+> item 2's; this paragraph stands as the history it always was.
 
 ## Rejected alternatives
 

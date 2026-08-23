@@ -203,6 +203,12 @@ impl ProviderModule for ScriptedChat {
                                 usage: agent_ledger::providers::Usage::default(),
                                 stop_reason: StopReason::EndTurn,
                             }));
+                        // The trailing done real wires send after every
+                        // completed turn: the framework settles the dispatch
+                        // state on the closed signal, so a scripted turn
+                        // ending without it would leave the state open and
+                        // stall the suite.
+                        let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
                     if let Some(narration) = &script.narration {
@@ -230,6 +236,7 @@ impl ProviderModule for ScriptedChat {
                             json: script.input.clone(),
                         }));
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                    let _ = response_tx.send(ProviderResponse::Done);
                     continue;
                 }
                 let answer = answer_to(&messages.last().map(message_text).unwrap_or_default());
@@ -241,6 +248,7 @@ impl ProviderModule for ScriptedChat {
                     usage: agent_ledger::providers::Usage::default(),
                     stop_reason: StopReason::EndTurn,
                 }));
+                let _ = response_tx.send(ProviderResponse::Done);
             }
         });
         (request_tx, responses)

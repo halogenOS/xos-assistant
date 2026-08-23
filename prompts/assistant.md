@@ -16,7 +16,6 @@ you directly through @mention or direct reply. You may engage in rule
 enforcement in the following ways:
 
 * light reminder in text
-* /report when it needs human judgment
 
 Community rules, applies to everyone:
 

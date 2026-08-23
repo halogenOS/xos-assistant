@@ -16,13 +16,12 @@
 //! every conversation's creation. A conversation without a palette admits
 //! nothing.
 //!
-//! Required authority is enforced at registration, not at the call:
-//! [`ToolSet::admit`] refuses any tool whose required authority is above
-//! member — the structural floor of decision 0043's closure (2026-08-22),
-//! standing in until the framework's dispatch anchor records the turn's
-//! summoning frontier onto the tool call at insert. A refused tool never
-//! reaches the registry or the palette, so nothing above the floor is
-//! expressible at runtime.
+//! Required authority is enforced at the call, per decision 0043: every
+//! wrapped execute reads the turn's provenance through the call block's
+//! dispatch anchor — the `provenance` module holds the reading — and
+//! declines when it falls below the tool's required authority. Registration
+//! accepts any authority; the wrapper's check at the call is the whole
+//! enforcement.
 
 use agent_ledger::{CoreEvent, ToolHandler, ToolRegistry};
 
@@ -32,31 +31,12 @@ pub(crate) mod admission;
 pub mod commit;
 pub(crate) mod lookup;
 pub mod palette;
+pub(crate) mod provenance;
 pub mod release;
 
 use admission::AdmittedTool;
 use commit::CommitLookup;
 use release::ReleaseLookup;
-
-/// The refusal [`ToolSet::admit`] answers a tool whose required authority is
-/// above member: the registration floor of decision 0043's closure. The
-/// floor exists because no stored shape can currently answer whose authority
-/// summoned a turn — the framework's dispatch anchor is the mechanism that
-/// will, and until it ships, a tool needing more than member authority is
-/// refused at the door instead of read from stored shape at the call.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "the tool '{tool}' names {} as its required authority, above the member \
-     floor: registration refuses every tool above member until the \
-     framework's dispatch anchor ships (decision 0043, closed 2026-08-22)",
-    required.as_str()
-)]
-pub struct RegistrationAboveFloor {
-    /// The refused tool's registered name.
-    pub tool: String,
-    /// The authority the tool named, above the floor.
-    pub required: Authority,
-}
 
 /// The tools the assembly registers, each admitted at the authority its
 /// admission requires. The set is built by the embedder — the binary admits
@@ -80,11 +60,6 @@ impl ToolSet {
     /// which tools ship: the binary points it at the configured hosts, and
     /// the suites' default fixtures point the same set at a loopback
     /// address nothing listens on.
-    ///
-    /// # Panics
-    ///
-    /// Never: both lookups sit at the member floor, and the pin on the
-    /// production names covers this construction.
     #[must_use]
     pub fn production_lookups(
         forge_base_url: impl Into<String>,
@@ -95,37 +70,20 @@ impl ToolSet {
         set.admit(
             commit::REQUIRED_AUTHORITY,
             CommitLookup::new(forge_base_url, commit::DEFAULT_TIMEOUT),
-        )
-        .expect("the commit lookup sits at the member floor");
+        );
         set.admit(
             release::REQUIRED_AUTHORITY,
             ReleaseLookup::new(mirror_base_url, mirror_token, release::DEFAULT_TIMEOUT),
-        )
-        .expect("the release lookup sits at the member floor");
+        );
         set
     }
 
     /// Admit one tool at the given required authority. The registered name
-    /// is the definition's own.
-    ///
-    /// # Errors
-    ///
-    /// [`RegistrationAboveFloor`] for any authority above member — the
-    /// structural floor of decision 0043's closure. The refused tool is not
-    /// held anywhere: it reaches neither the registry nor the palette.
-    pub fn admit(
-        &mut self,
-        required: Authority,
-        handler: impl ToolHandler<CoreEvent> + 'static,
-    ) -> Result<(), RegistrationAboveFloor> {
-        if required > Authority::Member {
-            return Err(RegistrationAboveFloor {
-                tool: handler.definition().name,
-                required,
-            });
-        }
-        self.entries.push(AdmittedTool::new(handler));
-        Ok(())
+    /// is the definition's own. Any authority registers; enforcement is the
+    /// admission wrapper's provenance check at every call, never a
+    /// registration refusal (decision 0043).
+    pub fn admit(&mut self, required: Authority, handler: impl ToolHandler<CoreEvent> + 'static) {
+        self.entries.push(AdmittedTool::new(required, handler));
     }
 
     /// The registry the runtime resolves calls against, and the palette list
@@ -203,10 +161,8 @@ mod tests {
         // registry's own iteration order, so the palette and the schema
         // list agree.
         let mut set = ToolSet::new();
-        set.admit(Authority::Member, Named("zulu"))
-            .expect("a member-level probe registers");
-        set.admit(Authority::Member, Named("alpha"))
-            .expect("a member-level probe registers");
+        set.admit(Authority::Member, Named("zulu"));
+        set.admit(Authority::Member, Named("alpha"));
         let (registry, names) = set.into_registry();
         assert_eq!(names, vec!["alpha".to_owned(), "zulu".to_owned()]);
         assert_eq!(
@@ -217,47 +173,29 @@ mod tests {
     }
 
     #[test]
-    fn a_registration_above_the_member_floor_is_refused_and_never_reaches_the_registry() {
-        // The structural floor of decision 0043's closure (AC5): an
-        // admin-level registration is refused with the typed error, the
-        // refusal names the floor and the closure, and the refused tool is
-        // provably absent from the registry and the palette list alike.
+    fn a_registration_above_member_reaches_the_registry_and_the_palette() {
+        // Registration accepts every authority (decision 0043): an
+        // admin-level registration reaches both derived views, because
+        // enforcement is the admission wrapper's provenance check, which
+        // every call passes through.
         let mut set = ToolSet::new();
-        let refusal = set
-            .admit(Authority::Admin, Named("above_the_floor"))
-            .expect_err("an admin-level registration is refused");
-        assert_eq!(
-            refusal,
-            RegistrationAboveFloor {
-                tool: "above_the_floor".to_owned(),
-                required: Authority::Admin,
-            }
-        );
-        let worded = refusal.to_string();
-        assert!(
-            worded.contains("above the member floor"),
-            "the refusal names the floor: {worded}"
-        );
-        assert!(
-            worded.contains("decision 0043, closed 2026-08-22"),
-            "the refusal names the closure it stands on: {worded}"
-        );
-
-        set.admit(Authority::Moderator, Named("also_above"))
-            .expect_err("a moderator-level registration is refused too");
-        set.admit(Authority::Member, Named("at_the_floor"))
-            .expect("a member-level tool registers");
-
+        set.admit(Authority::Admin, Named("admin_probe"));
+        set.admit(Authority::Moderator, Named("moderator_probe"));
+        set.admit(Authority::Member, Named("member_probe"));
         let (registry, names) = set.into_registry();
         assert_eq!(
             names,
-            vec!["at_the_floor".to_owned()],
-            "the palette list carries only the admitted tool"
+            vec![
+                "admin_probe".to_owned(),
+                "member_probe".to_owned(),
+                "moderator_probe".to_owned()
+            ],
+            "every authority registers and the palette names all three"
         );
         assert_eq!(
             registry.names().collect::<Vec<_>>(),
-            vec!["at_the_floor"],
-            "the refused registrations never reached the registry"
+            vec!["admin_probe", "member_probe", "moderator_probe"],
+            "the registry holds all three registrations"
         );
     }
 }

@@ -103,6 +103,7 @@ mod tests {
             role: None,
             block_type: TOOL_PALETTE_KIND.into(),
             created_at: String::new(),
+            dispatch_anchor: None,
             fields,
         }
     }

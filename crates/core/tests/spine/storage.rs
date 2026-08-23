@@ -21,6 +21,7 @@ fn chat_block(fields: serde_json::Map<String, serde_json::Value>) -> Block {
         role: Some(Role::User),
         block_type: CHAT_MESSAGE_KIND.into(),
         created_at: String::new(),
+        dispatch_anchor: None,
         fields,
     }
 }

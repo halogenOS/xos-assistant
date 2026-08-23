@@ -466,10 +466,11 @@ impl Assistant {
     /// block would be the tail instead, and mid-turn absorption keeps its
     /// own semantics for those — an addressed message absorbed mid-turn
     /// opens a fresh debt at its own authority, correct for answering (the
-    /// next turn pays it) and consulted by nothing else, since tool
-    /// registration floors required authority at member (decisions 0021 and
-    /// 0043, closed 2026-08-22). An owing tail hands over the authority its
-    /// debt carries, folded through the kind's pre-migration rule.
+    /// next turn pays it; decision 0021), while tool admission folds such
+    /// a co-summoner in by its stored sender authority under the
+    /// opened-debt predicate, not through this debt stamp (decision 0043).
+    /// An owing tail hands over the authority its debt carries, folded
+    /// through the kind's pre-migration rule.
     async fn owing_tail_debt(
         &self,
         conversation_id: i64,

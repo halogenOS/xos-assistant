@@ -61,6 +61,7 @@ fn chat_block(id: i64, text: Option<&str>) -> Block {
         role: Some(Role::User),
         block_type: CHAT_MESSAGE_KIND.into(),
         created_at: String::new(),
+        dispatch_anchor: None,
         fields,
     }
 }
@@ -74,6 +75,7 @@ fn answer_block(id: i64, text: &str) -> Block {
         role: Some(Role::Assistant),
         block_type: "text".into(),
         created_at: String::new(),
+        dispatch_anchor: None,
         fields,
     }
 }
@@ -87,6 +89,7 @@ fn prompt_block(id: i64) -> Block {
         role: Some(Role::System),
         block_type: "system_prompt".into(),
         created_at: String::new(),
+        dispatch_anchor: None,
         fields,
     }
 }
