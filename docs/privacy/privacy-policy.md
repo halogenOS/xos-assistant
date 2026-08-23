@@ -36,8 +36,8 @@ own community groups. You can object at any time, see below.
 
 **Message author**
 
-We store your username, your display name and the numeric account identifier your chat
-platform assigns you, in tables of their own so that a deletion request can remove them. We
+We store your username and the numeric account identifier your chat platform assigns
+you, in tables of their own so that a deletion request can remove them. We
 store beside each message the platform's send time and the time it reached us, which
 message it replied to, whether it was addressed to the assistant, whether you were an
 administrator then, and whether an answer was due or a limit refused one. We take the
@@ -59,9 +59,7 @@ We send the conversation to a language model through a processor, and each reque
 - what the assistant looked up, and its own earlier answers in that conversation
 
 We send the whole stored conversation every time, because an answer that cannot see the
-thread misreads it. We keep your display name and your account identifier here. We send a
-short piece of each new conversation once to a smaller model, which returns a few words
-naming it.
+thread misreads it. We keep your account identifier here.
 
 _Purpose and legal basis:_ as under Messages. The sending is how an answer gets written.
 
@@ -92,9 +90,9 @@ We store messages on a server in Germany. Data leaves the EU/EEA in three places
 - Our processor is a UK company, though it stores and serves in Frankfurt. The European
   Commission has decided the United Kingdom offers adequate protection, so no further
   safeguard is needed.
-- A model deployment outside the EEA receives the request there, as the smaller naming model
-  does today, under the standard contractual clauses in the processor agreement
-  (Article 46(2)(c) GDPR). Write to the address above for a copy.
+- A model deployment outside the EEA would receive the request there, under the standard
+  contractual clauses in the processor agreement (Article 46(2)(c) GDPR); the configured
+  model is served in the EU. Write to the address above for a copy.
 - Your chat platform is outside the EU/EEA and receives every message and answer as it
   delivers them, as its own controller.
 
