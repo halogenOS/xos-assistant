@@ -533,6 +533,10 @@ Any one of these triggers a review, and none of them is optional:
 - A complaint or an objection that this assessment did not anticipate.
 - New guidance from the German authorities or the EDPB on conversational AI, or a
   decision that changes the legitimate-interest analysis.
+- Any capability that touches a person's standing in the group — a real moderation
+  decision above the report relay — which also reopens the EU AI Act risk
+  classification (deployer of a minimal-risk conversational system today; noted
+  2026-08-23).
 - Twelve months since this date, with no other trigger.
 
 ## 12. Addendum, 2026-08-23: the report and the wiki fetch
