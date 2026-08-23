@@ -14,12 +14,6 @@ Germany
 
 Data protection enquiries: [privacy@halogenos.org](mailto:privacy@halogenos.org)
 
-A data protection officer is not appointed. The duty to appoint one applies where a
-processing operation must undergo a data protection impact assessment, and this one does
-not fall under that. We checked the question before answering it and wrote the assessment
-anyway, as a precaution, and the reasoning is on file. Data protection enquiries are
-answered at the address above.
-
 **What we process, why, and on what basis**
 
 **Messages**
