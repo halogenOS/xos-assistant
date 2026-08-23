@@ -31,3 +31,11 @@ the report tool files a block whose fixed line the outbound edge delivers as a
 threaded reply. The rule of this record is unchanged where it binds: a tool's
 FAILURE still speaks to the model alone, the report tool's refusals included, and
 the chat never receives a raw error.
+
+Amended 2026-08-23, second clause, with the privacy-self-service unit
+(decision 0075): a tool may also write the consumer's own identity-table
+fact when the write IS the honored right — the privacy tool's opt-out flag
+is that write, performed under the erasure fence held for reading. Lookups
+still write nothing, and the rule of this record stays where it binds: a
+tool's FAILURE still speaks to the model alone, the privacy tool's fixed
+declines included, and the chat never receives a raw error.

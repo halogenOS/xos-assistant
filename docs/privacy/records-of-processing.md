@@ -66,6 +66,7 @@ erasure path are written to that standard.
 | D6 | Special categories, incidentally | Free text can reveal health, belief, political opinion or sexual orientation in passing. Not sought, not detected, not used. Aligned 2026-08-23: the groups are readable by anyone on the platform without joining or approval, so content a person posts about themselves is covered by Article 9(2)(e), and what one member reveals about another is the residual the impact assessment carries under R2. | Inside D1 |
 | D7 | Report record (added 2026-08-23) | The reported message's platform identifier, the reported sender's internal identifier, and the fixed report command line. Written only when a member replies to a message and asks for a report. | Content table of the report block kind |
 | D8 | Reply reference (added 2026-08-23) | The platform identifier of the message a message replies to, kept for reply threading and the report's target. | Content table of the message block kind, beside D3 |
+| D9 | Suppression flag (added 2026-08-23) | One boolean on the identity row recording that the person opted out of collection on that platform. Purpose: honoring the objection going forward — from the moment it stands, the person's new messages are dropped at ingestion, and the flag survives the person's own deletion because forgetting who objected would silently resume collection. Set and cleared only by the person's own commands or their own plain-language ask through the privacy tool. | Identity table, on the person's row |
 
 Personal data is kept apart from the ledger by design: a block carries position, kind and
 links, and the personal columns live in tables referenced by key, so append-only storage
@@ -107,7 +108,7 @@ for any secondary purpose, and not used to train any model.
 | # | Data | Time limit |
 |---|---|---|
 | D1, D3 | Message content and circumstance | No scheduled expiry. Kept until erasure is requested, and erased on request. The reasoning is recorded in decision 0003 and assessed in the impact assessment. |
-| D2 | Identity | Deleted on erasure of the person. The username is refreshed from the platform on each later message and never accumulates a history; the display name is not stored at all (decision 0077). |
+| D2 | Identity | Deleted on erasure of the person. The username is refreshed from the platform on each later message and never accumulates a history; the display name is not stored at all (decision 0077). Qualified 2026-08-23: for a person whose suppression flag stands, the refresh stops with the flag, and erasure empties the row to the flag-bearing remnant described under D9 instead of deleting it — remembering the objection is what honoring it takes. |
 | D4 | Group facts | Kept while the group is served. A note is superseded when the group's rules are pinned anew. |
 | D5 | Derived state | Answering counters age out of their window by use. Conversation state follows the messages it derives from. A direct conversation is removed whole on erasure. |
 | Direct chats | Whole conversations with the assistant | Removed entirely on erasure, mappings included, because a two-party chat that lost its human still identifies the person (decisions 0011, 0012). |

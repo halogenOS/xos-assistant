@@ -34,6 +34,7 @@ pub mod palette;
 pub(crate) mod provenance;
 pub mod release;
 pub mod report;
+pub mod rights;
 pub mod wiki;
 
 use admission::AdmittedTool;

@@ -192,6 +192,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN reply_target;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN reply_to_assistant;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;
+                 ALTER TABLE principals DROP COLUMN opted_out;
                  DROP TABLE {palette};
                  DROP TABLE {note};
                  DROP TABLE {report};
@@ -242,7 +243,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        12,
+        13,
         "the appended steps advanced the domain's version"
     );
 

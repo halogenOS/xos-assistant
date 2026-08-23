@@ -3,10 +3,15 @@
 //! narrowing, the unit-5 no-write amendment, and the four privacy drafts'
 //! dated updates — joined by the username-projection unit's AC4 pins (the
 //! prompt's mention line, the DPIA's dated note and the three decision
-//! records that close 0056's implementation debt) and the minimization
+//! records that close 0056's implementation debt), the minimization
 //! pins of decision 0077 (the record, the shrunken policy sections and the
-//! four documents' dated notes). Each pin reads the committed file the way
-//! the repository ships it, so a drifted edit fails loudly here.
+//! four documents' dated notes), and the privacy-self-service unit's AC6
+//! pins: the prompt's tool teaching with its verbatim relay, the six
+//! decision records, the erasure decision's idempotency refinement, the
+//! no-write amendment's second clause, every fixed line verbatim, and the
+//! four policy edits with the two assessment notes. Each pin reads the
+//! committed file the way the repository ships it, so a drifted edit fails
+//! loudly here.
 
 use std::path::Path;
 
@@ -237,6 +242,214 @@ fn the_minimization_decision_ships_its_record_and_dated_doc_updates() {
     assert!(
         !flattened(&lia).contains("All three live"),
         "the necessity paragraph counts two stored identity fields, not three"
+    );
+}
+
+// ─── The privacy-self-service unit's pins (AC6, 2026-08-23) ──────────────
+
+#[test]
+fn the_prompt_teaches_the_privacy_tool_and_the_verbatim_relay() {
+    let prompt = flattened(&repo_file("prompts/assistant.md"));
+    assert!(
+        prompt.contains("use the privacy_request tool with action opt_out"),
+        "the prompt names the tool and the opt-out action"
+    );
+    assert!(
+        prompt.contains("use it with action request_deletion"),
+        "the prompt names the deletion action"
+    );
+    assert!(
+        prompt.contains("Relay the quoted text in the tool's result to the person verbatim"),
+        "the prompt orders the verbatim relay"
+    );
+    assert!(
+        prompt.contains("tell the person to send /privacyout or /privacydelete themselves"),
+        "the prompt routes an ambiguity decline to the commands"
+    );
+    assert!(
+        prompt.contains(
+            "The commands /privacyout, /privacydelete, /confirmdelete and /unblockprivacy \
+             always work directly"
+        ),
+        "the prompt names the four commands as the direct path"
+    );
+    assert!(
+        prompt.contains("you never perform a privacy change by just saying you did"),
+        "the prompt forbids a claimed change without the tool"
+    );
+}
+
+#[test]
+fn the_units_decisions_are_recorded_with_dates_and_rejected_alternatives() {
+    for record in [
+        "docs/decisions/0071-opt-out-is-a-suppression-stub.md",
+        "docs/decisions/0072-the-privacy-command-family-is-exempt-from-suppression.md",
+        "docs/decisions/0073-deletion-confirms-programmatically-and-runs-outside-the-fence.md",
+        "docs/decisions/0074-erasure-keeps-the-stub-when-the-flag-stands.md",
+        "docs/decisions/0075-plain-language-reaches-the-rights-through-one-tool.md",
+        "docs/decisions/0076-the-rights-replies-are-bounded-per-person.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-23"),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+}
+
+#[test]
+fn the_erasure_idempotency_refinement_and_the_second_clauses_are_recorded() {
+    let erasure = repo_file("docs/decisions/0012-erasure-reaches-the-prose.md");
+    assert!(
+        erasure.contains("Refined 2026-08-23, with the privacy-self-service unit"),
+        "the erasure decision's refinement is dated"
+    );
+    assert!(
+        flattened(&erasure)
+            .contains("re-runs over emptiness and reports completion rather than not-found"),
+        "the refinement states the changed idempotency"
+    );
+
+    let amended = repo_file("docs/decisions/0044-tool-failures-speak-to-the-model-not-the-chat.md");
+    assert!(
+        amended.contains("Amended 2026-08-23, second clause"),
+        "the 0044 amendment's second clause is dated"
+    );
+    assert!(
+        flattened(&amended).contains(
+            "a tool may also write the consumer's own identity-table fact when the write \
+             IS the honored right"
+        ),
+        "the second clause states the identity-write allowance"
+    );
+
+    let unit = repo_file("docs/units/05-tools.md");
+    assert!(
+        unit.contains("Amended 2026-08-23, second clause (unit 11, decision 0075)"),
+        "the unit-5 no-write amendment carries its second clause"
+    );
+}
+
+#[test]
+fn the_fixed_lines_match_the_spec_copy_verbatim() {
+    use assistant_core::privacy;
+    use assistant_core::tools::rights as privacy_tool;
+
+    assert_eq!(
+        privacy::OPT_OUT_DONE,
+        "Understood. From now on your messages here are not collected and not answered on \
+         this platform. What was stored before stays until you ask for deletion with \
+         /privacydelete. Undo with /unblockprivacy."
+    );
+    assert_eq!(
+        privacy::OPT_OUT_ALREADY,
+        "You are already opted out. Undo with /unblockprivacy, or delete stored data with \
+         /privacydelete."
+    );
+    assert_eq!(
+        privacy::OPT_IN_DONE,
+        "Collection is on again for you. Nothing that was deleted comes back."
+    );
+    assert_eq!(
+        privacy::OPT_IN_ALREADY,
+        "You were not opted out. Nothing changed."
+    );
+    assert_eq!(
+        privacy::CONFIRM_INSTRUCTION,
+        "To delete your stored data, reply /confirmdelete within five minutes. This \
+         removes your messages and identity data and cannot be undone."
+    );
+    assert_eq!(
+        privacy::DELETION_STARTED,
+        "Deletion is underway. Your messages and identity data are being removed."
+    );
+    assert_eq!(
+        privacy::NOTHING_PENDING,
+        "There is no deletion waiting for confirmation. Start one with /privacydelete."
+    );
+    assert_eq!(
+        privacy_tool::AMBIGUOUS_RESULT,
+        "Several people spoke in this turn, so the request is not acted on. The person \
+         concerned should send /privacyout or /privacydelete themselves."
+    );
+    assert_eq!(
+        privacy_tool::INVALID_ACTION_RESULT,
+        "The privacy tool accepts opt_out or request_deletion. Nothing was changed. Do \
+         not retry with other words."
+    );
+    assert_eq!(
+        privacy_tool::TRANSIENT_RESULT,
+        "The change did not take effect. Nothing was recorded. The person can use \
+         /privacyout or /privacydelete directly."
+    );
+}
+
+#[test]
+fn the_policy_edits_and_the_two_assessment_notes_ship() {
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains("You can also delete and object in the group."),
+        "the rights section carries the in-chat sentence"
+    );
+    assert!(
+        policy.contains(
+            "`/privacydelete`, confirmed with `/confirmdelete` within five minutes, \
+             removes your stored data"
+        ),
+        "the deletion command carries its confirmation window"
+    );
+    assert!(
+        policy.contains(
+            "the commands are the one place a machine acts, and only on your own \
+             confirmed instruction"
+        ),
+        "the automated-decision sentence carries its carve-out"
+    );
+    assert!(
+        policy.contains(
+            "In practice we weigh nothing: `/privacyout` stops collection from that \
+             moment"
+        ),
+        "the objection sentence records the in-place honoring"
+    );
+    assert!(
+        policy.contains("we keep your account identifier with the opt-out mark on purpose"),
+        "the deletion section names the surviving stub"
+    );
+    assert!(
+        policy.contains("forgetting it would mean collecting your messages again"),
+        "the stub is named as what remembering the objection costs"
+    );
+    assert!(
+        policy.contains("Opt back in and ask for deletion once more, and that mark goes too."),
+        "the stub's own exit is stated"
+    );
+
+    let records = flattened(&repo_file("docs/privacy/records-of-processing.md"));
+    assert!(
+        records.contains("Suppression flag (added 2026-08-23)"),
+        "the record of processing gains the suppression flag as a data item"
+    );
+    assert!(
+        records.contains("honoring the objection going forward"),
+        "the flag's row states its purpose"
+    );
+
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    assert!(
+        dpia.contains(
+            "Added 2026-08-23, with the privacy-self-service unit: an objection to \
+             collection going forward is now honored by machine, in place"
+        ),
+        "the impact assessment records the honored-by-machine path"
+    );
+    assert!(
+        dpia.contains("This is a safeguard, not an Article 22 decision"),
+        "the path is recorded as the safeguard it is"
     );
 }
 

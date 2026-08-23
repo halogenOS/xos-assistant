@@ -122,7 +122,8 @@ beyond our reach. We do not reach lookup records, the pinned rules text, or the
 copy of your message's identifier on somebody else's reply where it matches nothing of
 yours, and a query or a rules text can quote your words or name you. If you opted out, we
 keep your account identifier with the opt-out mark on purpose, because forgetting it would
-mean collecting your messages again.
+mean collecting your messages again. Opt back in and ask for deletion once more, and that
+mark goes too.
 
 **Your rights**
 
@@ -132,8 +133,8 @@ covers data processed on consent or for a contract, and everything here rests on
 interest.
 
 You can also delete and object in the group. `/privacyout` stops us collecting and answering
-your messages from that moment; `/privacydelete`, confirmed with `/confirmdelete`, removes
-your stored data; `/unblockprivacy` turns collection back on. They act on the sending
+your messages from that moment; `/privacydelete`, confirmed with `/confirmdelete` within
+five minutes, removes your stored data; `/unblockprivacy` turns collection back on. They act on the sending
 account immediately, by machine, because you asked and confirmed. Plain words work too: tell
 the assistant to stop collecting or to delete, and it honors that the same way.
 

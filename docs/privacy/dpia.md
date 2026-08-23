@@ -349,6 +349,16 @@ by mail. Objections and their handling are recorded and feed the review triggers
 section 10. No formal survey is planned; a community group that dislikes the assistant
 says so loudly and immediately, and that signal is treated as the consultation.
 
+Added 2026-08-23, with the privacy-self-service unit: an objection to collection going
+forward is now honored by machine, in place, the moment it is made — `/privacyout` (or
+the person's plain-language ask, read by the model and enforced by the system) raises a
+suppression flag that drops the person's new messages at ingestion before anything is
+written, and deletion is commanded and confirmed by the person in the chat and then runs
+by machine. This is a safeguard, not an Article 22 decision: the machine executes the
+person's own decision and takes none of its own, the flag survives the person's deletion
+so the objection cannot be forgotten, and the mailed path with its human answer remains
+open beside it.
+
 ## 6. Risks to the people concerned
 
 | # | Risk | Severity before mitigation | Likelihood |
@@ -393,7 +403,8 @@ the terms of the chosen model; no profile is built from any of it; erasure on re
 reaches everything of the requesting person's own by mechanism, within the month and in
 practice within days; a request about somebody else's message is answered by a person on
 the same rights; and an objection is honored the same way today and by machine once the
-self-service unit ships. The residual is minimised, not resolved, and it is named as such.
+self-service unit ships (which it did on 2026-08-23; section 5 records the shipped
+path). The residual is minimised, not resolved, and it is named as such.
 
 **R3, provider exposure.** The mitigation is contractual and territorial, not technical: an
 Article 28 agreement with standard contractual clauses, the European entry point, storage

@@ -330,6 +330,23 @@ static SPEAKER_MIGRATION: LazyLock<String> = LazyLock::new(|| {
 /// upgraded one. No frozen vocabulary list: the step quotes no enum.
 const DISPLAY_NAME_DROP_MIGRATION: &str = "ALTER TABLE principals DROP COLUMN display_name;";
 
+/// The suppression flag — the appended migration step of the privacy-self-
+/// service unit, per decision 0026's discipline. One boolean column on the
+/// identity table, `INTEGER NOT NULL DEFAULT 0` so every pre-existing row
+/// reads unflagged: whether the person opted out of collection on this
+/// adapter, the one lawful remnant an erasure leaves standing (decision
+/// 0071). The flag is the suppression mechanism's whole storage — from the
+/// moment it stands, the person's inbound messages are dropped at
+/// ingestion. No frozen vocabulary list: the step closes a boolean, not an
+/// enum — the reply-target step's own precedent.
+static SUPPRESSION_FLAG_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "ALTER TABLE principals
+             ADD COLUMN {flag} INTEGER NOT NULL DEFAULT 0;",
+        flag = crate::identity::COLUMN_OPTED_OUT,
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -352,6 +369,7 @@ pub fn store_config() -> StoreConfig {
                 REPORT_MIGRATION.as_str(),
                 SPEAKER_MIGRATION.as_str(),
                 DISPLAY_NAME_DROP_MIGRATION,
+                SUPPRESSION_FLAG_MIGRATION.as_str(),
             ],
         }],
     }

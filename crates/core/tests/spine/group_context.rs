@@ -330,8 +330,10 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
         // time. It is created through the current entry points, then the
         // unit's additions are dropped, the display-name column the later
         // retirement step drops is restored (a version-five principals
-        // table still carried it), the message table is rebuilt to the
-        // explicit version-five DDL, and the version rewound — leaving
+        // table still carried it), the suppression flag the later
+        // privacy-self-service step adds is dropped, the message table is
+        // rebuilt to the explicit version-five DDL, and the version
+        // rewound — leaving
         // exactly what the previous unit's binary wrote.
         authorize(&fixture.assistant, &key).await;
         support::ingest_recorded(
@@ -350,6 +352,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
                  DROP TABLE group_authorizations;
                  DROP TABLE {report};
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
+                 ALTER TABLE principals DROP COLUMN opted_out;
                  {V5_CHAT_MESSAGE_DDL}",
                 note = assistant_core::note::CONTEXT_NOTE_TABLE,
                 report = assistant_core::tools::report::REPORT_TABLE,
@@ -381,7 +384,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             .expect("the version-five store reopens under the shipped configuration");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            12,
+            13,
             "the appended steps advanced the domain's version"
         );
         let fixture = support::start_assistant_on(store.clone(), None).await;

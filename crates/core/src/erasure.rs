@@ -27,10 +27,17 @@
 //!    collected afterwards. The affected conversations are found by reading
 //!    the ledger through the public load path, bounded by the number of
 //!    direct channels.
-//! 3. The principal's identity rows are deleted, last on purpose: as long as
-//!    they exist, a retried erasure still finds the principal and runs the
-//!    earlier steps again instead of reporting not-found over remaining
-//!    data.
+//! 3. The principal's identity rows are concluded, last on purpose: as long
+//!    as they exist, a retried erasure still finds the principal and runs
+//!    the earlier steps again instead of reporting not-found over remaining
+//!    data. The conclusion carries one conditional (2026-08-23, the
+//!    privacy-self-service unit): a row whose suppression flag stands is
+//!    EMPTIED instead of deleted — the username gone, the flag surviving
+//!    its own person's deletion, so collection stays stopped — while an
+//!    unflagged row is deleted whole as before. With the stub surviving,
+//!    the documented idempotency refines (recorded on decision 0012): for a
+//!    flagged person a repeat erasure re-runs over emptiness and reports
+//!    completion rather than not-found — honest, harmless, stated.
 //!
 //! The operation is split into [`plan`] and [`execute`] on purpose: the
 //! plan decides not-found and names the direct conversations, and the caller
@@ -53,8 +60,9 @@ use crate::message::ChannelKind;
 pub enum ErasureOutcome {
     /// The principal existed; its personal columns are nulled, its direct
     /// conversations and their mappings are removed, its identity rows are
-    /// deleted. Carries the removed conversation ids so the caller can drop
-    /// its own per-conversation state for them.
+    /// concluded — deleted, or emptied to the suppression stub when the
+    /// opt-out flag stands (2026-08-23). Carries the removed conversation
+    /// ids so the caller can drop its own per-conversation state for them.
     Erased {
         /// The direct conversations that were removed entirely.
         deleted_conversations: Vec<i64>,
@@ -83,8 +91,10 @@ impl ErasurePlan {
 
 /// Decide one erasure per decision 0012: `None` when no identity row matches
 /// the principal id — erasing is keyed on identity, and a second call after
-/// a completed erasure reports the same — otherwise the plan [`execute`]
-/// runs. Reads only; nothing is touched.
+/// an unflagged person's completed erasure reports the same, while a
+/// flagged person's surviving stub keeps matching, so their repeat re-runs
+/// and reports completion (the idempotency refinement of 2026-08-23) —
+/// otherwise the plan [`execute`] runs. Reads only; nothing is touched.
 ///
 /// # Errors
 ///
@@ -143,7 +153,7 @@ pub(crate) async fn execute(
     }
     store.gc_orphan_blocks().await?;
 
-    identity::delete(&tx, plan.principal_id).await?;
+    identity::conclude_erasure(&tx, plan.principal_id).await?;
     Ok(ErasureOutcome::Erased {
         deleted_conversations: plan.direct_conversations,
     })

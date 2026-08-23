@@ -607,9 +607,12 @@ async fn a_direct_conversation_ask_is_refused() {
 /// The report window (AC5): the second ask inside the window is declined
 /// with the no-retry result and files nothing. The window's REOPENING is
 /// pinned under paused time on the injected primitive itself, in the
-/// window module beside its clock — a paused full assembly is unsound,
-/// because the store's actor is an external thread and the paused clock
-/// auto-advances past every deadline while a task awaits it.
+/// window module beside its clock — not because a paused full assembly
+/// cannot run (the confirm window's spine pin runs one), but because the
+/// store's actor is an external thread: the paused clock auto-advances
+/// while a store roundtrip is in flight, so a window measured through
+/// the full assembly could expire mid-operation and the reopening pin
+/// would be racing its own clock.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_ask_inside_the_window_is_declined() {
     let (provider, handle) = repeating_report_provider();
@@ -1374,12 +1377,14 @@ fn fresh_handle() -> ScriptHandle {
 }
 
 /// The full registered set of a reporting deployment, sorted as the
-/// palette records it: the three production lookups plus the report tool.
+/// palette records it: the three production lookups, the always-registered
+/// privacy tool, and the report tool.
 fn reporting_palette() -> Vec<String> {
     vec![
         "lookup_commit".into(),
         "lookup_release".into(),
         "lookup_wiki".into(),
+        assistant_core::tools::rights::NAME.into(),
         report::NAME.into(),
     ]
 }
@@ -1570,9 +1575,10 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
             vec![
                 "lookup_commit".to_owned(),
                 "lookup_release".to_owned(),
-                "lookup_wiki".to_owned()
+                "lookup_wiki".to_owned(),
+                assistant_core::tools::rights::NAME.to_owned()
             ],
-            "the report tool is removed; the wiki tool stands with the lookups"
+            "the report tool is removed; the lookups and the privacy tool stand"
         );
 
         let fresh = support::ingest_recorded(

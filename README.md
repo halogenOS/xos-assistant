@@ -141,6 +141,18 @@ deterministically, without a model turn: with `Privacy policy: ` plus the config
 absent — an empty value is refused at start. The answer goes out at most once per
 chat per window; repeats within it are recorded in silence.
 
+Privacy self-service is built in (decisions 0071–0076): `/privacyout` stops the
+sender's messages from being collected or answered on that platform — from then on
+their inbound messages are dropped at ingestion before any write — and
+`/unblockprivacy` turns collection back on; `/privacydelete` answers a confirm
+instruction and `/confirmdelete` within five minutes runs the erasure, asked and
+confirmed in any chat because the pending state is keyed by the person. An
+opted-out person's identity row survives as an emptied stub carrying the flag, so
+the objection is never forgotten, and the deterministic replies are bounded per
+person — never silenced by the answering budgets. A plain-language ask reaches the
+same mechanisms through the privacy tool, which acts only on the one person who
+asked and otherwise points at the commands.
+
 Direct chats are served by default and can be switched off with `direct_chats =
 "off"`: a direct message is then refused before anything is written — no identity
 row, no conversation, no answer, the `/privacy` command included — while groups are

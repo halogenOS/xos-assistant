@@ -76,3 +76,14 @@ loudly past the bound deleting nothing; pinned by the erasure-versus-stream test
 - **Leaving the text and recording the gap as open work.** That was the state this
   record replaces; a data-protection promise with its central case missing is not a
   smaller version of the promise.
+
+---
+
+Refined 2026-08-23, with the privacy-self-service unit (decision 0074): the
+third step is now a conclusion, not always a deletion — an identity row
+whose opt-out flag stands is emptied to the suppression stub instead of
+deleted, so the flag survives its own person's deletion. The documented
+idempotency refines with it: for a flagged person a repeat erasure re-runs
+over emptiness and reports completion rather than not-found — honest,
+harmless, stated. For an unflagged person the not-found reporting above is
+unchanged.
