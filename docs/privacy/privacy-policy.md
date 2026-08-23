@@ -6,10 +6,10 @@ directly. It is provided pursuant to Articles 13 and 14 GDPR.
 
 **Controller**
 
-Simão Gomes Viana
-c/o IP-Management #10911
-Ludwig-Erhard-Str. 18
-20459 Hamburg
+Simão Gomes Viana\
+c/o IP-Management #10911\
+Ludwig-Erhard-Str. 18\
+20459 Hamburg\
 Germany
 
 Data protection enquiries: [privacy@halogenos.org](mailto:privacy@halogenos.org)
@@ -64,22 +64,6 @@ Nothing else about you is attached, and nothing is sent that the group did not a
 
 _Purpose:_ producing an answer that fits the conversation and can address people by name.
 _Legal basis:_ Article 6(1)(f) GDPR.
-
-**Answer limits**
-
-The assistant counts how many messages it has answered for one person and in one chat
-inside a time window, and stops answering past that. The counts are technical and expire
-with their window. They limit answering only. They never limit what is stored, and they
-have no other consequence for anybody.
-
-_Purpose:_ keeping the assistant available to everyone and its running costs bounded.
-_Legal basis:_ Article 6(1)(f) GDPR.
-
-**Project lookups**
-
-A question about a commit or a release makes the assistant query the halogenOS forge or the
-public interface of the builds repository. Such a query carries a repository name and a
-commit reference or a release tag. It carries nothing about you.
 
 **What we do not do**
 
@@ -148,8 +132,8 @@ You may lodge a complaint with a supervisory authority, in particular in the Mem
 of your habitual residence, place of work, or the place of the alleged infringement. The
 authority competent for this controller is:
 
-Bayerisches Landesamt für Datenschutzaufsicht (BayLDA)
-Promenade 18, 91522 Ansbach
+Bayerisches Landesamt für Datenschutzaufsicht (BayLDA)\
+Promenade 18, 91522 Ansbach\
 [https://www.lda.bayern.de](https://www.lda.bayern.de)
 
 **Changes**
