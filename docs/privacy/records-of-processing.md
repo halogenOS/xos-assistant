@@ -63,6 +63,8 @@ erasure path are written to that standard.
 | D4 | Group facts | Channel title, pinned rules text, stored as context notes | Note table |
 | D5 | Derived state | Conversation membership and order, answering counters, tool palette, group authorization | Ledger and its side tables |
 | D6 | Special categories, incidentally | Free text can reveal health, belief, political opinion or sexual orientation in passing. Not sought, not detected, not used. | Inside D1 |
+| D7 | Report record (added 2026-08-23) | The reported message's platform identifier, the reported sender's internal identifier, and the fixed report command line. Written only when a member replies to a message and asks for a report. | Content table of the report block kind |
+| D8 | Reply reference (added 2026-08-23) | The platform identifier of the message a message replies to, kept for reply threading and the report's target. | Content table of the message block kind, beside D3 |
 
 Personal data is kept apart from the ledger by design: a block carries position, kind and
 links, and the personal columns live in tables referenced by key, so append-only storage
@@ -79,9 +81,15 @@ the platform hides the real author (decision 0016).
 | R2 | Google, as the model provider inside the processor chain | Sub-processor of R1 | The same request, served by Gemini on Google Vertex AI, pinned to European serving through the configured model name. |
 | R3 | Public project sources | Not a recipient of personal data | A commit lookup queries the halogenOS forge and a release lookup queries the builds repository's public interface. A query carries a repository name and a reference or tag. |
 | R4 | The chat platform | Independent controller of its own delivery and storage, not a processor of the controller | Its own handling of the same messages, under its own policy, unchanged by the assistant. |
+| R5 | The group's administrators, via the group's moderation bot (added 2026-08-23) | Recipients of the report event inside the group they already administer | When a member replies to a message and asks for a report, the assistant sends the fixed report command as a reply to that message; the moderation bot forwards the event to the group's administrators. The event carries the reported message's identifier — a message the administrators already see in their own group — and no data from the assistant's store. |
 
 Nobody else receives the data. It is not sold, not shared with advertisers, not analysed
 for any secondary purpose, and not used to train any model.
+
+> Amended 2026-08-23: R3 gains the project wiki's public pages beside the forge and
+> the builds repository — a wiki query carries a page name and nothing about any
+> person — and R5 records the report event. The impact assessment's addendum of the
+> same date assesses both.
 
 ## 7. Third-country transfers
 
@@ -100,6 +108,7 @@ for any secondary purpose, and not used to train any model.
 | D4 | Group facts | Kept while the group is served. A note is superseded when the group's rules are pinned anew. |
 | D5 | Derived state | Answering counters age out of their window by use. Conversation state follows the messages it derives from. A direct conversation is removed whole on erasure. |
 | Direct chats | Whole conversations with the assistant | Removed entirely on erasure, mappings included, because a two-party chat that lost its human still identifies the person (decisions 0011, 0012). |
+| D7, D8 | Report record and reply reference (added 2026-08-23) | The reported person's erasure empties the report record's message reference, and an emptied report is never sent. The reply reference is emptied from both ends: a person's own messages lose it with the rest of their row, and every other person's message replying to one of the erased person's messages loses its stored copy of that message's identifier too (decision 0063 and its refinement of 2026-08-23). Qualified 2026-08-23: a reply recorded between a failed erasure attempt and its retry keeps its stored copy — the retry can no longer match it once the person's own message references are emptied. The copy links to no recorded person; a reach key independent of those references is the decided follow-up, recorded in decision 0063's second refinement. Widened 2026-08-23: the same stored copy also stays on a reply recorded after the person's erasure completed, and on a reply to a message the assistant never recorded — the retry window is one way the match is lost, not the boundary. Every such copy links to no recorded person, and the reach key above is the decided follow-up for all of them, recorded in decision 0063's later refinement. |
 
 **Erasure on request** is one operation with three steps: the person's message text, send
 time and reply reference are emptied in every conversation, their direct conversations are
@@ -136,7 +145,7 @@ A general description under Article 30(1)(g), mapped to the mechanisms that ship
 | Availability and abuse | Two answering counters, per person across all chats and per chat, limit answering and never storage. An over-limit message draws silence, so a flooder cannot borrow the assistant's voice (decisions 0030, 0034). |
 | Boundary discipline in the tools | The lookup palette is recorded per conversation and admission fails closed; tool authority is floored at member level; lookup failures are reported to the model and never to the chat (decisions 0041, 0044). |
 | Bounded input into the system voice | Byte bounds on both surfaces the group controls, the rules text and the title, with over-bound text refused whole instead of truncated (decisions 0048, 0049). |
-| No decisions about people | No moderation capability ships. The warn, report and ban lines are held out of the system prompt until their mechanisms exist (decision 0046). No automated decision with legal or similarly significant effect is taken. |
+| No decisions about people | No decision capability ships. A member can ask the assistant to relay a report to the group's moderation bot; the assistant detects nothing, files nothing on its own, and the group's human administrators judge the report (added 2026-08-23; the warn and ban lines stay held out of the system prompt, decision 0046). No automated decision with legal or similarly significant effect is taken. |
 | Transparency | The group's pinned rules announce the assistant and point at the policy, and the privacy command answers deterministically, without a model turn, at most once per chat per window (decision 0053). |
 | Erasure | The operation described in section 8, with its two recorded gaps. |
 | Storage protection at rest | Deployment configuration. Open, see section 10. |

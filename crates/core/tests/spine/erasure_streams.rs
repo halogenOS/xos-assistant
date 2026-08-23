@@ -187,6 +187,7 @@ async fn a_stream_that_never_settles_fails_the_erasure_loudly_deleting_nothing()
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await
@@ -285,6 +286,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
                 protection: assistant_core::ProtectionConfig::default(),
                 operators: support::operator_config(),
                 privacy_policy_address: None,
+                moderation_handle: None,
             },
         )
         .await
@@ -318,6 +320,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await

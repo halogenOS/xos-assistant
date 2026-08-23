@@ -17,12 +17,17 @@ mention, a reply to the assistant), a failed turn tells the chat once, and the
 Flood protection is in: two configurable answering budgets — per sender and per chat —
 limit what the assistant answers, never what it records, and every message carries the
 authority of the debt it opens or propagates (decisions 0029–0036). The tools are in:
-two project lookups — a commit lookup against the project's canonical forge, a release
-lookup against the builds repository on the mirror — behind a per-conversation tool
-palette that fails closed; tool authority is enforced structurally, with registration
-refusing any tool that requires more than member authority until the framework records
-the turn's summoning frontier onto tool calls (decisions 0037–0045). Spam detection
-and reporting arrive with the next unit.
+three project lookups — a commit lookup against the project's canonical forge, a
+release lookup against the builds repository on the mirror, and a wiki lookup reading
+the project wiki's raw pages — behind a per-conversation tool palette that fails
+closed and supersedes itself when the registered set changes, with tool authority
+enforced by the anchor gate over the turn's provenance (decisions 0037–0046). Group
+context is in: the group's title and pinned rules reach the model as context notes,
+group membership is authorized fail-closed by the operator's own invitation, and the
+`/privacy` command answers deterministically (decisions 0047–0055). The report is in:
+a member who replies to an offending message and asks makes the assistant file a spam
+report with the group's moderation bot, delivered as a threaded reply to the reported
+message (decisions 0058–0063).
 
 ## The framework checkout
 
@@ -57,6 +62,11 @@ file path per secret — and never appear in the file itself:
     # command answers a fixed not-yet-published line instead.
     #privacy_policy = "https://example.org/privacy"
 
+    # Optional: the moderation bot's handle the report tool files toward,
+    # with or without the leading @. Absent, the report tool is not
+    # registered and the assistant cannot file reports.
+    #moderation_handle = "moderation_bot"
+
     [secrets.bot_token]
     env = "ASSISTANT_BOT_TOKEN"
 
@@ -81,18 +91,29 @@ file path per secret — and never appear in the file itself:
     [operators]
     telegram = "<the operator's numeric Telegram user id>"
 
-The `[endpoints]` table can override any of the four hosts the process talks to —
+The `[endpoints]` table can override any of the five hosts the process talks to —
 `telegram`, `openrouter`, `forge` (the commit lookup's canonical forge, default
-`https://git.halogenos.org`) and `mirror` (the release lookup's API host, default
-`https://api.github.com`); omitted entries keep the real hosts, and the overrides
-exist for the test suites' loopback servers.
+`https://git.halogenos.org`), `mirror` (the release lookup's API host, default
+`https://api.github.com`) and `wiki` (the wiki lookup's raw host, default
+`https://raw.githubusercontent.com`); omitted entries keep the real hosts, and the
+overrides exist for the test suites' loopback servers.
 
-The two lookup tools answer community questions from the project's own sources: a
-commit by repository and reference from the canonical forge, and a release — the
-latest, or one by tag — from the builds repository. Every conversation records a
-tool palette at creation naming exactly the registered tools; a conversation
-without a palette admits none, and a call outside the palette is declined with a
-recorded error the model reads.
+The three lookup tools answer community questions from the project's own sources: a
+commit by repository and reference from the canonical forge, a release — the
+latest, or one by tag — from the builds repository, and a wiki page by its name
+from the project wiki's raw pages, with a five-minute response cache mirroring the
+raw host's own cache header. Every conversation records a tool palette at creation
+naming exactly the registered tools, and appends a superseding palette when the
+registered set changes; a conversation without a palette admits none, and a call
+outside the palette is declined with a recorded error the model reads.
+
+The report tool files a spam report with the group's moderation bot when a member
+replies to an offending message and asks: the fixed `/report@<handle>` line goes
+out as a threaded reply to the reported message, before the assistant's answer, at
+most once per group per report window. It registers only when `moderation_handle`
+is configured, works in groups only, and takes no arguments — the member's reply
+is what names the reported message. The platform-side setup it needs is recorded
+in the group operator's reference document.
 
 The protection table sets the two answering budgets: how many messages one sender is
 answered per window (counted across every chat, direct and group alike) and how many

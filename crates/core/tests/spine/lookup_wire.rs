@@ -33,6 +33,9 @@ impl RecordedLookup {
 pub enum LookupAnswer {
     /// A JSON body under the given status.
     Json(u16, Value),
+    /// A plain-text body under the given status — the raw wiki host's
+    /// shape.
+    Text(u16, String),
     /// Sleep first, then answer 200 with an empty object — long enough past
     /// a short constructed client bound to be a timeout there.
     Stall(Duration),
@@ -125,18 +128,21 @@ async fn serve(
         .expect("the request log locks")
         .push(RecordedLookup { path, headers });
 
-    let (status, location, body) = match script {
-        LookupAnswer::Json(status, body) => (status, None, body.to_string()),
+    let (status, location, content_type, body) = match script {
+        LookupAnswer::Json(status, body) => (status, None, "application/json", body.to_string()),
+        LookupAnswer::Text(status, body) => (status, None, "text/plain; charset=utf-8", body),
         LookupAnswer::Stall(wait) => {
             tokio::time::sleep(wait).await;
-            (200, None, "{}".to_owned())
+            (200, None, "application/json", "{}".to_owned())
         }
-        LookupAnswer::Redirect(location) => (302, Some(location), "{}".to_owned()),
+        LookupAnswer::Redirect(location) => {
+            (302, Some(location), "application/json", "{}".to_owned())
+        }
     };
     let location_header =
         location.map_or_else(String::new, |location| format!("Location: {location}\r\n"));
     let response = format!(
-        "HTTP/1.1 {status} Scripted\r\nContent-Type: application/json\r\n\
+        "HTTP/1.1 {status} Scripted\r\nContent-Type: {content_type}\r\n\
          {location_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );

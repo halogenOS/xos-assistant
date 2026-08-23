@@ -86,10 +86,13 @@ through Requesty Inc., which routes it. Concretely:
 
 Two more recipients, both narrow:
 
-- **Public project sources.** A question about a commit or a release makes the assistant
-  query the halogenOS forge or the builds repository's public interface. Such a query
-  carries a repository name and a commit reference or a release tag. It carries nothing
-  about you.
+- **Public project sources.** A question about a commit, a release or the wiki makes the
+  assistant query the halogenOS forge, the builds repository's public interface or the
+  project wiki's public pages. Such a query carries a repository name and a commit
+  reference, a release tag, or a wiki page name. It carries nothing about you.
+
+  > Amended 2026-08-23: the wiki joined the public project sources — a wiki query
+  > carries a page name and nothing else.
 - **The chat platform.** Telegram is not ours and is not acting for us. It handles your
   messages under its own privacy policy, as its own responsible party, exactly as it did
   before the assistant arrived. The other people in the group see your messages the same
@@ -160,8 +163,18 @@ When it exists, deletion covers them, and this section disappears.
 
 The assistant makes none. It writes answers. It does not decide anything about you with
 legal effect or similar weight. Its answer counters limit how much it replies, never what
-it stores, and they change nobody's standing in the group. The assistant takes no
-moderation action.
+it stores, and they change nobody's standing in the group. The one moderation step it
+performs is started and decided by a person, never by the assistant: when a member
+replies to a message and asks for a report, the assistant forwards that ask to the
+group's moderation bot as a report command, and the group's human administrators decide
+what happens. The assistant judges nothing about the reported message, and it stores the
+reported message's identifier with the report so that a deletion request from the
+reported person also empties the report's reference to them.
+
+> Amended 2026-08-23: this section previously said the assistant takes no moderation
+> action. With the report feature it relays a member's report to the group's moderation
+> bot — visible to the group's administrators — and the paragraph above states exactly
+> what that does and does not decide.
 
 Its answers are written by a language model and can be wrong. Treat them as a helpful
 member's answer, not as an official statement of the project.

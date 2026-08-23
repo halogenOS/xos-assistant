@@ -346,8 +346,10 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             conn.execute_batch(&format!(
                 "DROP TABLE {note};
                  DROP TABLE group_authorizations;
+                 DROP TABLE {report};
                  {V5_CHAT_MESSAGE_DDL}",
                 note = assistant_core::note::CONTEXT_NOTE_TABLE,
+                report = assistant_core::tools::report::REPORT_TABLE,
             ))?;
             // Non-vacuity: the rebuilt table really is the two-kind
             // version-five shape — the command stamp the widening step
@@ -376,7 +378,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             .expect("the version-five store reopens under the shipped configuration");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            8,
+            10,
             "the appended steps advanced the domain's version"
         );
         let fixture = support::start_assistant_on(store.clone(), None).await;
@@ -651,6 +653,7 @@ async fn a_note_over_an_unanswered_message_leaves_the_turn_owed() {
                 1,
                 Authority::Member,
                 None,
+                None,
                 "2026-08-23T00:00:00+00:00",
                 assistant_core::kind::Stamp {
                     addressed: true,
@@ -719,6 +722,7 @@ async fn debt_propagation_reads_through_a_note_at_the_stamp() {
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await
@@ -942,6 +946,7 @@ async fn a_pending_tail_debt_is_preserved_past_the_privacy_command() {
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await
@@ -1349,6 +1354,7 @@ async fn a_failed_turns_closure_marker_does_not_widen_debt_propagation() {
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await
@@ -1423,6 +1429,7 @@ async fn a_note_over_a_failed_turns_marker_stays_a_settled_tail() {
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await
@@ -1589,6 +1596,7 @@ async fn an_observation_racing_an_erasure_respects_the_fence() {
                 protection: assistant_core::ProtectionConfig::default(),
                 operators: support::operator_config(),
                 privacy_policy_address: None,
+                moderation_handle: None,
             },
         )
         .await

@@ -47,6 +47,7 @@ mod erasure;
 mod error;
 mod identity;
 pub mod kind;
+mod ledger;
 mod mapping;
 mod message;
 pub mod note;
@@ -68,9 +69,9 @@ pub use error::{CoreError, FailureKind};
 pub use message::{
     Authority, ChannelKey, ChannelKind, DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt,
     InvokedCommand, Observation, ObserveOutcome, ObservedFact, OutboundReply, ReplyKind,
-    SenderIdentity,
+    ReplyTarget, SenderIdentity,
 };
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
 };
-pub use window::{ACKNOWLEDGMENT_WINDOW, NOTE_TOPIC_APPEND_CAP};
+pub use window::{ACKNOWLEDGMENT_WINDOW, NOTE_TOPIC_APPEND_CAP, REPORT_WINDOW};

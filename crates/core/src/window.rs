@@ -25,6 +25,16 @@ use tokio::time::Instant;
 /// window.
 pub const ACKNOWLEDGMENT_WINDOW: Duration = Duration::from_mins(5);
 
+/// At most one filed report per channel inside this window — the report
+/// tool's own bound (decided 2026-08-23), a named constant of its own
+/// instead of the acknowledgment length, because the two lines answer
+/// different threats: an acknowledgment is a courtesy line, a report pings
+/// every group administrator through the moderation bot. The window is
+/// process memory, and the re-argument is this unit's own instead of the
+/// courtesy-line rationale: for THIS bound a restart forgives at most one
+/// extra report, which is one extra ping — accepted.
+pub const REPORT_WINDOW: Duration = Duration::from_mins(5);
+
 /// How many notes of one topic may append per conversation inside one
 /// window. A pin toggler's burst appends at most this many system-voiced
 /// notes; a capped delta is not queued — the next observation after the
@@ -33,31 +43,47 @@ pub const ACKNOWLEDGMENT_WINDOW: Duration = Duration::from_mins(5);
 pub const NOTE_TOPIC_APPEND_CAP: u32 = 3;
 
 /// The at-most-once-per-window bookkeeping of one fixed line, keyed by
-/// conversation. The window opens at the grant that actually happened, so
-/// a run of silent triggers cannot postpone the next grant forever.
+/// conversation, over the window length it is constructed with. The window
+/// opens at the grant that actually happened, so a run of silent triggers
+/// cannot postpone the next grant forever.
 pub(crate) struct LineWindow {
+    window: Duration,
     granted: Mutex<HashMap<i64, Instant>>,
 }
 
 impl LineWindow {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(window: Duration) -> Self {
         Self {
+            window,
             granted: Mutex::new(HashMap::new()),
         }
     }
 
     /// Whether the line goes out now: `true` opens the channel's window,
     /// `false` is the recorded silence within it. Expired windows are swept
-    /// here, so the map holds only channels inside a live window.
+    /// here, so the map holds only channels inside a live window. The
+    /// check and the spend are one atomic step under the lock — two racing
+    /// callers cannot both be granted — which is what makes this the
+    /// report bound's atomic grant.
     pub(crate) async fn grants(&self, channel: i64) -> bool {
         let mut granted = self.granted.lock().await;
         let now = Instant::now();
-        granted.retain(|_, at| now.duration_since(*at) < ACKNOWLEDGMENT_WINDOW);
+        granted.retain(|_, at| now.duration_since(*at) < self.window);
         if granted.contains_key(&channel) {
             return false;
         }
         granted.insert(channel, now);
         true
+    }
+
+    /// Hand a grant back: the granted action failed transiently before it
+    /// stood, so the channel's window closes again as if never opened. This
+    /// is how a spend-only-after-the-append ordering rides an atomic grant:
+    /// the grant is taken first — so a concurrent second ask is declined —
+    /// and revoked when the append does not stand, so a redelivered ask is
+    /// not silenced by a failure that delivered nothing.
+    pub(crate) async fn revoke(&self, channel: i64) {
+        self.granted.lock().await.remove(&channel);
     }
 }
 
@@ -113,7 +139,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_line_window_grants_once_then_again_past_the_window() {
-        let window = LineWindow::new();
+        let window = LineWindow::new(ACKNOWLEDGMENT_WINDOW);
         assert!(window.grants(1).await, "the first trigger is granted");
         assert!(
             !window.grants(1).await,
@@ -125,6 +151,58 @@ mod tests {
         assert!(
             window.granted.lock().await.len() < 3,
             "expired entries are swept on access"
+        );
+    }
+
+    /// The report window's own reopening, under paused time: one grant per
+    /// channel inside [`REPORT_WINDOW`], and the expired window grants
+    /// again. Pinned on the primitive because the assembly injects exactly
+    /// this instance into the report tool — and because a paused full
+    /// assembly is unsound: the store's actor is an external thread, and
+    /// the paused clock auto-advances past every deadline while a task
+    /// awaits it.
+    #[tokio::test(start_paused = true)]
+    async fn the_report_window_declines_within_and_reopens_past_its_length() {
+        let window = LineWindow::new(REPORT_WINDOW);
+        assert!(window.grants(1).await, "the first filing takes the grant");
+        assert!(
+            !window.grants(1).await,
+            "a second ask inside the window is declined"
+        );
+        tokio::time::advance(
+            REPORT_WINDOW
+                .checked_sub(Duration::from_secs(1))
+                .expect("the window is longer than a second"),
+        )
+        .await;
+        assert!(
+            !window.grants(1).await,
+            "still inside the window, still declined"
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(
+            window.grants(1).await,
+            "past the window, the channel files again"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_revoked_grant_spends_nothing() {
+        let window = LineWindow::new(REPORT_WINDOW);
+        assert!(window.grants(1).await, "the first ask takes the grant");
+        window.revoke(1).await;
+        assert!(
+            window.grants(1).await,
+            "a revoked grant closes the window again, as if never opened"
+        );
+        assert!(
+            !window.grants(1).await,
+            "the re-taken grant is spent normally"
+        );
+        window.revoke(2).await;
+        assert!(
+            window.grants(2).await,
+            "revoking an unopened channel is a no-op"
         );
     }
 

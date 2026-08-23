@@ -22,9 +22,10 @@ use agent_ledger::{EventBus, ProviderModule, ProviderRegistry, Store};
 use assistant_adapter_telegram::{AdapterError, TelegramAdapter};
 use assistant_core::provider::MemoryConfiguredProvider;
 use assistant_core::schema::store_config;
-use assistant_core::tools::ToolSet;
 use assistant_core::tools::commit;
 use assistant_core::tools::release;
+use assistant_core::tools::wiki;
+use assistant_core::tools::{LookupEndpoints, ToolSet};
 use assistant_core::{Assistant, CoreError, ModelBinding};
 use tokio::signal::unix::{SignalKind, signal};
 
@@ -86,6 +87,20 @@ enum StartError {
         "the privacy_policy key must carry an address; omit it to leave the policy unpublished"
     )]
     PrivacyPolicyEmpty,
+
+    /// The `moderation_handle` key is present but empty after trimming and
+    /// stripping a leading `@`. Omitting the key is how a deployment
+    /// without the report tool is chosen.
+    #[error(
+        "the moderation_handle key must carry the moderation bot's handle; omit it to \
+         leave the report tool unregistered"
+    )]
+    ModerationHandleEmpty,
+
+    /// The wiki endpoint override is present but empty or whitespace.
+    /// Omitting the key is how the real host is chosen.
+    #[error("the endpoints.wiki key must carry an address; omit it for the real host")]
+    WikiEndpointEmpty,
 
     /// A secret reference names both sources or neither.
     #[error("the secret `{key}` must name exactly one of `env` or `file`")]
@@ -156,6 +171,8 @@ fn run() -> Result<(), StartError> {
     let protection = configuration.protection.resolve()?;
     let operators = configuration.operators.resolve(&KNOWN_ADAPTERS)?;
     let privacy_policy = configuration.resolve_privacy_policy()?;
+    let moderation_handle = configuration.resolve_moderation_handle()?;
+    let wiki_endpoint = configuration.resolve_wiki_endpoint()?;
     let bot_token = configuration.secrets.bot_token.resolve("bot_token")?;
     let openrouter_key = configuration
         .secrets
@@ -180,6 +197,8 @@ fn run() -> Result<(), StartError> {
             protection,
             operators,
             privacy_policy,
+            moderation_handle,
+            wiki_endpoint,
             bot_token,
             openrouter_key,
             mirror_token,
@@ -229,81 +248,41 @@ struct ServeInputs {
     protection: assistant_core::ProtectionConfig,
     operators: assistant_core::OperatorConfig,
     privacy_policy: Option<String>,
+    moderation_handle: Option<String>,
+    wiki_endpoint: Option<String>,
     bot_token: String,
     openrouter_key: String,
     mirror_token: Option<String>,
     system_prompt: String,
 }
 
-/// Assemble and serve until SIGTERM or an adapter start refusal.
-async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
-    let ServeInputs {
-        configuration,
-        protection,
-        operators,
-        privacy_policy,
-        bot_token,
-        openrouter_key,
-        mirror_token,
-        system_prompt,
-    } = inputs;
-    let store = Store::open_with(&configuration.store_path, store_config())?;
-    let provider = MemoryConfiguredProvider::new(
-        &store,
-        openrouter_key,
-        configuration.endpoints.openrouter.clone(),
-    )
-    .await;
-    let vendor = ProviderModule::type_id(&provider).to_owned();
-    let binding = ModelBinding {
-        provider_instance: format!("{vendor}-1"),
-        provider_display_name: ProviderModule::display_name(&provider).to_owned(),
-        vendor,
-        model: configuration.model.clone(),
-        model_display_name: configuration.model.clone(),
-    };
-    let mut providers = ProviderRegistry::new();
-    providers.register(Box::new(provider));
-    // The production lookups, at their real hosts unless the configuration
-    // overrides them; the palette every new conversation records names
-    // exactly this set.
-    let tools = ToolSet::production_lookups(
-        configuration
+/// The lookup hosts the production tool set is pointed at: the configured
+/// overrides where present, the real defaults otherwise. The palette every
+/// new conversation records names exactly the set built over these.
+fn resolved_lookup_endpoints(
+    configuration: &Configuration,
+    mirror_token: Option<String>,
+    wiki_endpoint: Option<&str>,
+) -> LookupEndpoints {
+    LookupEndpoints {
+        forge: configuration
             .endpoints
             .forge
             .clone()
             .unwrap_or_else(|| commit::DEFAULT_BASE_URL.into()),
-        configuration
+        mirror: configuration
             .endpoints
             .mirror
             .clone()
             .unwrap_or_else(|| release::DEFAULT_BASE_URL.into()),
         mirror_token,
-    );
-    let assistant = Assistant::start(
-        store,
-        Arc::new(EventBus::new()),
-        Arc::new(providers),
-        tools,
-        assistant_core::AssemblyConfig {
-            binding,
-            system_prompt,
-            protection,
-            operators,
-            privacy_policy_address: privacy_policy,
-        },
-    )
-    .await?;
-
-    let mut adapter_config = assistant_adapter_telegram::Config::new(
-        bot_token,
-        configuration.telegram_state_path.clone(),
-    );
-    if let Some(root) = configuration.endpoints.telegram.clone() {
-        adapter_config.api_root = root;
+        wiki: wiki_endpoint.map_or_else(|| wiki::DEFAULT_BASE_URL.into(), ToOwned::to_owned),
     }
-    let adapter = TelegramAdapter::new(adapter_config);
+}
 
+/// One startup line naming every resolved path and endpoint — never a
+/// secret.
+fn log_startup(configuration: &Configuration, wiki_endpoint: Option<&str>) {
     tracing::info!(
         store = %configuration.store_path.display(),
         telegram_state = %configuration.telegram_state_path.display(),
@@ -329,8 +308,73 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
             .mirror
             .as_deref()
             .unwrap_or("the real host"),
+        wiki_endpoint = %wiki_endpoint.unwrap_or("the real host"),
         "the assistant is up"
     );
+}
+
+/// Assemble and serve until SIGTERM or an adapter start refusal.
+async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
+    let ServeInputs {
+        configuration,
+        protection,
+        operators,
+        privacy_policy,
+        moderation_handle,
+        wiki_endpoint,
+        bot_token,
+        openrouter_key,
+        mirror_token,
+        system_prompt,
+    } = inputs;
+    let store = Store::open_with(&configuration.store_path, store_config())?;
+    let provider = MemoryConfiguredProvider::new(
+        &store,
+        openrouter_key,
+        configuration.endpoints.openrouter.clone(),
+    )
+    .await;
+    let vendor = ProviderModule::type_id(&provider).to_owned();
+    let binding = ModelBinding {
+        provider_instance: format!("{vendor}-1"),
+        provider_display_name: ProviderModule::display_name(&provider).to_owned(),
+        vendor,
+        model: configuration.model.clone(),
+        model_display_name: configuration.model.clone(),
+    };
+    let mut providers = ProviderRegistry::new();
+    providers.register(Box::new(provider));
+    let tools = ToolSet::production_lookups(resolved_lookup_endpoints(
+        &configuration,
+        mirror_token,
+        wiki_endpoint.as_deref(),
+    ));
+    let assistant = Assistant::start(
+        store,
+        Arc::new(EventBus::new()),
+        Arc::new(providers),
+        tools,
+        assistant_core::AssemblyConfig {
+            binding,
+            system_prompt,
+            protection,
+            operators,
+            privacy_policy_address: privacy_policy,
+            moderation_handle,
+        },
+    )
+    .await?;
+
+    let mut adapter_config = assistant_adapter_telegram::Config::new(
+        bot_token,
+        configuration.telegram_state_path.clone(),
+    );
+    if let Some(root) = configuration.endpoints.telegram.clone() {
+        adapter_config.api_root = root;
+    }
+    let adapter = TelegramAdapter::new(adapter_config);
+
+    log_startup(&configuration, wiki_endpoint.as_deref());
 
     let mut sigterm = signal(SignalKind::terminate()).map_err(StartError::Runtime)?;
     tokio::select! {

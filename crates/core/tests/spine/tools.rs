@@ -1,8 +1,11 @@
-//! The tools unit at the core's edges: the two lookups against scripted
-//! wires (AC3, AC7), the fail-closed palette (AC4), the anchor gate over
-//! the turn's provenance (AC5, lifted with the dispatch anchor), the
-//! tail-only stamp under mid-turn absorption (AC6), the budget composition
-//! (AC8), and the redispatch canary over the closed duplicate-turn window.
+//! The tools unit at the core's edges: the three lookups against scripted
+//! wires — the wiki lookup under its own section (AC2) — the palette
+//! supersession that folds a pre-unit conversation into the registered
+//! set, the anchor gate over the turn's provenance (AC5, lifted with the
+//! dispatch anchor), the tail-only stamp under mid-turn absorption (AC6),
+//! the budget composition (AC8), and the redispatch canary over the
+//! closed duplicate-turn window. The no-palette refusal is pinned
+//! behaviorally in the admission wrapper's own tests, beside its strings.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,13 +17,14 @@ use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::commit::{self, CommitLookup};
 use assistant_core::tools::release::{self, ReleaseLookup};
+use assistant_core::tools::wiki::{self, WikiLookup};
 use assistant_core::{Assistant, Authority, ChannelKind, ProtectionConfig};
 use serde_json::{Value, json};
 
 use crate::lookup_wire::{LookupAnswer, LookupServer};
 use crate::support::{
-    self, CLOSING_ANSWER, Round, ToolScript, carries, channel, inbound, inbound_as,
-    inbound_unaddressed, recv_reply, round_scripted_provider, tool_scripted_provider,
+    self, CLOSING_ANSWER, Round, ToolScript, carries, channel, field, inbound, inbound_as,
+    inbound_unaddressed, recv_reply, round_scripted_provider, settle_shape, tool_scripted_provider,
 };
 
 /// A commit-lookup input the scripts send — non-empty by the script's
@@ -47,33 +51,6 @@ fn forge_compact_result() -> String {
      Date: 2026-08-17T01:23:26+02:00\n\
      Link: https://example.invalid/commit/deadbeef"
         .to_owned()
-}
-
-/// A settled tool turn: the given block-type shape, newest block the
-/// finalized closing text.
-async fn settle_shape(
-    store: &Store,
-    conversation_id: i64,
-    what: &str,
-    shape: &[&str],
-) -> Vec<Block> {
-    let expected: Vec<String> = shape.iter().map(|s| (*s).to_owned()).collect();
-    support::await_ledger(store, conversation_id, what, |blocks| {
-        blocks.len() == expected.len()
-            && blocks
-                .iter()
-                .zip(&expected)
-                .all(|(block, want)| &block.block_type == want)
-            && blocks
-                .last()
-                .is_some_and(|block| block.block_type == "text")
-    })
-    .await
-}
-
-/// The stored field of one block, as text.
-fn field(block: &Block, name: &str) -> String {
-    block.fields[name].as_str().unwrap_or_default().to_owned()
 }
 
 /// A probe tool: records whether its body ran, so a decline can prove the
@@ -543,14 +520,19 @@ async fn a_redirect_answer_is_a_tool_error_and_is_not_followed() {
     assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
 }
 
-// ─── AC4: the palette fails closed ───────────────────────────────────────
+// ─── The palette: supersession on first activity, the creation set ───────
 
 /// A store-direct conversation modeling a pre-unit store: mapped and
-/// prompted but carrying no palette block. Its tool call is declined with
-/// the recorded error, the body provably never runs — the scripted forge
-/// sees no request — and the turn still completes with the model's answer.
+/// prompted but carrying no palette block. Under the on-delta supersession
+/// (2026-08-23), its first activity appends the registered set as a fresh
+/// palette block ahead of the message — so the very turn that activity
+/// summons admits the tool, and the scripted forge sees the call. The
+/// supersession makes the no-palette shape unreachable end to end, so the
+/// refusal it once drew here is pinned behaviorally on the admission
+/// wrapper, in that module's tests, where a conversation no
+/// reconciliation touched can still exist.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_conversation_without_a_palette_admits_no_tool_call() {
+async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let forge = LookupServer::start(LookupAnswer::Json(200, forge_commit_body())).await;
 
@@ -611,37 +593,39 @@ async fn a_conversation_without_a_palette_admits_no_tool_call() {
     let blocks = settle_shape(
         &fixture.store,
         conversation,
-        "the declined turn",
+        "the admitted first-activity turn",
         &[
             "system_prompt",
+            "tool_palette",
             "chat_message",
             "tool_call",
-            "tool_error",
+            "tool_result",
             "text",
         ],
     )
     .await;
-    let decline = field(&blocks[3], "error");
-    assert!(
-        decline.contains("no tool palette"),
-        "the decline names the fail-closed rule: {decline}"
+    // The delta append: the superseding palette lands ahead of the message
+    // and names exactly the registered set, so this very turn admits.
+    let names: Vec<String> =
+        serde_json::from_str(&field(&blocks[1], "tools")).expect("the stored list parses");
+    assert_eq!(
+        names,
+        vec![commit::NAME.to_owned()],
+        "the appended palette names the registered set"
     );
-    assert!(
-        decline.contains("Do not call this tool again"),
-        "the decline teaches the model not to retry: {decline}"
+    assert_eq!(field(&blocks[4], "content"), forge_compact_result());
+    assert_eq!(
+        forge.requests().len(),
+        1,
+        "the gained tool ran against the forge"
     );
-    assert!(
-        forge.requests().is_empty(),
-        "declined means the body never ran: no network was touched"
-    );
-    // The turn completes: the model reads the decline and answers.
     assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
 }
 
-/// A created conversation's palette names exactly the two tools, and a
+/// A created conversation's palette names exactly the three lookups, and a
 /// direct and a group conversation get the identical palette.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_created_conversation_names_exactly_the_two_tools_direct_and_group_alike() {
+async fn a_created_conversation_names_exactly_the_three_lookups_direct_and_group_alike() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
@@ -683,8 +667,12 @@ async fn a_created_conversation_names_exactly_the_two_tools_direct_and_group_ali
             serde_json::from_str(&field(stored[0], "tools")).expect("the stored list parses");
         assert_eq!(
             names,
-            vec![commit::NAME.to_owned(), release::NAME.to_owned()],
-            "the palette names exactly the two tools"
+            vec![
+                commit::NAME.to_owned(),
+                release::NAME.to_owned(),
+                assistant_core::tools::wiki::NAME.to_owned()
+            ],
+            "the palette names exactly the three lookups"
         );
         palettes.push(names);
     }
@@ -1431,6 +1419,7 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
                 protection: ProtectionConfig::default(),
                 operators: support::operator_config(),
                 privacy_policy_address: None,
+                moderation_handle: None,
             },
         )
         .await
@@ -1781,5 +1770,237 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
     assert!(
         extra.is_err(),
         "the limited ask draws no reply; got {extra:?}"
+    );
+}
+
+// ─── AC2: the wiki lookup over the scripted raw host ─────────────────────
+
+/// The scripted raw host's page body for the happy-path pins.
+const WIKI_PAGE: &str = "# Home\n\nWelcome to the halogenOS wiki.\n";
+
+/// One wiki tool set over a scripted server and a timeout.
+fn wiki_tools(base: String, timeout: Duration) -> ToolSet {
+    let mut tools = ToolSet::new();
+    tools.admit(wiki::REQUIRED_AUTHORITY, WikiLookup::new(base, timeout));
+    tools
+}
+
+/// The wiki lookup end to end: the page fetch reaches the model — the raw
+/// text is the result block, asked at the raw host's page path — and the
+/// answer reaches the chat.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_wiki_lookup_reads_a_page_end_to_end() {
+    let host = LookupServer::start(LookupAnswer::Text(200, WIKI_PAGE.into())).await;
+    let tools = wiki_tools(host.base(), wiki::DEFAULT_TIMEOUT);
+    let script = ToolScript {
+        tool: wiki::NAME.into(),
+        input: r#"{"page":"Home"}"#.into(),
+        narration: None,
+    };
+    let (fixture, mut replies) = tool_fixture(script, None, tools).await;
+
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
+            &channel("dm-wiki"),
+            ChannelKind::Direct,
+            "42",
+            "what does the wiki say?",
+        ),
+    )
+    .await;
+    let blocks = settle_shape(
+        &fixture.store,
+        receipt.conversation_id,
+        "the wiki turn",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "tool_call",
+            "tool_result",
+            "text",
+        ],
+    )
+    .await;
+    assert_eq!(field(&blocks[4], "content"), WIKI_PAGE);
+    let requests = host.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/wiki/halogenOS/android_manifest/Home.md");
+    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+}
+
+/// The wiki failure paths: a missing page becomes the tool error naming
+/// the page-name shape, and a timeout under a short constructed bound
+/// becomes the time-bound error — the chat receives only the model's
+/// answer either way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_missing_wiki_page_and_a_timeout_become_tool_errors() {
+    for (case, answer, timeout, expected) in [
+        (
+            "missing page",
+            LookupAnswer::Text(404, "404: Not Found".into()),
+            Duration::from_secs(10),
+            "the wiki has no page named `Guessed-Page` — a page is named by its title \
+             with spaces as dashes, parentheses literal; fetch the Home page or the \
+             _Sidebar page to see the page names"
+                .to_owned(),
+        ),
+        (
+            "timeout",
+            LookupAnswer::Stall(Duration::from_secs(5)),
+            Duration::from_millis(100),
+            "the wiki did not answer within the time bound".to_owned(),
+        ),
+    ] {
+        let host = LookupServer::start(answer).await;
+        let tools = wiki_tools(host.base(), timeout);
+        let script = ToolScript {
+            tool: wiki::NAME.into(),
+            input: r#"{"page":"Guessed-Page"}"#.into(),
+            narration: None,
+        };
+        let (fixture, mut replies) = tool_fixture(script, None, tools).await;
+        let receipt = support::ingest_recorded(
+            &fixture.assistant,
+            inbound(
+                &channel("dm-wiki-fail"),
+                ChannelKind::Direct,
+                "42",
+                "what does the wiki say?",
+            ),
+        )
+        .await;
+        let blocks = settle_shape(
+            &fixture.store,
+            receipt.conversation_id,
+            "the failed wiki turn",
+            &[
+                "system_prompt",
+                "tool_palette",
+                "chat_message",
+                "tool_call",
+                "tool_error",
+                "text",
+            ],
+        )
+        .await;
+        assert_eq!(
+            field(&blocks[4], "error"),
+            expected,
+            "the {case} path records its named tool error"
+        );
+        assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+        let extra = replies.try_recv();
+        assert!(
+            extra.is_err(),
+            "the raw error never reaches the chat; got {extra:?}"
+        );
+    }
+}
+
+/// One direct call of a tool handler, outside any turn: the context is the
+/// bare agency wiring the framework would hand it, which the wiki lookup
+/// never reads.
+async fn call_wiki(tool: &WikiLookup, store: &Store, input: &str) -> ToolOutcome {
+    let agency = agent_ledger::AgencyCtx {
+        conversation_id: 1,
+        store: store.clone(),
+        bus: Arc::new(EventBus::new()),
+    };
+    let ctx = ToolContext {
+        agency: &agency,
+        tool_call_id: "call-direct",
+        block_id: 0,
+    };
+    tool.execute(input, ctx).await
+}
+
+/// The cache over the real wire, where time runs: a repeat inside the TTL
+/// serves without a second request, a missing page's answer is cached the
+/// same way, and the entry cap clears the cache whole — the refetch past
+/// the TTL is pinned under paused time on the cache itself, beside its
+/// clock in the wiki module.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_wiki_cache_serves_repeats_caches_the_missing_page_and_clears_at_the_cap() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+
+    // A repeat inside the TTL: one request on the wire.
+    let host = LookupServer::start(LookupAnswer::Text(200, WIKI_PAGE.into())).await;
+    let tool = WikiLookup::new(host.base(), wiki::DEFAULT_TIMEOUT);
+    for _ in 0..2 {
+        let outcome = call_wiki(&tool, &store, r#"{"page":"Home"}"#).await;
+        assert!(
+            matches!(&outcome, ToolOutcome::Done(text) if text == WIKI_PAGE),
+            "the page answers from the wire, then from the cache"
+        );
+    }
+    assert_eq!(
+        host.requests().len(),
+        1,
+        "the repeat inside the TTL asked the wire nothing"
+    );
+
+    // A missing page is cached alike: two calls, one request, the same
+    // named error both times.
+    let missing = LookupServer::start(LookupAnswer::Text(404, "404: Not Found".into())).await;
+    let guessing = WikiLookup::new(missing.base(), wiki::DEFAULT_TIMEOUT);
+    for _ in 0..2 {
+        let outcome = call_wiki(&guessing, &store, r#"{"page":"Guessed-Page"}"#).await;
+        assert!(
+            matches!(&outcome, ToolOutcome::Error(error) if error.contains("no page named")),
+            "the missing page answers the named error, cached"
+        );
+    }
+    assert_eq!(
+        missing.requests().len(),
+        1,
+        "negative caching bounds a model guessing page names"
+    );
+
+    // The cap: one page past it clears the cache whole, so the first
+    // page's next ask meets the wire again.
+    let capped_host = LookupServer::start(LookupAnswer::Text(200, WIKI_PAGE.into())).await;
+    let capped = WikiLookup::new(capped_host.base(), wiki::DEFAULT_TIMEOUT);
+    for n in 0..=wiki::CACHE_CAP {
+        let input = format!("{{\"page\":\"Page-{n}\"}}");
+        let outcome = call_wiki(&capped, &store, &input).await;
+        assert!(matches!(outcome, ToolOutcome::Done(_)));
+    }
+    let before_repeat = capped_host.requests().len();
+    assert_eq!(
+        before_repeat,
+        wiki::CACHE_CAP + 1,
+        "every distinct page fetched once"
+    );
+    let outcome = call_wiki(&capped, &store, r#"{"page":"Page-0"}"#).await;
+    assert!(matches!(outcome, ToolOutcome::Done(_)));
+    assert_eq!(
+        capped_host.requests().len(),
+        wiki::CACHE_CAP + 2,
+        "the cap cleared the cache whole, so the first page refetched"
+    );
+}
+
+/// The result bound over the wire: an over-bound page is cut at the named
+/// limit with the truncation marker riding after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_over_bound_wiki_page_is_truncated_with_the_marker() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let long_page = "x".repeat(wiki::RESULT_LIMIT + 500);
+    let host = LookupServer::start(LookupAnswer::Text(200, long_page)).await;
+    let tool = WikiLookup::new(host.base(), wiki::DEFAULT_TIMEOUT);
+    let outcome = call_wiki(&tool, &store, r#"{"page":"Home"}"#).await;
+    let ToolOutcome::Done(text) = outcome else {
+        panic!("the over-bound page still answers");
+    };
+    assert!(
+        text.ends_with(wiki::TRUNCATION_MARKER),
+        "the marker names the cut"
+    );
+    assert_eq!(
+        text.chars().count(),
+        wiki::RESULT_LIMIT + wiki::TRUNCATION_MARKER.chars().count(),
+        "the bound counts characters of the page, the marker rides after it"
     );
 }

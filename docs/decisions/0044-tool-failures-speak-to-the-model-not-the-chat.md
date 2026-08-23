@@ -23,3 +23,11 @@ construct short ones instead of waiting production bounds.
   whose tool failed still completes with the model's own answer.
 - **Suppressing pre-tool narration.** An outbound rule against the assistant's
   own words — a filter on the assistant's voice the product has no reading for.
+
+---
+
+Amended 2026-08-23, with decision 0060: a tool's SUCCESS can now reach the chat —
+the report tool files a block whose fixed line the outbound edge delivers as a
+threaded reply. The rule of this record is unchanged where it binds: a tool's
+FAILURE still speaks to the model alone, the report tool's refusals included, and
+the chat never receives a raw error.

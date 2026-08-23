@@ -16,7 +16,11 @@
 //! The block projects nothing to the model and awaits nothing: it is a pure
 //! record, invisible to projection, consulted only by the admission wrapper.
 
-use agent_ledger::{Agency, Block, Column, ColumnType, ContentDescriptor, LeafKind, Projection};
+use agent_ledger::store::{StoreError, domain_run};
+use agent_ledger::{
+    Agency, Block, Column, ColumnType, ContentDescriptor, LeafKind, Projection, Store,
+};
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 
 /// The stored type string of the palette kind.
@@ -86,12 +90,56 @@ impl LeafKind for ToolPalette {
     }
 }
 
-/// Awaits nothing: the palette is a record, never a summons.
-impl Agency for ToolPalette {}
+/// Awaits nothing, and frontier-transparent on purpose (refined
+/// 2026-08-23, with the on-delta supersession): a superseding palette is
+/// appended at a conversation's first activity per process, at an
+/// arbitrary point in its history, so the owed-turn decision must read
+/// through it — a palette appended over an unanswered message buries
+/// nothing. At creation the transparency is inert: the palette sits ahead
+/// of every message.
+impl Agency for ToolPalette {
+    fn frontier_transparent(&self) -> bool {
+        true
+    }
+}
 
 /// Invisible to the model in every mode: the palette names capabilities, and
 /// capability lists are for the admission wrapper, not for the prompt.
 impl Projection for ToolPalette {}
+
+/// The newest stored palette's raw tool list of one conversation — the
+/// read half of the on-delta supersession (decided 2026-08-23), serialized
+/// under the stamp lock by the assembly. One bounded row by junction
+/// order, like the note reads beside it: the join couples to the
+/// framework's table names under decision 0032's recorded reasoning. The
+/// outer `None` is a conversation with no palette block at all; the inner
+/// `None` is a stored list that does not parse — both are deltas to the
+/// registered set, because neither admits what the set names.
+///
+/// # Errors
+///
+/// [`StoreError`] if the query fails or the store's actor has stopped.
+pub(crate) async fn newest_tools(
+    store: &Store,
+    conversation_id: i64,
+) -> Result<Option<Option<Vec<String>>>, StoreError> {
+    domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
+        let stored: Option<String> = conn
+            .query_row(
+                &format!(
+                    "SELECT p.{COLUMN_TOOLS} FROM conversation_blocks cb \
+                     JOIN {TOOL_PALETTE_TABLE} p ON p.block_id = cb.block_id \
+                     WHERE cb.conversation_id = ?1 \
+                     ORDER BY cb.id DESC LIMIT 1"
+                ),
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.map(|stored| serde_json::from_str::<Vec<String>>(&stored).ok()))
+    })
+    .await
+}
 
 #[cfg(test)]
 mod tests {

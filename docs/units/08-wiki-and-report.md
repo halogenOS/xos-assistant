@@ -268,3 +268,34 @@ decisions above recorded with dates and rejected alternatives; the 0044,
   gate closed with the prose residual; the 0044 amendment, the erasure
   narrowing and the privacy-draft updates are present; the answers stay
   unthreaded; the exact copy of every new constant matches the spec — pinned.
+
+## Ratified at the unit's close, 2026-08-23
+
+Three shipped shapes went beyond the letter above; each is ratified with its
+reasoning rather than narrowed:
+
+1. **The unrecorded-target refusal.** A reply whose target message the ledger
+   never recorded (posted before the assistant joined, or by an anonymous
+   administrator, or itself erased) cannot be reported: the tool refuses with
+   its own result, because a report block needs the reported principal for
+   erasure to reach it, and an unrecorded message names none. The mechanism
+   forced the refusal; the contract now owns it.
+2. **The reply-target erasure runs two-ended.** The author-keyed pass nulls
+   the reply targets a person's own rows carry, AND a target-keyed pass nulls
+   every stored reference NAMING the erased person's messages — on chat rows
+   and report blocks alike. The letter said author-keyed only; the wider
+   pass is the one that honors erasure's intent, since a reference to an
+   erased message is exactly the pointer erasure exists to cut.
+3. **The failure wake delivers every finalized undelivered block, not
+   reports alone.** The delivery cursor is one high-water mark; a
+   report-only failure read would strand a finalized answer behind an
+   advanced cursor. A turn that dies after finalizing narration therefore
+   delivers that narration beside the report and the notice — more truthful
+   than losing it, and recorded in the delivery decision's refinement.
+
+4. **The window grant is taken before the append and revoked on failure.**
+   The letter said spent only after the append stands; the shipped order is
+   take-then-revoke, which is strictly safer — spend-after would let two
+   concurrent calls both append before either claimed the slot. The
+   observable property the letter wanted holds and is pinned: a transient
+   append failure spends nothing.

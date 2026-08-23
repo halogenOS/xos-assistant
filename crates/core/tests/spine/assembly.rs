@@ -32,6 +32,7 @@ async fn a_binding_with_an_unregistered_vendor_is_refused_at_start() {
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await
@@ -64,6 +65,7 @@ async fn a_store_opened_without_the_configuration_is_refused_at_start() {
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await

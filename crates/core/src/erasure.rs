@@ -4,12 +4,20 @@
 //! tables:
 //!
 //! 1. The personal columns of the principal's messages — text, origin
-//!    reference and platform send time — are nulled in every conversation:
-//!    the kind's own write on its content table, which is the separate
-//!    personal-data table of decision 0003. Block header rows are never
-//!    touched; positions, references and conversation order keep their
-//!    shape, and an erased message projects none of its prose to the model
-//!    — only the kind's fixed marker.
+//!    reference, platform send time and the reply-target reference
+//!    (2026-08-23) — are nulled in every conversation: the kind's own
+//!    write on its content table, which is the separate personal-data
+//!    table of decision 0003. First, though, the reply-target copies OTHER
+//!    people's rows hold — a reply stores the replied-to message's id, the
+//!    erased person's own identifier — are nulled by the target-keyed pass
+//!    (2026-08-23), which joins on the very origins the
+//!    author-keyed pass nulls next, so the order between the two is
+//!    load-bearing. Block header rows are never touched; positions,
+//!    references and conversation order keep their shape, and an erased
+//!    message projects none of its prose to the model — only the kind's
+//!    fixed marker. Beside it, every report block naming the principal as
+//!    the reported person loses its target origin (2026-08-23, narrowing
+//!    the 0045 lineage), so the report line goes undeliverable.
 //! 2. The principal's direct conversations are removed entirely — a
 //!    two-party chat that lost its human is metadata that still identifies
 //!    the person. Each one is unmapped through the mapping module first,
@@ -106,7 +114,27 @@ pub(crate) async fn execute(
     plan: ErasurePlan,
 ) -> Result<ErasureOutcome, StoreError> {
     let tx = store.tx();
+    // The target-keyed pass runs first: it finds the repliers' rows by
+    // joining their stored reply target against the principal's origins,
+    // and the author-keyed pass below is about to null those origins.
+    // Within one attempt the order guarantees the join still matches, and
+    // across retries any attempt that reached the author-keyed pass had
+    // already completed this one. The pass reaches exactly what its join
+    // matches: a reply whose stored target matches none of the principal's
+    // recorded origins — recorded between a failed attempt and its retry,
+    // recorded after a completed erasure (the person's next appearance
+    // resolves to a new principal), or naming a message never recorded —
+    // keeps its copy, unlinked inside the store but stored. Decision
+    // 0063's refinements record that residual with its follow-up, a reach
+    // key resolved when the reply is recorded.
+    kind::erase_reply_targets_naming(&tx, plan.principal_id).await?;
     kind::erase_principal_content(&tx, plan.principal_id).await?;
+    // The report table's pass (2026-08-23, narrowing the 0045 lineage):
+    // every report naming the person as the reported principal loses its
+    // target origin, so the line goes undeliverable and the edge skips it.
+    // The block stores that principal id precisely so this pass can reach
+    // it.
+    crate::tools::report::erase_reported_origin(&tx, plan.principal_id).await?;
 
     for &conversation_id in &plan.direct_conversations {
         mapping::delete_by_conversation(&tx, conversation_id).await?;

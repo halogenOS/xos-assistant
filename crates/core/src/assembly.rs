@@ -10,7 +10,7 @@
 //! registries it passed in; the adapter edges below are the only surface an
 //! adapter touches.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::pin::Pin;
@@ -32,9 +32,35 @@ use crate::message::{
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::outbound::RULES_ACKNOWLEDGMENT;
 use crate::streams::StreamObserver;
-use crate::tools::{ToolSet, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
-use crate::window::{AppendWindow, LineWindow};
+use crate::tools::report::{self, ReportTool};
+use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
+use crate::window::{ACKNOWLEDGMENT_WINDOW, AppendWindow, LineWindow, REPORT_WINDOW};
 use crate::{authorization, identity, mapping, outbound, privacy, streams};
+
+/// The erasure fence, as the shared handle the report tool receives at its
+/// construction: ingestions and the tool's filing hold it shared, an
+/// erasure holds it exclusively, so a report cannot re-materialize an
+/// origin an erasure just nulled.
+pub(crate) type ErasureFence = Arc<RwLock<()>>;
+
+/// The kinds the owing-tail walk reads through (widened 2026-08-23 from
+/// notes exactly to the consumer's delivery and supersession kinds): each
+/// one is appended by an independent path at an arbitrary moment, so a
+/// debt behind a run of them still owes. The framework's other transparent
+/// kinds — the turn-closure markers above all — stay a settled tail, per
+/// the walk's contract on [`Assistant::owing_tail_debt`].
+pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
+    note::CONTEXT_NOTE_KIND,
+    TOOL_PALETTE_KIND,
+    report::REPORT_KIND,
+];
+
+/// The most conversations the palette-reconciliation memory holds. Past
+/// the cap the memory is cleared whole — the established memory-cap shape:
+/// it only suppresses repeat comparisons, so losing it costs one bounded
+/// palette read per conversation, while an unbounded set would grow with
+/// every direct chat the process ever saw.
+const PALETTE_MEMORY_CAP: usize = 4096;
 
 /// The model every new conversation is created under: one provider instance
 /// and one model, named by the assembly and never by a message.
@@ -156,6 +182,13 @@ pub struct AssemblyConfig {
     /// The address the privacy command answers with; absent answers the
     /// not-yet-published line.
     pub privacy_policy_address: Option<String>,
+    /// The moderation bot's handle, already trimmed with its leading `@`
+    /// stripped by the configuration layer, which also refuses an empty
+    /// one. Present, the assembly registers the report tool against it;
+    /// absent, the report tool does not register and the palette-delta
+    /// mechanism removes it from conversations that had it. One global
+    /// handle: one deployment serves one community (decided 2026-08-23).
+    pub moderation_handle: Option<String>,
 }
 
 /// The running core: the framework runtime spawned over the assistant's
@@ -205,6 +238,12 @@ pub struct Assistant {
     note_appends: AppendWindow<(i64, NoteTopic)>,
     /// The observation race's test seam; `None` in production.
     note_read_pause: Option<NoteReadPause>,
+    /// The conversations whose stored palette this process already
+    /// compared against the registered set — the once-per-process memory
+    /// of the on-delta supersession (decided 2026-08-23), bounded by
+    /// [`PALETTE_MEMORY_CAP`] and cleared whole at the cap. Guarded by the
+    /// stamp lock's serialization: every reader holds it.
+    palette_reconciled: Mutex<HashSet<i64>>,
     /// Serializes the answer-due stamp against other ingestions: the tail
     /// read and the append it feeds are a read-then-write, and two
     /// concurrent ingestions into one conversation could both observe the
@@ -224,7 +263,9 @@ pub struct Assistant {
     /// person being erased, leaving personal data behind after the erasure
     /// returns. Ingestions hold this shared, an erasure holds it
     /// exclusively, so the erasure's steps see no half-recorded message.
-    erasure_fence: RwLock<()>,
+    /// Shared as a handle (2026-08-23) because the report tool holds it
+    /// across its resolution and its append, under the same reasoning.
+    erasure_fence: ErasureFence,
 }
 
 impl Assistant {
@@ -256,6 +297,7 @@ impl Assistant {
             protection,
             operators,
             privacy_policy_address,
+            moderation_handle,
         } = config;
         if !store.content_tables().contains(&CHAT_MESSAGE_TABLE) {
             return Err(CoreError::MissingContentTable {
@@ -266,6 +308,24 @@ impl Assistant {
             return Err(CoreError::UnknownVendor {
                 vendor: binding.vendor,
             });
+        }
+        let erasure_fence: ErasureFence = Arc::new(RwLock::new(()));
+        // The report tool joins the set here, where the tool set's assembly
+        // finishes: its filing window is constructed at this registration
+        // and the erasure fence is injected beside it, so the tool never
+        // reaches into the assembly. No handle, no registration — and the
+        // palette derived below then names no report tool, which is what
+        // the delta mechanism removes from conversations that had it.
+        let mut tools = tools;
+        if let Some(handle) = moderation_handle {
+            tools.admit(
+                report::REQUIRED_AUTHORITY,
+                ReportTool::new(
+                    handle,
+                    LineWindow::new(REPORT_WINDOW),
+                    Arc::clone(&erasure_fence),
+                ),
+            );
         }
         // One source for what tools exist: the registry the runtime resolves
         // calls against and the palette every new conversation records are
@@ -291,12 +351,13 @@ impl Assistant {
             protection,
             operators,
             privacy_policy_address,
-            rules_acknowledged: LineWindow::new(),
-            command_answered: LineWindow::new(),
+            rules_acknowledged: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
+            command_answered: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
             note_appends: AppendWindow::new(),
             note_read_pause: None,
+            palette_reconciled: Mutex::new(HashSet::new()),
             stamp_lock: Mutex::new(()),
-            erasure_fence: RwLock::new(()),
+            erasure_fence,
         })
     }
 
@@ -414,6 +475,11 @@ impl Assistant {
         // messages cannot both take the last budget slot. The lock's
         // contract is on its field.
         let _one_stamp_at_a_time = self.stamp_lock.lock().await;
+        // The palette supersession, on the conversation's first activity
+        // per process (decided 2026-08-23): the delta append lands ahead of
+        // the message, so this very turn's admission reads the fresh
+        // palette.
+        self.reconcile_palette(conversation_id).await?;
         let owing_tail = self.owing_tail_debt(conversation_id).await?;
         let is_command = privacy::is_privacy_command(message.command.as_ref());
         let limited = if is_command {
@@ -440,6 +506,7 @@ impl Assistant {
             principal_id,
             authority,
             message.origin.as_deref(),
+            message.reply_target.as_ref(),
             &message.timestamp.to_rfc3339(),
             stamp,
         );
@@ -566,6 +633,11 @@ impl Assistant {
                             .await?
                     }
                 };
+                // The palette supersession fires on observed activity too
+                // (decided 2026-08-23): a conversation whose next contact
+                // is a pin or a title change gains the current tools the
+                // same way an ingested message grants them.
+                self.reconcile_palette(conversation_id).await?;
                 let newest = note::newest_text(self.ctx.store(), conversation_id, topic).await?;
                 if let Some(pause) = &self.note_read_pause {
                     pause().await;
@@ -733,6 +805,56 @@ impl Assistant {
         Ok(winner)
     }
 
+    /// The palette supersession on delta (decided 2026-08-23), under the
+    /// stamp lock every caller holds: on a conversation's first activity
+    /// per process, the newest stored palette is compared against the
+    /// registered tool set, and a fresh palette block is appended when
+    /// they differ — one write per real change, the context note's
+    /// on-delta shape. A conversation created before a tool existed
+    /// admits it on its next activity; a tool the handle no longer
+    /// configures is removed the same way, because the registered set is
+    /// the comparison's one side. A palette that never parsed reads as a
+    /// delta: it admits nothing, so superseding it is the correction. The
+    /// memory is marked only after the append stands — a transiently
+    /// failed append leaves the conversation unreconciled, and the
+    /// redelivered activity retries.
+    async fn reconcile_palette(&self, conversation_id: i64) -> Result<(), CoreError> {
+        if self
+            .palette_reconciled
+            .lock()
+            .await
+            .contains(&conversation_id)
+        {
+            return Ok(());
+        }
+        let stored = palette::newest_tools(self.ctx.store(), conversation_id).await?;
+        let already_current =
+            stored.is_some_and(|tools| tools.as_deref() == Some(self.palette.as_slice()));
+        if !already_current {
+            self.ctx
+                .store()
+                .append_consumer_block(
+                    conversation_id,
+                    None,
+                    TOOL_PALETTE_KIND,
+                    ToolPalette::stored_fields(&self.palette),
+                    None,
+                )
+                .await?;
+            tracing::info!(
+                conversation_id,
+                "the conversation's palette was superseded to the registered tool set"
+            );
+        }
+        let mut reconciled = self.palette_reconciled.lock().await;
+        if reconciled.len() >= PALETTE_MEMORY_CAP {
+            tracing::debug!("the palette memory reached its cap and was cleared");
+            reconciled.clear();
+        }
+        reconciled.insert(conversation_id);
+        Ok(())
+    }
+
     /// The conversation's owing tail, if any — the one-block read behind the
     /// write-time stamp, deciding through the kind's own
     /// [`ChatMessage::owes_answer`] so this read and the awaiting hook can
@@ -748,11 +870,14 @@ impl Assistant {
     /// An owing tail hands over the authority its debt carries, folded
     /// through the kind's pre-migration rule.
     ///
-    /// The read walks past context notes exactly (refined 2026-08-23): a
-    /// note appended over an unanswered message leaves the turn owed, so
-    /// the debt it carries must propagate through the note to the next
-    /// message's stamp — while the framework's other transparent kinds,
-    /// the turn-closure markers above all, stay a settled tail here: the
+    /// The read walks past the consumer's own mid-history kinds exactly —
+    /// context notes (refined 2026-08-23), and, widened the same day with
+    /// the report and the palette supersession, the report block and a
+    /// superseding palette ([`DEBT_READ_THROUGH`]): each is appended by an
+    /// independent path at an arbitrary moment, so a debt behind a run of
+    /// them still owes and must propagate through to the next message's
+    /// stamp — while the framework's other transparent kinds, the
+    /// turn-closure markers above all, stay a settled tail here: the
     /// framework's own walk governs turn liveness, and reading debt
     /// through a closed turn's marker would widen propagation past failed
     /// turns. Every read is bounded — one row behind the tail at most,
@@ -767,9 +892,11 @@ impl Assistant {
         let Some(tail) = store.latest_block(conversation_id).await? else {
             return Ok(None);
         };
-        let tail = if tail.block_type == note::CONTEXT_NOTE_KIND {
-            match note::newest_block_id_past_notes(store, conversation_id).await? {
-                Some(behind_the_notes) => store.find_block(behind_the_notes).await?,
+        let tail = if DEBT_READ_THROUGH.contains(&tail.block_type.as_str()) {
+            match crate::ledger::newest_block_id_past(store, conversation_id, DEBT_READ_THROUGH)
+                .await?
+            {
+                Some(behind_the_run) => store.find_block(behind_the_run).await?,
                 None => None,
             }
         } else {
@@ -785,7 +912,8 @@ impl Assistant {
                 AssistantKind::ChatMessage(_)
                 | AssistantKind::Core(_)
                 | AssistantKind::ToolPalette(_)
-                | AssistantKind::ContextNote(_),
+                | AssistantKind::ContextNote(_)
+                | AssistantKind::Report(_),
             )
             | None => None,
         })

@@ -55,3 +55,16 @@ scope, and the prompt reaches production no earlier than that unit.
   checks) acts on real people in the group.
 - **Keeping the placeholder prompt.** The maintainer's text is the product's actual
   voice; the placeholder existed only so the prompt seam could be built and tested.
+
+---
+
+Gate 2 closed 2026-08-23: the report tool shipped with decision 0060, and the
+`* /report when it needs human judgment` bullet returned to the prompt verbatim,
+with the tool teaching beside it naming the report tool as the ONLY way to report —
+the model is told never to write the moderation command into an answer. The
+residual — a disobedient model typing the command into an answer anyway — is
+accepted with its reasoning: the moderation bot acts only on command REPLIES, and
+the assistant's answers are unthreaded (decision 0059 keeps them so), so stray
+prose is noise, not a filed report. Rejected: outbound prose sanitation —
+censoring the assistant's own speech on a pattern is the bolted-on conditional
+the structure rule forbids. Gates 1, 3 and 4 stay held.

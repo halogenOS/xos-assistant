@@ -89,9 +89,80 @@ pub fn turn_reading(ledger: &[Block], call_block_id: i64) -> Authority {
             AssistantKind::ChatMessage(message) => Some(message),
             AssistantKind::Core(_)
             | AssistantKind::ToolPalette(_)
-            | AssistantKind::ContextNote(_) => None,
+            | AssistantKind::ContextNote(_)
+            | AssistantKind::Report(_) => None,
         });
     fold(origin, span)
+}
+
+/// What the newest co-summoner's stored reply says, if any — the report
+/// tool's target resolution (decided 2026-08-23), riding the same debt
+/// origin walk as [`turn_reading`] and never the bare anchor: decision
+/// 0043 records the exact shape in which the anchor is a bystander's line.
+/// The candidates are the turn's co-summoners alone — the span's
+/// own-debt-takers between the anchor and the call, then the origin set's
+/// takers in the anchor's chain — read newest first, and the first one
+/// carrying a stored reply fact answers. A bystander's reply target is
+/// never read: an unaddressed line co-summons nothing, so its reply loses
+/// to the co-summoner's even when it is newer. `None` when no co-summoner
+/// carries a reply — the null anchor and the unloadable shapes included,
+/// each one more absence folded to the refusing side.
+pub(crate) fn newest_co_summoner_reply(
+    ledger: &[Block],
+    call_block_id: i64,
+) -> Option<StoredReply> {
+    let call = ledger.iter().find(|block| block.id == call_block_id)?;
+    let anchor = call.dispatch_anchor?;
+    let anchor_index = ledger.iter().position(|block| block.id == anchor)?;
+    let span = ledger
+        .iter()
+        .rev()
+        .filter(|block| block.id > anchor && block.id < call_block_id)
+        .filter_map(|block| match AssistantKind::from_block(block) {
+            AssistantKind::ChatMessage(message) => Some(message),
+            _ => None,
+        })
+        .filter(ChatMessage::own_debt_taken);
+    // The chain exists only behind a chat-message frontier, the same
+    // precondition as [`origin_reading`]: machinery is read through only
+    // BEHIND a real summons, never in place of one.
+    let chain = matches!(
+        AssistantKind::from_block(&ledger[anchor_index]),
+        AssistantKind::ChatMessage(_)
+    )
+    .then(|| {
+        ledger[..=anchor_index]
+            .iter()
+            .rev()
+            .map(|block| (block, chain_step(block, ledger)))
+            .take_while(|(_, step)| !matches!(step, ChainStep::Ends))
+            .filter(|(_, step)| matches!(step, ChainStep::Votes(_)))
+            .filter_map(|(block, _)| match AssistantKind::from_block(block) {
+                AssistantKind::ChatMessage(message) => Some(message),
+                _ => None,
+            })
+    })
+    .into_iter()
+    .flatten();
+    span.chain(chain).find_map(|message| stored_reply(&message))
+}
+
+/// One co-summoner's stored reply fact, if it carries one.
+fn stored_reply(message: &ChatMessage) -> Option<StoredReply> {
+    if message.reply_to_assistant == Some(true) {
+        return Some(StoredReply::ToAssistant);
+    }
+    message.reply_target.clone().map(StoredReply::Target)
+}
+
+/// What one stored reply points at, read back from a co-summoner's row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StoredReply {
+    /// A reply to another person's message, by that message's origin.
+    Target(String),
+    /// A reply to one of the assistant's own messages — the shape the
+    /// report tool refuses with its own error.
+    ToAssistant,
 }
 
 /// The anchor's contribution: the minimum sender authority over the debt
@@ -165,6 +236,9 @@ enum ChainStep {
 /// reasoning-model product, cut the owed member out of the fold and read
 /// the next turn as admin — while reading one block further can only add
 /// a voter to a minimum, the over-declining direction 0043 accepts.
+// The report arm restates the catch-all on purpose — the explicitness is
+// the point, stated in the arm's own comment.
+#[allow(clippy::match_same_arms)]
 fn chain_step(block: &Block, ledger: &[Block]) -> ChainStep {
     match AssistantKind::from_block(block) {
         AssistantKind::ChatMessage(message) if message.answer_due == Some(true) => {
@@ -176,6 +250,13 @@ fn chain_step(block: &Block, ledger: &[Block]) -> ChainStep {
         }
         AssistantKind::ChatMessage(_) => ChainStep::Ends,
         AssistantKind::Core(BlockKind::Text(_)) if !turn_died(block, ledger) => ChainStep::Ends,
+        // The report block extends explicitly, not by the default (decided
+        // 2026-08-23): the kind is written INTO a live turn's window by the
+        // report tool itself, so its classification decides admission on the
+        // very turn that wrote it — a report can never answer a debt, and
+        // naming it here keeps that judgment visible beside the rule
+        // instead of buried in the catch-all.
+        AssistantKind::Report(_) => ChainStep::Extends,
         _ => ChainStep::Extends,
     }
 }
@@ -246,6 +327,8 @@ mod tests {
             answer_due: Some(addressed && limited.is_none()),
             limited,
             debt_authority: None,
+            reply_target: None,
+            reply_to_assistant: None,
         }
     }
 
@@ -323,10 +406,65 @@ mod tests {
                 1,
                 authority,
                 None,
+                None,
                 "2026-08-22T00:00:00Z",
                 crate::kind::Stamp::compose(addressed, authority, None, tail),
             ),
         }
+    }
+
+    /// One stored chat message carrying a reply to another person's
+    /// message — the [`chat_block`] shape plus the translated reply fact.
+    fn replying_chat_block(id: i64, authority: Authority, addressed: bool, target: &str) -> Block {
+        Block {
+            id,
+            role: Some(Role::User),
+            block_type: crate::kind::CHAT_MESSAGE_KIND.into(),
+            created_at: String::new(),
+            dispatch_anchor: None,
+            fields: ChatMessage::stored_fields(
+                "a recorded reply",
+                1,
+                authority,
+                None,
+                Some(&crate::message::ReplyTarget::Message {
+                    origin: target.into(),
+                }),
+                "2026-08-22T00:00:00Z",
+                crate::kind::Stamp::compose(addressed, authority, None, None),
+            ),
+        }
+    }
+
+    /// The resolution reads the turn's co-summoners, never the bare anchor:
+    /// the anchor is an addressed summons carrying NO reply, and the reply
+    /// answering the walk is the absorbed own-debt-taker's — a body reduced
+    /// to reading the anchor's own stored reply answers `None` here and
+    /// fails. A turn whose co-summoners carry no reply at all refuses with
+    /// `None`, the report tool's needs-a-reply shape.
+    #[test]
+    fn the_reply_resolution_reads_the_co_summoners_not_the_bare_anchor() {
+        let ledger = vec![
+            chat_block(1, Authority::Member, false, None),
+            chat_block(2, Authority::Admin, true, None),
+            replying_chat_block(3, Authority::Member, true, "origin-absorbed"),
+            call_block(5, Some(2)),
+        ];
+        assert_eq!(
+            newest_co_summoner_reply(&ledger, 5),
+            Some(StoredReply::Target("origin-absorbed".into())),
+            "the absorbed co-summoner's stored reply answers for the replyless anchor"
+        );
+
+        let replyless = vec![
+            chat_block(2, Authority::Admin, true, None),
+            call_block(5, Some(2)),
+        ];
+        assert_eq!(
+            newest_co_summoner_reply(&replyless, 5),
+            None,
+            "no co-summoner carries a reply, so the resolution refuses"
+        );
     }
 
     /// The owing tail an admin's taken debt hands the next write.

@@ -20,3 +20,10 @@ searchable docs backend, a wiki tool follows as its own small unit.
   contract; the tool would break on every site deploy.
 - **Fetch-and-search over a fixed URL list.** A hand-kept index that drifts,
   answering worse than the two real lookups.
+
+---
+
+Amended 2026-08-23: the wait ends with decision 0058. This record ruled the tool
+out while the project SITE had no wiki; the manifest repository's wiki on the
+mirror forge is a different backend, and it is real — the wiki lookup ships
+against its raw pages.

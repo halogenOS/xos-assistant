@@ -712,11 +712,10 @@ pub async fn start_assistant_operators(
     operators: OperatorConfig,
     privacy_policy_address: Option<String>,
 ) -> Fixture {
-    let bus: Arc<EventBus<CoreEvent>> = Arc::new(EventBus::new());
-    let assistant = Assistant::start(
-        store.clone(),
-        Arc::clone(&bus),
-        registry_of(provider),
+    start_assistant_config(
+        store,
+        provider,
+        script,
         tools,
         assistant_core::AssemblyConfig {
             binding: binding(),
@@ -724,7 +723,58 @@ pub async fn start_assistant_operators(
             protection,
             operators,
             privacy_policy_address,
+            moderation_handle: None,
         },
+    )
+    .await
+}
+
+/// The moderation handle every report fixture configures — the report
+/// line's `/report@` suffix under test.
+pub const MODERATION_HANDLE: &str = "moderation_fixture_bot";
+
+/// Assemble a running assistant with the report tool registered: the
+/// suite's [`MODERATION_HANDLE`] beside the given tool set, under the
+/// default operator wiring — the seam the report tests use.
+pub async fn start_assistant_reporting(
+    store: Store,
+    provider: Box<dyn ProviderModule>,
+    script: ScriptHandle,
+    tools: ToolSet,
+    protection: ProtectionConfig,
+) -> Fixture {
+    start_assistant_config(
+        store,
+        provider,
+        script,
+        tools,
+        assistant_core::AssemblyConfig {
+            binding: binding(),
+            system_prompt: SYSTEM_PROMPT.into(),
+            protection,
+            operators: operator_config(),
+            privacy_policy_address: None,
+            moderation_handle: Some(MODERATION_HANDLE.into()),
+        },
+    )
+    .await
+}
+
+/// The one assembly call every seam above funnels into.
+pub async fn start_assistant_config(
+    store: Store,
+    provider: Box<dyn ProviderModule>,
+    script: ScriptHandle,
+    tools: ToolSet,
+    config: assistant_core::AssemblyConfig,
+) -> Fixture {
+    let bus: Arc<EventBus<CoreEvent>> = Arc::new(EventBus::new());
+    let assistant = Assistant::start(
+        store.clone(),
+        Arc::clone(&bus),
+        registry_of(provider),
+        tools,
+        config,
     )
     .await
     .expect("the assembly starts");
@@ -817,7 +867,12 @@ pub const UNROUTABLE: &str = "http://127.0.0.1:1";
 /// generate traffic. Tests that execute a tool build their own set against
 /// a scripted server.
 pub fn production_toolset() -> ToolSet {
-    ToolSet::production_lookups(UNROUTABLE, UNROUTABLE, None)
+    ToolSet::production_lookups(assistant_core::tools::LookupEndpoints {
+        forge: UNROUTABLE.into(),
+        mirror: UNROUTABLE.into(),
+        mirror_token: None,
+        wiki: UNROUTABLE.into(),
+    })
 }
 
 /// A protection configuration from two optional `(answers, window seconds)`
@@ -984,6 +1039,7 @@ pub fn inbound_as(
         },
         authority: Some(authority),
         addressed: true,
+        reply_target: None,
         command: None,
         text: text.into(),
         origin: Some(format!(
@@ -999,6 +1055,23 @@ pub fn inbound_as(
 /// text.
 pub fn with_command(mut message: InboundMessage, command: &str) -> InboundMessage {
     message.command = Some(InvokedCommand::new(command));
+    message
+}
+
+/// The same message, replying to the given target — the translated reply
+/// fact the adapter delivers beside the addressed flag.
+pub fn with_reply(
+    mut message: InboundMessage,
+    target: assistant_core::ReplyTarget,
+) -> InboundMessage {
+    message.reply_target = Some(target);
+    message
+}
+
+/// The same message under an exact origin, for the tests that reply to it
+/// by that origin later.
+pub fn with_origin(mut message: InboundMessage, origin: &str) -> InboundMessage {
+    message.origin = Some(origin.into());
     message
 }
 
@@ -1068,6 +1141,35 @@ pub fn settled(len: usize) -> impl Fn(&[Block]) -> bool {
 /// answer last, per [`settled`] — and return the blocks.
 pub async fn settle(store: &Store, conversation_id: i64, what: &str, len: usize) -> Vec<Block> {
     await_ledger(store, conversation_id, what, settled(len)).await
+}
+
+/// Await one conversation's settled turn by its exact block-type shape —
+/// every stored type matches `shape` in order, newest block the finalized
+/// text — and return the blocks.
+pub async fn settle_shape(
+    store: &Store,
+    conversation_id: i64,
+    what: &str,
+    shape: &[&str],
+) -> Vec<Block> {
+    let expected: Vec<String> = shape.iter().map(|s| (*s).to_owned()).collect();
+    await_ledger(store, conversation_id, what, |blocks| {
+        blocks.len() == expected.len()
+            && blocks
+                .iter()
+                .zip(&expected)
+                .all(|(block, want)| &block.block_type == want)
+            && blocks
+                .last()
+                .is_some_and(|block| block.block_type == "text")
+    })
+    .await
+}
+
+/// The stored field of one block, as text. Panics on an absent field —
+/// the callers assert stored values, so an absence is a test failure.
+pub fn field(block: &Block, name: &str) -> String {
+    block.fields[name].as_str().unwrap_or_default().to_owned()
 }
 
 /// Await the next outbound reply, or name the stall.

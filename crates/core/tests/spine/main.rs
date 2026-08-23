@@ -24,6 +24,7 @@ mod lookup_wire;
 mod openrouter;
 mod projection;
 mod protection;
+mod report;
 mod storage;
 mod support;
 mod tools;

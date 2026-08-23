@@ -1,4 +1,4 @@
-//! What the two lookups share: the project organization, the one-bounded-GET
+//! What the lookups share: the project organization, the one-bounded-GET
 //! contract with the client that enforces it, the decode helpers, and the
 //! path-safety checks.
 
@@ -6,13 +6,14 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-/// The project organization both lookups address — one org on each host,
-/// same name on both.
+/// The project organization every lookup addresses — one org on each host,
+/// same name everywhere.
 pub(crate) const ORGANIZATION: &str = "halogenOS";
 
-/// The largest answer body a lookup reads before refusing, in bytes. Both
-/// dialects answer one object; a body past this bound is not an answer this
-/// unit has a reading for.
+/// The largest answer body a lookup reads before refusing, in bytes —
+/// shared by all three fetches: the two JSON dialects answering one object
+/// each, and the wiki's plain-text page read. A body past this bound is
+/// not an answer this unit has a reading for.
 pub(crate) const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// The client every lookup performs its one bounded GET with: the given
@@ -43,33 +44,93 @@ pub(crate) async fn bounded_get(
     headers: &[(&str, String)],
     who: &str,
 ) -> Result<Value, String> {
+    let response = send_get(client, url, headers, who).await?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!(
+            "{who} answered: not found — check the name and the reference"
+        ));
+    }
+    checked_success(&response, who)?;
+    let body = read_body(response, who).await?;
+    serde_json::from_slice(&body).map_err(|_| format!("{who} answered something that is not JSON"))
+}
+
+/// What the text-body GET answered when the wire itself worked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TextAnswer {
+    /// A success body, decoded lossily as UTF-8 — a host that says plain
+    /// text today may answer HTML on a 200 tomorrow, and such a body
+    /// passes through as text and reads as what it is.
+    Body(String),
+    /// The host answered 404: no such resource. A named answer instead of
+    /// an error, because the wiki lookup caches it — negative caching
+    /// bounds a model guessing page names.
+    Missing,
+}
+
+/// The text-body sibling of [`bounded_get`] (decided 2026-08-23): one
+/// bounded GET whose success body is decoded lossily as UTF-8 instead of
+/// as JSON, and whose 404 is a typed [`TextAnswer::Missing`] instead of a
+/// worded error — the caller owns the missing-resource wording and the
+/// negative cache. Every other failure is the same plain sentence naming
+/// `who`.
+pub(crate) async fn bounded_get_text(
+    client: &reqwest::Client,
+    url: &str,
+    who: &str,
+) -> Result<TextAnswer, String> {
+    let response = send_get(client, url, &[], who).await?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(TextAnswer::Missing);
+    }
+    checked_success(&response, who)?;
+    let body = read_body(response, who).await?;
+    Ok(TextAnswer::Body(
+        String::from_utf8_lossy(&body).into_owned(),
+    ))
+}
+
+/// Send one GET under the shared failure wording: a timeout and an
+/// unreachable host each become the plain sentence naming `who`.
+async fn send_get(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &[(&str, String)],
+    who: &str,
+) -> Result<reqwest::Response, String> {
     let mut request = client.get(url);
     for (name, value) in headers {
         request = request.header(*name, value);
     }
-    let response = match request.send().await {
-        Ok(response) => response,
+    match request.send().await {
+        Ok(response) => Ok(response),
         Err(error) if error.is_timeout() => {
-            return Err(format!("{who} did not answer within the time bound"));
+            Err(format!("{who} did not answer within the time bound"))
         }
-        Err(_) => return Err(format!("{who} could not be reached")),
-    };
+        Err(_) => Err(format!("{who} could not be reached")),
+    }
+}
+
+/// The shared status discipline past the caller's own 404 handling: a
+/// redirect is a refusal — one GET means one — and so is any non-success
+/// status.
+fn checked_success(response: &reqwest::Response, who: &str) -> Result<(), String> {
     let status = response.status();
     if status.is_redirection() {
         return Err(format!(
             "{who} answered with a redirect, which this lookup does not follow"
         ));
     }
-    if status == reqwest::StatusCode::NOT_FOUND {
-        return Err(format!(
-            "{who} answered: not found — check the name and the reference"
-        ));
-    }
     if !status.is_success() {
         return Err(format!("{who} answered HTTP {}", status.as_u16()));
     }
+    Ok(())
+}
+
+/// Read one success body up to [`MAX_BODY_BYTES`], under the shared
+/// failure wording.
+async fn read_body(mut response: reqwest::Response, who: &str) -> Result<Vec<u8>, String> {
     let mut body: Vec<u8> = Vec::new();
-    let mut response = response;
     loop {
         match response.chunk().await {
             Ok(Some(chunk)) => {
@@ -85,7 +146,7 @@ pub(crate) async fn bounded_get(
             Err(_) => return Err(format!("the answer from {who} ended mid-body")),
         }
     }
-    serde_json::from_slice(&body).map_err(|_| format!("{who} answered something that is not JSON"))
+    Ok(body)
 }
 
 /// One required string field out of a decoded answer, by JSON pointer. A

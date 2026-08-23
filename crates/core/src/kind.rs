@@ -77,6 +77,29 @@ pub const COLUMN_LIMITED: &str = "limited";
 /// [`ChatMessage::carried_debt_authority`] answers with the row's own
 /// stored sender authority instead.
 pub const COLUMN_DEBT_AUTHORITY: &str = "debt_authority";
+/// The platform's own id for the message this one replies to, opaque —
+/// what the report tool resolves its target through and what reply
+/// threading names (decided 2026-08-23). NULL for a non-reply, for a reply
+/// without a usable id, and for a reply to one of the assistant's own
+/// messages. Personal data of TWO people at once: the row's author chose
+/// to store it, and its value is the replied-to person's own message
+/// identifier — so erasure reaches it from both ends: the author-keyed
+/// pass nulls it with the rest of the row, and the crate-private
+/// target-keyed pass `erase_reply_targets_naming` nulls it when the
+/// replied-to person is erased. The target-keyed reach is exactly as wide
+/// as its join: a stored value matching none of the erased person's
+/// recorded origins — a reply recorded after their erasure completed,
+/// one recorded inside a failed erasure's retry window, or one naming a
+/// message the assistant never recorded — keeps an unreachable copy.
+/// Decision 0063's refinements record that residual and its decided
+/// follow-up, a reach key resolved when the reply is recorded. Added by
+/// the reply-target migration step, so pre-migration rows read NULL.
+pub const COLUMN_REPLY_TARGET: &str = "reply_target";
+/// Whether the message replies to one of the assistant's own messages —
+/// the fact the report tool's self-report refusal reads (decided
+/// 2026-08-23). Structure, not personal data: erasure leaves it. Added by
+/// the reply-target migration step, so pre-migration rows read NULL.
+pub const COLUMN_REPLY_TO_ASSISTANT: &str = "reply_to_assistant";
 
 /// What an erased message contributes to a projected request in place of its
 /// nulled prose. Non-empty on purpose: the live vendors whose strict
@@ -264,6 +287,14 @@ pub struct ChatMessage {
     /// pre-migration tail is folded to its stored sender authority by
     /// [`Self::carried_debt_authority`].
     pub debt_authority: Option<Authority>,
+    /// The origin of the message this one replies to. `None` for a
+    /// non-reply, a reply without a usable id, a reply to the assistant's
+    /// own message, every pre-migration row — and for an erased row, whose
+    /// author-keyed pass nulled it.
+    pub reply_target: Option<String>,
+    /// Whether the reply points at one of the assistant's own messages.
+    /// `None` on a non-reply and on every pre-migration row.
+    pub reply_to_assistant: Option<bool>,
 }
 
 impl ChatMessage {
@@ -272,13 +303,16 @@ impl ChatMessage {
     /// back — both sides of the kind's encoding live in this module, so a
     /// column rename cannot split them. The role travels as the append's own
     /// argument, never as a field; the four decided facts travel together as
-    /// the composed [`Stamp`].
+    /// the composed [`Stamp`]; the reply fact travels as the translated
+    /// [`ReplyTarget`](crate::message::ReplyTarget), encoded into its two
+    /// columns here.
     #[must_use]
     pub fn stored_fields(
         text: &str,
         principal_id: i64,
         authority: Authority,
         origin: Option<&str>,
+        reply_target: Option<&crate::message::ReplyTarget>,
         sent_at: &str,
         stamp: Stamp,
     ) -> serde_json::Map<String, Value> {
@@ -288,6 +322,15 @@ impl ChatMessage {
         fields.insert(COLUMN_AUTHORITY.into(), json!(authority.as_str()));
         if let Some(origin) = origin {
             fields.insert(COLUMN_ORIGIN.into(), json!(origin));
+        }
+        match reply_target {
+            Some(crate::message::ReplyTarget::Message { origin }) => {
+                fields.insert(COLUMN_REPLY_TARGET.into(), json!(origin));
+            }
+            Some(crate::message::ReplyTarget::AssistantMessage) => {
+                fields.insert(COLUMN_REPLY_TO_ASSISTANT.into(), json!(true));
+            }
+            None => {}
         }
         fields.insert(COLUMN_SENT_AT.into(), json!(sent_at));
         fields.insert(COLUMN_ADDRESSED.into(), json!(stamp.addressed));
@@ -371,6 +414,8 @@ impl LeafKind for ChatMessage {
             Column::new(COLUMN_ANSWER_DUE, ColumnType::Boolean),
             Column::new(COLUMN_LIMITED, ColumnType::Text),
             Column::new(COLUMN_DEBT_AUTHORITY, ColumnType::Text),
+            Column::new(COLUMN_REPLY_TARGET, ColumnType::Text),
+            Column::new(COLUMN_REPLY_TO_ASSISTANT, ColumnType::Boolean),
         ],
         reference_columns: &[],
         ephemeral: false,
@@ -403,6 +448,11 @@ impl LeafKind for ChatMessage {
                 .get(COLUMN_DEBT_AUTHORITY)
                 .and_then(Value::as_str)
                 .and_then(Authority::parse),
+            reply_target: string_field(block, COLUMN_REPLY_TARGET),
+            reply_to_assistant: block
+                .fields
+                .get(COLUMN_REPLY_TO_ASSISTANT)
+                .and_then(Value::as_bool),
         }
     }
 }
@@ -443,13 +493,14 @@ impl Projection for ChatMessage {
     }
 }
 
-/// Null the personal columns — text, origin reference and platform send
-/// time — of every message a principal wrote, in every conversation: the
-/// first of erasure's three steps (decision 0012), owned by the kind because
-/// the nullable columns are the kind's own contract. The block header rows
-/// are never touched; each affected content row keeps its shape and its
-/// message reads back erased. Nulling already-null columns is a no-op, so
-/// the step is idempotent.
+/// Null the personal columns — text, origin reference, platform send time
+/// and the reply-target reference (extended 2026-08-23) — of every message
+/// a principal wrote, in every conversation: the first of erasure's three
+/// steps (decision 0012), owned by the kind because the nullable columns
+/// are the kind's own contract. The block header rows are never touched;
+/// each affected content row keeps its shape and its message reads back
+/// erased. Nulling already-null columns is a no-op, so the step is
+/// idempotent.
 ///
 /// # Errors
 ///
@@ -462,8 +513,48 @@ pub(crate) async fn erase_principal_content(
         conn.execute(
             &format!(
                 "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_TEXT} = NULL, \
-                 {COLUMN_ORIGIN} = NULL, {COLUMN_SENT_AT} = NULL \
+                 {COLUMN_ORIGIN} = NULL, {COLUMN_SENT_AT} = NULL, \
+                 {COLUMN_REPLY_TARGET} = NULL \
                  WHERE {COLUMN_PRINCIPAL_ID} = ?1"
+            ),
+            [principal_id],
+        )?;
+        Ok(())
+    })
+    .await
+}
+
+/// Null the reply-target reference of every message that replies to one of
+/// this principal's messages — the target-keyed half of the reply-target
+/// erasure (2026-08-23): the stored
+/// value is the replied-to person's own message identifier, so the
+/// author-keyed pass alone would null it on the person's rows while
+/// leaving a verbatim copy on every row that replied to them. The match
+/// runs through the origin column within the same conversation — platform
+/// message ids are opaque and unique only per channel, so a bare id match
+/// across conversations would null a stranger's reference — which is why
+/// erasure runs this pass BEFORE [`erase_principal_content`] nulls the
+/// origins it joins on. Nulling already-null columns is a no-op, so the
+/// step is idempotent; the framework-table names it joins carry the
+/// deliberate coupling decision 0032 records.
+pub(crate) async fn erase_reply_targets_naming(
+    tx: &StoreTx,
+    principal_id: i64,
+) -> Result<(), StoreError> {
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        conn.execute(
+            &format!(
+                "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_REPLY_TARGET} = NULL \
+                 WHERE {COLUMN_REPLY_TARGET} IS NOT NULL \
+                 AND EXISTS (\
+                   SELECT 1 FROM {CHAT_MESSAGE_TABLE} author \
+                   JOIN conversation_blocks acb ON acb.block_id = author.block_id \
+                   JOIN conversation_blocks rcb \
+                     ON rcb.block_id = {CHAT_MESSAGE_TABLE}.block_id \
+                   WHERE author.{COLUMN_PRINCIPAL_ID} = ?1 \
+                   AND author.{COLUMN_ORIGIN} = {CHAT_MESSAGE_TABLE}.{COLUMN_REPLY_TARGET} \
+                   AND acb.conversation_id = rcb.conversation_id\
+                 )"
             ),
             [principal_id],
         )?;
@@ -589,6 +680,9 @@ pub enum AssistantKind {
     /// owns the kind; it composes here so one parse path reads every
     /// block).
     ContextNote(crate::note::ContextNote),
+    /// A filed report awaiting delivery (the report module owns the kind;
+    /// it composes here so one parse path reads every block).
+    Report(crate::tools::report::Report),
 }
 
 /// A text field read by column name from a loaded block's fields, absent when
