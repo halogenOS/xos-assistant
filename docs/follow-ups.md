@@ -21,3 +21,12 @@ what resolving it takes. Resolved items move into a decision record.
   wording is authoritative; a superseding-block mechanism in the framework
   — already on its improvements list — would compact the superseded ones
   out of the projection.
+
+- **Unit 7 close, 2026-08-23 — the provider module still speaks its first
+  gateway's name.** The configuration key, the endpoint override and the
+  provider crate are named for OpenRouter while the deployed gateway is any
+  OpenAI-compatible endpoint (Requesty today). Invisible to users and
+  harmless at runtime — the endpoint override carries the truth — but the
+  vocabulary misleads a reader of the configuration. Closing it means a
+  neutral provider name across config, crate and docs with a compatibility
+  alias for the old key.
