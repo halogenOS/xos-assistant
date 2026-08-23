@@ -9,6 +9,7 @@
 
 mod addressing;
 mod classification;
+mod composing;
 mod end_to_end;
 mod group_context;
 mod offset;

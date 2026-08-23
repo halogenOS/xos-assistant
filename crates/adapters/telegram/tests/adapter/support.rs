@@ -132,6 +132,14 @@ struct ScriptedChat {
     /// Every turn request's projected messages, for the projection pins.
     seen: Arc<Mutex<Vec<Vec<Message>>>>,
     tool_script: Option<ToolScript>,
+    /// When set, every chat turn awaits one release before it streams —
+    /// the composing pins' fixture: the held turn keeps the answer out of
+    /// the wire while the typing action is asserted. Title derivations
+    /// never wait.
+    turn_hold: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    /// The error text a scripted failure streams; see
+    /// [`Fixture::word_failures_as`].
+    failure_text: Arc<Mutex<String>>,
 }
 
 impl ProviderModule for ScriptedChat {
@@ -175,6 +183,8 @@ impl ProviderModule for ScriptedChat {
         let failures = Arc::clone(&self.failures);
         let seen = Arc::clone(&self.seen);
         let tool_script = self.tool_script.clone();
+        let turn_hold = Arc::clone(&self.turn_hold);
+        let failure_text = Arc::clone(&self.failure_text);
         tokio::spawn(async move {
             let mut calls = 0_usize;
             while let Some(request) = requests.recv().await {
@@ -191,14 +201,18 @@ impl ProviderModule for ScriptedChat {
                 seen.lock()
                     .expect("the request log locks")
                     .push(messages.clone());
+                let hold = turn_hold.lock().expect("the turn hold locks").clone();
+                if let Some(hold) = hold {
+                    hold.notified().await;
+                }
                 if failures
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                         left.checked_sub(1)
                     })
                     .is_ok()
                 {
-                    let _ =
-                        response_tx.send(ProviderResponse::Error("scripted stream failure".into()));
+                    let error = failure_text.lock().expect("the failure text locks").clone();
+                    let _ = response_tx.send(ProviderResponse::Error(error));
                     continue;
                 }
                 if let Some(script) = &tool_script {
@@ -311,6 +325,33 @@ pub struct Fixture {
     /// Every turn request's projected messages, as the scripted provider
     /// received them.
     pub seen: Arc<Mutex<Vec<Vec<Message>>>>,
+    /// The scripted provider's turn hold, unset by default; see
+    /// [`Fixture::hold_turns`].
+    turn_hold: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    /// The error text a scripted failure streams; see
+    /// [`Fixture::word_failures_as`].
+    failure_text: Arc<Mutex<String>>,
+}
+
+impl Fixture {
+    /// Hold every upcoming chat turn until the returned handle's
+    /// `notify_one` releases it, one release per held turn. What the
+    /// composing pins need: while a turn is held, its answer provably has
+    /// not reached the wire, so anything recorded meanwhile came before
+    /// the answer.
+    pub fn hold_turns(&self) -> Arc<tokio::sync::Notify> {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        *self.turn_hold.lock().expect("the turn hold locks") = Some(Arc::clone(&hold));
+        hold
+    }
+
+    /// Reword the error every scripted failure streams. The default is an
+    /// ordinary transient rendering, which the core answers with the
+    /// failure notice; the quiet-failure pin words it as the payment
+    /// rendering instead, which the core keeps out of the chat entirely.
+    pub fn word_failures_as(&self, text: &str) {
+        text.clone_into(&mut self.failure_text.lock().expect("the failure text locks"));
+    }
 }
 
 /// A loopback address nothing listens on: a tool constructed over it can be
@@ -360,11 +401,15 @@ pub async fn start_assistant_moderating(
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let failures = Arc::new(AtomicUsize::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
+    let turn_hold = Arc::new(Mutex::new(None));
+    let failure_text = Arc::new(Mutex::new("scripted stream failure".to_owned()));
     let mut providers = ProviderRegistry::new();
     providers.register(Box::new(ScriptedChat {
         failures: Arc::clone(&failures),
         seen: Arc::clone(&seen),
         tool_script,
+        turn_hold: Arc::clone(&turn_hold),
+        failure_text: Arc::clone(&failure_text),
     }));
     let assistant = Assistant::start(
         store.clone(),
@@ -393,6 +438,8 @@ pub async fn start_assistant_moderating(
         store,
         failures,
         seen,
+        turn_hold,
+        failure_text,
     }
 }
 

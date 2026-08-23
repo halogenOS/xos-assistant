@@ -19,8 +19,9 @@
 //!   (answering with an [`IngestOutcome`], its stamp bounded by the
 //!   [`ProtectionConfig`] budgets and its group admission checked against
 //!   the [`OperatorConfig`]), the observation entry point (answering with an
-//!   [`ObserveOutcome`]), the per-adapter outbound subscription, and erasure
-//!   with its [`ErasureOutcome`].
+//!   [`ObserveOutcome`]), the per-adapter outbound subscription, the
+//!   per-adapter composing subscription (yielding [`ComposingUpdate`]
+//!   transitions), and erasure with its [`ErasureOutcome`].
 //! - [`CoreError`] — what a core operation fails with.
 //!
 //! The public modules stay addressable by path, because their items read by
@@ -43,6 +44,7 @@
 
 mod assembly;
 mod authorization;
+mod composing;
 mod erasure;
 mod error;
 mod identity;
@@ -67,9 +69,9 @@ pub use assembly::{
 pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
 pub use message::{
-    Authority, ChannelKey, ChannelKind, DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt,
-    InvokedCommand, Observation, ObserveOutcome, ObservedFact, OutboundReply, ReplyKind,
-    ReplyTarget, SenderIdentity,
+    Authority, ChannelKey, ChannelKind, ComposingState, ComposingUpdate, DeliveryItem,
+    InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand, Observation, ObserveOutcome,
+    ObservedFact, OutboundReply, ReplyKind, ReplyTarget, SenderIdentity,
 };
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
