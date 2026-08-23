@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use agent_ledger::providers::{
     BoxFuture, ContentPart as WirePart, Message, MessageContent, ModelInfo, ProviderRx, ProviderTx,
+    ReasoningLevel,
 };
 use agent_ledger::{
     Block, CoreEvent, EventBus, LlmError, ProviderModule, ProviderRegistry, ProviderRequest,
@@ -138,6 +139,11 @@ pub const SCRIPTED_FAILURE: &str = "scripted stream failure";
 pub struct ScriptHandle {
     pub turns: Arc<AtomicUsize>,
     pub seen: Arc<std::sync::Mutex<Vec<Vec<Message>>>>,
+    /// The reasoning level each answered turn's request carried, in turn
+    /// order — what the framework resolved from the conversation's stored
+    /// key, observed at the provider's edge so a test pins the level end to
+    /// end instead of at the row alone.
+    pub reasonings: Arc<std::sync::Mutex<Vec<Option<ReasoningLevel>>>>,
     /// The error texts the upcoming turns fail with, one per turn, in order;
     /// a turn that finds the queue empty answers normally. Texts and not a
     /// count, because the consumer reads the error text to classify the
@@ -156,6 +162,7 @@ impl ScriptHandle {
         Self {
             turns: Arc::new(AtomicUsize::new(0)),
             seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+            reasonings: Arc::new(std::sync::Mutex::new(Vec::new())),
             failures: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
             title_requests: Arc::new(AtomicUsize::new(0)),
         }
@@ -261,12 +268,18 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
         let (response_tx, responses) = mpsc::unbounded_channel();
         let turns = Arc::clone(&script.turns);
         let seen = Arc::clone(&script.seen);
+        let reasonings = Arc::clone(&script.reasonings);
         let failures = Arc::clone(&script.failures);
         let title_requests = Arc::clone(&script.title_requests);
         let hold = hold.clone();
         tokio::spawn(async move {
             while let Some(request) = requests.recv().await {
-                let ProviderRequest::Stream { messages, .. } = request else {
+                let ProviderRequest::Stream {
+                    messages,
+                    reasoning,
+                    ..
+                } = request
+                else {
                     continue;
                 };
                 if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
@@ -286,6 +299,7 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                 let answer = answer_to(&messages.last().map(message_text).unwrap_or_default());
                 let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                 seen.lock().unwrap().push(messages);
+                reasonings.lock().unwrap().push(reasoning);
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
                     text: answer,
@@ -742,6 +756,7 @@ pub async fn start_assistant_operators(
         script,
         tools,
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: binding(),
             system_prompt: SYSTEM_PROMPT.into(),
             protection,
@@ -774,6 +789,7 @@ pub async fn start_assistant_reporting(
         script,
         tools,
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: binding(),
             system_prompt: SYSTEM_PROMPT.into(),
             protection,

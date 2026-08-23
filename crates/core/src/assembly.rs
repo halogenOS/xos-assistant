@@ -16,6 +16,7 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{ProviderInstance, StoreTx};
 use agent_ledger::{
     CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext, Store, spawn_reactor,
@@ -197,6 +198,12 @@ pub type ScriptedPause = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>
 pub struct AssemblyConfig {
     /// The model every new conversation is created under.
     pub binding: ModelBinding,
+    /// The reasoning-effort level every new conversation is created under
+    /// (decided 2026-08-23). Set on the conversation at its creation, so the
+    /// framework carries it into every provider request the conversation
+    /// makes; a conversation created before the level existed keeps its
+    /// deferring null.
+    pub reasoning: ReasoningLevel,
     /// The system prompt recorded into every conversation at its creation.
     pub system_prompt: String,
     /// The answering budgets the stamp consults for addressed messages.
@@ -223,6 +230,9 @@ pub struct AssemblyConfig {
 pub struct Assistant {
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
     binding: ModelBinding,
+    /// The reasoning-effort level every new conversation is set to at its
+    /// creation. Read-only after start.
+    reasoning: ReasoningLevel,
     /// The system prompt recorded into every conversation at its creation,
     /// through the framework's system-prompt kind. The framework records a
     /// conversation's prompt exactly once, so an edited prompt reaches new
@@ -338,6 +348,7 @@ impl Assistant {
     ) -> Result<Self, CoreError> {
         let AssemblyConfig {
             binding,
+            reasoning,
             system_prompt,
             protection,
             operators,
@@ -411,6 +422,7 @@ impl Assistant {
         Ok(Self {
             ctx,
             binding,
+            reasoning,
             system_prompt,
             palette,
             streams,
@@ -1159,15 +1171,22 @@ impl Assistant {
 
     /// First message on a channel: create the conversation under the
     /// assembly's binding, record the system prompt and the tool palette as
-    /// its first blocks, and claim the mapping. Direct and group channels
-    /// take the identical path, so both get the same palette.
+    /// its first blocks, claim the mapping, and set the winner's reasoning
+    /// level to the assembly's configured one. Direct and group channels
+    /// take the identical path, so both get the same palette and the same
+    /// level.
     ///
     /// Two ingestions can race here; the mapping's claim decides, and the
     /// loser's conversation is deleted — its prompt and palette blocks with
     /// it — before anything referenced it. Recording both before the claim
     /// is what makes them the winner's first blocks: the losing racer's
     /// message arrives in the winning conversation only after the winner's
-    /// records are in.
+    /// records are in. The reasoning set follows the claim instead, on the
+    /// winner: both racers write the one configured value, so the second
+    /// write repeats the first, and the loser's deleted row never needed
+    /// one. Conversations created before the level shipped keep their
+    /// deferring null — no backfill, because a stored null already reads as
+    /// the provider's own default.
     async fn map_new_channel(
         &self,
         channel: &ChannelKey,
@@ -1198,6 +1217,9 @@ impl Assistant {
         if winner != created {
             store.delete_conversation(created).await?;
         }
+        store
+            .set_conversation_reasoning(winner, Some(self.reasoning.as_key().to_owned()))
+            .await?;
         Ok(winner)
     }
 

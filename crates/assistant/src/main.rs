@@ -356,6 +356,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         tools,
         assistant_core::AssemblyConfig {
             binding,
+            reasoning: configuration.reasoning.resolve(),
             system_prompt,
             protection,
             operators,

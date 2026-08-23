@@ -72,6 +72,9 @@ pub use assembly::{
     AssemblyConfig, Assistant, Budget, DirectChats, ModelBinding, OperatorConfig, ProtectionConfig,
     ScriptedPause,
 };
+// Re-exported so the embedder names the reasoning level through the core's
+// own surface, beside the rest of the assembly configuration's vocabulary.
+pub use agent_ledger::providers::ReasoningLevel;
 pub use composing::COMPOSING_SIGNAL_LIFETIME;
 pub use disclosure::{DISCLOSURE_LINE, disclosed};
 pub use erasure::ErasureOutcome;

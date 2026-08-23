@@ -726,6 +726,7 @@ async fn debt_propagation_reads_through_a_note_at_the_stamp() {
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection: assistant_core::ProtectionConfig::default(),
@@ -951,6 +952,7 @@ async fn a_pending_tail_debt_is_preserved_past_the_privacy_command() {
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection: assistant_core::ProtectionConfig::default(),
@@ -1360,6 +1362,7 @@ async fn a_failed_turns_closure_marker_does_not_widen_debt_propagation() {
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection: assistant_core::ProtectionConfig::default(),
@@ -1436,6 +1439,7 @@ async fn a_note_over_a_failed_turns_marker_stays_a_settled_tail() {
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection: assistant_core::ProtectionConfig::default(),
@@ -1604,6 +1608,7 @@ async fn an_observation_racing_an_erasure_respects_the_fence() {
             support::registry_of(deaf_provider()),
             assistant_core::tools::ToolSet::new(),
             assistant_core::AssemblyConfig {
+                reasoning: assistant_core::ReasoningLevel::Low,
                 binding: support::binding(),
                 system_prompt: support::SYSTEM_PROMPT.into(),
                 protection: assistant_core::ProtectionConfig::default(),

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 
-use assistant_core::{Budget, DirectChats, OperatorConfig, ProtectionConfig};
+use assistant_core::{Budget, DirectChats, OperatorConfig, ProtectionConfig, ReasoningLevel};
 use serde::Deserialize;
 
 use crate::StartError;
@@ -52,6 +52,14 @@ pub struct Configuration {
     /// `off` until its direct-chat feature set ships.
     #[serde(default)]
     pub direct_chats: DirectChatsKey,
+    /// The reasoning-effort level every conversation is created under: the
+    /// framework's closed key set — `off`, `auto`, `minimal`, `low`,
+    /// `medium`, `high`, `xhigh`, `max` — any other value refused at the
+    /// load. Absent means `low`, the deployment's stated default (decided
+    /// 2026-08-23): without a set level the model thinks unboundedly, and
+    /// a small budget already carries the moderation assessments.
+    #[serde(default)]
+    pub reasoning: ReasoningKey,
     /// The address the privacy command answers with; absent answers the
     /// not-yet-published line. Resolved through
     /// [`Configuration::resolve_privacy_policy`], which refuses an empty
@@ -128,6 +136,54 @@ impl DirectChatsKey {
         match self {
             Self::On => DirectChats::On,
             Self::Off => DirectChats::Off,
+        }
+    }
+}
+
+/// The reasoning key's closed word list, one variant per key the framework's
+/// level parser accepts, spelled identically — the mirror of
+/// [`DirectChatsKey`]: decoding is the validation, so a misspelled value
+/// refuses the load with the failing place named, and a value this file
+/// accepts can never be one the stored key's reader drops as unknown. The
+/// tests hold the two vocabularies equal, so a level added to the framework
+/// grows a variant here instead of silently staying unspellable.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningKey {
+    /// No reasoning.
+    Off,
+    /// The model decides.
+    Auto,
+    /// The smallest budget the provider offers.
+    Minimal,
+    /// A small budget — the absent key's meaning: the deployment default
+    /// (decided 2026-08-23), because moderation assessments ride on some
+    /// thinking while an unset level lets the model think unboundedly.
+    #[default]
+    Low,
+    /// A middling budget.
+    Medium,
+    /// A large budget.
+    High,
+    /// Larger than high, where the provider offers it.
+    XHigh,
+    /// The largest budget the provider offers.
+    Max,
+}
+
+impl ReasoningKey {
+    /// The framework's reasoning level this key names.
+    #[must_use]
+    pub fn resolve(self) -> ReasoningLevel {
+        match self {
+            Self::Off => ReasoningLevel::Off,
+            Self::Auto => ReasoningLevel::Auto,
+            Self::Minimal => ReasoningLevel::Minimal,
+            Self::Low => ReasoningLevel::Low,
+            Self::Medium => ReasoningLevel::Medium,
+            Self::High => ReasoningLevel::High,
+            Self::XHigh => ReasoningLevel::XHigh,
+            Self::Max => ReasoningLevel::Max,
         }
     }
 }
@@ -822,6 +878,63 @@ mod tests {
             assert!(
                 load(&full("log = \"stderr\"", spelling)).is_err(),
                 "the value must be exactly `on` or `off`; {spelling:?} decoded"
+            );
+        }
+    }
+
+    // ─── The reasoning level ─────────────────────────────────────────────
+
+    /// Every accepted spelling beside the level it names — the whole closed
+    /// set, so a key the file accepts that the framework's parser would drop
+    /// as unknown, or a framework key this file cannot spell, fails a test
+    /// here instead of surfacing as a silently deferring conversation.
+    const REASONING_KEYS: [(&str, ReasoningLevel); 8] = [
+        ("off", ReasoningLevel::Off),
+        ("auto", ReasoningLevel::Auto),
+        ("minimal", ReasoningLevel::Minimal),
+        ("low", ReasoningLevel::Low),
+        ("medium", ReasoningLevel::Medium),
+        ("high", ReasoningLevel::High),
+        ("xhigh", ReasoningLevel::XHigh),
+        ("max", ReasoningLevel::Max),
+    ];
+
+    #[test]
+    fn the_reasoning_key_decodes_every_framework_key_and_defaults_low() {
+        assert_eq!(
+            loaded("log = \"stderr\"", "").reasoning.resolve(),
+            ReasoningLevel::Low,
+            "the absent key means low — the deployment's stated default"
+        );
+        for (spelling, level) in REASONING_KEYS {
+            let resolved = loaded("log = \"stderr\"", &format!("reasoning = \"{spelling}\"\n"))
+                .reasoning
+                .resolve();
+            assert_eq!(resolved, level, "the spelling {spelling:?} names its level");
+            assert_eq!(
+                ReasoningLevel::from_key(spelling),
+                Some(level),
+                "the framework's parser accepts the same spelling"
+            );
+            assert_eq!(
+                resolved.as_key(),
+                spelling,
+                "the resolved level stores back under the file's own spelling"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reasoning_value_outside_the_framework_keys_is_refused_at_the_load() {
+        for spelling in [
+            "reasoning = \"unbounded\"\n",
+            "reasoning = \"LOW\"\n",
+            "reasoning = \"\"\n",
+            "reasoning = 3\n",
+        ] {
+            assert!(
+                load(&full("log = \"stderr\"", spelling)).is_err(),
+                "the value must be one of the framework's keys; {spelling:?} decoded"
             );
         }
     }

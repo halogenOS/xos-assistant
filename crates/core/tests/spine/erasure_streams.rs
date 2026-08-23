@@ -182,6 +182,7 @@ async fn a_stream_that_never_settles_fails_the_erasure_loudly_deleting_nothing()
         support::registry_of(deaf_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection: assistant_core::ProtectionConfig::default(),
@@ -282,6 +283,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
             support::registry_of(deaf_provider()),
             assistant_core::tools::ToolSet::new(),
             assistant_core::AssemblyConfig {
+                reasoning: assistant_core::ReasoningLevel::Low,
                 binding: support::binding(),
                 system_prompt: support::SYSTEM_PROMPT.into(),
                 protection: assistant_core::ProtectionConfig::default(),
@@ -317,6 +319,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
         support::registry_of(deaf_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),
             protection: assistant_core::ProtectionConfig::default(),
