@@ -57,7 +57,10 @@ controller, and anything the project does outside the assistant.
   no voice, no stickers (decision 0017). Edited versions are not collected; the message
   stands as first seen.
 - **Identity.** The platform's opaque account identifier, display name, username. Held in
-  tables of their own and never inline in the ledger (decisions 0003, 0006).
+  tables of their own and never inline in the ledger (decisions 0003, 0006). The username
+  is transmitted to the processor with the conversation, by the operator's decision of
+  2026-08-23, so the assistant can address people by the handle the group uses. The
+  account identifier and the display name stay on the machine.
 - **Circumstance.** Arrival time, the platform send time, the reply reference, whether the
   message was addressed to the assistant, and the authority the person held in that chat
   at that moment (member or administrator).
@@ -102,12 +105,17 @@ fails closed and withdraws (decision 0052).
 
 ### 3.5 Recipients and transfers
 
-- **Requesty Inc.**, processor under an Article 28 agreement carrying the EU standard
+- **Requesty Inc.**, the processor, under an Article 28 agreement carrying the EU standard
   contractual clauses. Requests enter through the European endpoint in Frankfurt, Germany
-  (AWS eu-central-1). Zero data retention is enabled for the account: prompts and
-  completions are not stored after the response, by Requesty or by the model provider.
-- **The model provider.** Google Gemini served on Google Vertex AI, pinned to European
-  serving through the configured model name, so inference does not leave the EU.
+  (AWS eu-central-1) and are served on infrastructure in the EU. Zero data retention is
+  enabled for the account: prompts and completions are not stored once the response is
+  returned, and nothing is used for training. What the processor receives is the
+  conversation's text and the public username of each speaker.
+- **Sub-processors of the processor.** Requesty engages the model providers it routes to
+  as its own sub-processors, under its own agreements, and stays answerable for them.
+  Google is the sub-processor serving the model in use today. The model is not pinned in
+  this assessment, because the processor's obligations, not the model's identity, are what
+  the assessment rests on; a model change inside the EU region changes no conclusion here.
 - **Public project sources.** The halogenOS forge for a commit lookup and the builds
   repository's public interface for a release lookup. Queries carry a repository name and
   a reference or tag.
@@ -138,10 +146,10 @@ framework seam, and both are named in the public policy.
 
 - Personal data in tables of its own, referenced by key, so append-only storage and
   deletion coexist (decisions 0003, 0012).
-- Identity kept out of provider requests: no display name, no username, no account
-  identifier is sent. The request carries the conversation's words without names; a
-  neutral per-conversation speaker label is a settled design improvement, not yet
-  built, and its arrival changes nothing the provider learns.
+- Identity minimised at the provider boundary: one identifier is transmitted, the public
+  username, decided by the operator on 2026-08-23 so the assistant can address people by
+  the handle the group already uses. The display name and the numeric account identifier
+  stay on the machine, and no other attribute of a person is attached to a request.
 - The provider key is held in memory and never written to storage (decision 0020).
 - Answering counters per person and per chat, limiting answers and never storage; an
   over-limit message draws no reply and no notice, because a refusal notice would hand a
@@ -177,15 +185,17 @@ It was rejected in decision 0003 and the reasoning holds under this assessment: 
 deletes the entire community's history on a schedule to reach the part one person wanted
 removed, it destroys the long memory that is purpose 2, and it leaves the deletion
 mechanism necessary anyway. What makes the absence of a timer proportionate is the pairing
-with the rest: separation of personal data, deletion that reaches the prose, no identity
-sent outside, no profiling, no action taken against anybody. The proportionality rests on
+with the rest: separation of personal data, deletion that reaches the prose, a single
+identifier crossing to the processor and nothing more, no profiling, no action taken
+against anybody. The proportionality rests on
 that pairing, not on the storage alone. If any part of the pairing were removed, this
 conclusion would have to be taken again.
 
 **Is the amount minimal?** Text only, no media, no edits, no anonymous stand-in senders.
 Identity is one opaque account identifier plus the display fields the platform already
-shows to everyone in the group. The provider receives conversation text with the identity
-removed. Lookups carry repository references. Nothing is collected for a purpose beyond
+shows to everyone in the group. The provider receives the conversation's text and one of
+those fields, the public username, which the group sees on every message anyway; the
+identifier and the display name do not cross. Lookups carry repository references. Nothing is collected for a purpose beyond
 the three named.
 
 **Is the legal basis right?** Legitimate interest under Article 6(1)(f), assessed
@@ -210,8 +220,8 @@ says so loudly and immediately, and that signal is treated as the consultation.
 |---|------|---------------------------|------------|
 | R1 | Everything said in the group is kept without an end date, so a remark made in passing stays available years later | Medium | Certain by design |
 | R2 | Special-category content appears in ordinary conversation and is stored and transmitted with the rest | High | Occasional |
-| R3 | Conversation text is exposed to an external processor and a model provider | Medium | Every answer |
-| R4 | A person is re-identified from the content of a message even though identifiers were removed before sending | Medium | Occasional |
+| R3 | Conversation text, together with each speaker's public username, is exposed to an external processor and its sub-processor | Medium | Every answer |
+| R4 | What crosses to the processor is attributable to a named account, so it is pseudonymous at best and not anonymous | Medium | Every answer |
 | R5 | Whoever holds the group's pin right steers the assistant's system voice, possibly against a member | Medium | Rare |
 | R6 | Deletion is promised but two record types are not reached | Medium | Rare, and only where a query or a rules text quotes a person |
 | R7 | The model writes something wrong or harmful about a member, in the group | Medium | Occasional |
@@ -230,23 +240,31 @@ vague "as long as necessary". Storage never leaves the project's own server; the
 search interface, no export, no analysis over the history.
 
 **R2, special categories.** Nothing detects such content, so the mitigation is structural:
-the content is not sent with any identity attached, the recipient stores nothing (zero
-data retention), the assistant builds no profile of anybody, and deletion on request
+the recipient stores nothing (zero data retention), so an accidental disclosure that
+travels to the processor leaves no record there once the answer is returned, the assistant
+builds no profile of anybody, and deletion on request
 reaches the prose completely and fast. A person who realizes they revealed something can
 have it gone within the month, in practice within days. Residual exposure is accepted and
 named.
 
-**R3, provider exposure.** The processor chain is contractual and territorial: an
+**R3, provider exposure.** The mitigation is contractual and territorial, not technical: an
 Article 28 agreement with standard contractual clauses, the European entry point in
-Frankfurt, EU-pinned inference, zero data retention on both hops, and no training on the
-content. What crosses is conversation text without names, usernames or account
-identifiers.
+Frankfurt, serving inside the EU, zero data retention at the processor and at its
+sub-processor, and no training on the content. The processor stays answerable for the
+sub-processors it engages. What crosses is the conversation's text and the public username
+of each speaker, which is exactly what any member of the group sees.
 
-**R4, re-identification.** Removing identifiers is not anonymization, and this document
-does not claim it is. The assessment claims something narrower and true: the recipient is
-contractually bound, retains nothing, and receives no key that links the text to an
-account. The residual case is a person who identifies themselves inside their own message,
-which no mechanism can undo.
+**R4, attribution at the processor.** The operator decided on 2026-08-23 that the assistant
+addresses people by their handle, which means the username travels with the conversation.
+This document does not describe the transmitted data as anonymous or pseudonymous in any
+protective sense: a public username identifies an account, and the text beside it is
+attributable to that account for as long as the request exists. What limits the risk is
+that the request does not persist. Zero data retention means the attributable record is
+gone once the answer is returned, no profile is accumulated on the other side, the numeric
+account identifier and the display name never cross, and the data itself is what the person
+already published to a group. The capability bought with it, an assistant that can answer
+"@handle, that setting moved", is the reason the operator accepted the exchange, and the
+public policy states the transmission plainly instead of implying anonymity.
 
 **R5, system-voice steering.** Accepted with reasoning in decision 0049: the group
 governing its own assistant is the point of the feature, and pinning is an administrator
@@ -292,9 +310,9 @@ cannot be borrowed by a flooder (0030, 0034).
 | # | Residual | Reasoning |
 |---|----------|-----------|
 | R1 | Low to medium | The absence of a timer is real and stays real; it is answered by deletion on request, announced transparency, and the absence of any secondary use. |
-| R2 | Medium | Accepted. No mechanism can detect what a person reveals in passing. Deletion and non-transmission of identity are what is available. |
-| R3 | Low | Contract, EU territory, zero retention, no training, no identity. |
-| R4 | Low to medium | Structural, not solvable; bounded by the recipient retaining nothing. |
+| R2 | Medium | Accepted. No mechanism can detect what a person reveals in passing, and since 2026-08-23 such a disclosure travels with the speaker's handle attached. Zero data retention and fast erasure are what is available. |
+| R3 | Low to medium | Contract, EU territory, zero retention, no training. Raised from low on 2026-08-23: the transmitted set now includes a public identifier. |
+| R4 | Medium | Accepted by the operator on 2026-08-23 for the mention capability. Not solvable while the capability exists; bounded by the processor retaining nothing and by the identifier being the one the group already sees. |
 | R5 | Low | Bounded surface, no action capability. |
 | R6 | Low to medium | Narrow content, named openly, one framework seam away from closed. |
 | R7 | Low | No action capability; bounded volume; stated plainly to readers. |
@@ -328,7 +346,8 @@ Any one of these triggers a review, and none of them is optional:
 - A new platform adapter, or the assistant entering a group beyond the project's own.
 - A change of processor, model provider, endpoint region or retention setting, including
   anything that would move inference outside the EU.
-- Any new path that sends message content off the machine, including a new tool.
+- Any new path that sends message content off the machine, including a new tool, and any
+  change to which identifiers travel with a request.
 - A change to what is collected: media, edits, reactions, membership events.
 - Any moderation capability shipping, in particular the held-out warn, report and ban
   lines.

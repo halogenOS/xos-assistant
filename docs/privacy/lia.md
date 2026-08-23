@@ -67,13 +67,20 @@ route reaches the same purpose.
 inside a conversation, to apply the per-person answering counter, and, most importantly,
 to make deletion possible at all: a request to delete one person's messages can only be
 served if the messages can be linked to that person. Display name and username are kept so
-a request can be matched to an account and so the operator can act on abuse. All three
-live in tables of their own and none of them reaches the model.
+a request can be matched to an account and so the operator can act on abuse. All three live
+in tables of their own.
 
-**Sending text to a model.** Answering is the purpose; a language model is the mechanism.
-The processing is minimised at the boundary: identity is removed before the request, the
-recipient keeps nothing, and no history is uploaded beyond the conversation being
-answered.
+**Sending text and one handle to a model.** Answering is the purpose and a language model
+is the mechanism. Since the operator's decision of 2026-08-23 the request carries the
+public username of each speaker beside the text, because an assistant that answers in a
+group has to be able to say which person it is answering, and the handle is how a group
+addresses its members. The necessity is judged on that capability: without the handle the
+model can write an answer, but not one that points at the person who asked, and in a busy
+group that produces answers nobody can attach to their question. Everything else stays
+back. The numeric account identifier and the display name do not cross, no history beyond
+the conversation being answered is uploaded, and the recipient keeps nothing. The
+transmitted identifier is the one the group already sees on every message, which is why
+the exchange is proportionate and not a widening of who knows what about the person.
 
 **Keeping history without a timer.** The one point where necessity deserves real
 scepticism, and it is assessed on its own in section 4 of the impact assessment. In short:
@@ -123,8 +130,9 @@ group and not only on a website, which is why the pinned rules carry it.
   action. Nobody's standing in the community depends on it.
 - **No profiling, no scoring, no targeting.** The counters count messages in a window and
   nothing else.
-- **No new audience.** The people in the group already saw the message. The only new
-  reader is a model that retains nothing.
+- **No new audience.** The people in the group already saw the message and the handle
+  above it. The only new reader is a model behind a processor that retains nothing, and it
+  receives no more than the group did.
 - **No commercial use.** Nothing is sold, shared, advertised against or analysed.
 - **The real impact** is that a remark keeps existing on a project server after the person
   stopped thinking about it, and that it can resurface in an answer months later. That is
@@ -165,10 +173,12 @@ needs an exception of its own, and none applies cleanly to a health remark someo
 into a technical conversation: posting in an open group does not by itself make data
 manifestly public in the sense of Article 9(2)(e). This assessment does not pretend
 otherwise. What answers it, imperfectly and knowingly, is the structure around it: no
-detection and therefore no targeting of such content, no identity attached when text is
-sent onward, a recipient that retains nothing, no profile built from it, and deletion that
-reaches the text quickly on request. The exposure is recorded as accepted residual risk in
-the impact assessment, not as a solved problem.
+detection and therefore no targeting of such content, a recipient that retains nothing and
+builds no profile, and deletion that reaches the text quickly on request. Since 2026-08-23
+such a remark travels to the processor with the speaker's handle beside it, which makes it
+attributable for the life of the request and no longer. That is a real increase in the
+exposure and it is recorded as such: accepted residual risk in the impact assessment, not
+a solved problem.
 
 ## 6. Why not consent
 
@@ -193,9 +203,13 @@ again:
 1. Personal data stored apart from the ledger, and deletion that empties the message text,
    the send time and the reply reference, removes direct conversations whole and deletes
    the identity rows (decisions 0003, 0006, 0011, 0012, 0027, 0028).
-2. No identity in provider requests: no display name, no username, no account identifier.
-3. The processor chain stays inside the EU, under an Article 28 agreement with standard
-   contractual clauses, with zero data retention and no training on the content.
+2. Exactly one identifier in provider requests, the public username, and no more: the
+   display name and the numeric account identifier stay on the machine, and nothing is
+   added to a request without weighing this assessment again.
+3. Processing stays inside the EU, at a processor under an Article 28 agreement with
+   standard contractual clauses, with zero data retention, no training on the content, and
+   sub-processors engaged by that processor under its own agreements and its own answer
+   for them.
 4. Notice in the group before collection: the rules pin and the deterministic privacy
    command (decision 0053), plus the platform's own policy field.
 5. Objection and deletion answered within a month, free, with no more identity checking
