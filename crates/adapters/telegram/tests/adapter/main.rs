@@ -12,6 +12,7 @@ mod classification;
 mod end_to_end;
 mod group_context;
 mod offset;
+mod report;
 mod sending;
 mod server;
 mod support;

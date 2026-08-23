@@ -181,11 +181,14 @@ pub(crate) struct ChatInfo {
     pub pinned_message: Option<PinnedContent>,
 }
 
-/// The replied-to message, reduced to its author: addressing only asks
-/// whether that author is the bot itself.
+/// The replied-to message, reduced to what the adapter reads: its author —
+/// addressing asks whether that author is the bot itself — and its own
+/// message id, which translation stores as the reply target (2026-08-23).
+/// The id decodes leniently: a reply without a usable id stores no target.
 #[derive(Debug, Deserialize)]
 pub(crate) struct RepliedTo {
     pub from: Option<User>,
+    pub message_id: Option<i64>,
 }
 
 /// The chat a message lives in: its id and its platform type string.
@@ -334,17 +337,33 @@ impl BotClient {
         Ok(())
     }
 
-    /// Send one reply's text to its chat. Text past the platform's message
-    /// cap goes out as consecutive chunks, per decision 0019: the cap is
-    /// the platform's, and dropping or truncating the reply instead would
-    /// lose the answer. A chunk that fails ends the reply there: sending
-    /// the tail after a lost middle would deliver a spliced statement, so
-    /// the caller drops the rest with it — and the error carries how many
+    /// Send one reply's text to its chat, threaded onto `reply_to` where
+    /// one is given. Text past the platform's message cap goes out as
+    /// consecutive chunks, per decision 0019: the cap is the platform's,
+    /// and dropping or truncating the reply instead would lose the answer.
+    /// Only the first chunk threads (2026-08-23): a thread is one answer,
+    /// and the platform shows the continuation chunks right under it. The
+    /// reply travels as the platform's current reply parameters — the old
+    /// reply field was replaced two platform versions ago — with
+    /// send-without-reply tolerance, so a deleted target degrades to a
+    /// plain send. A chunk that fails ends the reply there: sending the
+    /// tail after a lost middle would deliver a spliced statement, so the
+    /// caller drops the rest with it — and the error carries how many
     /// chunks were already delivered, because "dropped" and "cut short in
     /// the chat" are different outcomes to report.
-    pub(crate) async fn send_message(&self, chat_id: i64, text: &str) -> Result<(), SendError> {
+    pub(crate) async fn send_message(
+        &self,
+        chat_id: i64,
+        text: &str,
+        reply_to: Option<i64>,
+    ) -> Result<(), SendError> {
         for (delivered_chunks, chunk) in chunks_within_cap(text).into_iter().enumerate() {
-            if let Err(error) = self.send_chunk(chat_id, chunk).await {
+            let threaded = if delivered_chunks == 0 {
+                reply_to
+            } else {
+                None
+            };
+            if let Err(error) = self.send_chunk(chat_id, chunk, threaded).await {
                 return Err(SendError {
                     delivered_chunks,
                     error,
@@ -355,8 +374,19 @@ impl BotClient {
     }
 
     /// One chunk's `sendMessage` call.
-    async fn send_chunk(&self, chat_id: i64, chunk: &str) -> Result<(), ClientError> {
-        let body = serde_json::json!({ "chat_id": chat_id, "text": chunk });
+    async fn send_chunk(
+        &self,
+        chat_id: i64,
+        chunk: &str,
+        reply_to: Option<i64>,
+    ) -> Result<(), ClientError> {
+        let mut body = serde_json::json!({ "chat_id": chat_id, "text": chunk });
+        if let Some(message_id) = reply_to {
+            body["reply_parameters"] = serde_json::json!({
+                "message_id": message_id,
+                "allow_sending_without_reply": true,
+            });
+        }
         let response = self
             .request("sendMessage", &body, Some(MAX_RATE_LIMIT_WAIT))
             .await?;

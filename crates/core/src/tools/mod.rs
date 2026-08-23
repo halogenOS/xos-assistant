@@ -33,10 +33,13 @@ pub(crate) mod lookup;
 pub mod palette;
 pub(crate) mod provenance;
 pub mod release;
+pub mod report;
+pub mod wiki;
 
 use admission::AdmittedTool;
 use commit::CommitLookup;
 use release::ReleaseLookup;
+use wiki::WikiLookup;
 
 /// The tools the assembly registers, each admitted at the authority its
 /// admission requires. The set is built by the embedder — the binary admits
@@ -48,6 +51,23 @@ pub struct ToolSet {
     entries: Vec<AdmittedTool>,
 }
 
+/// What the production lookups are pointed at: one named base per host,
+/// plus the mirror's optional credential. The bases are interchangeable
+/// strings at the type level, so they travel under their names: a call
+/// site reads what it sets, and two swapped hosts are visible where they
+/// are written instead of compiling silently into production traffic at
+/// the wrong address.
+pub struct LookupEndpoints {
+    /// The forge base URL the commit lookup queries.
+    pub forge: String,
+    /// The mirror base URL the release lookup queries.
+    pub mirror: String,
+    /// The mirror's optional bearer token, absent for anonymous reads.
+    pub mirror_token: Option<String>,
+    /// The raw wiki base URL the wiki lookup queries.
+    pub wiki: String,
+}
+
 impl ToolSet {
     /// An empty set: nothing registered, every palette written empty.
     #[must_use]
@@ -55,25 +75,31 @@ impl ToolSet {
         Self::default()
     }
 
-    /// The production set — the two lookups at their required authorities
-    /// and default timeouts, against the given base URLs. One answer to
-    /// which tools ship: the binary points it at the configured hosts, and
-    /// the suites' default fixtures point the same set at a loopback
-    /// address nothing listens on.
+    /// The production set — the three lookups at their required
+    /// authorities and default timeouts, against the given endpoints. One
+    /// answer to which lookups ship: the binary points it at the
+    /// configured hosts, and the suites' default fixtures point the same
+    /// set at a loopback address nothing listens on. The report tool is
+    /// not a lookup and joins at the assembly, where its window and the
+    /// erasure fence live.
     #[must_use]
-    pub fn production_lookups(
-        forge_base_url: impl Into<String>,
-        mirror_base_url: impl Into<String>,
-        mirror_token: Option<String>,
-    ) -> Self {
+    pub fn production_lookups(endpoints: LookupEndpoints) -> Self {
         let mut set = Self::new();
         set.admit(
             commit::REQUIRED_AUTHORITY,
-            CommitLookup::new(forge_base_url, commit::DEFAULT_TIMEOUT),
+            CommitLookup::new(endpoints.forge, commit::DEFAULT_TIMEOUT),
         );
         set.admit(
             release::REQUIRED_AUTHORITY,
-            ReleaseLookup::new(mirror_base_url, mirror_token, release::DEFAULT_TIMEOUT),
+            ReleaseLookup::new(
+                endpoints.mirror,
+                endpoints.mirror_token,
+                release::DEFAULT_TIMEOUT,
+            ),
+        );
+        set.admit(
+            wiki::REQUIRED_AUTHORITY,
+            WikiLookup::new(endpoints.wiki, wiki::DEFAULT_TIMEOUT),
         );
         set
     }
@@ -141,17 +167,27 @@ mod tests {
         // of silently pointing production at the wrong host.
         assert_eq!(commit::DEFAULT_BASE_URL, "https://git.halogenos.org");
         assert_eq!(release::DEFAULT_BASE_URL, "https://api.github.com");
+        assert_eq!(wiki::DEFAULT_BASE_URL, "https://raw.githubusercontent.com");
     }
 
     #[test]
-    fn the_production_set_yields_the_two_lookup_names() {
-        // The one shared answer to which tools ship, pinned where it is
+    fn the_production_set_yields_the_three_lookup_names() {
+        // The one shared answer to which lookups ship, pinned where it is
         // defined: the fixtures and the binary both build this set.
-        let set = ToolSet::production_lookups("http://127.0.0.1:1", "http://127.0.0.1:1", None);
+        let set = ToolSet::production_lookups(LookupEndpoints {
+            forge: "http://127.0.0.1:1".into(),
+            mirror: "http://127.0.0.1:1".into(),
+            mirror_token: None,
+            wiki: "http://127.0.0.1:1".into(),
+        });
         let (_, names) = set.into_registry();
         assert_eq!(
             names,
-            vec![commit::NAME.to_owned(), release::NAME.to_owned()]
+            vec![
+                commit::NAME.to_owned(),
+                release::NAME.to_owned(),
+                wiki::NAME.to_owned()
+            ]
         );
     }
 

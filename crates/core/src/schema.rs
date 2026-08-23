@@ -18,8 +18,8 @@ use agent_ledger::{DomainMigrations, FromBlock, StoreConfig};
 
 use crate::kind::{
     AssistantKind, CHAT_MESSAGE_TABLE, COLUMN_ADDRESSED, COLUMN_ANSWER_DUE, COLUMN_AUTHORITY,
-    COLUMN_DEBT_AUTHORITY, COLUMN_LIMITED, COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID, COLUMN_ROLE,
-    COLUMN_SENT_AT, COLUMN_TEXT,
+    COLUMN_DEBT_AUTHORITY, COLUMN_LIMITED, COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID, COLUMN_REPLY_TARGET,
+    COLUMN_REPLY_TO_ASSISTANT, COLUMN_ROLE, COLUMN_SENT_AT, COLUMN_TEXT,
 };
 use crate::message::{Authority, ChannelKind};
 
@@ -266,6 +266,45 @@ static COMMAND_STAMP_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The reply-target columns — an appended migration step of the wiki-and-
+/// report unit, per decision 0026's discipline. Two nullable columns on
+/// the message table, so every pre-existing row reads NULL in both: the
+/// replied-to message's origin (personal data under the author-keyed
+/// erasure null, like the origin itself) and whether the reply points at
+/// one of the assistant's own messages (structure, which erasure leaves).
+/// No frozen vocabulary list: the step closes a boolean, not an enum.
+static REPLY_TARGET_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "ALTER TABLE {CHAT_MESSAGE_TABLE}
+             ADD COLUMN {COLUMN_REPLY_TARGET} TEXT;
+         ALTER TABLE {CHAT_MESSAGE_TABLE}
+             ADD COLUMN {COLUMN_REPLY_TO_ASSISTANT} INTEGER
+                 CHECK ({COLUMN_REPLY_TO_ASSISTANT} IN (0, 1));"
+    )
+});
+
+/// The report block's content table — an appended migration step of the
+/// wiki-and-report unit. The table shape is the report kind's descriptor
+/// contract: the block header row is the ledger entry, this row carries
+/// the target origin, the reported principal and the fixed line. The
+/// target origin is nullable for exactly one reason: the reported person's
+/// erasure nulls it, keyed by the reported principal this table stores.
+/// No frozen vocabulary list: the step quotes no enum.
+static REPORT_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {table} (
+            block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {target}   TEXT,
+            {reported} INTEGER NOT NULL,
+            {line}     TEXT NOT NULL
+        );",
+        table = crate::tools::report::REPORT_TABLE,
+        target = crate::tools::report::COLUMN_TARGET_ORIGIN,
+        reported = crate::tools::report::COLUMN_REPORTED_PRINCIPAL_ID,
+        line = crate::tools::report::COLUMN_LINE,
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -284,6 +323,8 @@ pub fn store_config() -> StoreConfig {
                 CONTEXT_NOTE_MIGRATION.as_str(),
                 GROUP_AUTHORIZATION_MIGRATION.as_str(),
                 COMMAND_STAMP_MIGRATION.as_str(),
+                REPLY_TARGET_MIGRATION.as_str(),
+                REPORT_MIGRATION.as_str(),
             ],
         }],
     }

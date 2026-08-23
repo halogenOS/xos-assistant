@@ -18,3 +18,11 @@ onto the newest message, which is wrong in a busy group.
 
 - **Extending the outbound edge in this unit.** A core change the adapter invariant
   says an adapter must never need.
+
+---
+
+Amended 2026-08-23: the deferral falls due with decision 0059 — the outbound edge
+now carries an optional reply target and the adapter threads onto it with
+send-without-reply tolerance, first chunk only. The judgment of this record stands
+for the model's ANSWERS: they still send plainly, and only the report's delivery
+threads.

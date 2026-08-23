@@ -46,6 +46,11 @@ pub struct Configuration {
     /// [`Configuration::resolve_privacy_policy`], which refuses an empty
     /// value.
     pub privacy_policy: Option<String>,
+    /// The moderation bot's handle the report tool files toward; absent
+    /// leaves the report tool unregistered. Resolved through
+    /// [`Configuration::resolve_moderation_handle`], which trims, strips a
+    /// leading `@` and refuses an empty value.
+    pub moderation_handle: Option<String>,
     /// Where the two secrets are found — never the secrets themselves.
     pub secrets: Secrets,
 }
@@ -159,6 +164,10 @@ pub struct Endpoints {
     pub forge: Option<String>,
     /// The mirror API's base URL — the release lookup's host.
     pub mirror: Option<String>,
+    /// The wiki's raw base address — the wiki lookup's host. Resolved
+    /// through [`Configuration::resolve_wiki_endpoint`], which trims and
+    /// refuses an empty value.
+    pub wiki: Option<String>,
 }
 
 /// The protection table: the answering budgets, four fields with per-field
@@ -234,6 +243,50 @@ impl Configuration {
         match &self.privacy_policy {
             Some(address) => match address.trim() {
                 "" => Err(StartError::PrivacyPolicyEmpty),
+                trimmed => Ok(Some(trimmed.to_owned())),
+            },
+            None => Ok(None),
+        }
+    }
+
+    /// The moderation handle the report tool files toward, `None` when the
+    /// key is absent — under which the report tool does not register.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::ModerationHandleEmpty`] when the key is present but
+    /// empty after trimming and stripping one leading `@` — a blank handle
+    /// would file `/report@` at nobody, silently; omitting the key is how
+    /// no-report deployments are chosen. A surviving handle resolves
+    /// trimmed with the `@` stripped: the pad is file formatting, and the
+    /// `@` is the report line's own to add.
+    pub fn resolve_moderation_handle(&self) -> Result<Option<String>, StartError> {
+        match &self.moderation_handle {
+            Some(handle) => {
+                let handle = handle.trim();
+                let handle = handle.strip_prefix('@').unwrap_or(handle).trim();
+                if handle.is_empty() {
+                    return Err(StartError::ModerationHandleEmpty);
+                }
+                Ok(Some(handle.to_owned()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// The wiki lookup's raw base address, `None` when the key is absent —
+    /// under which the real host stands.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::WikiEndpointEmpty`] when the key is present but empty
+    /// or whitespace — an empty base would build unroutable addresses
+    /// silently; omitting the key is how the real host is chosen. A
+    /// surviving address resolves trimmed.
+    pub fn resolve_wiki_endpoint(&self) -> Result<Option<String>, StartError> {
+        match &self.endpoints.wiki {
+            Some(address) => match address.trim() {
+                "" => Err(StartError::WikiEndpointEmpty),
                 trimmed => Ok(Some(trimmed.to_owned())),
             },
             None => Ok(None),
@@ -377,13 +430,15 @@ mod tests {
 
     impl TempConfigFile {
         fn new(content: &str) -> Self {
+            // The name is collision-proof by construction: the pid separates
+            // processes and the process-wide counter separates threads — a
+            // clock-based name collides under the parallel runner, which
+            // starts many fixtures inside one tick.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let unique = format!(
                 "assistant-config-{}-{}.toml",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .expect("the clock is past the epoch")
-                    .as_nanos()
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             );
             let path = std::env::temp_dir().join(unique);
             std::fs::write(&path, content).expect("the configuration file writes");
@@ -693,6 +748,86 @@ mod tests {
             StartError::OperatorUnknownAdapter { adapter } => assert_eq!(adapter, "telegrm"),
             other => panic!("the refusal names the unknown key; got {other}"),
         }
+    }
+
+    // ─── The moderation handle and the wiki endpoint ─────────────────────
+
+    #[test]
+    fn the_moderation_handle_resolves_trimmed_with_the_leading_at_stripped() {
+        for spelling in [
+            "moderation_bot",
+            "@moderation_bot",
+            "  @moderation_bot  ",
+            " moderation_bot ",
+        ] {
+            let configuration = loaded(
+                "log = \"stderr\"",
+                &format!("moderation_handle = \"{spelling}\"\n"),
+            );
+            assert_eq!(
+                configuration
+                    .resolve_moderation_handle()
+                    .expect("the handle resolves")
+                    .as_deref(),
+                Some("moderation_bot"),
+                "the pad is file formatting and the `@` is the report line's \
+                 own to add; spelling {spelling:?}"
+            );
+        }
+        assert_eq!(
+            loaded("log = \"stderr\"", "")
+                .resolve_moderation_handle()
+                .expect("the absent key resolves"),
+            None,
+            "no handle by default — the report tool stays unregistered"
+        );
+    }
+
+    #[test]
+    fn an_empty_moderation_handle_is_refused() {
+        for spelling in [
+            "moderation_handle = \"\"\n",
+            "moderation_handle = \"   \"\n",
+            "moderation_handle = \"@\"\n",
+            "moderation_handle = \" @ \"\n",
+        ] {
+            let refused = loaded("log = \"stderr\"", spelling)
+                .resolve_moderation_handle()
+                .expect_err("a blank handle must be refused");
+            assert!(
+                matches!(refused, StartError::ModerationHandleEmpty),
+                "the refusal names the empty handle; got {refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_wiki_endpoint_resolves_trimmed_and_refuses_empty() {
+        let configuration = loaded(
+            "log = \"stderr\"",
+            "[endpoints]\nwiki = \" http://127.0.0.1:1 \"\n",
+        );
+        assert_eq!(
+            configuration
+                .resolve_wiki_endpoint()
+                .expect("the address resolves")
+                .as_deref(),
+            Some("http://127.0.0.1:1")
+        );
+        assert_eq!(
+            loaded("log = \"stderr\"", "")
+                .resolve_wiki_endpoint()
+                .expect("the absent key resolves"),
+            None,
+            "no override by default — the real host stands"
+        );
+        let refused = loaded("log = \"stderr\"", "[endpoints]\nwiki = \"  \"\n")
+            .resolve_wiki_endpoint()
+            .expect_err("an empty address must be refused");
+        assert!(
+            matches!(refused, StartError::WikiEndpointEmpty),
+            "the refusal names the empty address; got {refused}"
+        );
     }
 
     #[test]

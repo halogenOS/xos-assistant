@@ -122,6 +122,10 @@ link; release: version, date, link, per-device assets summarized. Result-size
 bounds are named constants; timeouts per the decision above. No tool writes
 anywhere.
 
+> Amended 2026-08-23 (unit 8, decision 0060): the no-write rule above gains its
+> dated exception — a tool may append blocks of kinds that exist for tool-driven
+> delivery, which the report tool's filed block is. Lookups still write nothing.
+
 ### The palette kind and registration
 
 The new leaf kind composes into the existing enum through the derive, with its own

@@ -44,8 +44,10 @@ use crate::tools::provenance;
 
 /// The retry-teaching close of the declines that hold for the whole turn:
 /// the model may be offered a tool the palette declines, so the wording
-/// itself must stop the loop.
-const NO_RETRY: &str = "Do not call this tool again this turn; answer from what you already have.";
+/// itself must stop the loop. Crate-visible because the report tool's
+/// refusals close with the same teaching — one wording, one spelling.
+pub(crate) const NO_RETRY: &str =
+    "Do not call this tool again this turn; answer from what you already have.";
 
 /// The transient decline: the ledger did not read, so neither check could
 /// run. No no-retry line — the fact may not hold beyond this failure.
@@ -205,6 +207,11 @@ impl ToolHandler<CoreEvent> for AdmittedTool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use agent_ledger::{EventBus, Store};
+
     use super::*;
 
     /// The wording split, pinned where the strings are built: the palette
@@ -236,6 +243,79 @@ mod tests {
         assert!(
             authority.contains("needs admin") && authority.contains("reads member"),
             "the authority decline records the requirement and the reading: {authority}"
+        );
+    }
+
+    /// A handler that records whether its body ever ran — the probe behind
+    /// the fail-closed pin below.
+    struct Probe(Arc<AtomicBool>);
+
+    impl ToolHandler<CoreEvent> for Probe {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "probe".into(),
+                description: "a probe".into(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _input: &'a str,
+            _ctx: ToolContext<'a, CoreEvent>,
+        ) -> BoxFuture<'a, ToolOutcome> {
+            self.0.store(true, Ordering::SeqCst);
+            Box::pin(async { ToolOutcome::Done("ran".into()) })
+        }
+    }
+
+    /// The fail-closed rule, behaviorally: a conversation carrying no
+    /// palette block — one the palette reconciliation never touched —
+    /// draws the recorded no-palette decline, and the wrapped body
+    /// provably never runs. The assembly's reconciliation writes a palette
+    /// before any turn, so this arm is unreachable through the full
+    /// assembly; the wrapper still refuses on its own, and this pin keeps
+    /// that refusal a behavior instead of a wording.
+    #[tokio::test]
+    async fn a_conversation_without_a_palette_declines_before_the_body_runs() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let agency = AgencyCtx {
+            conversation_id: conversation,
+            store,
+            bus: Arc::new(EventBus::new()),
+        };
+        let ran = Arc::new(AtomicBool::new(false));
+        let tool = AdmittedTool::new(Authority::Member, Probe(Arc::clone(&ran)));
+
+        let outcome = tool
+            .execute(
+                "{}",
+                ToolContext {
+                    agency: &agency,
+                    tool_call_id: "call-0",
+                    block_id: 0,
+                },
+            )
+            .await;
+
+        match outcome {
+            ToolOutcome::Error(decline) => assert_eq!(
+                decline,
+                no_palette_decline(),
+                "the no-palette arm speaks its own recorded decline"
+            ),
+            ToolOutcome::Done(_) | ToolOutcome::Pending => {
+                panic!("a conversation without a palette admits no tool")
+            }
+        }
+        assert!(
+            !ran.load(Ordering::SeqCst),
+            "declined means the wrapped body never ran"
         );
     }
 }

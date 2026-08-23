@@ -144,6 +144,25 @@ impl InvokedCommand {
     }
 }
 
+/// What a message replies to, as the adapter resolved it at the boundary
+/// (decided 2026-08-23): the platform's own id for the replied-to message —
+/// opaque, kept for reply threading and the report tool's target resolution
+/// — or the fact that the reply points at one of the assistant's own
+/// messages, which the report tool refuses with its own error. A reply the
+/// platform carries no usable id for translates to no target at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplyTarget {
+    /// A reply to another person's message, named by that message's origin.
+    Message {
+        /// The platform's own id for the replied-to message, opaque.
+        origin: String,
+    },
+    /// A reply to one of the assistant's own messages. No origin rides
+    /// here: the assistant never reports itself, so nothing downstream
+    /// threads onto it.
+    AssistantMessage,
+}
+
 /// One message on its way into the core.
 #[derive(Debug, Clone)]
 pub struct InboundMessage {
@@ -167,6 +186,11 @@ pub struct InboundMessage {
     /// of its messages — is platform knowledge the adapter resolves; the core
     /// receives only the neutral fact and stores it on the message block.
     pub addressed: bool,
+    /// What the message replies to, where the platform carries a usable
+    /// reply (decided 2026-08-23) — translated beside the addressed flag
+    /// and stored on the message block, under the same erasure null as the
+    /// origin. `None` for a non-reply and for a reply without a usable id.
+    pub reply_target: Option<ReplyTarget>,
     /// The command the message invokes, as the adapter reports it beside
     /// the addressed flag — the core matches this, never the text.
     pub command: Option<InvokedCommand>,
@@ -299,6 +323,9 @@ pub enum ReplyKind {
     /// The failure notice: the turn did not produce an answer, said once,
     /// with no model prose.
     Notice,
+    /// A filed report's fixed line (decided 2026-08-23): the core's own
+    /// machinery text, delivered threaded onto the reported message.
+    Report,
 }
 
 /// One reply on its way out of the core, bound to the channel it answers.
@@ -308,8 +335,18 @@ pub struct OutboundReply {
     pub channel: ChannelKey,
     /// What the assistant says.
     pub text: String,
-    /// Whether this is the assistant's answer or the core's failure notice.
+    /// Whether this is the assistant's answer, the core's failure notice,
+    /// or a filed report's line.
     pub kind: ReplyKind,
+    /// The platform origin of the message this reply answers, where the
+    /// reply threads (decided 2026-08-23, the deferral of decision 0018
+    /// falling due). The adapter translates it into the platform's reply
+    /// parameters with send-without-reply tolerance — a deleted target
+    /// degrades to a plain send — and threads only the first chunk. The
+    /// model's answers stay unthreaded in this unit: only the report's
+    /// delivery sets a target, and the field exists for whatever
+    /// answer-threading decision comes later.
+    pub reply_target: Option<String>,
 }
 
 #[cfg(test)]

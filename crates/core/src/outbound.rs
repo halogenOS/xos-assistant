@@ -37,6 +37,29 @@
 //! only written to the log; [`is_quiet_failure`] names it. The title
 //! derivation the metadata worker runs never finalizes an answer block in
 //! the conversation ledger, so it never appears here.
+//!
+//! # The report's delivery (2026-08-23)
+//!
+//! A filed report block delivers as its stored fixed line, marked
+//! [`ReplyKind::Report`] and threaded onto the reported message's origin —
+//! on BOTH stream events: with the answer on the turn's completion, where
+//! ledger order puts it before the answer text so the member's
+//! confirmation reads after the deed, and on the turn's failure ahead of
+//! the notice, so a turn that dies after filing still files. The failure
+//! wake runs the same stored-state read as a completion, so a dead turn's
+//! already-finalized narration delivers beside its report instead of
+//! waiting for the conversation's next wake. Noted 2026-08-23: the unit
+//! contract's failure clause names report blocks beside the notice; the
+//! full read is deliberately wider, because the cursor is one high-water
+//! mark per conversation — a failure read narrowed to reports would
+//! either pass the committed narration for good or repeat the report on
+//! the next wake, and the contract refuses re-delivered reports above
+//! all. The accepted losses are recorded plainly: a report undelivered
+//! when the process dies is LOST — the restart seeding stands, and
+//! re-delivering reports from history would ping every group admin
+//! at-least-once; for a moderation nudge the safer direction is fewer
+//! reports, never more. A report whose target an erasure nulled is
+//! skipped as undeliverable.
 
 use std::collections::HashMap;
 
@@ -139,24 +162,45 @@ pub(crate) async fn spawn_edge(
                 Ok(CoreEvent::StreamDone {
                     conversation_id, ..
                 }) => {
-                    if let Err(error) =
-                        deliver_new_answers(&ctx, &adapter, conversation_id, &mut cursors, &replies)
-                            .await
+                    if let Err(error) = deliver_answers_and_reports(
+                        &ctx,
+                        &adapter,
+                        conversation_id,
+                        &mut cursors,
+                        &replies,
+                    )
+                    .await
                     {
                         tracing::error!(conversation_id, %error, "outbound delivery failed");
                     }
                 }
-                // A failed turn tells the chat once. The notice derives from
-                // this event alone and the bus is lossy, so it is at most
-                // once by construction: a lagged edge may drop it, a late
-                // error from a torn-down predecessor stream may produce a
-                // spurious one — both accepted for a courtesy line. The
-                // durable record of failed turns is framework work.
+                // A failed turn tells the chat once — after delivering what
+                // the dead turn already put on the ledger, a filed report
+                // above all: the failure wake runs the same stored-state
+                // read as a completion, so a turn that dies after filing
+                // still files, ahead of the notice. The notice itself
+                // derives from this event alone and the bus is lossy, so it
+                // is at most once by construction: a lagged edge may drop
+                // it, a late error from a torn-down predecessor stream may
+                // produce a spurious one — both accepted for a courtesy
+                // line. The durable record of failed turns is framework
+                // work.
                 Ok(CoreEvent::StreamError {
                     conversation_id,
                     error,
                     ..
                 }) => {
+                    if let Err(error) = deliver_answers_and_reports(
+                        &ctx,
+                        &adapter,
+                        conversation_id,
+                        &mut cursors,
+                        &replies,
+                    )
+                    .await
+                    {
+                        tracing::error!(conversation_id, %error, "outbound delivery failed");
+                    }
                     if is_quiet_failure(&error) {
                         tracing::info!(
                             conversation_id,
@@ -211,17 +255,21 @@ async fn seed_cursors(
     Ok(cursors)
 }
 
-/// Read the conversation's ledger and yield every answer block this edge has
-/// not delivered yet, bound to the conversation's channel key. A
-/// conversation that is not mapped, or is mapped for another adapter, is
-/// none of this edge's business and yields nothing.
+/// Read the conversation's ledger and yield every undelivered answer and
+/// report block, in ledger order — which puts a turn's report ahead of its
+/// answer, because the tool filed before the answer finalized — bound to
+/// the conversation's channel key. A report whose target origin an erasure
+/// nulled is skipped as undeliverable and accounted delivered, so the
+/// re-reads stop meeting it. A conversation that is not mapped, or is
+/// mapped for another adapter, is none of this edge's business and yields
+/// nothing.
 ///
 /// # Errors
 ///
 /// [`StoreError`] if a read fails or the store's actor has stopped. The send
 /// half never errors here: a dropped receiver ends the task at the loop
 /// instead.
-async fn deliver_new_answers(
+async fn deliver_answers_and_reports(
     ctx: &RuntimeContext<AssistantKind, CoreEvent>,
     adapter: &str,
     conversation_id: i64,
@@ -238,19 +286,37 @@ async fn deliver_new_answers(
     let blocks = ctx.store().list_blocks(conversation_id).await?;
     let cursor = cursors.entry(conversation_id).or_insert(0);
     for block in &blocks {
-        if block.id > *cursor
-            && let Some(text) = answer_text(block)
-        {
-            let reply = OutboundReply {
-                channel: channel.clone(),
-                text,
-                kind: ReplyKind::Answer,
-            };
-            if replies.send(reply).is_err() {
-                return Ok(());
-            }
-            *cursor = block.id;
+        if block.id <= *cursor {
+            continue;
         }
+        let Some(deliverable) = deliverable_of(block) else {
+            continue;
+        };
+        match deliverable {
+            Deliverable::Reply {
+                text,
+                kind,
+                reply_target,
+            } => {
+                let reply = OutboundReply {
+                    channel: channel.clone(),
+                    text,
+                    kind,
+                    reply_target,
+                };
+                if replies.send(reply).is_err() {
+                    return Ok(());
+                }
+            }
+            Deliverable::Skipped => {
+                tracing::debug!(
+                    conversation_id,
+                    block_id = block.id,
+                    "a targetless report is undeliverable; skipped"
+                );
+            }
+        }
+        *cursor = block.id;
     }
     Ok(())
 }
@@ -279,6 +345,7 @@ async fn deliver_notice(
         channel,
         text: FAILURE_NOTICE.into(),
         kind: ReplyKind::Notice,
+        reply_target: None,
     });
     Ok(())
 }
@@ -302,7 +369,8 @@ async fn recover_from_lag(
             continue;
         }
         if let Err(error) =
-            deliver_new_answers(ctx, adapter, record.conversation_id, cursors, replies).await
+            deliver_answers_and_reports(ctx, adapter, record.conversation_id, cursors, replies)
+                .await
         {
             tracing::error!(
                 conversation_id = record.conversation_id,
@@ -314,15 +382,45 @@ async fn recover_from_lag(
     Ok(())
 }
 
-/// The prose of a finalized answer, `None` for every other block. Decoded
-/// through the composed kind's one parse path: the framework ingests a
-/// completed stream as a committed text block in the assistant's voice, and
-/// streaming tails parse to their own kinds, so they never match here.
-fn answer_text(block: &Block) -> Option<String> {
+/// What one undelivered block means to this edge.
+enum Deliverable {
+    /// A reply to yield: an answer's prose unthreaded, or a report's
+    /// stored line threaded onto its target.
+    Reply {
+        text: String,
+        kind: ReplyKind,
+        reply_target: Option<String>,
+    },
+    /// A report gone undeliverable — its target origin nulled by the
+    /// reported person's erasure, or a row the store did not produce —
+    /// accounted delivered so the re-reads stop meeting it.
+    Skipped,
+}
+
+/// The delivery reading of one block, `None` for everything this edge does
+/// not carry. Decoded through the composed kind's one parse path: the
+/// framework ingests a completed stream as a committed text block in the
+/// assistant's voice, streaming tails parse to their own kinds, and the
+/// report kind carries its stored line and target. The answer stays
+/// unthreaded on purpose — decision 0018's judgment stands; only the
+/// report's delivery threads.
+fn deliverable_of(block: &Block) -> Option<Deliverable> {
     match AssistantKind::from_block(block) {
         AssistantKind::Core(BlockKind::Text(text)) if text.role == Some(Role::Assistant) => {
-            Some(text.content)
+            Some(Deliverable::Reply {
+                text: text.content,
+                kind: ReplyKind::Answer,
+                reply_target: None,
+            })
         }
+        AssistantKind::Report(report) => match (report.line, report.target_origin) {
+            (Some(line), Some(target)) => Some(Deliverable::Reply {
+                text: line,
+                kind: ReplyKind::Report,
+                reply_target: Some(target),
+            }),
+            _ => Some(Deliverable::Skipped),
+        },
         _ => None,
     }
 }

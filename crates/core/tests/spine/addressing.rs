@@ -270,6 +270,7 @@ async fn the_stamp_propagates_an_unanswered_debt_at_the_write() {
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await
@@ -326,6 +327,7 @@ async fn an_erased_tail_propagates_no_debt() {
             protection: assistant_core::ProtectionConfig::default(),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await

@@ -123,7 +123,10 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
                 "the ledger records the platform's send time, not its own clock"
             );
         }
-        AssistantKind::Core(_) | AssistantKind::ToolPalette(_) | AssistantKind::ContextNote(_) => {
+        AssistantKind::Core(_)
+        | AssistantKind::ToolPalette(_)
+        | AssistantKind::ContextNote(_)
+        | AssistantKind::Report(_) => {
             panic!("the stored row resolved through the delegate")
         }
     }

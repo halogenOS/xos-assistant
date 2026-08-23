@@ -15,7 +15,8 @@
 use chrono::{DateTime, Utc};
 
 use assistant_core::{
-    Authority, ChannelKey, ChannelKind, InvokedCommand, Observation, ObservedFact, SenderIdentity,
+    Authority, ChannelKey, ChannelKind, InvokedCommand, Observation, ObservedFact, ReplyTarget,
+    SenderIdentity,
 };
 
 use crate::ADAPTER_NAME;
@@ -92,6 +93,12 @@ pub(crate) struct Pending {
     /// it mentions the bot's username or replies to one of the bot's own
     /// messages. The core receives only this neutral fact.
     pub addressed: bool,
+    /// What the message replies to, translated beside the addressed flag
+    /// (2026-08-23): the replied-to message's id as the opaque origin, or
+    /// the fact that the reply points at one of the bot's own messages. A
+    /// non-reply, and a reply the platform carries no usable id for,
+    /// translates to no target.
+    pub reply_target: Option<ReplyTarget>,
     /// The command the message invokes, reported beside the text: the
     /// leading command token, a self-directed handle suffix normalized
     /// away. The text itself is never rewritten.
@@ -168,6 +175,7 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity) -> Translation {
         channel_kind,
         authority,
         addressed,
+        reply_target: reply_target_of(message, me),
         command: invoked_command(text, me),
         sender: SenderIdentity {
             external_id: from.id.to_string(),
@@ -311,6 +319,14 @@ pub(crate) fn chat_id_of(key: &ChannelKey) -> Option<i64> {
     key.channel.parse().ok()
 }
 
+/// The message a stored reply target names — the inverse of the decimal
+/// spelling [`reply_target_of`] stored the id under, so both directions of
+/// the naming rule live beside each other. `None` names a target this
+/// adapter did not mint; the send goes out unthreaded.
+pub(crate) fn message_id_of(origin: &str) -> Option<i64> {
+    origin.parse().ok()
+}
+
 /// Whether the text mentions the bot by username. A mention is `@` followed
 /// by exactly the bot's username as one whole handle token — the platform's
 /// handle alphabet is ASCII letters, digits and the underscore — compared
@@ -377,6 +393,22 @@ fn replies_to_bot(message: &Incoming, me: &BotIdentity) -> bool {
         .as_ref()
         .and_then(|replied| replied.from.as_ref())
         .is_some_and(|author| author.id == me.id)
+}
+
+/// The reply target the message carries, in the core's vocabulary
+/// (2026-08-23): a reply to one of the bot's own messages is the
+/// assistant-message fact — no origin rides it — and every other reply
+/// with a usable id contributes that id as the opaque origin, in the same
+/// decimal spelling [`Pending::origin`] uses for the message's own id. A
+/// reply without a usable id stores no target.
+fn reply_target_of(message: &Incoming, me: &BotIdentity) -> Option<ReplyTarget> {
+    let replied = message.reply_to_message.as_ref()?;
+    if replies_to_bot(message, me) {
+        return Some(ReplyTarget::AssistantMessage);
+    }
+    replied.message_id.map(|id| ReplyTarget::Message {
+        origin: id.to_string(),
+    })
 }
 
 /// The message's text, or its caption when the message is media with a
@@ -497,6 +529,7 @@ mod tests {
                         last_name: None,
                         username: None,
                     }),
+                    message_id: Some(19),
                 }),
                 pinned_message: None,
             }),
@@ -550,6 +583,47 @@ mod tests {
     fn group_addressing_reads_the_replied_author() {
         assert!(recorded(&group_update("thanks!", Some(4242))).addressed);
         assert!(!recorded(&group_update("thanks!", Some(9))).addressed);
+    }
+
+    /// The reply-target translation (2026-08-23): a reply to another
+    /// person's message carries that message's id as the opaque origin, a
+    /// reply to the bot's own message carries the assistant-message fact,
+    /// a reply without a usable id stores no target, and a non-reply
+    /// stores none either.
+    #[test]
+    fn the_reply_target_translates_beside_the_addressed_flag() {
+        assert_eq!(
+            recorded(&group_update("report this", Some(9))).reply_target,
+            Some(ReplyTarget::Message {
+                origin: "19".into()
+            }),
+            "a reply to a member carries the replied-to id as the origin"
+        );
+        assert_eq!(
+            recorded(&group_update("thanks!", Some(4242))).reply_target,
+            Some(ReplyTarget::AssistantMessage),
+            "a reply to the bot's own message is the assistant-message fact"
+        );
+        assert_eq!(
+            recorded(&group_update("no reply here", None)).reply_target,
+            None,
+            "a non-reply stores no target"
+        );
+
+        let mut idless = group_update("report this", Some(9));
+        idless
+            .message
+            .as_mut()
+            .expect("the fixture carries a message")
+            .reply_to_message
+            .as_mut()
+            .expect("the fixture carries a reply")
+            .message_id = None;
+        assert_eq!(
+            recorded(&idless).reply_target,
+            None,
+            "a reply without a usable id stores no target"
+        );
     }
 
     /// The display name composes the first and last names, and a username

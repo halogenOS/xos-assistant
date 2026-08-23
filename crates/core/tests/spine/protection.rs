@@ -73,6 +73,7 @@ async fn silent_assistant(
             protection,
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await
@@ -128,6 +129,9 @@ async fn the_appended_migration_adds_the_columns_and_the_index() {
 /// tables), add the columns, the index and the palette table, advance the
 /// version, and leave the pre-existing row reading the typed absence in
 /// both stamp columns.
+// The length is the upgrade story itself: write, rewind, reopen, pin every
+// appended step's artifact.
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     let db = support::TempDb::new("v3-upgrade");
@@ -153,6 +157,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                     1,
                     Authority::Member,
                     Some("scripted:41"),
+                    None,
                     "2026-08-21T00:00:00+00:00",
                     Stamp {
                         addressed: true,
@@ -176,12 +181,16 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                 "DROP INDEX {index};
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN limited;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN debt_authority;
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN reply_target;
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN reply_to_assistant;
                  DROP TABLE {palette};
                  DROP TABLE {note};
+                 DROP TABLE {report};
                  DROP TABLE group_authorizations;",
                 index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
                 palette = assistant_core::tools::palette::TOOL_PALETTE_TABLE,
                 note = assistant_core::note::CONTEXT_NOTE_TABLE,
+                report = assistant_core::tools::report::REPORT_TABLE,
             ))?;
             Ok(())
         })
@@ -197,10 +206,29 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     let (columns, index_count) = stamp_schema(&reopened).await;
     assert!(columns.iter().any(|name| name == "limited"));
     assert!(columns.iter().any(|name| name == "debt_authority"));
+    assert!(
+        columns.iter().any(|name| name == "reply_target"),
+        "the reply-target step added its origin column"
+    );
+    assert!(
+        columns.iter().any(|name| name == "reply_to_assistant"),
+        "the reply-target step added its assistant-reply column"
+    );
     assert_eq!(index_count, 1, "the appended step created the index");
+    let report_tables: i64 =
+        agent_ledger::store::domain_run(&reopened.tx(), assistant_core::schema::DOMAIN, |conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                [assistant_core::tools::report::REPORT_TABLE],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .expect("the table listing reads");
+    assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        8,
+        10,
         "the appended steps advanced the domain's version"
     );
 
@@ -213,6 +241,11 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert!(
         rows[0].fields.get("debt_authority").is_none(),
         "the pre-existing row reads null in the debt authority"
+    );
+    assert!(
+        rows[0].fields.get("reply_target").is_none()
+            && rows[0].fields.get("reply_to_assistant").is_none(),
+        "the pre-existing row reads null in both reply facts"
     );
     assert_eq!(
         rows[0].fields["answer_due"],
@@ -444,6 +477,7 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
             protection: budgets(None, Some((1, 600))),
             operators: support::operator_config(),
             privacy_policy_address: None,
+            moderation_handle: None,
         },
     )
     .await
@@ -740,6 +774,7 @@ async fn a_pre_migration_owing_tail_folds_to_its_stored_sender_authority() {
                 receipt.principal_id,
                 Authority::Admin,
                 None,
+                None,
                 "2026-08-21T00:00:00+00:00",
                 // The old binary's stamp: addressed and answer-due, with
                 // neither protection fact — written literally, not through
@@ -838,6 +873,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
                 protection: protection.clone(),
                 operators: support::operator_config(),
                 privacy_policy_address: None,
+                moderation_handle: None,
             },
         )
         .await
@@ -865,6 +901,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
                 protection,
                 operators: support::operator_config(),
                 privacy_policy_address: None,
+                moderation_handle: None,
             },
         )
         .await

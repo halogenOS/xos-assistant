@@ -103,6 +103,31 @@ pub(crate) async fn claim(
     winner.ok_or(CoreError::ClaimLost)
 }
 
+/// The kind a conversation's channel was recorded as at creation, if the
+/// mapping exists — what the report tool's group-only refusal reads
+/// (decided 2026-08-23).
+///
+/// # Errors
+///
+/// [`StoreError`] if the query fails, the stored kind falls outside the
+/// closed vocabulary, or the store's actor has stopped.
+pub(crate) async fn kind_for_conversation(
+    tx: &StoreTx,
+    conversation_id: i64,
+) -> Result<Option<ChannelKind>, StoreError> {
+    domain_run(tx, DOMAIN, move |conn| {
+        let found: Option<String> = conn
+            .query_row(
+                "SELECT kind FROM channels WHERE conversation_id = ?1",
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        found.map(|kind| parse_kind(&kind)).transpose()
+    })
+    .await
+}
+
 /// The channel key a conversation maps back to, if the mapping exists.
 ///
 /// # Errors

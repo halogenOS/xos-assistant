@@ -2,7 +2,8 @@
 
 Date: 2026-08-23. What a group operator does to run the assistant in a
 group, and the exact rules the assistant reads by. The mechanisms behind it
-are recorded in decisions 0047 through 0054.
+are recorded in decisions 0047 through 0054, and the report setup in 0060
+and 0062.
 
 ## Admitting the assistant into a group
 
@@ -61,6 +62,37 @@ group governs its assistant — and the boundary is the group's own
 administrator set, which controls pinning. The byte bound above caps the
 surface; there is no second control beyond the group's own admin
 discipline.
+
+## The report setup
+
+When a member replies to an offending message and asks the assistant for a
+report, the assistant files one with the group's moderation bot: it sends
+the fixed `/report@<handle>` line as a reply to the reported message, at
+most once per group within the report window, and confirms the filing in
+its answer. The handle comes from the `moderation_handle` configuration
+key; with the key absent, the report tool does not exist: a report ask is
+answered as ordinary conversation and nothing is ever filed. What the
+assistant says in that answer is the model's own prose — no mechanism
+scripts a "cannot report" line.
+
+Three platform-side switches make the filing reach the moderation bot, and
+all three are the operator's to set:
+
+1. **Bot-to-bot communication is enabled for the assistant** in the
+   platform's bot management surface, so the assistant's messages reach
+   another bot at all.
+2. **The moderation bot's bot-to-bot setting is opened to all bots**, so it
+   reads the assistant's report command.
+3. **The assistant is NOT a group administrator.** The moderation bot
+   ignores administrators' reports, so an administrator assistant files
+   into silence. Keep the assistant an ordinary member and turn its privacy
+   mode off instead of promoting it.
+
+One unknown, stated plainly: whether the moderation bot honors a report
+filed by a bot at all is undocumented on the platform. The first live
+filing settles it; until then, treat the report path as unproven in
+production and verify the moderation bot's reaction after the first real
+report.
 
 ## The privacy command
 

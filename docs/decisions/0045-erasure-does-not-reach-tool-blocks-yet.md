@@ -25,3 +25,11 @@ improvements list beside the other seams. OPEN.
 - **A consumer-side scrub of framework tables.** Reaching into another crate's
   storage names its internals; decision 0032 already records what that coupling
   costs where it was unavoidable.
+
+---
+
+Narrowed 2026-08-23, by decision 0063: the report block — a consumer kind in a
+consumer table — is reached by erasure directly, keyed by the reported principal
+it stores for exactly that purpose. What stays OPEN here is exactly the
+framework-owned surface: tool call and result blocks, whose input and result can
+quote a person's prose, still waiting on the framework seam.

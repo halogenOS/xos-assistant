@@ -166,6 +166,11 @@ framework seam, and both are named in the public policy.
 - No moderation capability ships: the warn, report and ban lines are held out of the
   system prompt until their mechanisms exist (decision 0046).
 
+  > Amended 2026-08-23: the report mechanism now exists and its line returned to the
+  > prompt; the warn and ban lines stay held. The addendum in section 12 assesses the
+  > report and the wiki fetch this unit added — the review trigger "any moderation
+  > capability shipping" fired and is answered there.
+
 ## 4. Necessity and proportionality
 
 **Is storing every message necessary?** Purposes 1 and 2 cannot be served by storing only
@@ -358,3 +363,48 @@ Any one of these triggers a review, and none of them is optional:
 - New guidance from the German authorities or the EDPB on conversational AI, or a
   decision that changes the legitimate-interest analysis.
 - Twelve months since this date, with no other trigger.
+
+## 12. Addendum, 2026-08-23: the report and the wiki fetch
+
+The review trigger "any moderation capability shipping" fired with the report
+feature, and this addendum is the assessment it demands; the wiki fetch shipped in
+the same unit and is covered with it. This document is a draft amended in place, per
+its own status line.
+
+**The report, described.** A member replies to an offending message and asks the
+assistant for a report. The assistant resolves the reported message from that reply —
+never from its own judgment or the model's choice — and appends a report record
+carrying the reported message's platform identifier, the reported sender's internal
+identifier, and a fixed command line naming the group's moderation bot. The line is
+then sent into the group as a reply to the reported message, where the moderation
+bot forwards it to the group's administrators. The assistant decides nothing: no
+detection, no scoring, no automatic filing — a person asks, a person judges.
+
+**What it changes for the people concerned.**
+
+- *A new disclosure path.* The report event — "this message was reported" — becomes
+  visible to the group's administrators through the moderation bot. The message
+  itself was already visible to them; what is new is the reported-ness. The event
+  carries the message's identifier, no prose and no names from the assistant's side.
+- *A new stored identifier.* The reported message's identifier and its sender's
+  internal identifier are stored on the report record, precisely so erasure can
+  reach it: the reported person's deletion empties the record's message reference,
+  and an emptied report is never sent. The reporter's own reply reference sits on
+  their message row and is emptied by their deletion like the rest of their row.
+- *Abuse of the path.* A member could ask for reports in bad faith. The bound is
+  one filed report per group per report window, each one costs the asker an answer
+  from their own answering budget, and the human administrators behind the
+  moderation bot are the judgment — the assistant amplifies a member's ask to the
+  admins, nothing more.
+
+**The wiki fetch.** A wiki question makes the assistant fetch one page of the
+project's public wiki. The request carries a page name and nothing about any person;
+responses are cached in memory for five minutes. This is the same shape as the
+existing forge and mirror lookups — a public project source, not a recipient of
+personal data — and section 3.5 is amended by naming it there in spirit; the
+records-of-processing recipient table carries the row.
+
+**Judgment.** The report is human-initiated, human-judged, bounded, and erasable;
+the wiki fetch carries no personal data. The overall judgment of section 8 stands:
+the residual risk is not high in the meaning of Article 36(1). The warn and ban
+lines remain held out, and their shipping remains a review trigger.

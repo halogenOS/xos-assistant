@@ -325,34 +325,6 @@ pub(crate) async fn newest_text(
     .await
 }
 
-/// The newest block of one conversation that is not a context note — the
-/// bounded read behind the entry point's owing-tail walk. The consumer walk
-/// reads through context notes exactly (refined 2026-08-23), and a tail
-/// cannot see behind itself, so this query answers what stands behind the
-/// notes in one row instead of hydrating the conversation.
-///
-/// # Errors
-///
-/// [`StoreError`] if the query fails or the store's actor has stopped.
-pub(crate) async fn newest_block_id_past_notes(
-    store: &Store,
-    conversation_id: i64,
-) -> Result<Option<i64>, StoreError> {
-    domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
-        Ok(conn
-            .query_row(
-                "SELECT cb.block_id FROM conversation_blocks cb \
-                 JOIN blocks b ON b.id = cb.block_id \
-                 WHERE cb.conversation_id = ?1 AND b.block_type <> ?2 \
-                 ORDER BY cb.id DESC LIMIT 1",
-                (conversation_id, CONTEXT_NOTE_KIND),
-                |row| row.get(0),
-            )
-            .optional()?)
-    })
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,14 +481,14 @@ mod tests {
         );
     }
 
-    // ─── The bounded hot-path readers ────────────────────────────────────
+    // ─── The bounded hot-path reader ─────────────────────────────────────
 
     /// A conversation whose tail is a run of notes: the newest-text reader
-    /// answers the newest note per topic, and the past-notes reader
-    /// answers the block standing behind the whole run — each from its one
-    /// bounded query, never a hydration.
+    /// answers the newest note per topic from its one bounded query, never
+    /// a hydration. The kind-agnostic read behind the whole run lives in
+    /// the ledger module, with its own pin.
     #[tokio::test]
-    async fn the_bounded_readers_answer_the_newest_note_and_the_block_behind_the_notes() {
+    async fn the_bounded_reader_answers_the_newest_note_per_topic() {
         let store =
             Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
         let conversation = store
@@ -530,17 +502,7 @@ mod tests {
             None,
             "an empty conversation holds no note"
         );
-        assert_eq!(
-            newest_block_id_past_notes(&store, conversation)
-                .await
-                .expect("the empty read runs"),
-            None
-        );
 
-        let behind = store
-            .insert_text_block(conversation, Role::User, "the block behind".into())
-            .await
-            .expect("the text block appends");
         for (topic, text) in [
             (NoteTopic::Title, "The first title"),
             (NoteTopic::Rules, "The first rules"),
@@ -572,13 +534,6 @@ mod tests {
                 .expect("the title read runs")
                 .as_deref(),
             Some("The newest title")
-        );
-        assert_eq!(
-            newest_block_id_past_notes(&store, conversation)
-                .await
-                .expect("the past-notes read runs"),
-            Some(behind),
-            "the whole note run is read through to the block behind it"
         );
     }
 

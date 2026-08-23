@@ -325,7 +325,14 @@ pub const UNROUTABLE: &str = "http://127.0.0.1:1";
 pub async fn start_assistant() -> Fixture {
     start_assistant_with_tools(
         None,
-        assistant_core::tools::ToolSet::production_lookups(UNROUTABLE, UNROUTABLE, None),
+        assistant_core::tools::ToolSet::production_lookups(
+            assistant_core::tools::LookupEndpoints {
+                forge: UNROUTABLE.into(),
+                mirror: UNROUTABLE.into(),
+                mirror_token: None,
+                wiki: UNROUTABLE.into(),
+            },
+        ),
     )
     .await
 }
@@ -335,6 +342,20 @@ pub async fn start_assistant() -> Fixture {
 pub async fn start_assistant_with_tools(
     tool_script: Option<ToolScript>,
     tools: assistant_core::tools::ToolSet,
+) -> Fixture {
+    start_assistant_moderating(tool_script, tools, None).await
+}
+
+/// The moderation handle the report round-trip configures — the report
+/// line's `/report@` suffix under test.
+pub const MODERATION_HANDLE: &str = "moderation_fixture_bot";
+
+/// The widest seam: the tool script, the tool set, and an optional
+/// moderation handle whose presence registers the report tool.
+pub async fn start_assistant_moderating(
+    tool_script: Option<ToolScript>,
+    tools: assistant_core::tools::ToolSet,
+    moderation_handle: Option<String>,
 ) -> Fixture {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let failures = Arc::new(AtomicUsize::new(0));
@@ -362,6 +383,7 @@ pub async fn start_assistant_with_tools(
             protection: assistant_core::ProtectionConfig::default(),
             operators: operator_config(),
             privacy_policy_address: None,
+            moderation_handle,
         },
     )
     .await

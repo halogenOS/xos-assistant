@@ -69,9 +69,12 @@ _Legal basis:_ Article 6(1)(f) GDPR.
 
 No advertising is displayed. No web analytics, tracking or profiling takes place. Nothing
 you write is sold, rented or passed on for marketing. Nothing you write is used to train a
-language model, by us or by our processor. The assistant builds no profile of anybody,
-takes no moderation action against anybody, and makes no automated decision within the
-meaning of Article 22 GDPR. Its answers are written by a language model and can be wrong.
+language model, by us or by our processor. The assistant builds no profile of anybody and
+makes no automated decision within the meaning of Article 22 GDPR. It takes no moderation
+action of its own: when a member asks it to report a message, it forwards that report to
+the group's moderation bot, and the group's administrators decide. The reported message's
+identifier is stored with the report, so the reported person's deletion request empties
+that reference too. Its answers are written by a language model and can be wrong.
 Treat them as a helpful member's answer and not as an official statement of the project.
 
 **Recipients and processors**

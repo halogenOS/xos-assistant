@@ -127,7 +127,12 @@ group and not only on a website, which is why the pinned rules carry it.
 ### 4.3 The impact on a member
 
 - **No decisions.** The assistant grants nothing, refuses nothing and takes no moderation
-  action. Nobody's standing in the community depends on it.
+  action of its own. Nobody's standing in the community depends on it.
+
+  > Amended 2026-08-23: the report feature lets a member ask the assistant to relay a
+  > report to the group's moderation bot. The assistant still decides nothing — a
+  > member starts it, the group's human administrators judge it — so the balancing
+  > above holds; the impact assessment's addendum carries the detail.
 - **No profiling, no scoring, no targeting.** The counters count messages in a window and
   nothing else.
 - **No new audience.** The people in the group already saw the message and the handle
@@ -217,6 +222,10 @@ again:
 6. No profiling, no secondary use, no sharing of the history, no training.
 7. No moderation capability without a fresh assessment (decision 0046 holds those lines
    out today).
+
+   > Amended 2026-08-23: the report capability shipped WITH its assessment — the
+   > impact assessment's addendum of the same date — so this safeguard is met, not
+   > removed. The condition continues to bind the held-out warn and ban lines.
 8. Group admission restricted to the operator's own invitation, fail-closed (decision
    0052).
 
