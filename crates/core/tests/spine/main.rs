@@ -9,8 +9,8 @@
 //! protection (the budgets, the limited stamp, the debt authority),
 //! projection (role alternation under erasure), erasure with its stream
 //! ordering, the end-to-end turn, tools (the lookups against the scripted
-//! forge and mirror in `lookup_wire`, the palette, admission over the
-//! registration floor), and — behind the openrouter feature — the real
+//! forge and mirror in `lookup_wire`, the palette, the anchor gate over
+//! the turn's provenance), and — behind the openrouter feature — the real
 //! `OpenRouter` module against a loopback server.
 
 mod addressing;

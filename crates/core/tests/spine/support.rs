@@ -121,7 +121,7 @@ impl TurnHold {
 }
 
 /// What a test observes of the scripted provider: turn count, every turn
-/// request's projected messages, the failure script, and the echo count.
+/// request's projected messages, and the failure script.
 #[derive(Clone)]
 pub struct ScriptHandle {
     pub turns: Arc<AtomicUsize>,
@@ -129,11 +129,6 @@ pub struct ScriptHandle {
     /// How many upcoming turns fail with a scripted stream error before the
     /// script answers normally again.
     pub failures: Arc<AtomicUsize>,
-    /// How many requests the tool providers answered as redelivery echoes —
-    /// the framework's duplicate-turn redispatch, observed. The ignored
-    /// canary asserts this stays zero; while the framework defect stands it
-    /// does not.
-    pub echoes: Arc<AtomicUsize>,
 }
 
 impl ScriptHandle {
@@ -143,7 +138,6 @@ impl ScriptHandle {
             turns: Arc::new(AtomicUsize::new(0)),
             seen: Arc::new(std::sync::Mutex::new(Vec::new())),
             failures: Arc::new(AtomicUsize::new(0)),
-            echoes: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -290,11 +284,43 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                     usage: agent_ledger::providers::Usage::default(),
                     stop_reason: StopReason::EndTurn,
                 }));
+                // The trailing done real wires send after every completed
+                // turn: the framework settles the dispatch state on the
+                // closed signal, so a scripted turn ending without it would
+                // leave the state open and stall the suite.
+                let _ = response_tx.send(ProviderResponse::Done);
             }
         });
         (request_tx, responses)
     });
     (provider, handle)
+}
+
+/// A provider that accepts every stream request and never answers: the tail
+/// under it stays the newest recorded message, so every stamp is observable
+/// without racing an answer, and a ledger built through the production
+/// ingest path holds exactly the recorded messages.
+pub fn silent_provider() -> Box<dyn ProviderModule> {
+    provider_stub("Silent", "accepts and never answers", || {
+        let (request_tx, mut requests) = mpsc::unbounded_channel();
+        let (response_tx, responses) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while requests.recv().await.is_some() {}
+            drop(response_tx);
+        });
+        (request_tx, responses)
+    })
+}
+
+/// One process of a multi-phase test: its own runtime, dropped at the end
+/// of the phase so every task the assembly spawned dies with it — the
+/// store is shared state on disk, the runtime is not.
+pub fn process_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_time()
+        .build()
+        .expect("a runtime for one simulated process")
 }
 
 /// One tool-call script: what the opening turn calls, with what input, and
@@ -325,15 +351,11 @@ pub const CLOSING_ANSWER: &str = "The scripted closing answer.";
 /// before the call events, which is what lets a test absorb a message
 /// mid-turn, provably before the call block exists.
 ///
-/// The call round plays once. A request repeating an already-played call
-/// round is the framework's duplicate-turn redispatch — a defect, filed on
-/// the framework improvements list: a stale owed-turn signal fires between
-/// the call round's stream end and its call-block insert and dispatches a
-/// second model turn over the mid-turn ledger. The tolerance here answers
-/// that echo as an empty turn, recorded nowhere and counted on the
-/// handle's `echoes`, so it can neither double the scripted call nor skew
-/// a test's request count; the ignored canary in the tools suite flips
-/// when the framework fix ships.
+/// Every completed turn ends with the trailing done real wires send. A
+/// request repeating the already-played call round replays it — the
+/// framework's duplicate-turn window is closed, so a replay is a regression
+/// the suite's turn counts and ledger shapes fail loudly on instead of a
+/// tolerated echo.
 pub fn tool_scripted_provider(
     script: ToolScript,
     hold: Option<Arc<TurnHold>>,
@@ -348,11 +370,9 @@ pub fn tool_scripted_provider(
             let (response_tx, responses) = mpsc::unbounded_channel();
             let turns = Arc::clone(&observed.turns);
             let seen = Arc::clone(&observed.seen);
-            let echoes = Arc::clone(&observed.echoes);
             let script = script.clone();
             let hold = hold.clone();
             tokio::spawn(async move {
-                let mut call_round_played = false;
                 while let Some(request) = requests.recv().await {
                     let ProviderRequest::Stream { messages, .. } = request else {
                         continue;
@@ -365,14 +385,6 @@ pub fn tool_scripted_provider(
                         continue;
                     }
                     let answered = messages.iter().any(carries_tool_result);
-                    if !answered && call_round_played {
-                        // The framework's duplicate-turn redispatch (the
-                        // improvements-list item): tolerated as an empty
-                        // turn, recorded nowhere, counted for the canary.
-                        echoes.fetch_add(1, Ordering::SeqCst);
-                        send_empty_turn(&response_tx);
-                        continue;
-                    }
                     let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                     seen.lock().unwrap().push(messages);
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
@@ -387,9 +399,9 @@ pub fn tool_scripted_provider(
                                 usage: agent_ledger::providers::Usage::default(),
                                 stop_reason: StopReason::EndTurn,
                             }));
+                        let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
-                    call_round_played = true;
                     if let Some(narration) = &script.narration {
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
@@ -422,6 +434,7 @@ pub fn tool_scripted_provider(
                             json: script.input.clone(),
                         }));
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                    let _ = response_tx.send(ProviderResponse::Done);
                 }
             });
             (request_tx, responses)
@@ -450,6 +463,14 @@ pub struct Round {
     /// and its tool events — where the ledger's tail is the finalized
     /// narration text, and where the redispatch canary absorbs a message.
     pub hold_after_finalize: bool,
+    /// Whether the round announces on the hold and waits for one release
+    /// between its tool events and its trailing done — the still-open
+    /// stream a real wire keeps while the runner records the call and its
+    /// result, so a test can absorb a message that sits AFTER the round's
+    /// result and BEFORE the continuation the close re-drives. Only a
+    /// calling round holds here; a closing round's done follows its
+    /// message end directly.
+    pub hold_before_done: bool,
     /// The registered tool the round calls with a fixed probe input.
     /// `None` closes the turn with [`CLOSING_ANSWER`]; a closing round
     /// names no narration.
@@ -463,15 +484,11 @@ pub struct Round {
 /// and waits for one release, in round order, so a test absorbs messages
 /// at exactly the scripted windows.
 ///
-/// Each round plays once. A repeated request for an already-played round
-/// is the framework's duplicate-turn redispatch — the same defect
-/// [`tool_scripted_provider`] tolerates, filed on the framework
-/// improvements list: a message absorbed between a narration's finalize
-/// and the call's insert re-signals an owed turn against the mid-turn
-/// ledger. The repeat is answered as an empty turn that streams nothing
-/// and writes nothing, counted on the handle's `echoes`, so a replay can
-/// neither wedge a hold nor disturb the ledger under test; the ignored
-/// canary in the tools suite flips when the framework fix ships.
+/// Every completed round ends with the trailing done real wires send. A
+/// repeated request for an already-played round replays it — the
+/// framework's duplicate-turn window is closed, so a replay is a
+/// regression the redispatch canary's turn count fails loudly on instead
+/// of a tolerated echo.
 pub fn round_scripted_provider(
     rounds: Vec<Round>,
     hold: Arc<TurnHold>,
@@ -487,11 +504,9 @@ pub fn round_scripted_provider(
             let (response_tx, responses) = mpsc::unbounded_channel();
             let turns = Arc::clone(&observed.turns);
             let seen = Arc::clone(&observed.seen);
-            let echoes = Arc::clone(&observed.echoes);
             let rounds = Arc::clone(&rounds);
             let hold = Arc::clone(&hold);
             tokio::spawn(async move {
-                let mut played = std::collections::HashSet::new();
                 while let Some(request) = requests.recv().await {
                     let ProviderRequest::Stream { messages, .. } = request else {
                         continue;
@@ -504,15 +519,6 @@ pub fn round_scripted_provider(
                         continue;
                     }
                     let resolved = tool_result_parts(&messages);
-                    if !played.insert(resolved) {
-                        // The framework's duplicate-turn redispatch (the
-                        // improvements-list item): this round already
-                        // played, so the repeat is tolerated as an empty
-                        // turn, recorded nowhere, counted for the canary.
-                        echoes.fetch_add(1, Ordering::SeqCst);
-                        send_empty_turn(&response_tx);
-                        continue;
-                    }
                     let round = rounds[resolved.min(rounds.len() - 1)];
                     turns.fetch_add(1, Ordering::SeqCst);
                     seen.lock().unwrap().push(messages);
@@ -546,6 +552,9 @@ pub fn round_scripted_provider(
                             },
                         ));
                         let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                        if round.hold_before_done && !pause(&hold, resolved).await {
+                            break;
+                        }
                     } else {
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
@@ -558,23 +567,13 @@ pub fn round_scripted_provider(
                                 stop_reason: StopReason::EndTurn,
                             }));
                     }
+                    let _ = response_tx.send(ProviderResponse::Done);
                 }
             });
             (request_tx, responses)
         },
     );
     (provider, handle)
-}
-
-/// Answer one request as an empty turn: connected, then an immediate end
-/// with no content — the shape a redelivery echo gets, writing nothing to
-/// the ledger.
-fn send_empty_turn(response_tx: &mpsc::UnboundedSender<ProviderResponse>) {
-    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
-    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
-        usage: agent_ledger::providers::Usage::default(),
-        stop_reason: StopReason::EndTurn,
-    }));
 }
 
 /// Announce the round on the hold and wait for the test's release; false

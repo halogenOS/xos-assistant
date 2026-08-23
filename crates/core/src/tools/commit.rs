@@ -28,8 +28,8 @@ pub const DEFAULT_BASE_URL: &str = "https://git.halogenos.org";
 /// short bounds instead of waiting production ones.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The authority this tool requires — the member floor registration
-/// enforces (decision 0043's closure).
+/// The authority this tool requires — the bar the admission wrapper's
+/// provenance gate compares each call's reading against (decision 0043).
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 
 /// How much of a commit subject the compact result carries.

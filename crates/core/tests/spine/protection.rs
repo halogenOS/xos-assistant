@@ -55,21 +55,6 @@ async fn await_message(store: &Store, conversation_id: i64, count: usize) -> Blo
         .expect("the awaited message exists")
 }
 
-/// A provider that accepts every stream request and never answers: the tail
-/// under it stays the newest recorded message, so every stamp is observable
-/// without racing an answer.
-fn silent_provider() -> Box<dyn ProviderModule> {
-    support::provider_stub("Silent", "accepts and never answers", || {
-        let (request_tx, mut requests) = mpsc::unbounded_channel();
-        let (response_tx, responses) = mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            while requests.recv().await.is_some() {}
-            drop(response_tx);
-        });
-        (request_tx, responses)
-    })
-}
-
 /// A silent-provider assistant over a fresh in-memory store with the given
 /// budgets — the shape most stamp pins here share.
 async fn silent_assistant(
@@ -80,7 +65,7 @@ async fn silent_assistant(
     let assistant = Assistant::start(
         store.clone(),
         Arc::clone(&bus),
-        support::registry_of(silent_provider()),
+        support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
@@ -818,7 +803,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
         let assistant = Assistant::start(
             store.clone(),
             Arc::new(EventBus::new()),
-            support::registry_of(silent_provider()),
+            support::registry_of(support::silent_provider()),
             assistant_core::tools::ToolSet::new(),
             support::binding(),
             support::SYSTEM_PROMPT.into(),
@@ -840,7 +825,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
         let assistant = Assistant::start(
             store.clone(),
             Arc::clone(&bus),
-            support::registry_of(silent_provider()),
+            support::registry_of(support::silent_provider()),
             assistant_core::tools::ToolSet::new(),
             support::binding(),
             support::SYSTEM_PROMPT.into(),

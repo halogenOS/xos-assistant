@@ -1,25 +1,26 @@
 //! The tools unit at the core's edges: the two lookups against scripted
-//! wires (AC3, AC7), the fail-closed palette (AC4), the admission wrapper
-//! over the registration floor (AC5), the tail-only stamp under mid-turn
-//! absorption (AC6), and the budget composition (AC8).
+//! wires (AC3, AC7), the fail-closed palette (AC4), the anchor gate over
+//! the turn's provenance (AC5, lifted with the dispatch anchor), the
+//! tail-only stamp under mid-turn absorption (AC6), the budget composition
+//! (AC8), and the redispatch canary over the closed duplicate-turn window.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::{Block, CoreEvent, Store, ToolContext, ToolHandler, ToolOutcome};
+use agent_ledger::{Block, CoreEvent, EventBus, Store, ToolContext, ToolHandler, ToolOutcome};
 use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::commit::{self, CommitLookup};
 use assistant_core::tools::release::{self, ReleaseLookup};
-use assistant_core::{Authority, ChannelKind, ProtectionConfig};
+use assistant_core::{Assistant, Authority, ChannelKind, ProtectionConfig};
 use serde_json::{Value, json};
 
 use crate::lookup_wire::{LookupAnswer, LookupServer};
 use crate::support::{
-    self, CLOSING_ANSWER, Round, ToolScript, channel, inbound, inbound_as, recv_reply,
-    round_scripted_provider, tool_scripted_provider,
+    self, CLOSING_ANSWER, Round, ToolScript, carries, channel, inbound, inbound_as,
+    inbound_unaddressed, recv_reply, round_scripted_provider, tool_scripted_provider,
 };
 
 /// A commit-lookup input the scripts send — non-empty by the script's
@@ -116,21 +117,56 @@ impl ToolHandler<CoreEvent> for ProbeTool {
     }
 }
 
+/// The outbound edge a fixture's replies arrive on.
+type Replies = tokio::sync::mpsc::UnboundedReceiver<assistant_core::OutboundReply>;
+
 /// One assembled tool fixture: the assistant over the tool-scripted
-/// provider and the given set, plus the outbound edge.
+/// provider and the given set, under the default budgets, plus the
+/// outbound edge.
 async fn tool_fixture(
     script: ToolScript,
     hold: Option<Arc<support::TurnHold>>,
     tools: ToolSet,
-) -> (
-    support::Fixture,
-    tokio::sync::mpsc::UnboundedReceiver<assistant_core::OutboundReply>,
-) {
+) -> (support::Fixture, Replies) {
+    tool_fixture_configured(script, hold, tools, ProtectionConfig::default()).await
+}
+
+/// The tool fixture with the budgets spelled out, for the tests that pin
+/// how protection and tools compose.
+async fn tool_fixture_configured(
+    script: ToolScript,
+    hold: Option<Arc<support::TurnHold>>,
+    tools: ToolSet,
+    protection: ProtectionConfig,
+) -> (support::Fixture, Replies) {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let (provider, handle) = tool_scripted_provider(script, hold);
-    let fixture =
-        support::start_assistant_full(store, provider, handle, tools, ProtectionConfig::default())
-            .await;
+    assemble(store, provider, handle, tools, protection).await
+}
+
+/// One assembled fixture over the round-scripted provider, under the
+/// default budgets.
+async fn round_fixture(
+    rounds: Vec<Round>,
+    hold: Arc<support::TurnHold>,
+    tools: ToolSet,
+) -> (support::Fixture, Replies) {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let (provider, handle) = round_scripted_provider(rounds, hold);
+    assemble(store, provider, handle, tools, ProtectionConfig::default()).await
+}
+
+/// The one home of the assembly preamble every fixture shares: start the
+/// assistant over the given store and provider, and open the outbound
+/// edge.
+async fn assemble(
+    store: Store,
+    provider: Box<dyn agent_ledger::ProviderModule>,
+    handle: support::ScriptHandle,
+    tools: ToolSet,
+    protection: ProtectionConfig,
+) -> (support::Fixture, Replies) {
+    let fixture = support::start_assistant_full(store, provider, handle, tools, protection).await;
     let replies = fixture
         .assistant
         .replies(support::ADAPTER)
@@ -148,12 +184,10 @@ async fn tool_fixture(
 async fn the_commit_lookup_decodes_the_forge_answer() {
     let forge = LookupServer::start(LookupAnswer::Json(200, forge_commit_body())).await;
     let mut tools = ToolSet::new();
-    tools
-        .admit(
-            commit::REQUIRED_AUTHORITY,
-            CommitLookup::new(forge.base(), commit::DEFAULT_TIMEOUT),
-        )
-        .expect("the commit lookup sits at the member floor");
+    tools.admit(
+        commit::REQUIRED_AUTHORITY,
+        CommitLookup::new(forge.base(), commit::DEFAULT_TIMEOUT),
+    );
     let script = ToolScript {
         tool: commit::NAME.into(),
         input: COMMIT_INPUT.into(),
@@ -244,16 +278,14 @@ async fn the_release_lookup_decodes_the_mirror_answer_and_sends_the_token() {
     ))
     .await;
     let mut tools = ToolSet::new();
-    tools
-        .admit(
-            release::REQUIRED_AUTHORITY,
-            ReleaseLookup::new(
-                mirror.base(),
-                Some("FAKE-MIRROR-TOKEN".into()),
-                release::DEFAULT_TIMEOUT,
-            ),
-        )
-        .expect("the release lookup sits at the member floor");
+    tools.admit(
+        release::REQUIRED_AUTHORITY,
+        ReleaseLookup::new(
+            mirror.base(),
+            Some("FAKE-MIRROR-TOKEN".into()),
+            release::DEFAULT_TIMEOUT,
+        ),
+    );
     let script = ToolScript {
         tool: release::NAME.into(),
         input: r#"{"tag":"20260707.2230.36-rb"}"#.into(),
@@ -332,12 +364,10 @@ async fn an_absent_token_sends_no_header_and_the_default_is_the_latest_release()
     ))
     .await;
     let mut tools = ToolSet::new();
-    tools
-        .admit(
-            release::REQUIRED_AUTHORITY,
-            ReleaseLookup::new(mirror.base(), None, release::DEFAULT_TIMEOUT),
-        )
-        .expect("the release lookup sits at the member floor");
+    tools.admit(
+        release::REQUIRED_AUTHORITY,
+        ReleaseLookup::new(mirror.base(), None, release::DEFAULT_TIMEOUT),
+    );
     let script = ToolScript {
         tool: release::NAME.into(),
         input: "{\"tag\":null}".into(),
@@ -371,20 +401,16 @@ async fn an_absent_token_sends_no_header_and_the_default_is_the_latest_release()
 /// the failure loop below run the same two cases against each tool.
 fn commit_tools(base: String, timeout: Duration) -> ToolSet {
     let mut tools = ToolSet::new();
-    tools
-        .admit(commit::REQUIRED_AUTHORITY, CommitLookup::new(base, timeout))
-        .expect("the commit lookup sits at the member floor");
+    tools.admit(commit::REQUIRED_AUTHORITY, CommitLookup::new(base, timeout));
     tools
 }
 
 fn release_tools(base: String, timeout: Duration) -> ToolSet {
     let mut tools = ToolSet::new();
-    tools
-        .admit(
-            release::REQUIRED_AUTHORITY,
-            ReleaseLookup::new(base, None, timeout),
-        )
-        .expect("the release lookup sits at the member floor");
+    tools.admit(
+        release::REQUIRED_AUTHORITY,
+        ReleaseLookup::new(base, None, timeout),
+    );
     tools
 }
 
@@ -569,20 +595,12 @@ async fn a_conversation_without_a_palette_admits_no_tool_call() {
         None,
     );
     let mut tools = ToolSet::new();
-    tools
-        .admit(
-            commit::REQUIRED_AUTHORITY,
-            CommitLookup::new(forge.base(), commit::DEFAULT_TIMEOUT),
-        )
-        .expect("the commit lookup sits at the member floor");
-    let fixture =
-        support::start_assistant_full(store, provider, handle, tools, ProtectionConfig::default())
-            .await;
-    let mut replies = fixture
-        .assistant
-        .replies(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    tools.admit(
+        commit::REQUIRED_AUTHORITY,
+        CommitLookup::new(forge.base(), commit::DEFAULT_TIMEOUT),
+    );
+    let (fixture, mut replies) =
+        assemble(store, provider, handle, tools, ProtectionConfig::default()).await;
 
     let receipt = fixture
         .assistant
@@ -688,12 +706,19 @@ async fn a_created_conversation_names_exactly_the_two_tools_direct_and_group_ali
     assert_eq!(palettes[0], palettes[1], "direct and group get one palette");
 }
 
-// ─── AC5: admission over the registration floor ─────────────────────────
+// ─── The anchor gate: admission by the turn's provenance ─────────────────
 //
-// Authority enforcement is structural: `ToolSet::admit` refuses any tool
-// above the member floor, pinned with registry access in the tools
-// module's own tests. What remains observable at this edge is the admitted
-// side — a member-level tool passes the wrapper and runs.
+// Authority enforcement is the admission wrapper's provenance gate
+// (decision 0043): the call block's dispatch anchor names the turn's
+// summoning frontier, and the reading is the minimum over the anchor's
+// debt ORIGIN SET — the own-debt-takers in the contiguous answer-due
+// chain ending at the anchor, a pure propagator carrying no vote — and
+// the span's CO-SUMMONERS, the addressed, unlimited messages absorbed
+// between the anchor and the call, the same opened-debt predicate the
+// budgets count. Unaddressed chatter and a line the budgets refused
+// contribute nothing. Registration accepts any authority, so the gate
+// itself carries the whole rule, pinned here end to end under the
+// production event order.
 
 /// A member call is admitted for a member-level tool: the body runs and
 /// its result is recorded.
@@ -701,9 +726,7 @@ async fn a_created_conversation_names_exactly_the_two_tools_direct_and_group_ali
 async fn a_member_call_is_admitted_for_a_member_level_tool() {
     let (probe, executed) = ProbeTool::new("member_probe");
     let mut tools = ToolSet::new();
-    tools
-        .admit(Authority::Member, probe)
-        .expect("a member-level probe registers");
+    tools.admit(Authority::Member, probe);
     let script = ToolScript {
         tool: "member_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
@@ -738,6 +761,776 @@ async fn a_member_call_is_admitted_for_a_member_level_tool() {
     assert!(executed.load(Ordering::SeqCst), "the admitted body ran");
     assert_eq!(field(&blocks[4], "content"), "the probe ran");
     assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+}
+
+/// Admitted above the floor: an admin-summoned turn's call to an
+/// admin-level tool passes the anchor gate — the call's dispatch anchor
+/// names the admin summons, the interval holds nothing lower, and the body
+/// runs. The anchor premise is asserted on the stored call block itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_admin_summoned_turn_admits_an_admin_tool() {
+    let (probe, executed) = ProbeTool::new("admin_probe");
+    let mut tools = ToolSet::new();
+    tools.admit(Authority::Admin, probe);
+    let script = ToolScript {
+        tool: "admin_probe".into(),
+        input: r#"{"ask":"run"}"#.into(),
+        narration: None,
+    };
+    let (fixture, mut replies) = tool_fixture(script, None, tools).await;
+
+    let receipt = fixture
+        .assistant
+        .ingest(inbound_as(
+            &channel("dm-admin-summons"),
+            ChannelKind::Direct,
+            "boss",
+            Authority::Admin,
+            "probe it",
+        ))
+        .await
+        .expect("the summons ingests");
+    let blocks = settle_shape(
+        &fixture.store,
+        receipt.conversation_id,
+        "the admitted admin turn",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "tool_call",
+            "tool_result",
+            "text",
+        ],
+    )
+    .await;
+    assert!(executed.load(Ordering::SeqCst), "the admitted body ran");
+    assert_eq!(field(&blocks[4], "content"), "the probe ran");
+    assert_eq!(
+        blocks[3].dispatch_anchor,
+        Some(blocks[2].id),
+        "the call block anchors on the summoning message"
+    );
+    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+}
+
+/// Declined below the requirement: a member-summoned turn's call to an
+/// admin-level tool is declined by the anchor gate with the reading
+/// recorded in the error text, the body provably never runs, and the turn
+/// still closes with the model's answer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_summoned_turn_declines_an_admin_tool() {
+    let (probe, executed) = ProbeTool::new("admin_probe");
+    let mut tools = ToolSet::new();
+    tools.admit(Authority::Admin, probe);
+    let script = ToolScript {
+        tool: "admin_probe".into(),
+        input: r#"{"ask":"run"}"#.into(),
+        narration: None,
+    };
+    let (fixture, mut replies) = tool_fixture(script, None, tools).await;
+
+    let receipt = fixture
+        .assistant
+        .ingest(inbound(
+            &channel("dm-member-summons"),
+            ChannelKind::Direct,
+            "42",
+            "probe it",
+        ))
+        .await
+        .expect("the summons ingests");
+    let blocks = settle_shape(
+        &fixture.store,
+        receipt.conversation_id,
+        "the declined turn",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "tool_call",
+            "tool_error",
+            "text",
+        ],
+    )
+    .await;
+    let decline = field(&blocks[4], "error");
+    assert!(
+        decline.contains("needs admin authority"),
+        "the decline names the requirement: {decline}"
+    );
+    assert!(
+        decline.contains("reads member"),
+        "the decline records the reading, per decision 0043: {decline}"
+    );
+    assert!(
+        decline.contains("Do not call this tool again"),
+        "the decline teaches the model not to retry: {decline}"
+    );
+    assert!(
+        !executed.load(Ordering::SeqCst),
+        "declined means the body never ran"
+    );
+    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+}
+
+/// The narrated-turn absorbed shape the refuted walk escalated on: a
+/// member summons an admin-tool turn, and an addressed admin message is
+/// absorbed while the narration is still streaming — before the call
+/// block exists. The absorbed admin co-summons the turn, but the fold is
+/// a minimum: the member summons keeps the reading at member and the
+/// admin tool stays declined. Absorption cannot escalate a turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_admin_absorbed_mid_narration_cannot_escalate_a_member_summons() {
+    let (probe, executed) = ProbeTool::new("admin_probe");
+    let mut tools = ToolSet::new();
+    tools.admit(Authority::Admin, probe);
+    let hold = support::TurnHold::new();
+    let script = ToolScript {
+        tool: "admin_probe".into(),
+        input: r#"{"ask":"run"}"#.into(),
+        narration: Some("One moment.".into()),
+    };
+    let (fixture, mut replies) = tool_fixture(script, Some(hold.clone()), tools).await;
+    let key = channel("room-narrated-absorption");
+
+    let receipt = fixture
+        .assistant
+        .ingest(inbound(&key, ChannelKind::Group, "m", "the summons"))
+        .await
+        .expect("the summons ingests");
+    let conv = receipt.conversation_id;
+
+    // The narration is mid-stream — the ledger's tail is the streaming
+    // block — when the admin message is absorbed, provably before the
+    // call block exists.
+    hold.started().await;
+    await_streaming_tail(&fixture.store, conv).await;
+    fixture
+        .assistant
+        .ingest(inbound_as(
+            &key,
+            ChannelKind::Group,
+            "boss",
+            Authority::Admin,
+            "an admin mid-turn",
+        ))
+        .await
+        .expect("the mid-turn absorption ingests");
+    hold.release();
+
+    let blocks = settle_shape(
+        &fixture.store,
+        conv,
+        "the declined narrated turn",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "chat_message",
+            "text",
+            "tool_call",
+            "tool_error",
+            "text",
+        ],
+    )
+    .await;
+    // The premise: the absorbed admin is addressed — a co-summoner, not a
+    // bystander — and still cannot raise the minimum.
+    assert_eq!(blocks[3].fields["addressed"], json!(true));
+    let decline = field(&blocks[6], "error");
+    assert!(
+        decline.contains("reads member"),
+        "the absorbed admin cannot raise the fold above the member \
+         summons: {decline}"
+    );
+    assert!(
+        !executed.load(Ordering::SeqCst),
+        "declined means the body never ran"
+    );
+    assert_eq!(
+        blocks[5].dispatch_anchor,
+        Some(blocks[2].id),
+        "the call anchors on the summons, never on the absorbed message"
+    );
+    recv_closing(&mut replies).await;
+}
+
+/// The between-rounds absorbed shape the refuted walk had no bound for: an
+/// admin summons a turn, its narration finalizes, and an ADDRESSED member
+/// message is absorbed in the window between the finalize and the call's
+/// insert. The absorbed member opened a debt of its own — the turn under
+/// way answers it — so it co-summons the turn and the fold lowers the
+/// reading to member: the admin tool is declined, stated against the
+/// escalation the shape used to leak.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_addressed_member_absorbed_between_rounds_lowers_an_admin_summons() {
+    let (probe, executed) = ProbeTool::new("admin_probe");
+    let mut tools = ToolSet::new();
+    tools.admit(Authority::Admin, probe);
+    let hold = support::TurnHold::new();
+    let rounds = vec![
+        Round {
+            narration: Some("One moment."),
+            hold_after_finalize: true,
+            hold_before_done: false,
+            call: Some("admin_probe"),
+        },
+        Round {
+            narration: None,
+            hold_after_finalize: false,
+            hold_before_done: false,
+            call: None,
+        },
+    ];
+    let (fixture, mut replies) = round_fixture(rounds, Arc::clone(&hold), tools).await;
+    let key = channel("room-window-absorption");
+
+    let receipt = fixture
+        .assistant
+        .ingest(inbound_as(
+            &key,
+            ChannelKind::Group,
+            "boss",
+            Authority::Admin,
+            "the summons",
+        ))
+        .await
+        .expect("the summons ingests");
+    let conv = receipt.conversation_id;
+
+    // The narration finalized, the call not yet inserted: the ledger's
+    // tail is the finalized text when the member message is absorbed.
+    hold.started().await;
+    await_tail(&fixture.store, conv, "the finalized narration", "text").await;
+    fixture
+        .assistant
+        .ingest(inbound(
+            &key,
+            ChannelKind::Group,
+            "m",
+            "a member in the window",
+        ))
+        .await
+        .expect("the in-window absorption ingests");
+    hold.release();
+
+    let blocks = settle_shape(
+        &fixture.store,
+        conv,
+        "the declined windowed turn",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "text",
+            "chat_message",
+            "tool_call",
+            "tool_error",
+            "text",
+        ],
+    )
+    .await;
+    // The premise: the absorbed member is a co-summoner — addressed, and
+    // no budget refused it.
+    assert_eq!(blocks[4].fields["addressed"], json!(true));
+    assert_eq!(blocks[4].fields.get("limited"), None);
+    let decline = field(&blocks[6], "error");
+    assert!(
+        decline.contains("reads member"),
+        "the absorbed member co-summons and lowers the admin summons: {decline}"
+    );
+    assert!(
+        !executed.load(Ordering::SeqCst),
+        "declined means the body never ran"
+    );
+    assert_eq!(
+        blocks[5].dispatch_anchor,
+        Some(blocks[2].id),
+        "the call anchors on the summons across the absorption window"
+    );
+    recv_closing(&mut replies).await;
+}
+
+/// The narrowing decision 0043 documents, pinned from the admitted side: a
+/// resting member's unaddressed message recorded before the admin summons
+/// lies outside the provenance interval — the span starts strictly at the
+/// summons, and the summons carries no debt from a resting author — so the
+/// admin tool is still admitted even though the dispatched request carries
+/// the member's text. Without the span read's lower bound the pre-summons
+/// member would fold in and this turn would read member instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resting_member_before_the_summons_lies_outside_the_interval() {
+    let (probe, executed) = ProbeTool::new("admin_probe");
+    let mut tools = ToolSet::new();
+    tools.admit(Authority::Admin, probe);
+    let script = ToolScript {
+        tool: "admin_probe".into(),
+        input: r#"{"ask":"run"}"#.into(),
+        narration: None,
+    };
+    let (fixture, mut replies) = tool_fixture(script, None, tools).await;
+    let key = channel("room-pre-summons-member");
+
+    // The resting member: recorded before the summons, unaddressed,
+    // summoning nothing.
+    let receipt = fixture
+        .assistant
+        .ingest(inbound_unaddressed(
+            &key,
+            ChannelKind::Group,
+            "m",
+            "a bystander before the summons",
+        ))
+        .await
+        .expect("the resting message ingests");
+    let conv = receipt.conversation_id;
+    fixture
+        .assistant
+        .ingest(inbound_as(
+            &key,
+            ChannelKind::Group,
+            "boss",
+            Authority::Admin,
+            "probe it",
+        ))
+        .await
+        .expect("the summons ingests");
+
+    let blocks = settle_shape(
+        &fixture.store,
+        conv,
+        "the admitted turn behind a resting member",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "chat_message",
+            "tool_call",
+            "tool_result",
+            "text",
+        ],
+    )
+    .await;
+    // The premise of the narrowing: the member rests without a debt, so
+    // the summons opens its own at admin and carries nothing lower.
+    assert_eq!(blocks[2].fields["answer_due"], json!(false));
+    assert_eq!(blocks[3].fields["debt_authority"], json!("admin"));
+    assert!(executed.load(Ordering::SeqCst), "the admitted body ran");
+    assert_eq!(field(&blocks[5], "content"), "the probe ran");
+    assert_eq!(
+        blocks[4].dispatch_anchor,
+        Some(blocks[3].id),
+        "the call anchors on the summons, past the resting member"
+    );
+    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+}
+
+/// The refinement's modal case (decision 0043, refined 2026-08-22): live
+/// group chatter landing during the turn's span is not a veto. An admin
+/// summons an admin-tool turn, two unaddressed member lines are absorbed
+/// while the narration streams, and the tool is still admitted — an
+/// unaddressed message summons nothing and co-summons nothing, one rule
+/// for context in the span as before the summons.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unaddressed_bystanders_absorbed_mid_turn_contribute_nothing() {
+    let (probe, executed) = ProbeTool::new("admin_probe");
+    let mut tools = ToolSet::new();
+    tools.admit(Authority::Admin, probe);
+    let hold = support::TurnHold::new();
+    let script = ToolScript {
+        tool: "admin_probe".into(),
+        input: r#"{"ask":"run"}"#.into(),
+        narration: Some("One moment.".into()),
+    };
+    let (fixture, mut replies) = tool_fixture(script, Some(hold.clone()), tools).await;
+    let key = channel("room-bystanders");
+
+    let receipt = fixture
+        .assistant
+        .ingest(inbound_as(
+            &key,
+            ChannelKind::Group,
+            "boss",
+            Authority::Admin,
+            "probe it",
+        ))
+        .await
+        .expect("the summons ingests");
+    let conv = receipt.conversation_id;
+
+    // The narration is mid-stream when the two bystander lines land,
+    // provably before the call block exists — inside the interval the
+    // gate folds.
+    hold.started().await;
+    await_streaming_tail(&fixture.store, conv).await;
+    for text in ["a bystander line", "another bystander line"] {
+        fixture
+            .assistant
+            .ingest(inbound_unaddressed(&key, ChannelKind::Group, "m", text))
+            .await
+            .expect("the bystander line ingests");
+    }
+    hold.release();
+
+    let blocks = settle_shape(
+        &fixture.store,
+        conv,
+        "the admitted turn behind the bystanders",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "chat_message",
+            "chat_message",
+            "text",
+            "tool_call",
+            "tool_result",
+            "text",
+        ],
+    )
+    .await;
+    // The premise: both absorbed lines rest unaddressed inside the span.
+    for absorbed in [&blocks[3], &blocks[4]] {
+        assert_eq!(absorbed.fields["addressed"], json!(false));
+    }
+    assert!(executed.load(Ordering::SeqCst), "the admitted body ran");
+    assert_eq!(field(&blocks[7], "content"), "the probe ran");
+    assert_eq!(
+        blocks[6].dispatch_anchor,
+        Some(blocks[2].id),
+        "the call anchors on the admin summons, past the bystanders"
+    );
+    recv_closing(&mut replies).await;
+}
+
+/// A refused line is not a veto (decision 0043, refined 2026-08-22): under
+/// a one-answer channel budget the admin summons consumes the slot, so the
+/// addressed member line absorbed mid-turn is recorded limited — the
+/// protection unit refused it service — and joins no fold: the admin tool
+/// is admitted. The budgets and the gate agree on one opened-debt
+/// predicate; a message outside it neither spends budget nor lowers
+/// provenance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
+    let (probe, executed) = ProbeTool::new("admin_probe");
+    let mut tools = ToolSet::new();
+    tools.admit(Authority::Admin, probe);
+    let hold = support::TurnHold::new();
+    let script = ToolScript {
+        tool: "admin_probe".into(),
+        input: r#"{"ask":"run"}"#.into(),
+        narration: Some("One moment.".into()),
+    };
+    let (fixture, mut replies) = tool_fixture_configured(
+        script,
+        Some(hold.clone()),
+        tools,
+        support::budgets(None, Some((1, 600))),
+    )
+    .await;
+    let key = channel("room-limited-line");
+
+    let receipt = fixture
+        .assistant
+        .ingest(inbound_as(
+            &key,
+            ChannelKind::Group,
+            "boss",
+            Authority::Admin,
+            "probe it",
+        ))
+        .await
+        .expect("the summons ingests");
+    let conv = receipt.conversation_id;
+
+    // The narration is mid-stream when the flooder's addressed line lands:
+    // the channel budget's one slot is already the summons's, so the line
+    // is recorded limited.
+    hold.started().await;
+    await_streaming_tail(&fixture.store, conv).await;
+    fixture
+        .assistant
+        .ingest(inbound(
+            &key,
+            ChannelKind::Group,
+            "m",
+            "an addressed line past the budget",
+        ))
+        .await
+        .expect("the refused line ingests");
+    hold.release();
+
+    let blocks = settle_shape(
+        &fixture.store,
+        conv,
+        "the admitted turn behind the refused line",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "chat_message",
+            "text",
+            "tool_call",
+            "tool_result",
+            "text",
+        ],
+    )
+    .await;
+    // The premise: the absorbed line is addressed AND limited — the
+    // budget refused its debt, so it opened none and co-summons nothing.
+    assert_eq!(blocks[3].fields["addressed"], json!(true));
+    assert_eq!(blocks[3].fields["limited"], json!("channel"));
+    assert_eq!(blocks[3].fields["answer_due"], json!(false));
+    assert!(executed.load(Ordering::SeqCst), "the admitted body ran");
+    assert_eq!(field(&blocks[6], "content"), "the probe ran");
+    assert_eq!(
+        blocks[5].dispatch_anchor,
+        Some(blocks[2].id),
+        "the call anchors on the admin summons, past the refused line"
+    );
+    recv_closing(&mut replies).await;
+}
+
+/// The escalation ledger of 0043's second refinement (2026-08-22), under
+/// the production event order: a member summons a tool turn, round one's
+/// call records and its result inserts while the round's stream is still
+/// open — a real wire's shape, the trailing done held — and the admin's
+/// addressed line is absorbed AFTER that result, in the window whose
+/// tail-derived continuation anchor used to hand the whole turn the
+/// admin's identity. The continuation's admin call still anchors the
+/// ORIGINAL member summons, reads member, and is declined with its body
+/// never run: a line absorbed behind a result joins the fold as a
+/// co-summoner but can never re-anchor the turn it joins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_admin_absorbed_after_a_rounds_result_cannot_reanchor_the_turn() {
+    let (member_probe, member_ran) = ProbeTool::new("member_probe");
+    let (admin_probe, admin_ran) = ProbeTool::new("admin_probe");
+    let mut tools = ToolSet::new();
+    tools.admit(Authority::Member, member_probe);
+    tools.admit(Authority::Admin, admin_probe);
+    let hold = support::TurnHold::new();
+    let rounds = vec![
+        Round {
+            narration: None,
+            hold_after_finalize: false,
+            hold_before_done: true,
+            call: Some("member_probe"),
+        },
+        Round {
+            narration: None,
+            hold_after_finalize: false,
+            hold_before_done: false,
+            call: Some("admin_probe"),
+        },
+        Round {
+            narration: None,
+            hold_after_finalize: false,
+            hold_before_done: false,
+            call: None,
+        },
+    ];
+    let (fixture, mut replies) = round_fixture(rounds, Arc::clone(&hold), tools).await;
+    let key = channel("room-post-result-absorption");
+
+    let receipt = fixture
+        .assistant
+        .ingest(inbound(&key, ChannelKind::Group, "m", "the summons"))
+        .await
+        .expect("the summons ingests");
+    let conv = receipt.conversation_id;
+
+    // Round one is held before its trailing done: the call recorded, the
+    // result inserted, the stream provably still open when the admin's
+    // line lands — so the line sits between the result and the
+    // continuation the close re-drives.
+    hold.started().await;
+    await_tail(&fixture.store, conv, "round one's result", "tool_result").await;
+    fixture
+        .assistant
+        .ingest(inbound_as(
+            &key,
+            ChannelKind::Group,
+            "boss",
+            Authority::Admin,
+            "an admin after the result",
+        ))
+        .await
+        .expect("the post-result absorption ingests");
+    hold.release();
+
+    let blocks = settle_shape(
+        &fixture.store,
+        conv,
+        "the declined continuation",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "tool_call",
+            "tool_result",
+            "chat_message",
+            "tool_call",
+            "tool_error",
+            "text",
+        ],
+    )
+    .await;
+    // The premise: the absorbed admin sits between round one's result and
+    // the continuation's call, addressed, its own debt taken.
+    assert_eq!(blocks[5].fields["addressed"], json!(true));
+    assert_eq!(blocks[5].fields.get("limited"), None);
+    // The turn's identity: both calls anchor the original member summons —
+    // the continuation never re-anchors onto the absorbed admin.
+    assert_eq!(blocks[3].dispatch_anchor, Some(blocks[2].id));
+    assert_eq!(
+        blocks[6].dispatch_anchor,
+        Some(blocks[2].id),
+        "the continuation's call anchors the original summons, not the \
+         absorbed admin"
+    );
+    let decline = field(&blocks[7], "error");
+    assert!(
+        decline.contains("needs admin authority") && decline.contains("reads member"),
+        "the member summons keeps the reading at member: {decline}"
+    );
+    assert!(
+        member_ran.load(Ordering::SeqCst),
+        "round one's member tool ran"
+    );
+    assert!(
+        !admin_ran.load(Ordering::SeqCst),
+        "declined means the admin body never ran"
+    );
+    recv_closing(&mut replies).await;
+    // The continuation answered the absorbed line: its request carries it.
+    let requests = fixture.script.seen.lock().unwrap();
+    assert!(
+        requests[1]
+            .iter()
+            .any(|m| carries(m, "an admin after the result")),
+        "the continuation's request carries the absorbed admin line"
+    );
+}
+
+/// The veto ledger of 0043's second refinement (2026-08-22), under the
+/// production event order: an admin's command is followed on its heels by
+/// a member's unaddressed line, which propagates the admin's debt
+/// (decision 0021) and becomes the turn's summoning frontier — the anchor
+/// whose min-folded stamp reads member, the fold that used to veto the
+/// admin whose debt it merely carried. The gate reads the debt's ORIGIN
+/// SET through the propagator: the admin who took the debt votes, the
+/// carrier does not, and the admin tool admits and runs.
+///
+/// The ledger is written by the production ingest path in a first process
+/// whose provider never answers, so the propagating line is durably the
+/// tail; the second process boots its actor latched over the stored
+/// ledger, and the production unlatch intent — the very event the admin's
+/// own ingest emits — is replayed once, now that the propagating line is
+/// the tail, so the turn fires against the exact frontier the live
+/// incident dispatched on.
+#[test]
+fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
+    let db = support::TempDb::new("veto-ledger");
+    let key = channel("room-propagating-frontier");
+    let admin_tools = || {
+        let (probe, executed) = ProbeTool::new("admin_probe");
+        let mut tools = ToolSet::new();
+        tools.admit(Authority::Admin, probe);
+        (tools, executed)
+    };
+
+    // Process one: the admin command, then the member's unaddressed line —
+    // recorded and stamped by the production path, answered by nothing.
+    let conv = support::process_runtime().block_on(async {
+        let store = Store::open_with(db.path(), store_config()).expect("the first store opens");
+        let (tools, _never_consulted) = admin_tools();
+        let assistant = Assistant::start(
+            store.clone(),
+            Arc::new(EventBus::new()),
+            support::registry_of(support::silent_provider()),
+            tools,
+            support::binding(),
+            support::SYSTEM_PROMPT.into(),
+            ProtectionConfig::default(),
+        )
+        .await
+        .expect("the first assembly starts");
+        let receipt = assistant
+            .ingest(inbound_as(
+                &key,
+                ChannelKind::Group,
+                "boss",
+                Authority::Admin,
+                "probe it",
+            ))
+            .await
+            .expect("the command ingests");
+        assistant
+            .ingest(inbound_unaddressed(&key, ChannelKind::Group, "m", "lol"))
+            .await
+            .expect("the line on its heels ingests");
+        // The premise: the line propagates the admin's debt, and its own
+        // min-folded stamp — the ANSWERING fact — reads member.
+        let messages = chat_messages(&store, receipt.conversation_id).await;
+        assert_eq!(messages.len(), 2, "the command and the line");
+        assert_eq!(messages[1].fields["addressed"], json!(false));
+        assert_eq!(messages[1].fields["answer_due"], json!(true));
+        assert_eq!(
+            messages[1].fields["debt_authority"],
+            json!("member"),
+            "the carrier's min-folded stamp is the fold that vetoed the admin"
+        );
+        receipt.conversation_id
+    });
+
+    // Process two: the actor boots latched over the stored ledger, whose
+    // tail is the propagating line.
+    support::process_runtime().block_on(async {
+        let store = Store::open_with(db.path(), store_config()).expect("the store reopens");
+        let (tools, executed) = admin_tools();
+        let (provider, handle) = tool_scripted_provider(
+            ToolScript {
+                tool: "admin_probe".into(),
+                input: r#"{"ask":"run"}"#.into(),
+                narration: None,
+            },
+            None,
+        );
+        let (fixture, mut replies) =
+            assemble(store, provider, handle, tools, ProtectionConfig::default()).await;
+        fixture.bus.emit(CoreEvent::UnlatchRequested {
+            conversation_id: conv,
+        });
+
+        let blocks = settle_shape(
+            &fixture.store,
+            conv,
+            "the admitted propagated turn",
+            &[
+                "system_prompt",
+                "tool_palette",
+                "chat_message",
+                "chat_message",
+                "tool_call",
+                "tool_result",
+                "text",
+            ],
+        )
+        .await;
+        assert_eq!(
+            blocks[4].dispatch_anchor,
+            Some(blocks[3].id),
+            "the turn anchors on the propagating frontier, not on the \
+             admin command"
+        );
+        assert!(
+            executed.load(Ordering::SeqCst),
+            "the admitted admin body ran"
+        );
+        assert_eq!(field(&blocks[5], "content"), "the probe ran");
+        assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+    });
 }
 
 // ─── AC6: the tail-only stamp under mid-turn absorption ──────────────────
@@ -787,15 +1580,13 @@ async fn recv_closing(
 /// the ledger's tail is the turn's streaming machinery, which carries no
 /// unanswered chat debt to read. Correct for answering, since the turn
 /// under way answers the absorbed message together with the summons; and
-/// nothing reads the stamp for tool authority, since registration floors
-/// required authority at member (decision 0043's closure).
+/// tool admission never reads this stamp — the anchor gate reads the
+/// turn's provenance through the call's dispatch anchor (decision 0043).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_absorbed_message_opens_a_fresh_debt_at_its_own_authority() {
     let (probe, _ran) = ProbeTool::new("member_probe");
     let mut tools = ToolSet::new();
-    tools
-        .admit(Authority::Member, probe)
-        .expect("a member-level probe registers");
+    tools.admit(Authority::Member, probe);
     let hold = support::TurnHold::new();
     let script = ToolScript {
         tool: "member_probe".into(),
@@ -845,46 +1636,34 @@ async fn an_absorbed_message_opens_a_fresh_debt_at_its_own_authority() {
 
 // ─── The duplicate-turn redispatch canary ────────────────────────────────
 
-/// The canary for the framework's duplicate-turn redispatch — the defect
-/// the scripted providers' echo tolerance covers for, filed on the
-/// framework improvements list: a message absorbed between a narration's
-/// finalize and the tool call's insert makes the runtime dispatch a second
-/// model turn over the mid-turn ledger, which the providers answer as a
-/// counted empty turn. This test asserts the echo does NOT happen, so it
-/// is expected to FAIL while the defect stands, and it stays ignored until
-/// then. When the framework fix ships: un-ignore it, and once it holds,
-/// take the tolerance branches out of both scripted providers.
+/// The canary for the framework's duplicate-turn window, now closed
+/// (2026-08-22): a message absorbed between a narration's finalize and the
+/// tool call's insert used to make the runtime dispatch a second model
+/// turn over the mid-turn ledger. The dispatch state now settles only on
+/// the stream's closed signal, so the window cannot fire — the provider
+/// counts exactly the turn's two requests, and a regression would surface
+/// as a third counted request replaying an already-played round.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "pins the framework's duplicate-turn redispatch fix; expected to fail until it ships"]
 async fn the_redispatch_window_dispatches_no_echo_turn() {
     let (probe, _ran) = ProbeTool::new("member_probe");
     let mut tools = ToolSet::new();
-    tools
-        .admit(Authority::Member, probe)
-        .expect("a member-level probe registers");
+    tools.admit(Authority::Member, probe);
     let hold = support::TurnHold::new();
     let rounds = vec![
         Round {
             narration: Some("One moment."),
             hold_after_finalize: true,
+            hold_before_done: false,
             call: Some("member_probe"),
         },
         Round {
             narration: None,
             hold_after_finalize: false,
+            hold_before_done: false,
             call: None,
         },
     ];
-    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
-    let (provider, handle) = round_scripted_provider(rounds, Arc::clone(&hold));
-    let fixture =
-        support::start_assistant_full(store, provider, handle, tools, ProtectionConfig::default())
-            .await;
-    let mut replies = fixture
-        .assistant
-        .replies(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let (fixture, mut replies) = round_fixture(rounds, Arc::clone(&hold), tools).await;
     let key = channel("room-redispatch-canary");
 
     let receipt = fixture
@@ -918,9 +1697,10 @@ async fn the_redispatch_window_dispatches_no_echo_turn() {
 
     recv_closing(&mut replies).await;
     assert_eq!(
-        fixture.script.echoes.load(Ordering::SeqCst),
-        0,
-        "the redispatch window dispatched no echo turn"
+        fixture.script.turns.load(Ordering::SeqCst),
+        2,
+        "exactly the turn's two requests: the call round and the close — \
+         the window dispatched no third"
     );
 }
 
@@ -933,28 +1713,17 @@ async fn the_redispatch_window_dispatches_no_echo_turn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
     let forge = LookupServer::start(LookupAnswer::Json(200, forge_commit_body())).await;
-    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
-    let (provider, handle) = tool_scripted_provider(
+    let (fixture, mut replies) = tool_fixture_configured(
         ToolScript {
             tool: commit::NAME.into(),
             input: COMMIT_INPUT.into(),
             narration: None,
         },
         None,
-    );
-    let fixture = support::start_assistant_full(
-        store,
-        provider,
-        handle,
         commit_tools(forge.base(), commit::DEFAULT_TIMEOUT),
         support::budgets(Some((1, 600)), None),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .replies(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
     let key = channel("dm-budget");
 
     let receipt = fixture
@@ -1023,26 +1792,17 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
         "one tool call in total — the limited message summoned no tools"
     );
     assert_eq!(forge.requests().len(), 1, "no further forge request");
-    assert_one_turn_and_no_echo(&fixture);
-    let extra = replies.try_recv();
-    assert!(
-        extra.is_err(),
-        "the limited ask draws no reply; got {extra:?}"
-    );
-}
-
-/// One counted turn and zero tolerated echoes: a wrongly dispatched turn
-/// for the limited message would land as an echo, not a counted turn, so
-/// the zero is what keeps the no-turn claim falsifiable.
-fn assert_one_turn_and_no_echo(fixture: &support::Fixture) {
+    // A wrongly dispatched turn for the limited message would be counted —
+    // every request the provider serves increments the turn count — so the
+    // exact two keeps the no-turn claim falsifiable.
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
         2,
         "one answer slot: the opening and closing requests of one turn"
     );
-    assert_eq!(
-        fixture.script.echoes.load(Ordering::SeqCst),
-        0,
-        "no tolerated echo turn hides behind the counted one"
+    let extra = replies.try_recv();
+    assert!(
+        extra.is_err(),
+        "the limited ask draws no reply; got {extra:?}"
     );
 }

@@ -6,8 +6,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use agent_ledger::providers::ProviderRequest;
-use agent_ledger::{CoreEvent, EventBus, ProviderModule, Store};
+use agent_ledger::{CoreEvent, EventBus, Store};
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::schema::store_config;
 use assistant_core::{Assistant, ChannelKind, FAILURE_NOTICE, ReplyKind};
@@ -175,26 +174,6 @@ async fn a_failed_turn_yields_one_notice_and_the_next_addressed_message_reengage
     assert_eq!(reply.text, answer_to("the failing ask\n\nasking again"));
 }
 
-/// A provider that accepts every stream request and never answers: the tail
-/// under it stays the newest recorded message, which is what makes the
-/// stamp's propagation observable without a race against the answer.
-fn silent_provider() -> Box<dyn ProviderModule> {
-    support::provider_stub("Silent", "accepts and never answers", || {
-        let (request_tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
-        let (response_tx, responses) = tokio::sync::mpsc::unbounded_channel();
-        tokio::spawn(async move {
-            // Hold the response half open until teardown, answering nothing.
-            while let Some(request) = requests.recv().await {
-                let ProviderRequest::Stream { .. } = request else {
-                    continue;
-                };
-            }
-            drop(response_tx);
-        });
-        (request_tx, responses)
-    })
-}
-
 /// The write-time stamp, pinned deterministically: with the answer withheld,
 /// an unaddressed message written onto the heels of an addressed one reads
 /// the tail's unanswered debt and carries it forward — recorded unaddressed,
@@ -205,7 +184,7 @@ async fn the_stamp_propagates_an_unanswered_debt_at_the_write() {
     let assistant = Assistant::start(
         store.clone(),
         Arc::new(EventBus::new()),
-        support::registry_of(silent_provider()),
+        support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),
@@ -260,7 +239,7 @@ async fn an_erased_tail_propagates_no_debt() {
     let assistant = Assistant::start(
         store.clone(),
         Arc::new(EventBus::new()),
-        support::registry_of(silent_provider()),
+        support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         support::binding(),
         support::SYSTEM_PROMPT.into(),

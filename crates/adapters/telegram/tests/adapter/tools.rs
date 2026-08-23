@@ -118,12 +118,10 @@ fn compact_result() -> String {
 /// A tool set holding the commit lookup against the scripted forge.
 fn commit_tools(forge: &ScriptedForge) -> ToolSet {
     let mut tools = ToolSet::new();
-    tools
-        .admit(
-            commit::REQUIRED_AUTHORITY,
-            CommitLookup::new(forge.base.clone(), commit::DEFAULT_TIMEOUT),
-        )
-        .expect("the commit lookup sits at the member floor");
+    tools.admit(
+        commit::REQUIRED_AUTHORITY,
+        CommitLookup::new(forge.base.clone(), commit::DEFAULT_TIMEOUT),
+    );
     tools
 }
 
