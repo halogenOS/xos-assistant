@@ -66,6 +66,30 @@ load-bearing and is sized by the reasoning-effort key.
   ordinary history), and an acceptance criterion pins the newest rules note in
   the request the model assesses on. Rejected: assessing against rules that may
   have scrolled out of context (silent moderation failure).
+- **The base prose carries no rules and no stale engagement or report copy,
+  2026-08-24.** The embedder's base prose (`prompts/assistant.md`) held a
+  hardcoded "Community rules, applies to everyone" list and a member-initiated
+  report instruction — both leaked in the live test: asked for the group's
+  rules, the model recited the base file's placeholder five instead of the
+  three the operator had pinned, and under this unit it would have MODERATED
+  against those placeholders, not the group's real rules. A group's rules are
+  runtime data, never prompt prose. So the base prose is reconciled to hold
+  only what is invariant across group and mode — the persona, the honest-AI
+  stance, the privacy-tool mechanics, the work ethic — and the group's rules
+  reach the model through exactly ONE channel: the pinned rules note
+  (`RULES_NOTE_LEAD`, "The group's rules are now:"), guaranteed in context by
+  this unit. The base prose loses the hardcoded rules list entirely; loses the
+  member-initiated report paragraph (superseded by this unit's composed
+  moderation teaching and the report tool's own reframed description); and
+  loses the addressed-only "stay quiet during regular conversations" framing
+  that contradicts unit 14's composed answering teaching, which alone owns when
+  the assistant speaks. The composed moderation teaching states that the only
+  rules are the pinned note's, and that with no rules note present there are no
+  rules — the model says so plainly, invents none, and reports nothing.
+  Rejected: leaving the hardcoded list (the leak itself, and moderation against
+  the wrong rules); a second rules source beside the pinned note (two truths,
+  the exact drift this unit exists to close); scrubbing the leak in a separate
+  unit (it is this unit's own subject — the rules the model assesses on).
 - **The tool's wording and guards are reframed for assessment, 2026-08-24.** The
   tool's description and result lines are rewritten from "a member's reply to the
   offending message" to "the message you are assessing that violates the rules,
@@ -145,3 +169,12 @@ palette-governed, group-only. No autonomous action beyond the report.
   registered tool — pinned. The documents ship: the policy assessment sentence,
   the DPIA purpose + false-positive residual, the compliance Article-22 note,
   the removed-member-report decision — pinned in the docs test.
+- **AC8** The base prose carries no rules and no stale copy: the shipped
+  `prompts/assistant.md`, and the composed system prompt built from it, contain
+  no hardcoded community-rules list and no member-initiated report instruction
+  — pinned by a content assertion. With a pinned rules note in session, a
+  rules-question turn answers from the note's text and cites nothing else; with
+  no rules note in session, the model states there are no rules set, invents
+  none, and moderation reports nothing (the no-rules path of AC4) — pinned. The
+  base prose no longer instructs "stay quiet during regular conversations"; the
+  composed answering teaching alone governs when the assistant speaks — pinned.
