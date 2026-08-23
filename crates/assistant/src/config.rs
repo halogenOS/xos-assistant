@@ -31,6 +31,11 @@ pub struct Configuration {
     /// The provider's identifier for the model every conversation is
     /// created under.
     pub model: String,
+    /// The provider's identifier for the model conversation titles are
+    /// derived with; absent, titles derive on the main model. Resolved
+    /// through [`Configuration::resolve_title_model`], which trims and
+    /// refuses an empty value.
+    pub title_model: Option<String>,
     /// The endpoint overrides; omitted entries keep the real hosts.
     #[serde(default)]
     pub endpoints: Endpoints,
@@ -270,6 +275,28 @@ impl Configuration {
                 }
                 Ok(Some(handle.to_owned()))
             }
+            None => Ok(None),
+        }
+    }
+
+    /// The model id conversation titles are derived with, `None` when the
+    /// key is absent — under which titles derive on the main model, so a
+    /// deployment pinned to one model never has its title traffic sent to a
+    /// model nobody named.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::TitleModelEmpty`] when the key is present but empty or
+    /// whitespace — an empty id would name no model and fail every title
+    /// derivation silently; omitting the key is how the main-model default
+    /// is chosen. A surviving id resolves trimmed: the pad is file
+    /// formatting, never identity.
+    pub fn resolve_title_model(&self) -> Result<Option<String>, StartError> {
+        match &self.title_model {
+            Some(model) => match model.trim() {
+                "" => Err(StartError::TitleModelEmpty),
+                trimmed => Ok(Some(trimmed.to_owned())),
+            },
             None => Ok(None),
         }
     }
@@ -828,6 +855,44 @@ mod tests {
             matches!(refused, StartError::WikiEndpointEmpty),
             "the refusal names the empty address; got {refused}"
         );
+    }
+
+    // ─── The title model ─────────────────────────────────────────────────
+
+    #[test]
+    fn the_title_model_resolves_trimmed_and_absent_means_the_main_model() {
+        let configuration = loaded(
+            "log = \"stderr\"",
+            "title_model = \" cheap/title-model \"\n",
+        );
+        assert_eq!(
+            configuration
+                .resolve_title_model()
+                .expect("the model id resolves")
+                .as_deref(),
+            Some("cheap/title-model"),
+            "the pad is file formatting, never identity"
+        );
+        assert_eq!(
+            loaded("log = \"stderr\"", "")
+                .resolve_title_model()
+                .expect("the absent key resolves"),
+            None,
+            "no title model by default — titles derive on the main model"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_whitespace_title_model_is_refused() {
+        for spelling in ["title_model = \"\"\n", "title_model = \"   \"\n"] {
+            let refused = loaded("log = \"stderr\"", spelling)
+                .resolve_title_model()
+                .expect_err("an empty model id must be refused");
+            assert!(
+                matches!(refused, StartError::TitleModelEmpty),
+                "the refusal names the empty model id; got {refused}"
+            );
+        }
     }
 
     #[test]
