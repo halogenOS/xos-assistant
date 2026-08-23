@@ -18,11 +18,11 @@ Data protection enquiries: [privacy@halogenos.org](mailto:privacy@halogenos.org)
 
 **Messages**
 
-Stored: the text of each message in a group the assistant belongs to, including the
-caption under a picture or a file; direct chats the same way; the group's title and its
-pinned rules, which can name a person; and every lookup the assistant makes in the
-project's public sources, with the result it received. Not stored: the media itself,
-edits, and posts made anonymously for the group, except a pinned rules text.
+We store the text of each message in a group the assistant belongs to, including the
+caption under a picture or a file, direct chats the same way, the group's title and its
+pinned rules, which can name a person, and every lookup the assistant makes in the
+project's public sources with the result it received. We do not store the media itself,
+edits, or posts made anonymously for the group, except a pinned rules text.
 
 The assistant does not look for sensitive content and cannot recognise it, so whatever a
 message carries is stored and sent on like any other text. If a stored message concerns you
