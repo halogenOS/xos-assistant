@@ -160,6 +160,23 @@ pub struct OperatorConfig {
     pub by_adapter: HashMap<String, String>,
 }
 
+/// Whether the assembly serves direct channels (decided 2026-08-23): the
+/// embedder's one switch for the whole direct-chat surface. Off, the entry
+/// point refuses a direct-channel inbound before anything is written — no
+/// mapping, no principal row, no ledger block, no answer, no deterministic
+/// reply — mirroring the unauthorized-group refusal's fail-closed shape.
+/// The default is on, so the generic assembly behaves as it always has; a
+/// deployment turns the switch off until its direct-chat feature set ships.
+/// Group channels are untouched by the switch either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DirectChats {
+    /// Direct channels are served: mapped, recorded and answered as ever.
+    #[default]
+    On,
+    /// Direct channels are refused fail-closed before any write.
+    Off,
+}
+
 /// A scripted pause between the on-delta newest-note read and its append —
 /// the observation race's test seam, mirroring the adapter's injectable
 /// sleep: a suite pins the stamp lock's serialization without racing the
@@ -180,6 +197,9 @@ pub struct AssemblyConfig {
     pub protection: ProtectionConfig,
     /// The operator wiring: who may admit the assistant into a group.
     pub operators: OperatorConfig,
+    /// Whether direct channels are served at all; off refuses them
+    /// fail-closed before any write.
+    pub direct_chats: DirectChats,
     /// The address the privacy command answers with; absent answers the
     /// not-yet-published line.
     pub privacy_policy_address: Option<String>,
@@ -221,6 +241,8 @@ pub struct Assistant {
     /// The operator wiring: who may admit the assistant into a group.
     /// Read-only after start.
     operators: OperatorConfig,
+    /// Whether direct channels are served at all. Read-only after start.
+    direct_chats: DirectChats,
     /// The address the privacy command answers with; absent answers the
     /// not-yet-published line. Read-only after start.
     privacy_policy_address: Option<String>,
@@ -297,6 +319,7 @@ impl Assistant {
             system_prompt,
             protection,
             operators,
+            direct_chats,
             privacy_policy_address,
             moderation_handle,
         } = config;
@@ -351,6 +374,7 @@ impl Assistant {
             streams,
             protection,
             operators,
+            direct_chats,
             privacy_policy_address,
             rules_acknowledged: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
             command_answered: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
@@ -379,7 +403,12 @@ impl Assistant {
     /// [`IngestOutcome::Withdraw`], touching neither the ledger nor the
     /// identity tables — the row-or-refusal shape is what makes the check
     /// survive lost leave calls and restarts alike. Direct channels are
-    /// untouched by the check.
+    /// untouched by the check; they carry their own admission instead
+    /// (decided 2026-08-23): with the assembly's [`DirectChats`] switch
+    /// off, a direct-channel inbound is refused the same fail-closed way
+    /// with [`IngestOutcome::Disregarded`] — nothing written, nothing
+    /// delivered, no directive to perform. On, the default, direct
+    /// channels pass exactly as they always have.
     ///
     /// An admitted message resolves or creates the sender's principal, maps
     /// the channel — creating the conversation under the assembly's
@@ -445,6 +474,14 @@ impl Assistant {
             && !authorization::is_authorized(&tx, &message.channel).await?
         {
             return Ok(IngestOutcome::Withdraw);
+        }
+        // The direct-chat admission, the same fail-closed shape as the
+        // group check above: refused before the sender's principal exists,
+        // before the channel maps, before any block appends — so a
+        // deployment with the switch off keeps a stranger's direct contact
+        // out of every table, not merely unanswered.
+        if message.channel_kind == ChannelKind::Direct && self.direct_chats == DirectChats::Off {
+            return Ok(IngestOutcome::Disregarded);
         }
         // Past admission, the write needs the sender's standing; delivered
         // unresolved, the message is refused transient and redelivers —

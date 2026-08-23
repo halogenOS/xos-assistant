@@ -34,6 +34,9 @@ struct ConfigOptions {
     /// Whether the file names the optional mirror-token secret, behind the
     /// suite's environment variable.
     mirror_token: bool,
+    /// The direct-chat switch's spelled value; absent omits the key, which
+    /// means on.
+    direct_chats: Option<&'static str>,
     /// Raw TOML appended after the named tables — the budget test's
     /// protection table.
     extra_tables: String,
@@ -46,6 +49,7 @@ impl Default for ConfigOptions {
             forge_root: None,
             mirror_root: None,
             mirror_token: false,
+            direct_chats: None,
             extra_tables: String::new(),
         }
     }
@@ -68,6 +72,7 @@ fn configuration(
         forge_root,
         mirror_root,
         mirror_token,
+        direct_chats,
         extra_tables,
     } = options;
     scratch.write("prompts/assistant.md", PROMPT);
@@ -85,6 +90,10 @@ fn configuration(
     } else {
         ""
     };
+    // A top-level key, so it must sit ahead of the file's first table.
+    let direct_chats_key = direct_chats
+        .map(|value| format!("direct_chats = {value:?}\n"))
+        .unwrap_or_default();
     scratch.write(
         "assistant.toml",
         &format!(
@@ -92,7 +101,8 @@ fn configuration(
              telegram_state_path = {:?}\n\
              prompt_dir = {:?}\n\
              log = {log_destination}\n\
-             model = \"test-vendor/test-model\"\n\n\
+             model = \"test-vendor/test-model\"\n\
+             {direct_chats_key}\n\
              [endpoints]\n\
              telegram = {telegram_root:?}\n\
              openrouter = {completions_base:?}\n\
@@ -402,6 +412,108 @@ async fn the_configured_budget_limits_answers_through_the_binary() {
         "the refused debt never reaches the model — the spend the limit exists to save"
     );
     drop(run);
+}
+
+/// The direct-chat switch, driven through the binary (decision 0069): with
+/// `direct_chats = "off"` in the configuration file, a direct message is
+/// disregarded before anything is written — the update is confirmed (a
+/// later poll asks past it, so the offset advances), no send goes out, no
+/// completion request is spent, and the message's distinctive text appears
+/// nowhere in the store file, which the run still created.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_direct_chat_switch_off_disregards_a_direct_message_through_the_binary() {
+    const PROBE: &str = "THE-DISTINCTIVE-OFF-SWITCH-PROBE";
+    let telegram = TelegramServer::start().await;
+    let completions = CompletionsServer::start().await;
+    let scratch = Scratch::new("direct-off");
+    let config = configuration(
+        &scratch,
+        &telegram.root(),
+        &completions.base(),
+        &ConfigOptions {
+            direct_chats: Some("off"),
+            ..ConfigOptions::default()
+        },
+    );
+
+    telegram.push_update(private_update(1, 42, PROBE));
+    let mut run = BinaryRun::spawn(
+        &[&config],
+        &[("PROCESS_TEST_BOT_TOKEN", TOKEN)],
+        &scratch.path("stderr.txt"),
+    );
+
+    // The confirmation proves processing: the poller confirms an update
+    // only after handling it, so a getUpdates asking from offset 2 means
+    // the direct message went through the whole path and was acknowledged.
+    let deadline = std::time::Instant::now() + DEADLINE;
+    loop {
+        let confirmed = telegram
+            .recorded("getUpdates")
+            .iter()
+            .any(|poll| poll.body["offset"].as_i64() == Some(2));
+        if confirmed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting the poll that confirms the disregarded update"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // A grace period so a wrongly spawned answer would surface as a send.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        telegram.recorded("sendMessage").is_empty(),
+        "the disregarded message draws no send of any kind"
+    );
+    assert_eq!(
+        completions.hit_count(),
+        0,
+        "no model turn is spent on a disregarded message"
+    );
+
+    run.terminate();
+    assert!(run.wait_exit(STOP_BOUND).await.success());
+    // The store exists — the scan binds — and holds nothing of the message.
+    assert_absent(
+        &scratch.path("store.db"),
+        PROBE,
+        "the disregarded message's text",
+    );
+}
+
+/// The switch's other word, driven through the binary: `direct_chats =
+/// "on"` spelled out decodes and behaves exactly like the absent key — the
+/// direct message is answered over the scripted wire.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_direct_chat_switch_on_spelled_out_serves_direct_chats() {
+    let telegram = TelegramServer::start().await;
+    let completions = CompletionsServer::start().await;
+    let scratch = Scratch::new("direct-on");
+    let config = configuration(
+        &scratch,
+        &telegram.root(),
+        &completions.base(),
+        &ConfigOptions {
+            direct_chats: Some("on"),
+            ..ConfigOptions::default()
+        },
+    );
+
+    telegram.push_update(private_update(1, 42, "hello again"));
+    let mut run = BinaryRun::spawn(
+        &[&config],
+        &[("PROCESS_TEST_BOT_TOKEN", TOKEN)],
+        &scratch.path("stderr.txt"),
+    );
+
+    let sends = telegram.await_recorded("sendMessage", 1).await;
+    assert_eq!(sends[0].body["chat_id"].as_i64(), Some(42));
+    assert_eq!(sends[0].body["text"].as_str(), Some(ANSWER));
+
+    run.terminate();
+    assert!(run.wait_exit(STOP_BOUND).await.success());
 }
 
 /// A configuration the process cannot read exits nonzero before anything

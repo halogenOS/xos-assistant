@@ -74,6 +74,10 @@ file path per secret — and never appear in the file itself:
     # titles derive on the main model above — never on a model the file
     # does not name.
     #title_model = "<the provider's id for the title model>"
+    # Optional: whether direct chats are served — "on" (the default) or
+    # "off". Off, a direct message is refused before anything is written:
+    # nothing is recorded, nothing is answered. Groups are unaffected.
+    #direct_chats = "off"
 
     [secrets.bot_token]
     env = "ASSISTANT_BOT_TOKEN"
@@ -141,6 +145,12 @@ deterministically, without a model turn: with `Privacy policy: ` plus the config
 `privacy_policy` address, or with the fixed not-yet-published line when the key is
 absent — an empty value is refused at start. The answer goes out at most once per
 chat per window; repeats within it are recorded in silence.
+
+Direct chats are served by default and can be switched off with `direct_chats =
+"off"`: a direct message is then refused before anything is written — no identity
+row, no conversation, no answer, the `/privacy` command included — while groups are
+served as ever. The two spelled values are the whole vocabulary; anything else
+refuses the start.
 
 The process logs its startup facts — never a secret — and stops cleanly on SIGTERM.
 Deployment wiring, including the group-privacy platform setting the record-all

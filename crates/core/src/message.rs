@@ -296,6 +296,12 @@ pub enum IngestOutcome {
     /// admitted. Nothing touched the ledger; the adapter performs the
     /// withdrawal.
     Withdraw,
+    /// Refused fail-closed: the channel is direct and the assembly's
+    /// configuration serves no direct chats. Nothing touched the ledger or
+    /// the identity tables, and nothing is delivered — there is no
+    /// directive to perform, so the adapter simply acknowledges the
+    /// message and moves on.
+    Disregarded,
 }
 
 /// What one accepted ingestion reports back: the ids the core resolved on

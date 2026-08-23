@@ -412,6 +412,16 @@ async fn process(
             leave(client, pending.chat_id, &mut memories.withdrawals).await;
             Step::Acknowledged
         }
+        // The core's disregard is complete in itself: nothing to send,
+        // nothing to leave — the update is acknowledged so the offset
+        // advances past it.
+        Ok(IngestOutcome::Disregarded) => {
+            tracing::debug!(
+                update_id = update.id,
+                "disregarded by the core; acknowledged"
+            );
+            Step::Acknowledged
+        }
         // The batch discipline reads the core's own terminal-or-transient
         // statement, never its variant names: the vocabulary of what can go
         // wrong is the core's to grow.

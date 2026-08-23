@@ -1418,6 +1418,7 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
                 system_prompt: support::SYSTEM_PROMPT.into(),
                 protection: ProtectionConfig::default(),
                 operators: support::operator_config(),
+                direct_chats: assistant_core::DirectChats::default(),
                 privacy_policy_address: None,
                 moderation_handle: None,
             },

@@ -376,6 +376,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
             system_prompt,
             protection,
             operators,
+            direct_chats: configuration.direct_chats.resolve(),
             privacy_policy_address: privacy_policy,
             moderation_handle,
         },
