@@ -4,39 +4,101 @@
 
 Date: 2026-08-23
 
-Assessment under Article 35 GDPR for the assistant described in this repository, in the
-state it is in on the date above. It records the processing, the reasons it is necessary,
+An assessment in the form Article 35(7) GDPR prescribes, for the assistant described in
+this repository, in the state it is in on the date above. It is carried out as a
+precaution; section 1 records the pre-check of whether Article 35 compels one at all. It
+records the processing, the reasons it is necessary,
 what it can do to the people in the groups, which shipped mechanism answers each of those
 risks, what remains, and when this document has to be looked at again.
 
 Controller: Simão Gomes Viana, c/o IP-Management #10911, Ludwig-Erhard-Str. 18, 20459
 Hamburg, Germany. Enquiries: privacy@halogenos.org.
 
-Corrected 2026-08-23: this document previously stated that no data protection officer is
-appointed because the thresholds of § 38 BDSG are not met. That was wrong. § 38(1)
-sentence 2 BDSG requires an officer, headcount aside, where processing is subject to a
-data protection impact assessment, and section 1 of this document declares exactly that.
-An officer is therefore required. The appointment is outstanding and is carried in
-section 9. Until it is made, enquiries are answered at the address above.
+Data protection officer: none appointed, decided 2026-08-23 with the reasoning in
+section 9. § 38(1) sentence 2 BDSG attaches the duty to processing that is objectively
+subject to a data protection impact assessment, in the statute's word "unterliegen". It
+does not attach to a controller's decision to write one. Two earlier versions of this note
+were wrong in opposite directions: the first made the § 38 headcount thresholds decide a
+question they do not reach, the second derived the duty from this document's own
+description of itself, which reasons in a circle. Enquiries are answered at the address
+above.
 
 Competent supervisory authority: Bayerisches Landesamt für Datenschutzaufsicht (BayLDA),
 Promenade 18, 91522 Ansbach. Settled by the operator 2026-08-23: the establishment is in
 Bavaria, and the Hamburg address in the controller block is a mail-forwarding contact
 address only, which does not determine competence.
 
-## 1. Why this assessment exists
+## 1. Whether Article 35 compels this assessment: the pre-check
 
-The German data protection authorities' list of processing operations that always require
-an assessment (the DSK list under Article 35(4) GDPR) names, at entry 11, the use of
-artificial intelligence to process personal data in order to steer the interaction with
-the people concerned, with the express example of a system that interacts with people
-through conversation. The assistant is exactly that: a conversational system, in groups of
-natural persons, processing what they write.
+German guidance expects a controller to check whether an assessment is required and to
+document that check whichever way it comes out. This section is that check, taken
+2026-08-23, and it replaces an earlier version that declared the duty settled.
 
-Two of the WP248 criteria apply independently: the processing is systematic (every message
-in the group, continuously), and it uses a technology whose behavior is not fully
-predictable (a large language model). The assessment is therefore treated as mandatory, not
-as a precaution.
+**What speaks for a duty.** Entry 11 of the German data protection authorities' list under
+Article 35(4) GDPR names the use of artificial intelligence to process personal data in
+order to steer the interaction with the people concerned. The entry carries no qualifying
+rider of the kind entries 1 to 4 attach to their subjects, so on its face it applies
+unconditionally, and its second example is a system that advises people through
+conversation. A plain reading of that headline reaches an assistant that converses with
+natural persons and processes what they write.
+
+**What speaks against.** The example's own wording, processing a person's data "für deren
+Beratung", contemplates a system that works on the data of the person it advises in order
+to advise them. A general-knowledge assistant does that only in part: it answers questions
+about a software project from public sources and from the group's own conversation, and
+the personal data it holds is that conversation and not a file about the person asking.
+Alongside that, the authority competent for this controller has published its own
+checklist for chatbots built on large language models (the Bavarian authority's AI
+checklist, 2024, still a consultation draft), and the DSK's 2025 guidance on artificial
+intelligence routes a controller through a conditional check-and-document step for such
+systems. Neither instrument applies entry 11 to a chatbot. A supervisory authority that
+considered this exact class of system compulsorily listed would have said so in the
+document it wrote for that class.
+
+**How the list relates to the general test.** The EDPB's Opinion 5/2018 on the German list
+construes a national list as further specifying Article 35(1), "which will prevail in any
+case". The list is therefore read through the general high-risk test and not as a
+mechanical trigger standing apart from it.
+
+**The WP248 criteria, honestly counted.** The Article 29 Working Party's guidelines set out
+nine criteria and treat two or more as an indication of high risk. An earlier version of
+this section counted "the processing is systematic", which is not one of the nine. The
+count as it actually stands:
+
+- *Criterion 8, innovative use or applying new technological solutions.* Met. A large
+  language model writing the answers is the case the guidelines describe.
+- *Criterion 4, data of a highly personal nature.* Met for direct chats between one person
+  and the assistant, which the guidelines reach by way of communications whose
+  confidentiality a person may expect. Recorded 2026-08-23: direct chats are switched off
+  entirely by configuration in the deployment, so the criterion is met by a capability
+  that is not in use. Arguable and not claimed for public group posts, because a message
+  typed into an open community group is not a communication anyone can expect to be
+  confidential.
+- *Criterion 7, data concerning vulnerable data subjects.* Arguable. The groups are open
+  and the platform applies no age check, so children are among the people concerned and
+  the guidelines name children expressly. Not claimed as settled, because the imbalance
+  the criterion aims at, the employee or the patient who cannot walk away, is absent: no
+  one depends on a community chat group.
+- *Criterion 3, systematic monitoring.* Not claimed. The guidelines mean observing,
+  monitoring or controlling data subjects. The assistant observes and controls nothing: it
+  takes no action against anybody, attaches no consequence to what it reads, and watches
+  for nothing in particular. Storing what a group says is not monitoring the people who
+  said it.
+- The remaining criteria are not met: no evaluation or scoring, no automated
+  decision-making with legal or similar effect, no large-scale processing in the sense the
+  guidelines describe, no matching or combining of datasets from separate operations, and
+  nothing that prevents anybody from exercising a right or using a service.
+
+One criterion is clearly met and two are arguable.
+
+**Conclusion, taken by the controller 2026-08-23.** The pre-check does not produce a clear
+duty. This assessment is carried out as a precaution, following the guidelines'
+recommendation to carry one out where there is doubt, and not because Article 35 compels
+it. The purpose behind the decision is the same one that shaped the system: risk as low as
+it can be brought at a cost the project can carry. Two consequences are recorded where
+they belong. Section 9 records that § 38(1) sentence 2 BDSG is therefore not triggered,
+with the residual risk of the opposite reading named. Section 8's judgment rests on the
+mitigations and not on that question.
 
 ## 2. Scope and the people concerned
 
@@ -372,34 +434,55 @@ cannot be borrowed by a flooder (0030, 0034).
 
 **Overall judgment.** With the mitigations above in place, the residual risk to the people
 concerned is not high within the meaning of Article 36(1), and prior consultation with the
-supervisory authority is not required. Restated 2026-08-23: the judgment depends on every
-open item in section 9 being closed, in particular the outstanding officer appointment, the
-countersigned agreement, storage protection at rest and the non-EEA naming model. If any of
+supervisory authority is not required. Restated 2026-08-23: the judgment depends on the
+open items in section 9 being closed, meaning the countersigned agreement, storage
+protection at rest, the Approved-Models restriction and the non-EEA naming model. If any of
 them stays open, the judgment is re-taken before the assistant enters the main community
-group.
+group. It does not depend on the officer question, which section 9 records as decided.
 
 ## 9. Open items this assessment depends on
 
-1. **The data protection officer appointment** required by § 38(1) sentence 2 BDSG,
-   because this processing is subject to this assessment. Added 2026-08-23, when the
-   earlier no-officer statement was found to be wrong. The officer's contact details go
-   into the public policy once the appointment is made.
-2. **Storage protection at rest** for the message store, required by the platform's
+**Decided 2026-08-23, and therefore not an open item: no data protection officer is
+appointed.** § 38(1) sentence 2 BDSG requires an appointment where a controller carries out
+processing that is subject to a data protection impact assessment under Article 35, in the
+statute's own word "unterliegen". The duty follows the processing being objectively subject
+to an assessment, not the controller's decision to write one, so a precautionary assessment
+does not create the duty by existing. Section 1's pre-check concludes that Article 35 does
+not compel an assessment here, which leaves § 38(1) sentence 2 untriggered. The Baden-
+Württemberg authority states the same connection in its negative form, that where no
+assessment has to be carried out, no data protection officer has to be appointed either
+("keine DSFA durchzuführen und daher auch kein Datenschutzbeauftragter zu bestellen ist").
+
+The residual risk of the opposite reading is named openly: entry 11 of the
+German list carries no qualifying rider, and a supervisory authority could read it as
+covering this assistant. On that reading the assessment would be compelled and the
+appointment would follow with it. Two things bound the exposure. The assessment the
+authority would ask for already exists, because it was written as a precaution, and the
+decision here is recorded with its reasoning and its date, which is what accountability
+under Article 5(2) asks for. If the authority takes the opposite view, the appointment is
+made and this entry is rewritten.
+
+Recorded as context and not as reasoning: the federal government has committed to
+introducing a bill repealing § 38(1) BDSG by the end of 2026. That is where the law may be
+going. It is not why this decision was taken, and the decision would read the same without
+it.
+
+1. **Storage protection at rest** for the message store, required by the platform's
    developer terms and relied on by the R8 mitigation. Deployment configuration, not
    repository work. Must be in place before the main group.
-3. **The countersigned processor agreement** with Requesty Ltd returned and on file. The
+2. **The countersigned processor agreement** with Requesty Ltd returned and on file. The
    terms are accepted and the clauses apply, and the signature round-trip is outstanding.
    Must be complete before the main group.
-4. **The Approved-Models restriction** under clause 5.5 of the processor agreement, which
+3. **The Approved-Models restriction** under clause 5.5 of the processor agreement, which
    would bind the processor contractually to a named set of models and therefore to their
    retention and training terms. Not configured today. Added 2026-08-23 together with the
    correction that zero data retention binds the processor alone.
-5. **The non-EEA conversation-naming model**, a framework defect with the fix in flight,
+4. **The non-EEA conversation-naming model**, a framework defect with the fix in flight,
    described in section 3.5. Until it merges, a piece of every new conversation reaches a
    deployment outside the EEA under the standard contractual clauses.
-6. **Records of processing** under Article 30, drafted 2026-08-23 and kept beside this
+5. **Records of processing** under Article 30, drafted 2026-08-23 and kept beside this
    document.
-7. **The deletion gaps** recorded in decisions 0045 and 0055, waiting on the storage
+6. **The deletion gaps** recorded in decisions 0045 and 0055, waiting on the storage
    framework.
 
 ## 10. When this assessment is taken again

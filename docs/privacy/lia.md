@@ -13,9 +13,12 @@ that document describes the processing in full, this one only weighs it.
 Controller: Simão Gomes Viana, c/o IP-Management #10911, Ludwig-Erhard-Str. 18, 20459
 Hamburg, Germany. Enquiries: privacy@halogenos.org.
 
-Noted 2026-08-23: a data protection officer is required under § 38(1) sentence 2 BDSG,
-because this processing is subject to a data protection impact assessment. The appointment
-is outstanding and is carried as an open item in that assessment. The competent supervisory
+Noted 2026-08-23: no data protection officer is appointed, and the reasoning is recorded
+with the pre-check in section 1 of the impact assessment beside this document. § 38(1)
+sentence 2 BDSG attaches its duty to processing that is objectively subject to an
+assessment under Article 35, and that pre-check concludes Article 35 does not compel one
+here. The assessment is written as a precaution, which does not create the duty. The
+competent supervisory
 authority is the Bayerisches Landesamt für Datenschutzaufsicht (BayLDA) in Ansbach, settled
 by the operator 2026-08-23: the establishment is in Bavaria, and the Hamburg address in the
 controller block is a mail-forwarding contact address only.

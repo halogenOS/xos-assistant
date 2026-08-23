@@ -14,10 +14,11 @@ Germany
 
 Data protection enquiries: [privacy@halogenos.org](mailto:privacy@halogenos.org)
 
-This processing requires a data protection officer under § 38(1) sentence 2 BDSG, because it
-is subject to a data protection impact assessment. The appointment is outstanding. Until it
-is made and the contact details appear here, data protection enquiries are answered at the
-address above.
+A data protection officer is not appointed. The duty to appoint one applies where a
+processing operation must undergo a data protection impact assessment, and this one does
+not fall under that. We checked the question before answering it and wrote the assessment
+anyway, as a precaution, and the reasoning is on file. Data protection enquiries are
+answered at the address above.
 
 **What we process, why, and on what basis**
 

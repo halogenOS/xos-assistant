@@ -15,7 +15,7 @@ authority asks for them.
 |---|---|
 | Controller | Simão Gomes Viana, c/o IP-Management #10911, Ludwig-Erhard-Str. 18, 20459 Hamburg, Germany |
 | Contact for data protection | privacy@halogenos.org |
-| Data protection officer | Required under § 38(1) sentence 2 BDSG, because this processing is subject to a data protection impact assessment. The appointment is outstanding and is carried in section 10. Corrected 2026-08-23; this row previously stated that no officer is needed because the headcount thresholds are not met, which was wrong. |
+| Data protection officer | None appointed, decided 2026-08-23 with the reasoning recorded in the impact assessment. § 38(1) sentence 2 BDSG attaches its duty to processing that is objectively subject to an assessment under Article 35, and that document's pre-check concludes Article 35 does not compel one here. The assessment is carried out as a precaution, which does not create the duty. The residual risk of the opposite reading is named there. This row previously gave the headcount thresholds as the reason, and then the existence of the assessment; both were wrong. |
 | Competent supervisory authority | Bayerisches Landesamt für Datenschutzaufsicht (BayLDA), Promenade 18, 91522 Ansbach. Settled by the operator 2026-08-23: the establishment is in Bavaria, and the Hamburg address above is a mail-forwarding contact address only. |
 | Joint controllers | None. The assistant serves only groups the controller operates and administers. |
 | Representative under Article 27 | Not applicable. The controller is established in the EU. |
@@ -158,20 +158,17 @@ A general description under Article 30(1)(g), mapped to the mechanisms that ship
 Stated here exactly as the impact assessment states them, because this record must not
 claim a measure that is not yet in place:
 
-1. **The data protection officer appointment** under § 38(1) sentence 2 BDSG. Added
-   2026-08-23, when the earlier no-officer entry was found to be wrong. The contact
-   details enter the public policy once the appointment is made.
-2. **Storage protection at rest** for the message store. Required by the platform's
+1. **Storage protection at rest** for the message store. Required by the platform's
    developer terms and relied on by the breach mitigation in the impact assessment. Must
    be in place before the assistant enters the main community group.
-3. **The countersigned processor agreement** with Requesty Ltd, returned and on file. The
+2. **The countersigned processor agreement** with Requesty Ltd, returned and on file. The
    terms are accepted and the clauses apply, and the signature round-trip is outstanding.
    Must be complete before the main community group.
-4. **The Approved-Models restriction** under clause 5.5 of the processor agreement, which
+3. **The Approved-Models restriction** under clause 5.5 of the processor agreement, which
    would bind the processor to a named set of models and therefore to their retention and
    training terms. Not configured today. Added 2026-08-23 with the correction that zero
    data retention binds the processor alone.
-5. **The non-EEA conversation-naming model**, the framework defect described in section 7,
+4. **The non-EEA conversation-naming model**, the framework defect described in section 7,
    with its fix in flight.
 
 ## 11. Keeping this record current
