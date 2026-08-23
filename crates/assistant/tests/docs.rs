@@ -94,7 +94,7 @@ fn the_four_privacy_drafts_carry_their_dated_report_updates() {
     for (draft, marker) in [
         (
             "docs/privacy/privacy-policy.md",
-            "It takes no moderation\naction of its own: when a member asks it to report a message",
+            "It does not moderate: it cannot",
         ),
         (
             "docs/privacy/dpia.md",
