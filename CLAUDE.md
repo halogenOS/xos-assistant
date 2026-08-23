@@ -15,6 +15,8 @@ Two invariants hold at every commit:
 
 - An adapter contains no behavior.
 - The core contains no platform vocabulary.
+- The assistant assesses, a human decides: no moderation effect without a human
+  decision point in the mechanism (decision 0070).
 
 Adding a platform means writing one adapter and registering it — never touching the core.
 If a change seems to need platform-specific branches in the core, the structure is wrong:
