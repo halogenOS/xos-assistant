@@ -29,6 +29,9 @@
 //!
 //! - [`kind`] — the assistant's block kind, composed with the framework's
 //!   kinds through the derive.
+//! - [`mirror`] — the deletion mirror: the moderation bot's reply deletion
+//!   command, recognized from an administrator and answered with a silent
+//!   one-row erasure of the named message.
 //! - [`note`] — the context-note kind carrying a group's observed facts,
 //!   and the rules contract that reads the pinned announcement.
 //! - [`privacy`] — the privacy command family's recognition and its fixed
@@ -52,9 +55,9 @@ mod erasure;
 mod error;
 mod identity;
 pub mod kind;
-mod ledger;
 mod mapping;
 mod message;
+pub mod mirror;
 pub mod note;
 mod outbound;
 pub mod privacy;

@@ -41,7 +41,7 @@ use crate::window::{
     ACKNOWLEDGMENT_WINDOW, AppendWindow, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW,
     REPORT_WINDOW, ReplyWindow,
 };
-use crate::{authorization, identity, mapping, outbound, privacy, streams};
+use crate::{authorization, identity, mapping, mirror, outbound, privacy, streams};
 
 /// The erasure fence, as the shared handle the report tool receives at its
 /// construction: ingestions and the tool's filing hold it shared, an
@@ -469,7 +469,9 @@ impl Assistant {
     /// binding, with the assembly's system prompt recorded first, on first
     /// message — stamps the message, and appends the message block through
     /// the framework's consumer write path. The stamp order is fixed:
-    /// addressing first; the privacy command stamped with the command kind
+    /// addressing first; the privacy command — and an administrator's
+    /// mirrored deletion command (2026-08-23, the deletion mirror) —
+    /// stamped with the command kind
     /// ahead of any budget — a command takes no debt by its nature; budgets
     /// consulted only for addressed non-command messages, principal before
     /// channel, the first refusing budget naming the limited fact; then
@@ -498,7 +500,11 @@ impl Assistant {
     /// (2026-08-23), because a peer ingestion's flag write is serialized
     /// under that very lock and can land after the pre-lock read: the
     /// re-read drops the racing message before its append, so the flag
-    /// suppresses from the moment it stands. Opt-out does not
+    /// suppresses from the moment it stands. Past the re-read runs the
+    /// deletion mirror (2026-08-23) — behind the suppression drop and the
+    /// direct-channel admission by this very order, ahead of the tail read
+    /// so the stamp sees the post-mirror world; its trigger and its
+    /// silence are the mirror module's contract. Opt-out does not
     /// reach backward: what was stored before stands until deletion, keeps
     /// being projected to the model with later turns, and a pre-flag
     /// unanswered question may still draw its one answer through a later
@@ -580,8 +586,28 @@ impl Assistant {
         // the message, so this very turn's admission reads the fresh
         // palette.
         self.reconcile_palette(conversation_id).await?;
+        // The deletion mirror (decided 2026-08-23), past the suppression
+        // and channel admissions on purpose and ahead of the tail read on
+        // purpose: an administrator's reply carrying the moderation bot's
+        // own deletion command nulls the named row here, inline under this
+        // ingestion's erasure-fence read hold — one row's nulls, not the
+        // person-wide operation, so no spawn is needed and no deadlock
+        // shape exists — and the stamp below is then decided against the
+        // post-mirror tail: a debt the deleted message itself owed dies
+        // with its text, exactly as the shared owes-answer reading already
+        // cancels an erased debt, while a debt the deleted row merely
+        // carried reads through to the live ask behind it, and a debt
+        // carried by any other row still propagates (decision 0086).
+        // Silent throughout: the admin addressed the
+        // moderation bot, and the command row appended below is the lawful
+        // record of the request.
+        let mirrored = mirror::mirrored_target(&message, authority);
+        if let Some(target) = mirrored {
+            self.mirror_named_deletion(&tx, conversation_id, target)
+                .await?;
+        }
         let owing_tail = self.owing_tail_debt(conversation_id).await?;
-        let limited = if family.is_some() {
+        let limited = if family.is_some() || mirrored.is_some() {
             Some(kind::LimitedBy::Command)
         } else if message.addressed {
             self.refusing_budget(principal_id, conversation_id).await?
@@ -980,6 +1006,30 @@ impl Assistant {
         Ok((mapped, None))
     }
 
+    /// The mirror's erasure, run for a triggering deletion command
+    /// (2026-08-23): the named row's personal columns and the reply
+    /// references pointing at it are nulled through the kind's mirror pass
+    /// (decision 0085), and both counts are traced at info — a destructive
+    /// act on stored personal data leaves a record in the default log, and
+    /// zero counts name the silent no-ops' shape: a target the store never
+    /// held or holds no longer. The caller's ordering reasoning sits at
+    /// the call site.
+    async fn mirror_named_deletion(
+        &self,
+        tx: &StoreTx,
+        conversation_id: i64,
+        target: &str,
+    ) -> Result<(), CoreError> {
+        let nulled = kind::erase_message_named(tx, conversation_id, target).await?;
+        tracing::info!(
+            conversation_id,
+            target_rows = nulled.target_rows,
+            reply_references = nulled.reply_references,
+            "the deletion mirror ran over an administrator's reply command"
+        );
+        Ok(())
+    }
+
     /// The under-lock suppression re-read (2026-08-23): whether the
     /// sender's standing flag stands NOW, consulted while the caller holds
     /// the stamp lock. The pre-lock standing is read outside that lock,
@@ -1204,8 +1254,11 @@ impl Assistant {
     /// The conversation's owing tail, if any — the one-block read behind the
     /// write-time stamp, deciding through the kind's own
     /// [`ChatMessage::owes_answer`] so this read and the awaiting hook can
-    /// never disagree about one stamp: an erased tail, whose debt the hook
-    /// cancels, propagates nothing here either. The tail carrying the debt
+    /// never disagree about one stamp: an erased tail's OWN debt, which the
+    /// hook cancels, propagates nothing here either, while a live debt a
+    /// third party's row still owes behind an erased run reads through
+    /// (decision 0086) — someone else's deletion erases one row's ask, not
+    /// the standing question behind it. The tail carrying the debt
     /// IS it being unanswered: an answer, a streaming tail or any later
     /// block would be the tail instead, and mid-turn absorption keeps its
     /// own semantics for those — an addressed message absorbed mid-turn
@@ -1222,14 +1275,17 @@ impl Assistant {
     /// superseding palette ([`DEBT_READ_THROUGH`]): each is appended by an
     /// independent path at an arbitrary moment, so a debt behind a run of
     /// them still owes and must propagate through to the next message's
-    /// stamp — while the framework's other transparent kinds, the
-    /// turn-closure markers above all, stay a settled tail here: the
-    /// framework's own walk governs turn liveness, and reading debt
-    /// through a closed turn's marker would widen propagation past failed
-    /// turns. Every read is bounded — one row behind the tail at most,
-    /// never a conversation hydration — because this sits on ingestion's
-    /// hot path and the framework leaves a transparent turn-end marker as
-    /// the tail of every answered conversation.
+    /// stamp. Erased chat rows are transparent the same way (2026-08-23,
+    /// the deletion mirror): they share the live rows' kind, so the kind's
+    /// own query skips them by shape instead. The framework's other
+    /// transparent kinds, the turn-closure markers above all, stay a
+    /// settled tail here: the framework's own walk governs turn liveness,
+    /// and reading debt through a closed turn's marker would widen
+    /// propagation past failed turns. Every read is bounded — the tail row,
+    /// then at most one query past the whole transparent run, never a
+    /// conversation hydration — because this sits on ingestion's hot path
+    /// and the framework leaves a transparent turn-end marker as the tail
+    /// of every answered conversation.
     async fn owing_tail_debt(
         &self,
         conversation_id: i64,
@@ -1238,8 +1294,13 @@ impl Assistant {
         let Some(tail) = store.latest_block(conversation_id).await? else {
             return Ok(None);
         };
-        let tail = if DEBT_READ_THROUGH.contains(&tail.block_type.as_str()) {
-            match crate::ledger::newest_block_id_past(store, conversation_id, DEBT_READ_THROUGH)
+        let transparent = DEBT_READ_THROUGH.contains(&tail.block_type.as_str())
+            || matches!(
+                AssistantKind::from_block(&tail),
+                AssistantKind::ChatMessage(message) if message.erased()
+            );
+        let tail = if transparent {
+            match kind::newest_block_id_past_erased(&store.tx(), conversation_id, DEBT_READ_THROUGH)
                 .await?
             {
                 Some(behind_the_run) => store.find_block(behind_the_run).await?,

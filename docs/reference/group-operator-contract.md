@@ -94,6 +94,29 @@ filing settles it; until then, treat the report path as unproven in
 production and verify the moderation bot's reaction after the first real
 report.
 
+## The deletion mirror
+
+Added 2026-08-23. When a group administrator replies to a message with the
+moderation bot's own deletion command — a reply `/del` — both bots read the
+same command: the moderation bot deletes the message in the chat, and the
+assistant erases its stored copy of that message, silently. The assistant
+adds no second answer, because the administrator addressed the moderation
+bot; only administrators' commands count, exactly as the moderation bot
+ignores everyone else's. Nothing to configure: the mirror rides the
+moderation bot's own command, with or without the report setup above — no
+switch exists, and the bounds below are its only limits.
+
+The constraint, stated plainly: the assistant must SEE the command, so only
+deletions issued as a reply `/del` reach it, and only the bare token: a
+`/del@...` suffixed with the moderation bot's handle is aimed at that bot
+by name, reads to the assistant as another bot's command, and mirrors
+nothing — the assistant strips only its own handle from a command. The
+moderation bot's other
+forms — bulk purges, and direct removals through the platform's own
+interface — produce nothing the assistant can read and leave the stored
+copy in place. For those, the person-wide deletion commands of the privacy
+route remain the way to clear the store.
+
 ## The privacy command
 
 `/privacy` — bare, or suffixed with the assistant's own handle — answers
