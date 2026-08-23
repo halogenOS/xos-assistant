@@ -107,11 +107,8 @@ identity data described above. What remains is an empty placeholder holding a po
 the conversation, with nothing in it and nothing pointing back to you. On the language
 model's side there is nothing to delete, because nothing is kept there.
 
-One limit deserves stating plainly. When the assistant looks something up, a record of
-the query and its result is stored separately, and deletion does not reach those records
-yet. Their content is technical, though a query can quote the words you used to ask. It
-is being closed. We would rather name it than let you assume a completeness we cannot
-yet deliver.
+One exception: records of the assistant's lookups (query and result) are stored
+separately and are not yet covered by deletion. A query can quote your words.
 
 **Your rights**
 
