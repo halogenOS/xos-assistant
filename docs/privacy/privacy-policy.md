@@ -65,15 +65,6 @@ Nothing else about you is attached, and nothing is sent that the group did not a
 _Purpose:_ producing an answer that fits the conversation and can address people by name.
 _Legal basis:_ Article 6(1)(f) GDPR.
 
-**Group information**
-
-The title of a group and the text of its pinned rules message are stored, so that the
-assistant knows where it is and which rules apply. This is what a group publishes about
-itself. It becomes personal data only if a rules text names somebody.
-
-_Purpose:_ following the rules of the group the assistant serves.
-_Legal basis:_ Article 6(1)(f) GDPR.
-
 **Answer limits**
 
 The assistant counts how many messages it has answered for one person and in one chat
@@ -132,14 +123,11 @@ identity data described above. What remains is an empty placeholder holding a po
 the conversation, with nothing in it and nothing pointing back to you. On the language
 model's side there is nothing to delete, because nothing is kept there.
 
-Two limits deserve stating plainly. When the assistant looks something up, a record of the
-query and its result is stored separately, and deletion does not reach those records yet.
-Their content is technical, though a query can quote the words you used to ask. And the
-text of a group's pinned rules is stored as written, so if a rules text names a person,
-deletion does not reach that either. Such a note is replaced when the group pins its rules
-anew.
-Both are being closed. We would rather name them than let you assume a completeness we
-cannot yet deliver.
+One limit deserves stating plainly. When the assistant looks something up, a record of
+the query and its result is stored separately, and deletion does not reach those records
+yet. Their content is technical, though a query can quote the words you used to ask. It
+is being closed. We would rather name it than let you assume a completeness we cannot
+yet deliver.
 
 **Your rights**
 
