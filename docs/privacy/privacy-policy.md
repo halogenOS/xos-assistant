@@ -32,9 +32,7 @@ _Purpose:_ answering questions in the groups, reading the conversation for
 context, limiting how much the assistant answers per person and per chat, and passing on a
 report when a member asks for one.
 _Legal basis:_ Article 6(1)(f) GDPR, our legitimate interest in running an assistant in our
-own community groups. We ask for no consent, and the group rules are not a consent form:
-consent required to enter a group would not be free, and one member's withdrawal could not
-stop the group's conversation from being stored. You can object at any time, see below.
+own community groups. You can object at any time, see below.
 
 **Who wrote them**
 
