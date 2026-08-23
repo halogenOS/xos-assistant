@@ -10,8 +10,19 @@ what it can do to the people in the groups, which shipped mechanism answers each
 risks, what remains, and when this document has to be looked at again.
 
 Controller: Simão Gomes Viana, c/o IP-Management #10911, Ludwig-Erhard-Str. 18, 20459
-Hamburg, Germany. Enquiries: privacy@halogenos.org. No data protection officer is
-appointed; the thresholds in § 38 BDSG are not met.
+Hamburg, Germany. Enquiries: privacy@halogenos.org.
+
+Corrected 2026-08-23: this document previously stated that no data protection officer is
+appointed because the thresholds of § 38 BDSG are not met. That was wrong. § 38(1)
+sentence 2 BDSG requires an officer, headcount aside, where processing is subject to a
+data protection impact assessment, and section 1 of this document declares exactly that.
+An officer is therefore required. The appointment is outstanding and is carried in
+section 9. Until it is made, enquiries are answered at the address above.
+
+Competent supervisory authority: Bayerisches Landesamt für Datenschutzaufsicht (BayLDA),
+Promenade 18, 91522 Ansbach. Settled by the operator 2026-08-23: the establishment is in
+Bavaria, and the Hamburg address in the controller block is a mail-forwarding contact
+address only, which does not determine competence.
 
 ## 1. Why this assessment exists
 
@@ -105,25 +116,51 @@ fails closed and withdraws (decision 0052).
 
 ### 3.5 Recipients and transfers
 
-- **Requesty Inc.**, the processor, under an Article 28 agreement carrying the EU standard
-  contractual clauses. Requests enter through the European endpoint in Frankfurt, Germany
-  (AWS eu-central-1) and are served on infrastructure in the EU. Zero data retention is
-  enabled for the account: prompts and completions are not stored once the response is
-  returned, and nothing is used for training. What the processor receives is the
-  conversation's text and the public username of each speaker.
-- **Sub-processors of the processor.** Requesty engages the model providers it routes to
-  as its own sub-processors, under its own agreements, and stays answerable for them.
-  Google is the sub-processor serving the model in use today. The model is not pinned in
-  this assessment, because the processor's obligations, not the model's identity, are what
-  the assessment rests on; a model change inside the EU region changes no conclusion here.
+- **Requesty Ltd, London, United Kingdom**, the processor, under an Article 28 agreement
+  carrying the EU standard contractual clauses (entity corrected 2026-08-23 from Requesty
+  Inc.; the company is British, which makes the processor relationship itself a transfer,
+  see below). Requests enter through its European endpoint, and what it stores it stores
+  in Frankfurt, Germany (AWS eu-central-1). Zero data retention is configured for the
+  account: Requesty writes no message and no answer to storage and uses none of it for
+  training. It keeps billing telemetry that carries no content, meaning token counts, the
+  model identifier and a timestamp. What the processor receives is the conversation's text
+  and the public username of each speaker.
+- **Sub-processors of the processor, in two layers.** The infrastructure Requesty runs the
+  service on, Amazon Web Services in Frankfurt, for which Requesty stays answerable to us.
+  And the model providers it routes to, Google today, for which Requesty answers for the
+  choice, for the written terms and for reporting that provider's published position
+  accurately, but not for that provider's own breach of it. Corrected 2026-08-23: zero
+  data retention binds Requesty alone. Whether a model provider keeps a request or trains
+  on it follows the terms of the model chosen, which makes the choice of model a data
+  protection decision and not only a quality one. The individual model is still not pinned
+  in this assessment, because what the assessment rests on is the processor's obligations,
+  the region a deployment sits in and the terms of the chosen model.
 - **Public project sources.** The halogenOS forge for a commit lookup and the builds
   repository's public interface for a release lookup. Queries carry a repository name and
   a reference or tag.
 - **The platform.** An independent controller for its own delivery and storage, not a
   processor of ours.
 
-No transfer to a third country is intended. Requests, storage and inference stay in
-Germany and the EU.
+**Transfers outside the EU/EEA.** Rewritten 2026-08-23; the previous flat statement that
+no transfer is intended was wrong. Data leaves the EEA in three places, each with its own
+basis:
+
+1. The processor is a company in the United Kingdom, although it stores and serves in
+   Frankfurt. The transfer rests on the European Commission's adequacy decision for the
+   United Kingdom under Article 45 GDPR, so no further safeguard is required for it.
+2. Where a model deployment sits outside the EEA, the request reaches it there. Those
+   transfers rest on the standard contractual clauses the processor agreement carries,
+   under Article 46(2)(c) GDPR.
+3. The chat platform sits outside the EU/EEA and receives every message and every answer
+   as part of delivering them, as its own controller under its own policy.
+
+**Defect found 2026-08-23, being closed.** The conversation-naming step, which sends a
+short piece of a new conversation to a smaller model to get a few words naming it, ships
+with a lightweight model hardcoded in the framework, and that deployment is outside the
+EEA. It is a framework defect, not a configuration choice, and the fix is in flight: the
+naming step will follow the same configured model as the answers. Until it merges, case 2
+above is live on every new conversation, and no claim in this document that requests stay
+in the EU may be read without it. The public policy carries the same qualification.
 
 ### 3.6 Storage and deletion
 
@@ -245,28 +282,35 @@ vague "as long as necessary". Storage never leaves the project's own server; the
 search interface, no export, no analysis over the history.
 
 **R2, special categories.** Nothing detects such content, so the mitigation is structural:
-the recipient stores nothing (zero data retention), so an accidental disclosure that
-travels to the processor leaves no record there once the answer is returned, the assistant
-builds no profile of anybody, and deletion on request
+the processor stores nothing (zero data retention), so an accidental disclosure leaves no
+record at that layer once the answer is returned, though a model provider behind it can
+keep the request under the terms of the chosen model, the assistant builds no profile of
+anybody, and deletion on request
 reaches the prose completely and fast. A person who realizes they revealed something can
 have it gone within the month, in practice within days. Residual exposure is accepted and
 named.
 
 **R3, provider exposure.** The mitigation is contractual and territorial, not technical: an
-Article 28 agreement with standard contractual clauses, the European entry point in
-Frankfurt, serving inside the EU, zero data retention at the processor and at its
-sub-processor, and no training on the content. The processor stays answerable for the
-sub-processors it engages. What crosses is the conversation's text and the public username
-of each speaker, which is exactly what any member of the group sees.
+Article 28 agreement with standard contractual clauses, the European entry point, storage
+in Frankfurt, the United Kingdom's adequacy decision for the processor itself, and zero
+data retention at the processor with no training on the content there. Corrected
+2026-08-23: that retention promise reaches the processor and stops. A model provider's own
+retention and training follow the terms of the model chosen, so the mitigation for the
+provider layer is the choice of model and the region its deployment sits in, not a blanket
+assurance. The processor agreement offers an Approved-Models restriction that would bind
+that choice contractually; it is not configured today and is carried in section 9. What
+crosses is the conversation's text and the public username of each speaker, which is
+exactly what any member of the group sees.
 
 **R4, attribution at the processor.** The operator decided on 2026-08-23 that the assistant
 addresses people by their handle, which means the username travels with the conversation.
 This document does not describe the transmitted data as anonymous or pseudonymous in any
 protective sense: a public username identifies an account, and the text beside it is
 attributable to that account for as long as the request exists. What limits the risk is
-that the request does not persist. Zero data retention means the attributable record is
-gone once the answer is returned, no profile is accumulated on the other side, the numeric
-account identifier and the display name never cross, and the data itself is what the person
+that the request does not persist at the processor. Zero data retention means the
+attributable record is gone there once the answer is returned, and no profile is
+accumulated on that layer, while a model provider's own retention follows the terms of the
+chosen model. The numeric account identifier and the display name never cross, and the data itself is what the person
 already published to a group. The capability bought with it, an assistant that can answer
 "@handle, that setting moved", is the reason the operator accepted the exchange, and the
 public policy states the transmission plainly instead of implying anonymity.
@@ -315,12 +359,12 @@ cannot be borrowed by a flooder (0030, 0034).
 | # | Residual | Reasoning |
 |---|----------|-----------|
 | R1 | Low to medium | The absence of a timer is real and stays real; it is answered by deletion on request, announced transparency, and the absence of any secondary use. |
-| R2 | Medium | Accepted. No mechanism can detect what a person reveals in passing, and since 2026-08-23 such a disclosure travels with the speaker's handle attached. Zero data retention and fast erasure are what is available. |
+| R2 | Medium | Accepted. No mechanism can detect what a person reveals in passing, and since 2026-08-23 such a disclosure travels with the speaker's handle attached. Zero data retention at the processor and fast erasure are what is available; the model provider's own terms decide the rest. |
 | R3 | Low to medium | Contract, EU territory, zero retention, no training. Raised from low on 2026-08-23: the transmitted set now includes a public identifier. |
-| R4 | Medium | Accepted by the operator on 2026-08-23 for the mention capability. Not solvable while the capability exists; bounded by the processor retaining nothing and by the identifier being the one the group already sees. |
+| R4 | Medium | Accepted by the operator on 2026-08-23 for the mention capability. Not solvable while the capability exists. Bounded by the processor retaining nothing, by the terms of the chosen model at the provider layer, and by the identifier being the one the group already sees. |
 | R5 | Low | Bounded surface, no action capability. |
 | R6 | Low to medium | Narrow content, named openly, one framework seam away from closed. |
-| R7 | Low | No action capability; bounded volume; stated plainly to readers. |
+| R7 | Low | No sanction capability, bounded volume, stated plainly to readers. Extended 2026-08-23 to the model-produced report relay: a misfire is public, administrator-judged and carries no consequence from the assistant. |
 | R8 | Medium until storage protection at rest is confirmed, then low | The one control this assessment cannot yet call shipped. |
 | R9 | Low | Fail-closed authorization, healed on every later contact. |
 | R10 | Low | Whole-conversation removal on deletion. |
@@ -328,21 +372,35 @@ cannot be borrowed by a flooder (0030, 0034).
 
 **Overall judgment.** With the mitigations above in place, the residual risk to the people
 concerned is not high within the meaning of Article 36(1), and prior consultation with the
-supervisory authority is not required. This judgment depends on two conditions that are
-not yet fully in place, listed in section 11; if either fails, the judgment is re-taken
-before the assistant enters the main community group.
+supervisory authority is not required. Restated 2026-08-23: the judgment depends on every
+open item in section 9 being closed, in particular the outstanding officer appointment, the
+countersigned agreement, storage protection at rest and the non-EEA naming model. If any of
+them stays open, the judgment is re-taken before the assistant enters the main community
+group.
 
 ## 9. Open items this assessment depends on
 
-1. **Storage protection at rest** for the message store, required by the platform's
+1. **The data protection officer appointment** required by § 38(1) sentence 2 BDSG,
+   because this processing is subject to this assessment. Added 2026-08-23, when the
+   earlier no-officer statement was found to be wrong. The officer's contact details go
+   into the public policy once the appointment is made.
+2. **Storage protection at rest** for the message store, required by the platform's
    developer terms and relied on by the R8 mitigation. Deployment configuration, not
    repository work. Must be in place before the main group.
-2. **The countersigned processor agreement** with Requesty Inc. returned and on file. The
-   terms are accepted and the clauses apply; the signature round-trip is outstanding and
-   must be complete before the main group.
-3. **Records of processing** under Article 30, a short document for one system, not yet
-   written.
-4. **The two deletion gaps** (decisions 0045, 0055), waiting on the storage framework.
+3. **The countersigned processor agreement** with Requesty Ltd returned and on file. The
+   terms are accepted and the clauses apply, and the signature round-trip is outstanding.
+   Must be complete before the main group.
+4. **The Approved-Models restriction** under clause 5.5 of the processor agreement, which
+   would bind the processor contractually to a named set of models and therefore to their
+   retention and training terms. Not configured today. Added 2026-08-23 together with the
+   correction that zero data retention binds the processor alone.
+5. **The non-EEA conversation-naming model**, a framework defect with the fix in flight,
+   described in section 3.5. Until it merges, a piece of every new conversation reaches a
+   deployment outside the EEA under the standard contractual clauses.
+6. **Records of processing** under Article 30, drafted 2026-08-23 and kept beside this
+   document.
+7. **The deletion gaps** recorded in decisions 0045 and 0055, waiting on the storage
+   framework.
 
 ## 10. When this assessment is taken again
 
@@ -372,13 +430,24 @@ the same unit and is covered with it. This document is a draft amended in place,
 its own status line.
 
 **The report, described.** A member replies to an offending message and asks the
-assistant for a report. The assistant resolves the reported message from that reply —
-never from its own judgment or the model's choice — and appends a report record
+assistant for a report. The assistant resolves the reported message from that reply,
+never from a judgment of its own about which message deserves reporting, and appends a
+report record
 carrying the reported message's platform identifier, the reported sender's internal
 identifier, and a fixed command line naming the group's moderation bot. The line is
 then sent into the group as a reply to the reported message, where the moderation
-bot forwards it to the group's administrators. The assistant decides nothing: no
-detection, no scoring, no automatic filing — a person asks, a person judges.
+bot forwards it to the group's administrators.
+
+Corrected 2026-08-23, on the public policy's audit: the sentence that stood here said the
+assistant decides nothing. That claims too much. The assistant watches nobody, detects
+nothing and files nothing on its own, and the reported message is taken from the asking
+member's reply and never from a judgment of its own. Between those two facts sits a model:
+the same language model that writes the answers decides that a request is a report request
+and produces the relay, so the step can go wrong and file a report about a message nobody
+meant. What bounds that is visibility and powerlessness. The relay is a public reply in the
+group, so a misfire is seen by everyone the moment it happens, the group's human
+administrators judge every report, and the assistant itself cannot warn, remove or ban
+anybody.
 
 **What it changes for the people concerned.**
 
@@ -394,8 +463,15 @@ detection, no scoring, no automatic filing — a person asks, a person judges.
 - *Abuse of the path.* A member could ask for reports in bad faith. The bound is
   one filed report per group per report window, each one costs the asker an answer
   from their own answering budget, and the human administrators behind the
-  moderation bot are the judgment — the assistant amplifies a member's ask to the
-  admins, nothing more.
+  moderation bot are the judgment. The assistant amplifies a member's ask to the
+  administrators, nothing more.
+- *A misfired report.* Added 2026-08-23. Because the relay is model-produced, a
+  report can name a message its sender never expected to be reported. The effect on
+  that person is reputational and momentary, not procedural: no sanction follows
+  from the assistant, the administrators see the reported message itself and judge
+  it, and the relay is public, so a wrong report is visible and correctable in the
+  same channel it appeared in. Residual risk low, and it joins R7 instead of
+  standing alone.
 
 **The wiki fetch.** A wiki question makes the assistant fetch one page of the
 project's public wiki. The request carries a page name and nothing about any person;
@@ -404,7 +480,8 @@ existing forge and mirror lookups — a public project source, not a recipient o
 personal data — and section 3.5 is amended by naming it there in spirit; the
 records-of-processing recipient table carries the row.
 
-**Judgment.** The report is human-initiated, human-judged, bounded, and erasable;
-the wiki fetch carries no personal data. The overall judgment of section 8 stands:
+**Judgment.** The report is human-initiated, human-judged, bounded, erasable and public
+even when the model misfires, and the wiki fetch carries no personal data. The overall
+judgment of section 8 stands:
 the residual risk is not high in the meaning of Article 36(1). The warn and ban
 lines remain held out, and their shipping remains a review trigger.

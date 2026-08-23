@@ -13,6 +13,13 @@ that document describes the processing in full, this one only weighs it.
 Controller: Simão Gomes Viana, c/o IP-Management #10911, Ludwig-Erhard-Str. 18, 20459
 Hamburg, Germany. Enquiries: privacy@halogenos.org.
 
+Noted 2026-08-23: a data protection officer is required under § 38(1) sentence 2 BDSG,
+because this processing is subject to a data protection impact assessment. The appointment
+is outstanding and is carried as an open item in that assessment. The competent supervisory
+authority is the Bayerisches Landesamt für Datenschutzaufsicht (BayLDA) in Ansbach, settled
+by the operator 2026-08-23: the establishment is in Bavaria, and the Hamburg address in the
+controller block is a mail-forwarding contact address only.
+
 ## 1. The processing being assessed
 
 Storing every message in the project's own community groups, together with the sender's
@@ -77,8 +84,10 @@ group has to be able to say which person it is answering, and the handle is how 
 addresses its members. The necessity is judged on that capability: without the handle the
 model can write an answer, but not one that points at the person who asked, and in a busy
 group that produces answers nobody can attach to their question. Everything else stays
-back. The numeric account identifier and the display name do not cross, no history beyond
-the conversation being answered is uploaded, and the recipient keeps nothing. The
+back. The numeric account identifier and the display name do not cross, and no history
+beyond the conversation being answered is uploaded. The processor keeps nothing, and a
+model provider behind it keeps what the terms of the chosen model allow, which is why the
+choice of model belongs in this assessment and not only in the impact assessment. The
 transmitted identifier is the one the group already sees on every message, which is why
 the exchange is proportionate and not a widening of who knows what about the person.
 
@@ -130,14 +139,21 @@ group and not only on a website, which is why the pinned rules carry it.
   action of its own. Nobody's standing in the community depends on it.
 
   > Amended 2026-08-23: the report feature lets a member ask the assistant to relay a
-  > report to the group's moderation bot. The assistant still decides nothing — a
-  > member starts it, the group's human administrators judge it — so the balancing
-  > above holds; the impact assessment's addendum carries the detail.
+  > report to the group's moderation bot. A member starts it and the group's human
+  > administrators judge it, and the assistant can neither warn, remove nor ban. Refined
+  > later the same day, on the public policy's audit: the relay itself is produced by the
+  > same language model that writes the answers, so it can misfire and report a message
+  > nobody meant. That is a real effect on a member, and it is public in the group the
+  > moment it happens, carries no sanction from the assistant, and reaches human judgment
+  > either way. The balancing above holds on those three facts, not on a claim that
+  > nothing is decided. The impact assessment's addendum carries the detail.
 - **No profiling, no scoring, no targeting.** The counters count messages in a window and
   nothing else.
 - **No new audience.** The people in the group already saw the message and the handle
-  above it. The only new reader is a model behind a processor that retains nothing, and it
-  receives no more than the group did.
+  above it. The new reader is a model reached through a processor that retains nothing,
+  and it receives no more than the group did. Corrected 2026-08-23: the processor's
+  retention promise does not bind the model provider behind it, whose own retention
+  follows the terms of the chosen model.
 - **No commercial use.** Nothing is sold, shared, advertised against or analysed.
 - **The real impact** is that a remark keeps existing on a project server after the person
   stopped thinking about it, and that it can resurface in an answer months later. That is
@@ -151,7 +167,9 @@ service, membership is voluntary and reversible, and the project has no power ov
 member. There is one asymmetry: the operator is also the group administrator, so a member
 who dislikes the arrangement is asking the same person who runs the assistant. The answer
 to that is external, and it is stated in the policy: a complaint goes to a supervisory
-authority, in Hamburg or where the member lives.
+authority, to the Bayerisches Landesamt für Datenschutzaufsicht for this controller, or to
+the authority where the member lives or works. The competence follows the establishment in
+Bavaria, settled by the operator 2026-08-23.
 
 ### 4.5 Children
 
@@ -178,8 +196,8 @@ needs an exception of its own, and none applies cleanly to a health remark someo
 into a technical conversation: posting in an open group does not by itself make data
 manifestly public in the sense of Article 9(2)(e). This assessment does not pretend
 otherwise. What answers it, imperfectly and knowingly, is the structure around it: no
-detection and therefore no targeting of such content, a recipient that retains nothing and
-builds no profile, and deletion that reaches the text quickly on request. Since 2026-08-23
+detection and therefore no targeting of such content, a processor that retains nothing and
+builds no profile, with the provider layer bound only by the terms of the chosen model, and deletion that reaches the text quickly on request. Since 2026-08-23
 such a remark travels to the processor with the speaker's handle beside it, which makes it
 attributable for the life of the request and no longer. That is a real increase in the
 exposure and it is recorded as such: accepted residual risk in the impact assessment, not
@@ -211,10 +229,15 @@ again:
 2. Exactly one identifier in provider requests, the public username, and no more: the
    display name and the numeric account identifier stay on the machine, and nothing is
    added to a request without weighing this assessment again.
-3. Processing stays inside the EU, at a processor under an Article 28 agreement with
-   standard contractual clauses, with zero data retention, no training on the content, and
-   sub-processors engaged by that processor under its own agreements and its own answer
-   for them.
+3. The processing chain stays as assessed: a processor in the United Kingdom under an
+   Article 28 agreement with standard contractual clauses, storing and serving in
+   Frankfurt, with the United Kingdom's adequacy decision covering the processor
+   relationship itself, zero data retention at the processor, no training there, and
+   sub-processors engaged by that processor under its own agreements. Corrected
+   2026-08-23: zero data retention binds the processor alone, so the terms of the chosen
+   model decide the provider layer, and a model deployment outside the EEA rests on the
+   standard contractual clauses. The conversation-naming step reaches such a deployment
+   today through a framework defect whose fix is in flight.
 4. Notice in the group before collection: the rules pin and the deterministic privacy
    command (decision 0053), plus the platform's own policy field.
 5. Objection and deletion answered within a month, free, with no more identity checking

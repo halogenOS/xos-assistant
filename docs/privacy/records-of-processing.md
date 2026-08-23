@@ -15,7 +15,8 @@ authority asks for them.
 |---|---|
 | Controller | Simão Gomes Viana, c/o IP-Management #10911, Ludwig-Erhard-Str. 18, 20459 Hamburg, Germany |
 | Contact for data protection | privacy@halogenos.org |
-| Data protection officer | None appointed. The thresholds in § 38 BDSG are not met. |
+| Data protection officer | Required under § 38(1) sentence 2 BDSG, because this processing is subject to a data protection impact assessment. The appointment is outstanding and is carried in section 10. Corrected 2026-08-23; this row previously stated that no officer is needed because the headcount thresholds are not met, which was wrong. |
+| Competent supervisory authority | Bayerisches Landesamt für Datenschutzaufsicht (BayLDA), Promenade 18, 91522 Ansbach. Settled by the operator 2026-08-23: the establishment is in Bavaria, and the Hamburg address above is a mail-forwarding contact address only. |
 | Joint controllers | None. The assistant serves only groups the controller operates and administers. |
 | Representative under Article 27 | Not applicable. The controller is established in the EU. |
 | Record maintained since | 2026-08-23 |
@@ -77,8 +78,8 @@ the platform hides the real author (decision 0016).
 
 | # | Recipient | Role | What it receives |
 |---|---|---|---|
-| R1 | Requesty Inc. | Processor under Article 28, on the controller's instruction only | The conversation's text and the public username of each speaker, plus the system prompt and the group's context notes. The account identifier and the display name are not sent. Requests enter the EU region in Frankfurt, Germany and are served on infrastructure in the EU. Zero data retention is enabled: nothing is stored once the response is returned, and nothing is used for training. |
-| R2 | The model providers Requesty routes to, Google among them today | Sub-processors engaged by R1 under its own agreements, with R1 answerable for them | The same request, served on EU infrastructure. The model is not named in this record, because the processor's obligations and the region, not the model's identity, are what the record states. |
+| R1 | Requesty Ltd, London, United Kingdom (entity corrected 2026-08-23 from Requesty Inc.) | Processor under Article 28, on the controller's instruction only | The conversation's text and the public username of each speaker, plus the system prompt and the group's context notes. The account identifier and the display name are not sent. Requests enter through its European endpoint, and what it stores it stores in Frankfurt, Germany (AWS eu-central-1). Zero data retention is configured: it writes no message and no answer to storage and uses none of it for training. It keeps billing telemetry carrying no content, meaning token counts, the model identifier and a timestamp. |
+| R2 | Sub-processors engaged by R1, in two layers: the infrastructure it runs on, Amazon Web Services in Frankfurt, and the model providers it routes to, Google today | Sub-processors under R1's own agreements. R1 stays answerable for the infrastructure layer, and for the provider layer it answers for the choice, for the written terms and for reporting the provider's published position accurately, not for that provider's own breach of it | The same request. Corrected 2026-08-23: zero data retention binds R1 alone, so whether a model provider keeps a request or trains on it follows the terms of the model chosen. Individual models are not named in this record, because what the record states is the chain, the region a deployment sits in and where the retention promise ends. |
 | R3 | Public project sources | Not a recipient of personal data | A commit lookup queries the halogenOS forge and a release lookup queries the builds repository's public interface. A query carries a repository name and a reference or tag. |
 | R4 | The chat platform | Independent controller of its own delivery and storage, not a processor of the controller | Its own handling of the same messages, under its own policy, unchanged by the assistant. |
 | R5 | The group's administrators, via the group's moderation bot (added 2026-08-23) | Recipients of the report event inside the group they already administer | When a member replies to a message and asks for a report, the assistant sends the fixed report command as a reply to that message; the moderation bot forwards the event to the group's administrators. The event carries the reported message's identifier — a message the administrators already see in their own group — and no data from the assistant's store. |
@@ -95,8 +96,10 @@ for any secondary purpose, and not used to train any model.
 
 | Entry | Content |
 |---|---|
-| Transfers intended | None. Requests enter through the processor's European endpoint in Frankfurt, Germany (AWS eu-central-1) and are served on infrastructure in the EU, and the store is held on a server run for the project in Germany. |
-| Safeguard held in reserve | The processor agreement carries the European Commission's standard contractual clauses, so a transfer that occurred outside the intended routing would rest on Article 46(2)(c). |
+| Transfers, rewritten 2026-08-23 | The earlier entry stating that no transfer is intended was wrong. The store is held on a server run for the project in Germany, and data leaves the EEA in three places, each listed below. |
+| The processor itself | Requesty Ltd is a company in the United Kingdom, although it stores and serves in Frankfurt. Covered by the European Commission's adequacy decision for the United Kingdom under Article 45 GDPR, so no further safeguard is required. |
+| Model deployments outside the EEA | Where a deployment sits outside the EEA, the request reaches it there. Covered by the European Commission's standard contractual clauses in the processor agreement, under Article 46(2)(c) GDPR. Live today for the conversation-naming step, which reaches a lightweight model hardcoded in the framework outside the EEA. That is a defect, its fix is in flight, and the naming step will follow the same configured model as the answers. Recorded 2026-08-23. |
+| The chat platform | Sits outside the EU/EEA and receives every message and every answer as part of delivering them, as its own controller under its own policy, not on the controller's instruction. |
 | Documentation | The processor agreement and its clauses are on file with the controller. The countersigned copy is outstanding, listed as an open dependency in section 10. |
 
 ## 8. Erasure concept and time limits
@@ -139,7 +142,7 @@ A general description under Article 30(1)(g), mapped to the mechanisms that ship
 | Separation | Personal data in tables of its own, referenced by key, never inline in the ledger (decisions 0003, 0006, 0012). |
 | Data minimisation | Text only, no media, no files, no voice, no stickers, no edits (decision 0017). Anonymous stand-in senders skipped (decision 0016). No profiling, no scoring, no secondary use. |
 | Minimisation at the boundary | One identifier is transmitted to the processor, the public username, decided by the operator on 2026-08-23 so the assistant can address people by their handle. The display name and the numeric account identifier stay on the machine, and no other attribute of a person is attached to a request. |
-| Processor control | Article 28 agreement with standard contractual clauses, European entry point, serving inside the EU, zero data retention, no training on the content, and sub-processors engaged by the processor under its own agreements. |
+| Processor control | Article 28 agreement with standard contractual clauses, European endpoint, storage in Frankfurt, the United Kingdom's adequacy decision for the processor relationship, zero data retention at the processor and no training there, and sub-processors engaged by the processor under its own agreements. Corrected 2026-08-23: the retention promise reaches the processor and stops, so the provider layer is governed by the terms of the chosen model, and the Approved-Models restriction that would bind it contractually is not configured. |
 | Secret handling | The provider key is held in memory and never written to storage (decision 0020). Secrets are referenced indirectly in configuration, by environment variable name or file path, and never appear in it. |
 | Access control | Group admission is a stored authorization written only by the operator's own invitation. Every other contact is refused without touching the ledger, and the assistant withdraws (decision 0052). |
 | Availability and abuse | Two answering counters, per person across all chats and per chat, limit answering and never storage. An over-limit message draws silence, so a flooder cannot borrow the assistant's voice (decisions 0030, 0034). |
@@ -155,12 +158,21 @@ A general description under Article 30(1)(g), mapped to the mechanisms that ship
 Stated here exactly as the impact assessment states them, because this record must not
 claim a measure that is not yet in place:
 
-1. **Storage protection at rest** for the message store. Required by the platform's
+1. **The data protection officer appointment** under § 38(1) sentence 2 BDSG. Added
+   2026-08-23, when the earlier no-officer entry was found to be wrong. The contact
+   details enter the public policy once the appointment is made.
+2. **Storage protection at rest** for the message store. Required by the platform's
    developer terms and relied on by the breach mitigation in the impact assessment. Must
    be in place before the assistant enters the main community group.
-2. **The countersigned processor agreement** with Requesty Inc., returned and on file. The
-   terms are accepted and the clauses apply; the signature round-trip is outstanding and
-   must be complete before the main community group.
+3. **The countersigned processor agreement** with Requesty Ltd, returned and on file. The
+   terms are accepted and the clauses apply, and the signature round-trip is outstanding.
+   Must be complete before the main community group.
+4. **The Approved-Models restriction** under clause 5.5 of the processor agreement, which
+   would bind the processor to a named set of models and therefore to their retention and
+   training terms. Not configured today. Added 2026-08-23 with the correction that zero
+   data retention binds the processor alone.
+5. **The non-EEA conversation-naming model**, the framework defect described in section 7,
+   with its fix in flight.
 
 ## 11. Keeping this record current
 
