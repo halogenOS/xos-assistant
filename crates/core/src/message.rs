@@ -328,6 +328,33 @@ pub enum ReplyKind {
     Report,
 }
 
+/// Whether the assistant is composing an answer on a channel right now.
+///
+/// A live presence cue, not a delivery: it exists only while the process
+/// runs, is never stored, and owes nothing across a restart. The core
+/// derives it from the turn lifecycle — composing from the moment a turn is
+/// owed and being worked, stopped on the turn's completion or failure — so
+/// a deterministic reply, which takes no turn, never composes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposingState {
+    /// The assistant is composing an answer on the channel.
+    Composing,
+    /// The composing ended: the turn completed or failed.
+    Stopped,
+}
+
+/// One change of the composing signal, bound to the channel it is about.
+/// The edge yields transitions only — one `Composing` when a channel's turn
+/// begins, one `Stopped` when it ends — so an adapter holds its platform's
+/// indicator between the two without deduplicating anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ComposingUpdate {
+    /// The channel the signal is about.
+    pub channel: ChannelKey,
+    /// The new state.
+    pub state: ComposingState,
+}
+
 /// One reply on its way out of the core, bound to the channel it answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboundReply {

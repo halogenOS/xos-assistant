@@ -22,12 +22,13 @@ use agent_ledger::{
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 
+use crate::composing;
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
 use crate::kind::{self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage};
 use crate::message::{
-    ChannelKey, ChannelKind, DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt,
-    Observation, ObserveOutcome, ObservedFact, OutboundReply,
+    ChannelKey, ChannelKind, ComposingUpdate, DeliveryItem, InboundMessage, IngestOutcome,
+    IngestReceipt, Observation, ObserveOutcome, ObservedFact, OutboundReply,
 };
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::outbound::RULES_ACKNOWLEDGMENT;
@@ -701,6 +702,18 @@ impl Assistant {
         adapter: &str,
     ) -> Result<mpsc::UnboundedReceiver<OutboundReply>, CoreError> {
         Ok(outbound::spawn_edge(self.ctx.clone(), adapter.to_owned()).await?)
+    }
+
+    /// The composing edge for one adapter: a subscription yielding the
+    /// composing transitions on that adapter's channels — the assistant
+    /// began working on an answer, it stopped — derived from the turn
+    /// lifecycle, so a deterministic reply never signals. A live presence
+    /// cue with no history, no persistence and no failure path: the
+    /// composing module states the exact contract, its lag answer
+    /// included. Each adapter takes one edge under its own name, beside
+    /// its [`Self::replies`] edge.
+    pub fn composing(&self, adapter: &str) -> mpsc::UnboundedReceiver<ComposingUpdate> {
+        composing::spawn_edge(self.ctx.clone(), adapter.to_owned())
     }
 
     /// Erase one principal, in one call, per decision 0012: the personal

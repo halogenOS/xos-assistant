@@ -1,6 +1,7 @@
-//! The adapter's loop: take the outbound edge, then long-poll, translate,
-//! ingest and observe, persist the offset, and send replies — all
-//! mechanics, no decisions of its own.
+//! The adapter's loop: take the outbound and composing edges, then
+//! long-poll, translate, ingest and observe, persist the offset, send
+//! replies, and render the composing signal as the platform's typing
+//! action — all mechanics, no decisions of its own.
 //!
 //! The batch discipline is the spec's: on the first transiently failed
 //! ingest the batch stops, the offset is persisted up to the last success,
@@ -55,8 +56,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use assistant_core::{
-    Assistant, ChannelKind, FailureKind, InboundMessage, IngestOutcome, Observation,
-    ObserveOutcome, ObservedFact, OutboundReply,
+    Assistant, ChannelKind, ComposingState, ComposingUpdate, FailureKind, InboundMessage,
+    IngestOutcome, Observation, ObserveOutcome, ObservedFact, OutboundReply,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -68,6 +69,14 @@ use crate::{ADAPTER_NAME, AdapterError, Config, Sleep, state};
 /// How long the loop pauses after a failed poll or a halted batch before
 /// re-polling; the loop never busy-spins.
 const POLL_BACKOFF: Duration = Duration::from_secs(2);
+
+/// How often the composing refresh re-sends the platform's typing action
+/// while the core's signal holds. The platform expires the indicator on its
+/// own after roughly five seconds, so the refresh stays just under that —
+/// late enough to spend few calls, early enough that the indicator never
+/// visibly flickers off mid-turn. Crate-visible because the wire client
+/// bounds the action's rate-limit wait by this same cadence.
+pub(crate) const TYPING_REFRESH: Duration = Duration::from_secs(4);
 
 /// How long a failed chat lookup rests before the chat's next contact may
 /// retry it. Without the rest, a chat whose lookup keeps failing would pay
@@ -227,18 +236,28 @@ impl Handled {
 
 /// The run entry's body: the outbound edge first — answers stored before the
 /// subscription are history, so taking it before the first poll is part of
-/// the contract — then the poll loop and the reply consumer, concurrently in
-/// this one future.
+/// the contract — then the poll loop, the reply consumer and the composing
+/// consumer, concurrently in this one future. The typing registry is shared
+/// by the last two: the composing consumer starts and stops the refreshers,
+/// and a delivered answer stops its chat's refresher too, so a stop signal
+/// lost on the core's lossy cue can never outlive the answer it was about.
 pub(crate) async fn run(
     config: Config,
     sleep: Sleep,
     assistant: Arc<Assistant>,
 ) -> Result<(), AdapterError> {
     let replies = assistant.replies(ADAPTER_NAME).await?;
-    let client = BotClient::new(&config.api_root, &config.token, Arc::clone(&sleep));
+    let composing = assistant.composing(ADAPTER_NAME);
+    let client = Arc::new(BotClient::new(
+        &config.api_root,
+        &config.token,
+        Arc::clone(&sleep),
+    ));
+    let typing = TypingRefreshers::default();
     tokio::select! {
         () = poll_loop(&client, &config.state_file, &sleep, &assistant) => {}
-        () = consume_replies(replies, &client) => {}
+        () = consume_replies(replies, &client, &typing) => {}
+        () = consume_composing(composing, &client, &typing) => {}
     }
     Ok(())
 }
@@ -562,17 +581,111 @@ async fn leave(client: &BotClient, chat_id: i64, withdrawals: &mut ChatRest) {
     }
 }
 
+/// The running typing refreshers, one per chat: the pure mechanics of the
+/// core's composing signal — a begin spawns the chat's refresh loop, a stop
+/// aborts it. Dropping the registry aborts every refresher with it, so an
+/// abandoned run future leaves no loop sending actions to nowhere.
+#[derive(Default)]
+struct TypingRefreshers {
+    running: std::sync::Mutex<HashMap<i64, tokio::task::AbortHandle>>,
+}
+
+impl TypingRefreshers {
+    /// Begin one chat's refresh loop; a loop already running for the chat
+    /// is replaced — the lossy cue can re-begin without a stop between.
+    fn begin(&self, client: &Arc<BotClient>, chat_id: i64) {
+        let refresher = tokio::spawn(refresh_typing(Arc::clone(client), chat_id));
+        let mut running = self
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(previous) = running.insert(chat_id, refresher.abort_handle()) {
+            previous.abort();
+        }
+    }
+
+    /// Stop one chat's refresh loop, if one runs.
+    fn stop(&self, chat_id: i64) {
+        let stopped = self
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&chat_id);
+        if let Some(refresher) = stopped {
+            refresher.abort();
+        }
+    }
+}
+
+impl Drop for TypingRefreshers {
+    fn drop(&mut self) {
+        for (_, refresher) in self
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain()
+        {
+            refresher.abort();
+        }
+    }
+}
+
+/// One chat's refresh loop: show the platform's typing indicator now and
+/// re-show it on the named interval until aborted. A failed action is
+/// logged and the loop keeps its cadence — a presence cue must never
+/// disturb anything else, and the next tick retries anyway. The interval
+/// waits on the runtime's own timer, not the injectable sleep: the test
+/// seam yields without waiting, which would turn this loop into a hot spin
+/// of platform calls.
+async fn refresh_typing(client: Arc<BotClient>, chat_id: i64) {
+    loop {
+        if let Err(error) = client.send_chat_action(chat_id).await {
+            tracing::warn!(chat_id, %error, "the typing action did not send; skipped");
+        }
+        tokio::time::sleep(TYPING_REFRESH).await;
+    }
+}
+
+/// Translate each composing transition from the core's edge into the
+/// platform's typing indicator: a begin starts the chat's refresh loop, a
+/// stop ends it. All mechanics — what composes and when it stops is the
+/// core's; this consumer never reads anything but the transition.
+async fn consume_composing(
+    mut updates: UnboundedReceiver<ComposingUpdate>,
+    client: &Arc<BotClient>,
+    typing: &TypingRefreshers,
+) {
+    while let Some(update) = updates.recv().await {
+        let Some(chat_id) = translate::chat_id_of(&update.channel) else {
+            tracing::error!("a composing channel key names no chat; transition dropped");
+            continue;
+        };
+        match update.state {
+            ComposingState::Composing => typing.begin(client, chat_id),
+            ComposingState::Stopped => typing.stop(chat_id),
+        }
+    }
+}
+
 /// Send each reply from the edge to its chat, sequentially — threaded onto
 /// its reply target where the core set one, decoded through the same
 /// naming rule the inbound side stored it under. A send that spends its
 /// bounded rate-limit retry — or fails outright — is logged and dropped,
-/// and the consumer moves on to the next reply.
-async fn consume_replies(mut replies: UnboundedReceiver<OutboundReply>, client: &BotClient) {
+/// and the consumer moves on to the next reply. The chat's typing
+/// refresher, if one still runs, is stopped ahead of the send: the answer
+/// ends the composing it announced, even when the core's stop transition
+/// was lost to the lossy cue.
+async fn consume_replies(
+    mut replies: UnboundedReceiver<OutboundReply>,
+    client: &BotClient,
+    typing: &TypingRefreshers,
+) {
     while let Some(reply) = replies.recv().await {
         let Some(chat_id) = translate::chat_id_of(&reply.channel) else {
             tracing::error!("an outbound channel key names no chat; reply dropped");
             continue;
         };
+        typing.stop(chat_id);
         let reply_to = reply
             .reply_target
             .as_deref()

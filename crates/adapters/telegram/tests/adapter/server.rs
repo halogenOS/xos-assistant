@@ -81,6 +81,10 @@ struct ServerState {
     /// exercises the retried-on-next-contact path and keeps its ledger
     /// free of notes.
     chats: Mutex<HashMap<i64, ChatScript>>,
+    /// Whether every `sendChatAction` answers a scripted server failure —
+    /// the fixture for the failed-typing-action pin. Unset, actions
+    /// succeed plainly.
+    failing_chat_actions: Mutex<bool>,
 }
 
 /// The running scripted server. Dropping it stops accepting; the per-test
@@ -216,6 +220,16 @@ impl BotApiServer {
             scripts.push_back(SendScript::Delivered);
         }
         scripts.push_back(SendScript::Failing);
+    }
+
+    /// Script every `sendChatAction` from here on to answer a server
+    /// failure.
+    pub fn fail_chat_actions(&self) {
+        *self
+            .state
+            .failing_chat_actions
+            .lock()
+            .expect("the action script locks") = true;
     }
 
     /// Script the next `times` update polls the same way; polls past the
@@ -399,6 +413,20 @@ async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16
             }
         }
         "getChat" => chat_info_answer(state, &body),
+        "sendChatAction" => {
+            if *state
+                .failing_chat_actions
+                .lock()
+                .expect("the action script locks")
+            {
+                (
+                    500,
+                    json!({ "ok": false, "description": "scripted action failure" }),
+                )
+            } else {
+                (200, json!({ "ok": true, "result": true }))
+            }
+        }
         "getChatAdministrators" => {
             let chat_id = body["chat_id"].as_i64().unwrap_or_default();
             let admins = state.admins.lock().expect("the admin scripts lock");

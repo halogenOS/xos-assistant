@@ -44,6 +44,15 @@ const FALLBACK_RETRY_WAIT: Duration = Duration::from_secs(1);
 /// usual failure rule — for a send, logged and dropped.
 const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_mins(1);
 
+/// The typing action's own rate-limit wait ceiling: one refresh period,
+/// not [`MAX_RATE_LIMIT_WAIT`]. The action is a presence cue re-sent on
+/// the refresh cadence, and the platform lets the indicator expire in
+/// about five seconds — a wait longer than the refresh would deliver a
+/// cue whose moment has passed and whose next tick was due to re-send it
+/// anyway, so a stated wait past one period fails the call at once and
+/// the refresh loop keeps its cadence.
+const CHAT_ACTION_WAIT_CEILING: Duration = crate::driver::TYPING_REFRESH;
+
 /// The HTTP status the platform rate-limits with.
 const TOO_MANY_REQUESTS: u16 = 429;
 
@@ -67,9 +76,10 @@ pub(crate) enum ClientError {
     /// Every attempt of a request was rate-limited; the bound is spent.
     #[error("rate-limited on all {RATE_LIMIT_ATTEMPTS} attempts")]
     RateLimitedOut,
-    /// The rate-limit reply stated a wait past [`MAX_RATE_LIMIT_WAIT`];
-    /// honoring it would park the sequential consumer, so the request
-    /// fails at once instead of waiting.
+    /// The rate-limit reply stated a wait past the caller's ceiling —
+    /// [`MAX_RATE_LIMIT_WAIT`], or [`CHAT_ACTION_WAIT_CEILING`] for the
+    /// typing action; honoring it would park the caller past its own
+    /// bounds, so the request fails at once instead of waiting.
     #[error("rate-limited with a stated wait of {stated_seconds}s, past the honored ceiling")]
     RateLimitWaitOverCeiling { stated_seconds: u64 },
 }
@@ -373,6 +383,23 @@ impl BotClient {
         Ok(())
     }
 
+    /// One typing action for a chat — the platform's rendering of the
+    /// core's composing signal. The platform expires the indicator on its
+    /// own after roughly five seconds, so the caller refreshes it on a
+    /// named interval while the signal holds. A failure is the caller's to
+    /// log and swallow: a presence cue must never disturb anything else.
+    /// The ceiling is the cue's own — [`CHAT_ACTION_WAIT_CEILING`], one
+    /// refresh period — because the loop must not park behind a stated
+    /// wait longer than the cadence it exists to keep.
+    pub(crate) async fn send_chat_action(&self, chat_id: i64) -> Result<(), ClientError> {
+        let body = serde_json::json!({ "chat_id": chat_id, "action": "typing" });
+        let response = self
+            .request("sendChatAction", &body, Some(CHAT_ACTION_WAIT_CEILING))
+            .await?;
+        let _shown: serde_json::Value = self.decode(response).await?;
+        Ok(())
+    }
+
     /// One chunk's `sendMessage` call.
     async fn send_chunk(
         &self,
@@ -410,9 +437,10 @@ impl BotClient {
     /// [`RATE_LIMIT_ATTEMPTS`] attempts in total; past the bound the call
     /// fails with [`ClientError::RateLimitedOut`]. The ceiling applies only
     /// where a caller asks for it: the send holds a queue of pending
-    /// replies behind it, and the leave call and the first-contact lookup
-    /// run inside the sequential update batch, so for those a stated wait
-    /// past [`MAX_RATE_LIMIT_WAIT`] fails the call at once with
+    /// replies behind it, the leave call and the first-contact lookup
+    /// run inside the sequential update batch, and the typing action keeps
+    /// a refresh cadence — so for those a stated wait past the caller's
+    /// ceiling fails the call at once with
     /// [`ClientError::RateLimitWaitOverCeiling`]. The callers that park
     /// nothing honor whatever the limiter states: the identity fetch and
     /// the poll, which run ahead of any batch with nothing queued behind
