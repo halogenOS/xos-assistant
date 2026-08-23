@@ -134,6 +134,13 @@ controller, and anything the project does outside the assistant.
   is transmitted to the processor with the conversation, by the operator's decision of
   2026-08-23, so the assistant can address people by the handle the group uses. The
   account identifier and the display name stay on the machine.
+
+  > Amended 2026-08-23: the username projection shipped. Until this note the sentence
+  > above described the operator's decision ahead of the running system, the harmless
+  > direction; it now describes what every request carries. The handle transmitted is
+  > the one stored with the message at receipt — a person who later changes their
+  > handle is projected under the handle they spoke with, and a person the platform
+  > gives no handle is projected with no identifier at all.
 - **Circumstance.** Arrival time, the platform send time, the reply reference, whether the
   message was addressed to the assistant, and the authority the person held in that chat
   at that moment (member or administrator).
@@ -236,10 +243,13 @@ Deletion waits for an open model stream on the affected conversation, confirms t
 settlement by re-reading stored state, and fails loudly without deleting anything past a
 bounded wait (decision 0028).
 
-Two record types are not reached by that operation today: lookup call records, which live
-in framework-owned tables (decision 0045), and context notes, which carry no person
-reference at all (decision 0055). Both are recorded as open, both wait on the same storage
-framework seam, and both are named in the public policy.
+Three record types are not reached by that operation today: lookup call records, which
+live in framework-owned tables (decision 0045), context notes, which carry no person
+reference at all (decision 0055), and the assistant's own answer blocks, which can quote
+an erased person's words and, since the speaker projection shipped, repeat their handle
+(noted 2026-08-23; the gap predates the projection, which widened its content by one
+field). All are recorded as open, all wait on the same storage framework seam, and the
+first is named in the public policy; the answer-block gap joins R6.
 
 ### 3.7 Measures in place
 
@@ -327,7 +337,7 @@ says so loudly and immediately, and that signal is treated as the consultation.
 | R3 | Conversation text, together with each speaker's public username, is exposed to an external processor and its sub-processor | Medium | Every answer |
 | R4 | What crosses to the processor is attributable to a named account, so it is pseudonymous at best and not anonymous | Medium | Every answer |
 | R5 | Whoever holds the group's pin right steers the assistant's system voice, possibly against a member | Medium | Rare |
-| R6 | Deletion is promised but two record types are not reached | Medium | Rare, and only where a query or a rules text quotes a person |
+| R6 | Deletion is promised but three record types are not reached | Medium | Rare: a query, a rules text or an assistant answer quoting a person |
 | R7 | The model writes something wrong or harmful about a member, in the group | Medium | Occasional |
 | R8 | The store is compromised and a full community history is taken at once | High | Rare |
 | R9 | The assistant appears in a group whose members never expected it | Medium | Rare |

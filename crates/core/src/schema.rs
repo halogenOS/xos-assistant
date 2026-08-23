@@ -19,7 +19,7 @@ use agent_ledger::{DomainMigrations, FromBlock, StoreConfig};
 use crate::kind::{
     AssistantKind, CHAT_MESSAGE_TABLE, COLUMN_ADDRESSED, COLUMN_ANSWER_DUE, COLUMN_AUTHORITY,
     COLUMN_DEBT_AUTHORITY, COLUMN_LIMITED, COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID, COLUMN_REPLY_TARGET,
-    COLUMN_REPLY_TO_ASSISTANT, COLUMN_ROLE, COLUMN_SENT_AT, COLUMN_TEXT,
+    COLUMN_REPLY_TO_ASSISTANT, COLUMN_ROLE, COLUMN_SENT_AT, COLUMN_SPEAKER, COLUMN_TEXT,
 };
 use crate::message::{Authority, ChannelKind};
 
@@ -305,6 +305,20 @@ static REPORT_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The speaker column — the appended migration step of the username-
+/// projection unit, per decision 0026's discipline. One nullable column on
+/// the message table, so every pre-existing row reads NULL and projects
+/// bare: the sender's public username as the platform delivered it at
+/// receipt (decision 0065). Personal data under the author-keyed erasure
+/// null, like the text and the origin. No frozen vocabulary list: the step
+/// quotes no enum.
+static SPEAKER_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "ALTER TABLE {CHAT_MESSAGE_TABLE}
+             ADD COLUMN {COLUMN_SPEAKER} TEXT;"
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -325,6 +339,7 @@ pub fn store_config() -> StoreConfig {
                 COMMAND_STAMP_MIGRATION.as_str(),
                 REPLY_TARGET_MIGRATION.as_str(),
                 REPORT_MIGRATION.as_str(),
+                SPEAKER_MIGRATION.as_str(),
             ],
         }],
     }

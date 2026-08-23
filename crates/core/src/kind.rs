@@ -77,6 +77,33 @@ pub const COLUMN_LIMITED: &str = "limited";
 /// [`ChatMessage::carried_debt_authority`] answers with the row's own
 /// stored sender authority instead.
 pub const COLUMN_DEBT_AUTHORITY: &str = "debt_authority";
+/// The sender's public username as the platform delivered it at receipt —
+/// the handle as it was when the person spoke, which is the historically
+/// honest value (decision 0065): the projection reads one block with no
+/// ledger access, so the handle the model sees must live on the row. A
+/// projection fact, not an identity fact — the identity tables keep owning
+/// who is who. Personal data: the author-keyed erasure pass nulls it
+/// beside the text and the origin. NULL for a sender the platform gave no
+/// handle, for a handle outside [`storable_speaker`]'s bound, for every
+/// pre-migration row, and for an erased row alike; a NULL speaker projects
+/// bare. Added by the speaker migration step.
+pub const COLUMN_SPEAKER: &str = "speaker";
+
+/// Whether a delivered handle may be stored as the speaker. The stored
+/// handle becomes the projected prefix `speaker: text`, so the prefix must
+/// be unambiguous, and three shapes would blur it: an empty handle projects
+/// a bare `: text` line, a handle carrying the prefix separator (':')
+/// projects a double colon nothing downstream can parse apart — the shape
+/// of a second platform's fully-qualified ids — and a whitespace-bearing
+/// handle lets one handle read as two. The current platform's username
+/// alphabet can produce none of these; a second platform's could, and the
+/// core owns this bound instead of trusting every adapter. A refused handle
+/// stores NULL, exactly like no handle at all: the message projects bare
+/// and no substitute identifier is minted (decision 0056).
+#[must_use]
+pub fn storable_speaker(handle: &str) -> bool {
+    !handle.is_empty() && !handle.contains(':') && !handle.chars().any(char::is_whitespace)
+}
 /// The platform's own id for the message this one replies to, opaque —
 /// what the report tool resolves its target through and what reply
 /// threading names (decided 2026-08-23). NULL for a non-reply, for a reply
@@ -169,6 +196,22 @@ impl LimitedBy {
 pub struct TailDebt {
     /// The carried debt's authority, folded.
     pub authority: Option<Authority>,
+}
+
+/// The sender as one write records them: the principal id the identity
+/// tables resolved, the standing at receipt, and the public username the
+/// platform delivered — three facts that enter the row together, carried
+/// as one value so the append's field map cannot take them apart.
+#[derive(Debug, Clone, Copy)]
+pub struct RecordedSender<'a> {
+    /// The resolved principal id.
+    pub principal_id: i64,
+    /// The sender's standing at receipt.
+    pub authority: Authority,
+    /// The sender's public username at receipt; `None` stores NULL — no
+    /// substitute identifier is minted (decision 0056) — and a handle
+    /// outside [`storable_speaker`]'s bound stores NULL the same way.
+    pub speaker: Option<&'a str>,
 }
 
 /// The write-time stamp: the four facts the entry point decides once at the
@@ -266,6 +309,11 @@ pub struct ChatMessage {
     /// The sender's standing at receipt. `None` only for a block the store
     /// did not produce (the schema closes the vocabulary with a CHECK).
     pub authority: Option<Authority>,
+    /// The sender's public username at receipt. `None` is a stored meaning
+    /// three ways: the platform gave the sender no handle, the row predates
+    /// the speaker migration, or erasure nulled it — and in every one of
+    /// them the message projects bare, unprefixed.
+    pub speaker: Option<String>,
     /// The platform's own id for the message, opaque.
     pub origin: Option<String>,
     /// The platform's send time, RFC 3339. The store's insertion time lives
@@ -302,15 +350,15 @@ impl ChatMessage {
     /// append carries, named by the same columns [`LeafKind::parse`] reads
     /// back — both sides of the kind's encoding live in this module, so a
     /// column rename cannot split them. The role travels as the append's own
-    /// argument, never as a field; the four decided facts travel together as
+    /// argument, never as a field; the three sender facts travel together
+    /// as the [`RecordedSender`]; the four decided facts travel together as
     /// the composed [`Stamp`]; the reply fact travels as the translated
     /// [`ReplyTarget`](crate::message::ReplyTarget), encoded into its two
     /// columns here.
     #[must_use]
     pub fn stored_fields(
         text: &str,
-        principal_id: i64,
-        authority: Authority,
+        sender: RecordedSender<'_>,
         origin: Option<&str>,
         reply_target: Option<&crate::message::ReplyTarget>,
         sent_at: &str,
@@ -318,8 +366,11 @@ impl ChatMessage {
     ) -> serde_json::Map<String, Value> {
         let mut fields = serde_json::Map::new();
         fields.insert(COLUMN_TEXT.into(), json!(text));
-        fields.insert(COLUMN_PRINCIPAL_ID.into(), json!(principal_id));
-        fields.insert(COLUMN_AUTHORITY.into(), json!(authority.as_str()));
+        fields.insert(COLUMN_PRINCIPAL_ID.into(), json!(sender.principal_id));
+        fields.insert(COLUMN_AUTHORITY.into(), json!(sender.authority.as_str()));
+        if let Some(speaker) = sender.speaker.filter(|handle| storable_speaker(handle)) {
+            fields.insert(COLUMN_SPEAKER.into(), json!(speaker));
+        }
         if let Some(origin) = origin {
             fields.insert(COLUMN_ORIGIN.into(), json!(origin));
         }
@@ -389,10 +440,22 @@ impl ChatMessage {
     /// when erasure nulled it. Only erasure produces the absent text — the
     /// adapter never records an empty message and the schema stores the
     /// column NOT NULL — so the marker speaks exactly for erased messages.
+    ///
+    /// A user-voiced message with a stored speaker projects as the speaker,
+    /// a colon and a space, then the text (decision 0066) — the handle the
+    /// model may address the person by. Everything else projects bare: a
+    /// handleless sender's message (no substitute identifier leaves the
+    /// machine, per decision 0056), any non-user voice, and the erased
+    /// marker — the erasure pass nulls the speaker with the text, and even
+    /// a row it half-reached keeps the placeholder exactly as it is.
     fn projected_text(&self) -> String {
-        self.text
-            .clone()
-            .unwrap_or_else(|| ERASED_MARKER.to_owned())
+        let Some(text) = &self.text else {
+            return ERASED_MARKER.to_owned();
+        };
+        match &self.speaker {
+            Some(speaker) if self.role == Some(Role::User) => format!("{speaker}: {text}"),
+            _ => text.clone(),
+        }
     }
 }
 
@@ -408,6 +471,7 @@ impl LeafKind for ChatMessage {
             Column::new(COLUMN_TEXT, ColumnType::Text),
             Column::new(COLUMN_PRINCIPAL_ID, ColumnType::Integer),
             Column::new(COLUMN_AUTHORITY, ColumnType::Text),
+            Column::new(COLUMN_SPEAKER, ColumnType::Text),
             Column::new(COLUMN_ORIGIN, ColumnType::Text),
             Column::new(COLUMN_SENT_AT, ColumnType::Text),
             Column::new(COLUMN_ADDRESSED, ColumnType::Boolean),
@@ -434,6 +498,7 @@ impl LeafKind for ChatMessage {
                 .get(COLUMN_AUTHORITY)
                 .and_then(Value::as_str)
                 .and_then(Authority::parse),
+            speaker: string_field(block, COLUMN_SPEAKER),
             origin: string_field(block, COLUMN_ORIGIN),
             sent_at: string_field(block, COLUMN_SENT_AT),
             addressed: block.fields.get(COLUMN_ADDRESSED).and_then(Value::as_bool),
@@ -493,14 +558,14 @@ impl Projection for ChatMessage {
     }
 }
 
-/// Null the personal columns — text, origin reference, platform send time
-/// and the reply-target reference (extended 2026-08-23) — of every message
-/// a principal wrote, in every conversation: the first of erasure's three
-/// steps (decision 0012), owned by the kind because the nullable columns
-/// are the kind's own contract. The block header rows are never touched;
-/// each affected content row keeps its shape and its message reads back
-/// erased. Nulling already-null columns is a no-op, so the step is
-/// idempotent.
+/// Null the personal columns — text, origin reference, platform send time,
+/// the reply-target reference and the speaker (both extended 2026-08-23) —
+/// of every message a principal wrote, in every conversation: the first of
+/// erasure's three steps (decision 0012), owned by the kind because the
+/// nullable columns are the kind's own contract. The block header rows are
+/// never touched; each affected content row keeps its shape and its message
+/// reads back erased. Nulling already-null columns is a no-op, so the step
+/// is idempotent.
 ///
 /// # Errors
 ///
@@ -514,7 +579,7 @@ pub(crate) async fn erase_principal_content(
             &format!(
                 "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_TEXT} = NULL, \
                  {COLUMN_ORIGIN} = NULL, {COLUMN_SENT_AT} = NULL, \
-                 {COLUMN_REPLY_TARGET} = NULL \
+                 {COLUMN_REPLY_TARGET} = NULL, {COLUMN_SPEAKER} = NULL \
                  WHERE {COLUMN_PRINCIPAL_ID} = ?1"
             ),
             [principal_id],

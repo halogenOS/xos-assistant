@@ -1,8 +1,11 @@
 //! AC8's documentation pins: the prompt's returned report bullet with its
 //! tool teaching, the 0046 closure, the 0044 amendment, the 0045
 //! narrowing, the unit-5 no-write amendment, and the four privacy drafts'
-//! dated updates. Each pin reads the committed file the way the repository
-//! ships it, so a drifted edit fails loudly here.
+//! dated updates — joined by the username-projection unit's AC4 pins: the
+//! prompt's mention line, the DPIA's dated note and the three decision
+//! records that close 0056's implementation debt. Each pin reads the
+//! committed file the way the repository ships it, so a drifted edit fails
+//! loudly here.
 
 use std::path::Path;
 
@@ -13,6 +16,13 @@ fn repo_file(relative: &str) -> String {
         .join(relative);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("the file {} reads: {error}", path.display()))
+}
+
+/// The file's prose with every whitespace run folded to one space — the
+/// wrap-independent reading for pins that are about the words, so a
+/// re-wrapped paragraph cannot fail them.
+fn flattened(content: &str) -> String {
+    content.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[test]
@@ -33,6 +43,71 @@ fn the_prompt_regains_the_report_bullet_tied_to_the_tool() {
     assert!(
         prompt.contains("Never write the /report command into an answer yourself"),
         "the model is told never to write the moderation command in prose"
+    );
+}
+
+#[test]
+fn the_username_projection_ships_its_prompt_line_dpia_note_and_decision_records() {
+    let prompt = repo_file("prompts/assistant.md");
+    assert!(
+        flattened(&prompt).contains(
+            "You may mention a person by the handle shown with their message, \
+             and never guess a handle you were not shown."
+        ),
+        "the prompt teaches the mention permission and its bound in one line"
+    );
+
+    let dpia = repo_file("docs/privacy/dpia.md");
+    assert!(
+        dpia.contains("Amended 2026-08-23: the username projection shipped."),
+        "the DPIA's transmitted-identifier line carries its dated note"
+    );
+
+    let column = repo_file("docs/decisions/0065-the-speaker-is-a-column-on-the-message-row.md");
+    assert!(
+        column.contains("Date: 2026-08-23"),
+        "the column record is dated"
+    );
+    assert!(
+        column.contains("closes decision 0056's implementation debt"),
+        "the column record names the debt it closes"
+    );
+    assert!(
+        column.contains("## Rejected alternatives"),
+        "the column record carries its rejected alternatives"
+    );
+
+    let projection =
+        repo_file("docs/decisions/0066-the-projection-prefixes-the-speaker-only-for-people.md");
+    assert!(
+        projection.contains("Date: 2026-08-23"),
+        "the projection record is dated"
+    );
+    assert!(
+        flattened(&projection).contains(
+            "A user-voiced message with a speaker projects as the speaker, \
+             a colon and a space, then the text."
+        ),
+        "the projection record states the prefix rule"
+    );
+    assert!(
+        projection.contains("## Rejected alternatives"),
+        "the projection record carries its rejected alternatives"
+    );
+
+    let teaching =
+        repo_file("docs/decisions/0067-the-prompt-may-address-people-by-the-shown-handle.md");
+    assert!(
+        teaching.contains("Date: 2026-08-23"),
+        "the teaching record is dated"
+    );
+    assert!(
+        flattened(&teaching).contains("must never guess a handle it was not shown"),
+        "the teaching record states the mention bound"
+    );
+    assert!(
+        teaching.contains("## Rejected alternatives"),
+        "the teaching record carries its rejected alternatives"
     );
 }
 
