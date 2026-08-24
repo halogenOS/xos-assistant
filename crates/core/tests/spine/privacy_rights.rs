@@ -1317,10 +1317,15 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
                  VALUES ('test-adapter', 'A', NULL)",
                 [],
             )?;
-            // The rewind: drop exactly what the suppression step adds and
-            // set the version back, leaving the previous unit's disk
-            // shape. The non-vacuity check proves the drop was real.
-            conn.execute_batch("ALTER TABLE principals DROP COLUMN opted_out;")?;
+            // The rewind: drop exactly what the steps past version twelve
+            // add — the suppression flag, and the literal-addressed column
+            // the later grounded-answer step appends — and set the version
+            // back, leaving the previous unit's disk shape. The
+            // non-vacuity check proves the drop was real.
+            conn.execute_batch(
+                "ALTER TABLE principals DROP COLUMN opted_out;
+                 ALTER TABLE block_chat_message DROP COLUMN literal_addressed;",
+            )?;
             let refused = conn.execute("UPDATE principals SET opted_out = 1", []);
             assert!(
                 refused.is_err(),
@@ -1339,8 +1344,8 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
         .expect("the version-twelve store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        13,
-        "the appended step advanced the domain's version"
+        14,
+        "the appended steps advanced the domain's version"
     );
     assert_eq!(
         principal_row(&reopened, "A").await.expect("the row").2,

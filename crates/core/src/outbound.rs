@@ -52,6 +52,24 @@
 //! words as prose is delivered untouched — the sentinel is the whole
 //! answer or nothing.
 //!
+//! # A recognized miss is routed by the literal addressed fact (unit 16)
+//!
+//! The model admits an unresolved lookup by emitting the miss sentinel as
+//! its whole answer, and this edge routes the outcome — the model cannot
+//! see whether a message addressed it, so it never decides this. The
+//! recognition runs on the same raw stored text as the abstention's,
+//! before any disclosure resolution, and reads the stored
+//! literal-addressed fact of the answer's dispatch-anchor message: the
+//! summoning frontier the framework stamps on every block a turn writes.
+//! An unaddressed anchor — and an unreadable one: no anchor, a non-message
+//! anchor, a pre-migration row without the fact — delivers nothing,
+//! exactly like an abstention, introducing nobody. An addressed anchor has
+//! the fixed [`DONT_KNOW_ANSWER`] written into the stored answer block
+//! first, so the ledger carries what the channel sees, and the delivery
+//! then flows through the ordinary answer path — the disclosure fold
+//! included, so a first asker's "don't know" still opens with the
+//! introduction line.
+//!
 //! # The first delivery introduces the assistant (2026-08-23)
 //!
 //! An undelivered answer whose summoning people include anyone never yet
@@ -90,7 +108,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use agent_ledger::{Block, BlockKind, CoreEvent, FromBlock, Role, RuntimeContext, StoreError};
+use agent_ledger::store::domain_run;
+use agent_ledger::{
+    Block, BlockKind, CoreEvent, FromBlock, Role, RuntimeContext, Store, StoreError,
+};
+use serde_json::json;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
@@ -138,6 +160,16 @@ const PAYMENT_REQUIRED_CLASS: &str = "payment required";
 fn is_quiet_failure(error: &str) -> bool {
     error.starts_with(PAYMENT_REQUIRED_RENDERING)
 }
+
+/// The fixed answer an addressed miss delivers (unit 16, 2026-08-24): the
+/// model looked, confirmed nothing, and the asker literally addressed the
+/// assistant, so silence would read as being ignored. A named constant on
+/// purpose — the wording is product behavior, not a model answer, and it
+/// carries no trained-knowledge tail: no "as far as I know", no partial
+/// answer from memory. It delivers as a first answer like any other,
+/// disclosure fold included; an unaddressed miss delivers nothing instead.
+pub const DONT_KNOW_ANSWER: &str =
+    "I don't know. I looked this up and could not find an answer in the project's sources.";
 
 /// The fixed acknowledgment a rules change draws in the chat — deterministic
 /// product behavior, not a model answer, so the wording cannot drift
@@ -346,6 +378,32 @@ async fn deliver_answers_and_reports(
                     *cursor = block_id;
                     continue;
                 }
+                // The miss recognition runs on the same raw stored text
+                // (unit 16), and the ROUTING is the machine's: the stored
+                // literal-addressed fact of the answer's dispatch-anchor
+                // message decides, never the model. Unaddressed — or
+                // unreadable, the silent fold — delivers nothing, like an
+                // abstention. Addressed rewrites the stored answer to the
+                // fixed don't-know line and falls through the ordinary
+                // delivery below, disclosure fold included: from here on
+                // the miss IS a first answer like any other, and a re-read
+                // after a crash between the rewrite and the send meets an
+                // ordinary undelivered answer, never a doubled decision.
+                if kind == ReplyKind::Answer && abstention::is_miss(&text) {
+                    if !anchor_literally_addressed(&blocks, index) {
+                        tracing::debug!(
+                            conversation_id,
+                            block_id,
+                            "an unaddressed turn's lookup missed; the turn speaks nothing"
+                        );
+                        *cursor = block_id;
+                        continue;
+                    }
+                    store_dont_know(ctx.store(), block_id).await?;
+                    blocks[index]
+                        .fields
+                        .insert("content".into(), json!(DONT_KNOW_ANSWER));
+                }
                 // An answer's first delivery resolves the first-interaction
                 // disclosure (decision 0079): the line is written into the
                 // stored block before the send, so the ledger carries what
@@ -448,6 +506,53 @@ async fn recover_from_lag(
         }
     }
     Ok(())
+}
+
+/// Whether the answer's dispatch-anchor message LITERALLY addressed the
+/// assistant — the miss routing's one question (unit 16), answered from the
+/// loaded ledger alone: the answer block carries the anchor id the
+/// framework stamped, and the anchor row carries the stored literal fact
+/// the ingestion wrote beside the summons. Everything unreadable answers
+/// false, the silent fold: an answer without an anchor (the public write
+/// surface), an anchor outside the loaded ledger, a non-message anchor,
+/// and a pre-migration anchor row whose column reads NULL — a "don't know"
+/// spoken to nobody in particular is noise, while a swallowed line to a
+/// literally addressed asker needs a row this unit's own write path never
+/// produces.
+fn anchor_literally_addressed(blocks: &[Block], index: usize) -> bool {
+    let Some(anchor) = blocks[index].dispatch_anchor else {
+        return false;
+    };
+    blocks
+        .iter()
+        .find(|block| block.id == anchor)
+        .is_some_and(|block| {
+            matches!(
+                AssistantKind::from_block(block),
+                AssistantKind::ChatMessage(message) if message.literal_addressed == Some(true)
+            )
+        })
+}
+
+/// Replace a recognized miss answer's stored text with the fixed
+/// [`DONT_KNOW_ANSWER`], before its first delivery — the same
+/// resolve-into-the-stored-block shape as the disclosure prepend, and the
+/// same deliberate `block_text` coupling decision 0079 records: the ledger,
+/// the model's later history and the channel carry one text, and the raw
+/// sentinel — a machinery token — never leaves the machine.
+///
+/// # Errors
+///
+/// [`StoreError`] if the rewrite fails or the store's actor has stopped.
+async fn store_dont_know(store: &Store, block_id: i64) -> Result<(), StoreError> {
+    domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
+        conn.execute(
+            "UPDATE block_text SET content = ?2 WHERE block_id = ?1",
+            rusqlite::params![block_id, DONT_KNOW_ANSWER],
+        )?;
+        Ok(())
+    })
+    .await
 }
 
 /// What one undelivered block means to this edge.
@@ -621,6 +726,245 @@ mod tests {
             .expect("the edge outlives the test");
         assert_eq!(reply.channel, key);
         assert_eq!(reply.text, disclosure.disclosed("the owed answer"));
+    }
+
+    /// One recorded member message with the given literal-addressed fact —
+    /// summoned either way, the two mirrored cases' one difference — and
+    /// its block id, for anchoring the turn's answer on it.
+    async fn summoning_message(store: &Store, conversation: i64, literal: bool) -> i64 {
+        store
+            .append_consumer_block(
+                conversation,
+                Some(Role::User),
+                crate::kind::CHAT_MESSAGE_KIND,
+                crate::kind::ChatMessage::stored_fields(
+                    "the unanswerable ask",
+                    crate::kind::RecordedSender {
+                        principal_id: 7,
+                        authority: crate::message::Authority::Member,
+                        speaker: None,
+                    },
+                    None,
+                    None,
+                    "2026-08-24T00:00:00Z",
+                    crate::kind::Stamp::compose(
+                        crate::kind::Summons {
+                            summoned: true,
+                            literal_addressed: literal,
+                        },
+                        crate::message::Authority::Member,
+                        None,
+                        None,
+                    ),
+                ),
+                None,
+            )
+            .await
+            .expect("the message appends")
+    }
+
+    /// One finalized assistant answer anchored on the given summons, the
+    /// way the framework's dispatch stamps it — the anchor set through the
+    /// domain seam, since the anchored destination is the framework's own.
+    async fn anchored_answer(store: &Store, conversation: i64, anchor: i64, content: &str) {
+        let answer = store
+            .insert_final_text_block(conversation, Role::Assistant, content.into(), None)
+            .await
+            .expect("the answer inserts");
+        agent_ledger::store::domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
+            conn.execute(
+                "UPDATE blocks SET dispatch_anchor = ?2 WHERE id = ?1",
+                [answer, anchor],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the anchor writes");
+    }
+
+    /// Wake the edge for one conversation, the completed-stream way.
+    fn wake(ctx: &RuntimeContext<AssistantKind, CoreEvent>, conversation_id: i64) {
+        ctx.bus().emit(CoreEvent::StreamDone {
+            conversation_id,
+            usage: None,
+            stop_reason: None,
+            generation: None,
+        });
+    }
+
+    /// One mapped conversation on the quiet adapter, under the given
+    /// channel id. The mirrored miss cases each take their own, so a wake
+    /// for one never meets the other's half-written turn: the production
+    /// finalize commits an answer with its anchor in one transaction,
+    /// while the helpers above write them in two steps.
+    async fn mapped_conversation(store: &Store, channel: &str) -> (ChannelKey, i64) {
+        let key = ChannelKey {
+            adapter: "quiet".into(),
+            channel: channel.into(),
+        };
+        let conversation = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        mapping::claim(&store.tx(), &key, ChannelKind::Direct, conversation)
+            .await
+            .expect("the mapping claims");
+        (key, conversation)
+    }
+
+    /// AC3 and AC4 (unit 16), deterministically at the edge over the two
+    /// mirrored cases of one miss sentinel: the routing reads the stored
+    /// literal-addressed fact of the answer's dispatch anchor, never model
+    /// text. The unaddressed miss delivers nothing, prepends no disclosure
+    /// and introduces nobody; the addressed miss delivers exactly the fixed
+    /// don't-know line — verbatim-pinned here, with no trained-knowledge
+    /// tail — carrying the first asker's disclosure line, and the stored
+    /// block is rewritten to the delivered text, so the ledger and the
+    /// channel agree.
+    #[tokio::test]
+    async fn a_miss_is_routed_by_the_anchors_stored_literal_addressed_fact() {
+        assert_eq!(
+            DONT_KNOW_ANSWER,
+            "I don't know. I looked this up and could not find an answer \
+             in the project's sources.",
+            "the fixed don't-know copy is pinned verbatim"
+        );
+
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let ctx = quiet_ctx(store.clone());
+        let (_, silent_side) = mapped_conversation(&store, "dm-miss-silent").await;
+        let (spoken_key, spoken_side) = mapped_conversation(&store, "dm-miss-spoken").await;
+        let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
+        let mut replies = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
+            .await
+            .expect("the edge opens");
+
+        // The unaddressed miss: summoned, literal fact false — the
+        // helpful-mode shape of the live failure.
+        let unaddressed = summoning_message(&store, silent_side, false).await;
+        anchored_answer(
+            &store,
+            silent_side,
+            unaddressed,
+            &format!("  {}\n", crate::abstention::MISS_SENTINEL),
+        )
+        .await;
+        wake(&ctx, silent_side);
+
+        // The addressed miss over the SAME sentinel: only the stored fact
+        // differs, and the edge works the wakes in order, so whatever
+        // arrives first proves the split.
+        let addressed = summoning_message(&store, spoken_side, true).await;
+        anchored_answer(
+            &store,
+            spoken_side,
+            addressed,
+            crate::abstention::MISS_SENTINEL,
+        )
+        .await;
+        wake(&ctx, spoken_side);
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .expect("the addressed miss delivers before the deadline")
+            .expect("the edge outlives the test");
+        assert_eq!(
+            reply.channel, spoken_key,
+            "the first delivery is the addressed side's: the unaddressed \
+             miss, worked first, delivered nothing"
+        );
+        assert_eq!(
+            reply.text,
+            disclosure.disclosed(DONT_KNOW_ANSWER),
+            "the addressed miss delivers the don't-know line, disclosure included"
+        );
+        assert!(
+            replies.try_recv().is_err(),
+            "exactly one reply: the unaddressed miss stays silent"
+        );
+
+        // The ledger carries what the channel saw: the addressed miss's
+        // stored answer was rewritten to the delivered text, while the
+        // unaddressed miss keeps its raw sentinel record.
+        let stored_answer = |blocks: &[Block]| {
+            blocks
+                .iter()
+                .filter(|block| block.block_type == "text")
+                .map(super::deliverable_of)
+                .find_map(|deliverable| match deliverable {
+                    Some(Deliverable::Reply { text, .. }) => Some(text),
+                    _ => None,
+                })
+                .expect("the side stores one answer")
+        };
+        let silent_blocks = store
+            .list_blocks(silent_side)
+            .await
+            .expect("the silent ledger reads");
+        assert_eq!(
+            stored_answer(&silent_blocks),
+            format!("  {}\n", crate::abstention::MISS_SENTINEL),
+            "the unaddressed miss's stored record is untouched"
+        );
+        let spoken_blocks = store
+            .list_blocks(spoken_side)
+            .await
+            .expect("the spoken ledger reads");
+        assert_eq!(
+            stored_answer(&spoken_blocks),
+            disclosure.disclosed(DONT_KNOW_ANSWER),
+            "the addressed miss's block holds the delivered line"
+        );
+    }
+
+    /// AC5 (unit 16): the two sentinels stay distinct at the edge — an
+    /// ADDRESSED turn whose answer is the abstention sentinel delivers
+    /// nothing and is never converted to the don't-know line; the next
+    /// spoken answer is the first thing the channel hears.
+    #[tokio::test]
+    async fn an_addressed_abstention_is_not_converted_to_dont_know() {
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let ctx = quiet_ctx(store.clone());
+        let key = ChannelKey {
+            adapter: "quiet".into(),
+            channel: "dm-abstain".into(),
+        };
+        let conversation = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        mapping::claim(&store.tx(), &key, ChannelKind::Direct, conversation)
+            .await
+            .expect("the mapping claims");
+        let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
+        let mut replies = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
+            .await
+            .expect("the edge opens");
+
+        let addressed = summoning_message(&store, conversation, true).await;
+        anchored_answer(
+            &store,
+            conversation,
+            addressed,
+            crate::abstention::ABSTENTION_SENTINEL,
+        )
+        .await;
+        wake(&ctx, conversation);
+
+        let spoken = summoning_message(&store, conversation, true).await;
+        anchored_answer(&store, conversation, spoken, "the spoken answer").await;
+        wake(&ctx, conversation);
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .expect("the spoken answer delivers before the deadline")
+            .expect("the edge outlives the test");
+        assert_eq!(
+            reply.text,
+            disclosure.disclosed("the spoken answer"),
+            "the addressed abstention delivered nothing and introduced \
+             nobody; social silence is never turned into a don't-know"
+        );
     }
 
     /// Dropping the receiver ends the edge task even though the bus stays

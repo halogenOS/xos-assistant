@@ -66,3 +66,25 @@ what resolving it takes. Resolved items move into a decision record.
   twice (the dedup check and the append's own load). Rare-path, so low impact,
   but it grows with the retention-free history. Closing it means a bounded
   lookup for the prior-report check instead of a full scan.
+
+- **Unit 16 close, 2026-08-24 — a silent unaddressed miss still spends its
+  budget slot.** The counting SQL excludes only the abstention sentinel, so an
+  unaddressed miss that delivers nothing still counts its opened debt. This errs
+  in the limiting direction (a miss spent a real lookup worth bounding) and the
+  budget spine was held unchanged this unit, so it is deliberate and pinned; a
+  later change to extend the exclusion to the silent miss would be a considered
+  budget decision, not a bug fix.
+
+- **Unit 16 close, 2026-08-24 — the addressed-miss first-interaction path
+  writes the block twice.** Delivering the fixed don't-know line to a first-time
+  addressed asker issues one update to rewrite the miss sentinel to the line and
+  a second to prepend the disclosure. Correct but two writes where one composed
+  write would do; closing it means folding the disclosure prepend into the same
+  rewrite.
+
+- **Unit 16 close, 2026-08-24 — the grounding discipline rests on the model
+  emitting the miss sentinel.** By design (the mechanical gate was rejected), a
+  substantive answer that does not ground its claim and does not emit the miss
+  sentinel is delivered as written. The teaching governs this and a scripted
+  turn pins the intended path; a live-transcript replay of a real failed lookup
+  would raise confidence that the model complies in practice.

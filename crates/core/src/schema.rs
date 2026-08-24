@@ -18,8 +18,9 @@ use agent_ledger::{DomainMigrations, FromBlock, StoreConfig};
 
 use crate::kind::{
     AssistantKind, CHAT_MESSAGE_TABLE, COLUMN_ADDRESSED, COLUMN_ANSWER_DUE, COLUMN_AUTHORITY,
-    COLUMN_DEBT_AUTHORITY, COLUMN_LIMITED, COLUMN_ORIGIN, COLUMN_PRINCIPAL_ID, COLUMN_REPLY_TARGET,
-    COLUMN_REPLY_TO_ASSISTANT, COLUMN_ROLE, COLUMN_SENT_AT, COLUMN_SPEAKER, COLUMN_TEXT,
+    COLUMN_DEBT_AUTHORITY, COLUMN_LIMITED, COLUMN_LITERAL_ADDRESSED, COLUMN_ORIGIN,
+    COLUMN_PRINCIPAL_ID, COLUMN_REPLY_TARGET, COLUMN_REPLY_TO_ASSISTANT, COLUMN_ROLE,
+    COLUMN_SENT_AT, COLUMN_SPEAKER, COLUMN_TEXT,
 };
 use crate::message::{Authority, ChannelKind};
 
@@ -347,6 +348,24 @@ static SUPPRESSION_FLAG_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The literal addressed column — the appended migration step of the
+/// grounded-answer unit (unit 16, 2026-08-24), per decision 0026's
+/// discipline. One nullable boolean column on the message table, stored
+/// beside the untouched summons column: the safe default is NULL, and that
+/// absence is genuinely safe because no historical row is ever read for its
+/// literal value — the one reader, the outbound miss-routing, reads only
+/// the current turn's dispatch-anchor message, and folds an absent value to
+/// the silent outcome. Structure, not personal data: erasure leaves it. No
+/// frozen vocabulary list: the step closes a boolean, not an enum — the
+/// reply-target step's own precedent.
+static LITERAL_ADDRESSED_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "ALTER TABLE {CHAT_MESSAGE_TABLE}
+             ADD COLUMN {COLUMN_LITERAL_ADDRESSED} INTEGER
+                 CHECK ({COLUMN_LITERAL_ADDRESSED} IN (0, 1));"
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -370,6 +389,7 @@ pub fn store_config() -> StoreConfig {
                 SPEAKER_MIGRATION.as_str(),
                 DISPLAY_NAME_DROP_MIGRATION,
                 SUPPRESSION_FLAG_MIGRATION.as_str(),
+                LITERAL_ADDRESSED_MIGRATION.as_str(),
             ],
         }],
     }

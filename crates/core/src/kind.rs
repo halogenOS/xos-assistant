@@ -61,6 +61,20 @@ pub const COLUMN_SENT_AT: &str = "sent_at";
 /// re-derived against a configuration that can change between runs.
 /// Structure, not personal data: erasure leaves it.
 pub const COLUMN_ADDRESSED: &str = "addressed";
+/// Whether the user LITERALLY addressed the assistant — the adapter's own
+/// fact, before the answering mode folded into the summons (unit 16,
+/// 2026-08-24): a mention, a reply to the assistant, its name, a direct
+/// chat. Stored BESIDE the recast summons, which keeps its column and every
+/// one of its readers — the budgets, the unlatch, the co-summoner rule, the
+/// report scoping and the disclosure fold all stay on [`COLUMN_ADDRESSED`].
+/// Exactly ONE consumer reads this column: the outbound miss-routing, which
+/// decides whether a turn that found no answer owes its asker a spoken
+/// "don't know" or silence. Structure, not personal data: erasure leaves
+/// it. Added by the literal-addressed migration step, so pre-migration rows
+/// read NULL — never a decision input, because only the current turn's
+/// dispatch-anchor message is read, at outbound time, and an absent value
+/// folds to silence.
+pub const COLUMN_LITERAL_ADDRESSED: &str = "literal_addressed";
 /// Whether the message owes the model a turn — the write-time stamp the
 /// entry point decides once at insert: true when the message is summoned
 /// and no budget refused it, or when the block behind it carries an
@@ -246,7 +260,28 @@ pub struct RecordedSender<'a> {
     pub speaker: Option<&'a str>,
 }
 
-/// The write-time stamp: the four facts the entry point decides once at the
+/// The summons resolution's two facts, decided together at the ONE place
+/// the answering mode enters the machinery (unit 16, 2026-08-24): the
+/// summons — the adapter's addressed fact OR the helpful mode's
+/// every-message evaluation, what the whole debt spine reads — and the
+/// literal addressed fact as the adapter alone recorded it, what the
+/// outbound miss-routing reads. Carried as one value so the two booleans
+/// can never swap places between the resolution and the stamp. The literal
+/// fact is stored, never derived: helpful is mutable configuration, and an
+/// addressed helpful-mode message would be indistinguishable after the
+/// fact.
+#[derive(Debug, Clone, Copy)]
+pub struct Summons {
+    /// Whether the message summoned the assistant, mode folded in — stored
+    /// under [`COLUMN_ADDRESSED`].
+    pub summoned: bool,
+    /// Whether the user literally addressed the assistant — stored under
+    /// [`COLUMN_LITERAL_ADDRESSED`]. Always false when `summoned` is
+    /// false: a message that did not even summon was not addressed.
+    pub literal_addressed: bool,
+}
+
+/// The write-time stamp: the facts the entry point decides once at the
 /// insert, composed here so the composition rule and the minimum rule live
 /// beside their readers ([`ChatMessage::owes_answer`],
 /// [`ChatMessage::carried_debt_authority`]) as one pure value a test can
@@ -257,6 +292,11 @@ pub struct Stamp {
     /// resolution of the adapter's addressed fact and the answering mode,
     /// stored under [`COLUMN_ADDRESSED`].
     pub addressed: bool,
+    /// Whether the user literally addressed the assistant, per
+    /// [`Summons::literal_addressed`] — stored under
+    /// [`COLUMN_LITERAL_ADDRESSED`], read only by the outbound
+    /// miss-routing.
+    pub literal_addressed: bool,
     /// Which budget refused the message's own debt, if any.
     pub limited: Option<LimitedBy>,
     /// Whether the message owes the model a turn — the composition rule:
@@ -268,12 +308,12 @@ pub struct Stamp {
 }
 
 impl Stamp {
-    /// Compose the stamp from the write's inputs: the message's summons
-    /// fact — addressed, or evaluated under helpful answering; the entry
-    /// point resolves it before this call — its sender's authority, the
-    /// first refusing budget (already `None` for unsummoned messages —
-    /// budgets are consulted for summoned ones only), and the owing tail's
-    /// debt if the conversation carries one.
+    /// Compose the stamp from the write's inputs: the message's resolved
+    /// [`Summons`] — the entry point resolves both of its facts before this
+    /// call — its sender's authority, the first refusing budget (already
+    /// `None` for unsummoned messages — budgets are consulted for summoned
+    /// ones only), and the owing tail's debt if the conversation carries
+    /// one.
     ///
     /// The composition rule: answer-due = (summoned and not limited) or
     /// tail-owes — a refused own debt never cancels a propagated one. The
@@ -281,17 +321,20 @@ impl Stamp {
     /// authority that contributed to summoning the turn — the tail's debt
     /// authority against the incoming sender's, regardless of the incoming
     /// message's own summons fact — and a fresh taken debt opens at its
-    /// sender's own authority.
+    /// sender's own authority. The literal fact passes through untouched:
+    /// no rule here reads it, only the store carries it to the outbound
+    /// miss-routing.
     #[must_use]
     pub fn compose(
-        summoned: bool,
+        summons: Summons,
         sender: Authority,
         limited: Option<LimitedBy>,
         owing_tail: Option<TailDebt>,
     ) -> Self {
-        let own_debt_taken = summoned && limited.is_none();
+        let own_debt_taken = summons.summoned && limited.is_none();
         Self {
-            addressed: summoned,
+            addressed: summons.summoned,
+            literal_addressed: summons.literal_addressed,
             limited,
             answer_due: own_debt_taken || owing_tail.is_some(),
             debt_authority: match owing_tail {
@@ -359,6 +402,12 @@ pub struct ChatMessage {
     /// [`COLUMN_ADDRESSED`]'s recast. `None` only for a block
     /// the store did not produce (the schema stores it NOT NULL).
     pub addressed: Option<bool>,
+    /// Whether the user literally addressed the assistant, per
+    /// [`COLUMN_LITERAL_ADDRESSED`]. `None` on every pre-migration row and
+    /// on a block the store did not produce; the one reader — the outbound
+    /// miss-routing — folds that absence to unaddressed, the silent
+    /// direction.
+    pub literal_addressed: Option<bool>,
     /// Whether the message owes the model a turn, stamped at the write.
     /// `None` only for a block the store did not produce; the awaiting hook
     /// treats that absence as owing nothing.
@@ -421,6 +470,10 @@ impl ChatMessage {
         }
         fields.insert(COLUMN_SENT_AT.into(), json!(sent_at));
         fields.insert(COLUMN_ADDRESSED.into(), json!(stamp.addressed));
+        fields.insert(
+            COLUMN_LITERAL_ADDRESSED.into(),
+            json!(stamp.literal_addressed),
+        );
         fields.insert(COLUMN_ANSWER_DUE.into(), json!(stamp.answer_due));
         if let Some(limited) = stamp.limited {
             fields.insert(COLUMN_LIMITED.into(), json!(limited.as_str()));
@@ -532,6 +585,7 @@ impl LeafKind for ChatMessage {
             Column::new(COLUMN_ORIGIN, ColumnType::Text),
             Column::new(COLUMN_SENT_AT, ColumnType::Text),
             Column::new(COLUMN_ADDRESSED, ColumnType::Boolean),
+            Column::new(COLUMN_LITERAL_ADDRESSED, ColumnType::Boolean),
             Column::new(COLUMN_ANSWER_DUE, ColumnType::Boolean),
             Column::new(COLUMN_LIMITED, ColumnType::Text),
             Column::new(COLUMN_DEBT_AUTHORITY, ColumnType::Text),
@@ -559,6 +613,10 @@ impl LeafKind for ChatMessage {
             origin: string_field(block, COLUMN_ORIGIN),
             sent_at: string_field(block, COLUMN_SENT_AT),
             addressed: block.fields.get(COLUMN_ADDRESSED).and_then(Value::as_bool),
+            literal_addressed: block
+                .fields
+                .get(COLUMN_LITERAL_ADDRESSED)
+                .and_then(Value::as_bool),
             answer_due: block.fields.get(COLUMN_ANSWER_DUE).and_then(Value::as_bool),
             limited: block
                 .fields
@@ -979,13 +1037,19 @@ pub(crate) async fn conversations_of_principal(
 
 /// The framework's kinds as this consumer composes them: a transparent
 /// delegation on every hook, with exactly one representation judgment of
-/// its own — a recognized abstention answer is invisible to the model
-/// (unit 14, 2026-08-23). The model chose silence by emitting the fixed
-/// sentinel as its whole answer; the stored block is the honest record of
-/// that turn, but projecting it into later requests would hand the model
-/// its own machinery token as prose. The kind level is the one seam the
-/// projection fold offers a consumer, the same seam decision 0027 used,
-/// so the judgment lives here instead of anywhere in the machinery.
+/// its own — a finalized assistant answer whose raw stored content is a
+/// machinery sentinel is invisible to the model: the abstention (unit 14,
+/// 2026-08-23) and a still-raw miss (unit 16, 2026-08-24). The model emits
+/// the fixed sentinel as its whole answer — silence, or an unresolved
+/// lookup — and the stored block is the honest record of that turn, but
+/// projecting it into later requests would hand the model its own machinery
+/// token as prose, accumulating tokens in its context turn over turn. An
+/// addressed miss is rewritten to the spoken don't-know line at the
+/// outbound edge before it would project, so it is ordinary prose by then;
+/// only the silent, still-raw sentinels are suppressed. The kind level is
+/// the one seam the projection fold offers a consumer, the same seam
+/// decision 0027 used, so the judgment lives here instead of anywhere in
+/// the machinery.
 ///
 /// The invisibility is boundary-invisible on purpose: the two user runs
 /// around a skipped abstention project as two same-role messages, the
@@ -1004,14 +1068,23 @@ pub(crate) async fn conversations_of_principal(
 pub struct FrameworkKind(pub BlockKind);
 
 impl FrameworkKind {
-    /// Whether this is a finalized assistant answer that is a recognized
-    /// abstention — the projection's one override.
-    fn recognized_abstention(&self) -> bool {
+    /// Whether this is a finalized assistant answer whose RAW stored content
+    /// is a machinery sentinel the model must never see projected back — the
+    /// abstention (unit 14) or a still-raw miss (unit 16). Both are the
+    /// model's own machinery tokens, not prose: projecting either would hand
+    /// the model its own token as an assistant message, exactly the leak the
+    /// abstention suppression was built to prevent. An addressed miss is
+    /// rewritten to the spoken don't-know line before it would project, so
+    /// once resolved it is ordinary prose and no longer matches here — only
+    /// the silent, still-raw sentinel turns (every unaddressed miss, and an
+    /// addressed one in the window before its rewrite) are suppressed.
+    fn projects_raw_sentinel(&self) -> bool {
         matches!(
             &self.0,
             BlockKind::Text(text)
                 if text.role == Some(Role::Assistant)
-                    && crate::abstention::is_abstention(&text.content)
+                    && (crate::abstention::is_abstention(&text.content)
+                        || crate::abstention::is_miss(&text.content))
         )
     }
 }
@@ -1066,21 +1139,21 @@ impl Agency for FrameworkKind {
 
 impl Projection for FrameworkKind {
     fn group_role(&self) -> Option<Role> {
-        if self.recognized_abstention() {
+        if self.projects_raw_sentinel() {
             return None;
         }
         self.0.group_role()
     }
 
     fn llm_parts(&self) -> Option<Vec<ContentPart>> {
-        if self.recognized_abstention() {
+        if self.projects_raw_sentinel() {
             return None;
         }
         self.0.llm_parts()
     }
 
     fn llm_text(&self) -> Option<String> {
-        if self.recognized_abstention() {
+        if self.projects_raw_sentinel() {
             return None;
         }
         self.0.llm_text()
@@ -1096,7 +1169,8 @@ impl Projection for FrameworkKind {
 #[derive(Agency)]
 pub enum AssistantKind {
     /// The framework's own kinds, resolved through the wrapping delegate
-    /// that silences a recognized abstention in projection.
+    /// that silences a raw machinery sentinel — an abstention or a still-raw
+    /// miss — in projection.
     #[agency(delegate)]
     Core(FrameworkKind),
     /// The assistant's recorded channel message.
@@ -1150,7 +1224,15 @@ mod tests {
                     None,
                     None,
                     "2026-08-23T00:00:00Z",
-                    Stamp::compose(true, Authority::Member, None, None),
+                    Stamp::compose(
+                        Summons {
+                            summoned: true,
+                            literal_addressed: true,
+                        },
+                        Authority::Member,
+                        None,
+                        None,
+                    ),
                 ),
                 None,
             )
@@ -1241,6 +1323,54 @@ mod tests {
         );
     }
 
+    /// A silent unaddressed miss still counts its opened debt against the
+    /// principal's budget: the raw `[[miss]]` sentinel is NOT excluded from
+    /// `COUNTED_DEBT_SQL` — only the abstention is. This is deliberate. The
+    /// budget spine reads the summons fact unchanged, and the miss/abstention
+    /// parity that makes a silent miss deliver nothing, introduce nobody and
+    /// spend no disclosure deliberately stops short of the budget: unlike a
+    /// cheap abstention, a miss spent a real in-turn lookup worth bounding, so
+    /// letting it keep its slot errs in the limiting direction. This test pins
+    /// the behavior so it cannot drift silently; a later change that extends
+    /// the exclusion to the silent miss would be a deliberate budget decision,
+    /// not an accident.
+    #[tokio::test]
+    async fn a_silent_miss_still_counts_its_opened_debt() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let tx = store.tx();
+        let window = NonZeroU64::new(600).expect("a nonzero window");
+
+        let ask = summoned_message(&store, conversation, "the missed ask").await;
+        anchored_answer(
+            &store,
+            conversation,
+            ask,
+            &format!("  {}\n", crate::abstention::MISS_SENTINEL),
+        )
+        .await;
+
+        assert_eq!(
+            opened_debts_by_principal(&tx, 7, window)
+                .await
+                .expect("the count runs"),
+            1,
+            "the raw miss sentinel is not excluded: the debt still counts, \
+             erring in the limiting direction since the miss spent a lookup"
+        );
+        assert_eq!(
+            opened_debts_in_conversation(&tx, conversation, window)
+                .await
+                .expect("the count runs"),
+            1,
+            "the channel count treats the silent miss the same way"
+        );
+    }
+
     /// The delegate's one projection judgment (unit 14): a finalized
     /// assistant answer that is exactly the sentinel — trimmed — projects
     /// nothing and opens no message boundary, while an answer quoting the
@@ -1286,6 +1416,71 @@ mod tests {
             user_sentinel.group_role(),
             Some(Role::User),
             "only the assistant's own voice abstains"
+        );
+    }
+
+    /// The same projection suppression covers a still-raw miss (unit 16): an
+    /// unaddressed miss is stored as the raw sentinel and never rewritten, so
+    /// without this it would project its machinery token into every later
+    /// model request in the conversation — the exact leak the abstention
+    /// suppression exists to prevent. A finalized assistant answer that is
+    /// exactly the miss sentinel — trimmed — projects nothing and opens no
+    /// boundary; an answer merely quoting it as prose, and a user message
+    /// carrying it whole, project exactly as the framework states them. An
+    /// addressed miss never reaches here as a raw sentinel: the edge rewrites
+    /// it to the don't-know line first, and that prose projects normally.
+    #[test]
+    fn a_raw_miss_sentinel_is_invisible_to_the_model() {
+        use crate::abstention::MISS_SENTINEL;
+
+        let text_block = |role: Role, content: &str| {
+            let mut fields = serde_json::Map::new();
+            fields.insert("role".into(), json!(role.as_str()));
+            fields.insert("content".into(), json!(content));
+            Block {
+                id: 1,
+                role: Some(role),
+                block_type: "text".into(),
+                created_at: String::new(),
+                dispatch_anchor: None,
+                fields,
+            }
+        };
+
+        let missed =
+            AssistantKind::from_block(&text_block(Role::Assistant, &format!(" {MISS_SENTINEL}\n")));
+        assert_eq!(missed.group_role(), None, "no boundary opens");
+        assert_eq!(missed.llm_text(), None, "no text contribution");
+        assert!(missed.llm_parts().is_none(), "no parts contribution");
+
+        let quoting = AssistantKind::from_block(&text_block(
+            Role::Assistant,
+            &format!("I reply {MISS_SENTINEL} when a lookup finds nothing"),
+        ));
+        assert_eq!(quoting.group_role(), Some(Role::Assistant));
+        assert!(
+            quoting
+                .llm_text()
+                .is_some_and(|t| t.contains(MISS_SENTINEL)),
+            "prose quoting the sentinel projects whole"
+        );
+
+        let user_sentinel = AssistantKind::from_block(&text_block(Role::User, MISS_SENTINEL));
+        assert_eq!(
+            user_sentinel.group_role(),
+            Some(Role::User),
+            "only the assistant's own voice misses"
+        );
+
+        let resolved = AssistantKind::from_block(&text_block(
+            Role::Assistant,
+            crate::outbound::DONT_KNOW_ANSWER,
+        ));
+        assert_eq!(
+            resolved.group_role(),
+            Some(Role::Assistant),
+            "an addressed miss, rewritten to the don't-know line, projects as \
+             the ordinary answer the channel heard"
         );
     }
 
@@ -1358,6 +1553,77 @@ mod tests {
         );
     }
 
+    /// AC2 at the stamp (unit 16): the literal addressed fact is stored
+    /// beside the summons without disturbing it. An unaddressed
+    /// helpful-mode message composes summons=true — its debt opens, it
+    /// counts, it co-summons — with literal=false; an addressed one
+    /// composes both true; and the stored fields carry both columns
+    /// exactly as composed, so the debt spine and the miss-routing read
+    /// two facts from one write.
+    #[test]
+    fn the_literal_fact_is_stored_beside_the_undisturbed_summons() {
+        let unaddressed_helpful = Stamp::compose(
+            Summons {
+                summoned: true,
+                literal_addressed: false,
+            },
+            Authority::Member,
+            None,
+            None,
+        );
+        assert!(unaddressed_helpful.addressed, "the summons stands");
+        assert!(
+            !unaddressed_helpful.literal_addressed,
+            "the literal fact stays the adapter's own"
+        );
+        assert!(
+            unaddressed_helpful.own_debt_taken(),
+            "the opened-debt predicate reads the summons, never the literal fact"
+        );
+        assert!(unaddressed_helpful.answer_due, "the debt opens");
+
+        let addressed = Stamp::compose(
+            Summons {
+                summoned: true,
+                literal_addressed: true,
+            },
+            Authority::Member,
+            None,
+            None,
+        );
+        assert!(addressed.addressed && addressed.literal_addressed);
+
+        let fields = ChatMessage::stored_fields(
+            "the ask",
+            RecordedSender {
+                principal_id: 7,
+                authority: Authority::Member,
+                speaker: None,
+            },
+            None,
+            None,
+            "2026-08-24T00:00:00Z",
+            unaddressed_helpful,
+        );
+        assert_eq!(fields[COLUMN_ADDRESSED], json!(true));
+        assert_eq!(fields[COLUMN_LITERAL_ADDRESSED], json!(false));
+
+        let parsed = <ChatMessage as agent_ledger::LeafKind>::parse(&Block {
+            id: 1,
+            role: Some(Role::User),
+            block_type: CHAT_MESSAGE_KIND.into(),
+            created_at: String::new(),
+            dispatch_anchor: None,
+            fields,
+        });
+        assert_eq!(parsed.addressed, Some(true));
+        assert_eq!(parsed.literal_addressed, Some(false));
+        assert!(
+            parsed.own_debt_taken(),
+            "the row-side co-summoner reading is untouched by the literal fact"
+        );
+    }
+
     /// A tail that is a run of read-through kinds and erased chat rows
     /// answers the block behind the whole run in one query; an empty kind
     /// list still reads past erased rows alone, and an empty conversation
@@ -1398,7 +1664,15 @@ mod tests {
                     Some("gone-1"),
                     None,
                     "2026-08-23T00:00:00Z",
-                    Stamp::compose(false, Authority::Member, None, None),
+                    Stamp::compose(
+                        Summons {
+                            summoned: false,
+                            literal_addressed: false,
+                        },
+                        Authority::Member,
+                        None,
+                        None,
+                    ),
                 ),
                 None,
             )

@@ -171,6 +171,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                     "2026-08-21T00:00:00+00:00",
                     Stamp {
                         addressed: true,
+                        literal_addressed: false,
                         limited: None,
                         answer_due: true,
                         debt_authority: None,
@@ -196,6 +197,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN reply_target;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN reply_to_assistant;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
                  ALTER TABLE principals DROP COLUMN opted_out;
                  DROP TABLE {palette};
                  DROP TABLE {note};
@@ -247,7 +249,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        13,
+        14,
         "the appended steps advanced the domain's version"
     );
 
@@ -813,6 +815,7 @@ async fn a_pre_migration_owing_tail_folds_to_its_stored_sender_authority() {
                 // point.
                 Stamp {
                     addressed: true,
+                    literal_addressed: false,
                     limited: None,
                     answer_due: true,
                     debt_authority: None,

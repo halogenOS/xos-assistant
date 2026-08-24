@@ -683,22 +683,17 @@ impl Assistant {
                 .await?;
         }
         let owing_tail = self.owing_tail_debt(conversation_id).await?;
-        // The summons resolution — the ONE place the answering mode enters
-        // (unit 14): a message summons the assistant when it addressed it,
-        // or when helpful answering evaluates every message. Everything
-        // below — the budget consultation, the stamp, the unlatch, and
-        // every later reader of the stored fact — is mode-free.
-        let summoned = message.addressed || self.answering == AnsweringMode::Helpful;
+        let summons = self.resolved_summons(&message);
         let limited = if family.is_some() || mirrored.is_some() {
             Some(kind::LimitedBy::Command)
-        } else if summoned {
+        } else if summons.summoned {
             self.refusing_budget(principal_id, conversation_id).await?
         } else {
             None
         };
         // The composition rule and the minimum rule live on the kind, as
         // one pure composition beside the stamp's readers.
-        let stamp = kind::Stamp::compose(summoned, authority, limited, owing_tail);
+        let stamp = kind::Stamp::compose(summons, authority, limited, owing_tail);
         // The notice command's budget half is decided inside the stamp
         // serialization, so the consultation it shares with the stamp sees
         // the same recorded history: answered only while every budget
@@ -1104,6 +1099,21 @@ impl Assistant {
             "the deletion mirror ran over an administrator's reply command"
         );
         Ok(())
+    }
+
+    /// The summons resolution — the ONE place the answering mode enters
+    /// the machinery (unit 14): a message summons the assistant when it
+    /// addressed it, or when helpful answering evaluates every message.
+    /// The literal addressed fact rides beside it (unit 16) — the
+    /// adapter's own flag, before the mode folded in — stored with the
+    /// stamp for the outbound miss-routing alone. Everything past this
+    /// resolution — the budget consultation, the stamp, the unlatch, and
+    /// every later reader of the stored summons — is mode-free.
+    fn resolved_summons(&self, message: &InboundMessage) -> kind::Summons {
+        kind::Summons {
+            summoned: message.addressed || self.answering == AnsweringMode::Helpful,
+            literal_addressed: message.addressed,
+        }
     }
 
     /// The under-lock suppression re-read (2026-08-23): whether the

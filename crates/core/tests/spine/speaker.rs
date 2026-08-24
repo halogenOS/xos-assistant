@@ -138,6 +138,7 @@ fn the_write_refuses_the_handles_that_would_blur_the_prefix() {
             "2026-08-23T00:00:00+00:00",
             Stamp {
                 addressed: true,
+                literal_addressed: false,
                 limited: None,
                 answer_due: true,
                 debt_authority: Some(Authority::Member),
@@ -511,6 +512,7 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
                     "2026-08-23T00:00:00+00:00",
                     Stamp {
                         addressed: false,
+                        literal_addressed: false,
                         limited: None,
                         answer_due: false,
                         debt_authority: None,
@@ -530,6 +532,7 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
                 "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;"
             ))?;
@@ -554,7 +557,7 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         .expect("the version-ten store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        13,
+        14,
         "the appended steps advanced the domain's version to the newest"
     );
     let blocks = reopened

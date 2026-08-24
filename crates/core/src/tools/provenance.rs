@@ -311,6 +311,7 @@ mod tests {
             origin: None,
             sent_at: Some("2026-08-22T00:00:00Z".into()),
             addressed: Some(addressed),
+            literal_addressed: Some(addressed),
             answer_due: Some(addressed && limited.is_none()),
             limited,
             debt_authority: None,
@@ -398,7 +399,15 @@ mod tests {
                 None,
                 None,
                 "2026-08-22T00:00:00Z",
-                crate::kind::Stamp::compose(addressed, authority, None, tail),
+                crate::kind::Stamp::compose(
+                    crate::kind::Summons {
+                        summoned: addressed,
+                        literal_addressed: addressed,
+                    },
+                    authority,
+                    None,
+                    tail,
+                ),
             ),
         }
     }
@@ -422,7 +431,15 @@ mod tests {
                 Some(origin),
                 None,
                 "2026-08-22T00:00:00Z",
-                crate::kind::Stamp::compose(addressed, authority, None, None),
+                crate::kind::Stamp::compose(
+                    crate::kind::Summons {
+                        summoned: addressed,
+                        literal_addressed: addressed,
+                    },
+                    authority,
+                    None,
+                    None,
+                ),
             ),
         }
     }

@@ -384,7 +384,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             .expect("the version-five store reopens under the shipped configuration");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            13,
+            14,
             "the appended steps advanced the domain's version"
         );
         let fixture = support::start_assistant_on(store.clone(), None).await;
@@ -672,6 +672,7 @@ async fn a_note_over_an_unanswered_message_leaves_the_turn_owed() {
                 "2026-08-23T00:00:00+00:00",
                 assistant_core::kind::Stamp {
                     addressed: true,
+                    literal_addressed: false,
                     limited: None,
                     answer_due: true,
                     debt_authority: Some(Authority::Member),
