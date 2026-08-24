@@ -82,7 +82,7 @@ Grounded by a cold probe of both repos; the file:line receipts below are its.
   adds a `CoreEvent::StreamStatus` arm: when `label == RESPONDING` it begins the cue for that
   conversation; it clears on the stream terminal set — `StreamDone | StreamError | StreamClosed`.
   The cue no longer lights during the pre-text thinking window or for a turn that says nothing (no
-  `responding` → no cue) — the operator's complaint (msg 590) resolved. The cue stays keyed per
+  `responding` → no cue) — the operator's complaint resolved. The cue stays keyed per
   conversation, and the existing 5-minute lost-stop lifetime deadline (`composing.rs:104-124`)
   bounds any missed clear. *Rejected:* deriving the begin from `ConversationState` alone (it
   cannot tell thinking from real text — the whole reason `responding` exists); a wall-clock grace
