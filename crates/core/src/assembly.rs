@@ -17,7 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use agent_ledger::providers::ReasoningLevel;
-use agent_ledger::store::{ProviderInstance, StoreTx};
+use agent_ledger::store::{ModelOverride, ProviderInstance, StoreTx};
 use agent_ledger::{
     BlockKind, CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext, Store,
     spawn_reactor,
@@ -869,11 +869,48 @@ impl Assistant {
             if recorded.as_deref() == Some(self.system_prompt.as_str()) {
                 continue;
             }
+            let Some(channel) =
+                mapping::channel_for_conversation(&tx, record.conversation_id).await?
+            else {
+                continue;
+            };
+            let blocks = &blocks;
+            let Some(last) = blocks.last().map(|block| block.id) else {
+                continue;
+            };
+            // Fork rather than start over. The group's conversation is the
+            // context every answer is built from, and a prompt edit is not a
+            // reason to forget what was said — the fork inherits the history
+            // through the junction, so nothing is copied and nothing is lost.
+            let successor = store
+                .fork_conversation(record.conversation_id, last, ModelOverride::default())
+                .await?;
+            // The fork inherits the old prompt along with everything else, and
+            // an appended replacement would sit behind it, read second and
+            // obeyed unevenly. So the inherited one is detached from the fork
+            // — the source keeps it, because a fork does not edit what it came
+            // from — and the current prompt is recorded in its place.
+            for block in blocks.iter().filter(|block| {
+                matches!(
+                    AssistantKind::from_block(block),
+                    AssistantKind::Core(kind::FrameworkKind(BlockKind::SystemPrompt(_)))
+                )
+            }) {
+                store.detach_block(successor, block.id).await?;
+            }
+            store
+                .insert_system_prompt(successor, self.system_prompt.clone())
+                .await?;
             mapping::delete_by_conversation(&tx, record.conversation_id).await?;
+            mapping::claim(&tx, &channel, record.kind, successor).await?;
+            store
+                .set_conversation_reasoning(successor, Some(self.reasoning.as_key().to_owned()))
+                .await?;
             retired += 1;
             tracing::info!(
                 conversation_id = record.conversation_id,
-                "the recorded system prompt is stale; the channel starts a new conversation"
+                successor,
+                "the recorded system prompt is stale; the channel forks and takes the current one"
             );
         }
         Ok(retired)

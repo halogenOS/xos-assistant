@@ -195,3 +195,86 @@ async fn an_edited_prompt_moves_a_served_group_to_a_new_conversation() {
         "a second message stays in the conversation the first one opened"
     );
 }
+
+/// Rules the group never changed are not announced again because the
+/// assistant moved to a new conversation.
+///
+/// The acknowledgment fires on a delta — text that differs from the newest
+/// note the assistant holds. Those notes live in the conversation, so a
+/// channel that starts a fresh one would find every rule new and say so to
+/// the whole group, on every prompt edit. The group did not change anything
+/// and should not be told that it did.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_moved_channel_does_not_re_announce_rules_it_already_read() {
+    use assistant_core::{DeliveryItem, Observation, ObserveOutcome, ObservedFact};
+
+    /// One group-kind observation on a channel — the shape every group fact
+    /// travels in.
+    fn observed(key: &assistant_core::ChannelKey, fact: ObservedFact) -> Observation {
+        Observation {
+            channel: key.clone(),
+            channel_kind: ChannelKind::Group,
+            fact,
+        }
+    }
+
+    let db = support::TempDb::new("moved-rules");
+    let store = Store::open_with(db.path(), store_config()).expect("the configured store opens");
+
+    let first = support::start_assistant_on(store.clone(), None).await;
+    let room = support::authorized_group(&first.assistant, "room-moved-rules").await;
+    let announced = first
+        .assistant
+        .observe(observed(
+            &room,
+            ObservedFact::PinnedAnnouncement("Rules:\n1. Be kind.".into()),
+        ))
+        .await
+        .expect("the rules pin is judged");
+    assert_eq!(
+        announced,
+        ObserveOutcome::Observed {
+            deliver: Some(DeliveryItem::Acknowledgment(
+                support::scripted_acknowledgment("1. Be kind.")
+            ))
+        },
+        "rules the assistant has not read before are acknowledged"
+    );
+
+    // The restart a prompt edit produces, which moves the channel.
+    let mut edited = support::assembly_config();
+    edited.system_prompt = "a different system prompt entirely".into();
+    let (provider, script) = support::scripted_provider(None);
+    let restarted = support::start_assistant_config(
+        store.clone(),
+        provider,
+        script,
+        assistant_core::tools::ToolSet::new(),
+        edited,
+    )
+    .await;
+    assert_eq!(
+        restarted
+            .assistant
+            .retire_stale_prompts()
+            .await
+            .expect("the retirement reads the ledger"),
+        1,
+        "the channel moves"
+    );
+
+    let again = restarted
+        .assistant
+        .observe(observed(
+            &room,
+            ObservedFact::PinnedAnnouncement("Rules:\n1. Be kind.".into()),
+        ))
+        .await
+        .expect("the re-observed pin is judged");
+    assert_eq!(
+        again,
+        ObserveOutcome::Observed { deliver: None },
+        "the same rules in the new conversation say nothing: what the channel \
+         had read travelled with it"
+    );
+}
