@@ -44,6 +44,34 @@ fn repo_file(relative: &str) -> String {
         .unwrap_or_else(|error| panic!("the file {} reads: {error}", path.display()))
 }
 
+/// The whole base prompt as the process composes it: every file in the prompt
+/// directory, in file-name order, joined by a blank line. The prose lives in
+/// several files so a deployment can carry its own persona without patching
+/// the others, and these documentation pins assert against the composition
+/// rather than any one file — a claim that moved between files must still be
+/// found, and one that vanished must still fail.
+fn repo_prompt() -> String {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prompts");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|error| panic!("the prompt directory {} reads: {error}", dir.display()))
+        .map(|entry| entry.expect("the prompt directory entry reads").path())
+        .collect();
+    files.sort();
+    let parts: Vec<_> = files
+        .iter()
+        .filter(|path| path.is_file())
+        .map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap_or_else(|error| panic!("the file {} reads: {error}", path.display()))
+                .trim()
+                .to_owned()
+        })
+        .filter(|text| !text.is_empty())
+        .collect();
+    assert!(!parts.is_empty(), "the prompt directory carries no prose");
+    parts.join("\n\n")
+}
+
 /// The file's prose with every whitespace run folded to one space — the
 /// wrap-independent reading for pins that are about the words, so a
 /// re-wrapped paragraph cannot fail them.
@@ -58,7 +86,7 @@ fn flattened(content: &str) -> String {
 /// constant carries the whole of it.
 #[test]
 fn the_report_teaching_moved_from_the_prompt_to_the_composition() {
-    let prompt = repo_file("prompts/assistant.md");
+    let prompt = repo_prompt();
     assert!(
         !prompt.contains("/report"),
         "the prompt no longer names the report command"
@@ -97,7 +125,7 @@ fn the_report_teaching_moved_from_the_prompt_to_the_composition() {
 fn the_base_prose_carries_no_rules_list_and_no_stay_quiet_framing() {
     use assistant_core::AnsweringMode;
 
-    let base = repo_file("prompts/assistant.md");
+    let base = repo_prompt();
     let composed = [
         assistant_core::composed_system_prompt(&base, "Probe", AnsweringMode::Helpful, true),
         assistant_core::composed_system_prompt(&base, "Probe", AnsweringMode::Addressed, false),
@@ -122,7 +150,7 @@ fn the_base_prose_carries_no_rules_list_and_no_stay_quiet_framing() {
 
 #[test]
 fn the_username_projection_ships_its_prompt_line_dpia_note_and_decision_records() {
-    let prompt = repo_file("prompts/assistant.md");
+    let prompt = repo_prompt();
     assert!(
         flattened(&prompt).contains(
             "You may mention a person by the handle shown with their message, \
@@ -317,7 +345,7 @@ fn the_minimization_decision_ships_its_record_and_dated_doc_updates() {
 
 #[test]
 fn the_prompt_teaches_the_privacy_tool_and_the_verbatim_relay() {
-    let prompt = flattened(&repo_file("prompts/assistant.md"));
+    let prompt = flattened(&repo_prompt());
     assert!(
         prompt.contains("use the privacy_request tool with action opt_out"),
         "the prompt names the tool and the opt-out action"
@@ -559,7 +587,7 @@ fn the_four_privacy_drafts_carry_their_dated_report_updates() {
 
 #[test]
 fn the_prompt_teaches_the_honest_ai_answer() {
-    let prompt = flattened(&repo_file("prompts/assistant.md"));
+    let prompt = flattened(&repo_prompt());
     assert!(
         prompt.contains("You are an AI system."),
         "the prompt names what the assistant is"
