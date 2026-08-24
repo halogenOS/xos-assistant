@@ -27,13 +27,16 @@
 //! `mirror` (the deletion mirror riding the moderation bot's reply
 //! command), sourcing (the lookup-backed answer discipline: the literal
 //! addressed fact beside the summons, the silent empty turn and the
-//! model's own spoken don't-know), and — behind the openrouter
-//! feature — the real `OpenRouter` module against a loopback server.
+//! model's own spoken don't-know), and — behind the `chat_completions`
+//! feature — the framework's real `OpenRouter` module, the shared
+//! chat-completions wire, against a loopback server.
 
 mod acknowledgment;
 mod addressing;
 mod assembly;
 mod audience;
+#[cfg(feature = "chat_completions")]
+mod chat_completions;
 mod direct_chats;
 mod disclosure;
 mod end_to_end;
@@ -43,8 +46,6 @@ mod group_context;
 mod helpful;
 mod lookup_wire;
 mod mirror;
-#[cfg(feature = "openrouter")]
-mod openrouter;
 mod privacy_rights;
 mod projection;
 mod protection;

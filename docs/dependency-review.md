@@ -72,8 +72,10 @@ re-recorded.
 
 Both resolved to the current latest at the time of the check.
 
-**The openrouter feature's transitive additions.** Enabling the framework's openrouter feature
-pulls `eventsource-stream` (with `nom` and `minimal-lexical` under it) into the lock file.
+**The chat-completions feature's transitive additions.** The core's `chat_completions`
+feature enables the framework's own `openrouter` feature (that project's name for its shared
+chat-completions wire), which pulls `eventsource-stream` (with `nom` and `minimal-lexical`
+under it) into the lock file.
 These arrive through the framework, whose own dependency review records them; per the
 core-spine entry's rule, the transitive tree behind the framework is not re-reviewed here.
 

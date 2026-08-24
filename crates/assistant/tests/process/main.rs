@@ -105,12 +105,12 @@ fn configuration(
              {direct_chats_key}\n\
              [endpoints]\n\
              telegram = {telegram_root:?}\n\
-             openrouter = {completions_base:?}\n\
+             chat_completions = {completions_base:?}\n\
              {forge_endpoint}\
              {mirror_endpoint}\n\
              [secrets.bot_token]\n\
              env = \"PROCESS_TEST_BOT_TOKEN\"\n\n\
-             [secrets.openrouter_key]\n\
+             [secrets.chat_completions_api_key]\n\
              file = {:?}\n\n\
              {mirror_secret}\
              {extra_tables}",
@@ -586,7 +586,7 @@ async fn an_unreadable_configuration_exits_nonzero() {
              model = \"m\"\n\n\
              [secrets]\n\
              bot_token = {{ env = \"X\" }}\n\
-             openrouter_key = \"{inline_secret}\"\n"
+             chat_completions_api_key = \"{inline_secret}\"\n"
         ),
     );
     let mut pasted = BinaryRun::spawn(&[&inline], &[], &scratch.path("stderr-inline.txt"));

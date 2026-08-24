@@ -1,7 +1,13 @@
 //! The in-memory provider registration: the framework's `OpenRouter` module
 //! with its configuration resident in process memory instead of the store.
 //!
-//! The framework's `OpenRouter` module persists provider configuration — the API
+//! The framework's module keeps that project's vendor name, but it is the
+//! shared chat-completions wire — an empty header map over an OpenAI-compatible
+//! chat-completions endpoint, whose base URL the configuration names. The
+//! deployment points it at whichever compatible host it uses; nothing here is
+//! specific to the vendor the framework named the module after.
+//!
+//! That module persists provider configuration — the API
 //! key included — into the store. The assistant's secrets rule forbids that:
 //! the store file is long-lived, backed up, and outlives any key rotation.
 //! This wrapper changes only where the configuration lives. The wire, the
@@ -19,8 +25,9 @@ use agent_ledger::{
 };
 use serde_json::{Value, json};
 
-/// The `OpenRouter` module with its configuration held in memory. Registered
-/// in place of the wrapped module, under the same type id.
+/// The framework's `OpenRouter` module — its shared chat-completions wire —
+/// with its configuration held in memory. Registered in place of the wrapped
+/// module, under the same type id.
 ///
 /// No `Debug` implementation on purpose: the held configuration carries the
 /// API key, and a derived representation would print it.
@@ -31,8 +38,9 @@ pub struct MemoryConfiguredProvider {
 
 impl MemoryConfiguredProvider {
     /// Wrap the framework's `OpenRouter` module around an in-memory
-    /// configuration: the key, and the base URL where a test points it at a
-    /// loopback server (`None` keeps the module's real host). No title
+    /// configuration: the key, and the chat-completions base URL — the
+    /// deployment's OpenAI-compatible host, or where a test points it at a
+    /// loopback server (`None` keeps the module's own default host). No title
     /// model rides here (decision 0077): the assembly switches title
     /// derivation off entirely, so the module's `lightweight_model` key
     /// would configure a request that never goes out.

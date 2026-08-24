@@ -298,8 +298,9 @@ impl FileDestination {
 pub struct Endpoints {
     /// The Telegram Bot API root.
     pub telegram: Option<String>,
-    /// The `OpenRouter` base URL.
-    pub openrouter: Option<String>,
+    /// The chat-completions endpoint's base URL — any OpenAI-compatible
+    /// host. Named for the interface the process speaks, not for a vendor.
+    pub chat_completions: Option<String>,
     /// The canonical forge's base URL — the commit lookup's host.
     pub forge: Option<String>,
     /// The mirror API's base URL — the release lookup's host.
@@ -536,8 +537,8 @@ fn budget(
 pub struct Secrets {
     /// The Telegram bot token.
     pub bot_token: SecretRef,
-    /// The `OpenRouter` API key.
-    pub openrouter_key: SecretRef,
+    /// The chat-completions endpoint's API key.
+    pub chat_completions_api_key: SecretRef,
     /// The mirror API token the release lookup sends as its authorization
     /// header. Optional: absent, the lookup runs unauthenticated at the
     /// mirror's lower rate limit and sends no header.
@@ -676,7 +677,7 @@ mod tests {
              [secrets.bot_token]\n\
              env = \"UNUSED\"\n\
              \n\
-             [secrets.openrouter_key]\n\
+             [secrets.chat_completions_api_key]\n\
              env = \"UNUSED\"\n"
         )
     }

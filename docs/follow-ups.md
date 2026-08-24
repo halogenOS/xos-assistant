@@ -30,14 +30,17 @@ what resolving it takes. Resolved items move into a decision record.
   output and writing the result into the compliance record's marking
   section.
 
-- **Unit 7 close, 2026-08-23 — the provider module still speaks its first
-  gateway's name.** The configuration key, the endpoint override and the
-  provider crate are named for OpenRouter while the deployed gateway is any
-  OpenAI-compatible endpoint (Requesty today). Invisible to users and
-  harmless at runtime — the endpoint override carries the truth — but the
-  vocabulary misleads a reader of the configuration. Closing it means a
-  neutral provider name across config, crate and docs with a compatibility
-  alias for the old key.
+- ~~**Unit 7 close, 2026-08-23 — the provider module still speaks its first
+  gateway's name.**~~ **Closed 2026-08-24.** The configuration key, the secret,
+  the environment variable and the core's feature now name the interface:
+  `chat_completions`, `chat_completions_api_key`, `CHAT_COMPLETIONS_API_KEY`.
+  The framework's own `openrouter` module keeps its name where it appears —
+  that is the framework's vocabulary for its shared chat-completions wire, and
+  renaming another project's type in our prose would be the same misdirection
+  in the other direction. The compatibility alias this item asked for was
+  **rejected by the operator**: the rename is clean and the one stored
+  credential is re-entered once, which fails loudly at the secrets prompt
+  rather than quietly accepting a name that no longer means anything.
 
 - **Unit 15 close, 2026-08-24 — the rules-note in-context guarantee is a
   guarantee of the request payload, not of what the model retains at scale.**

@@ -1,4 +1,5 @@
-//! The real `OpenRouter` module against a scripted loopback server: the
+//! The framework's real `OpenRouter` module — its shared chat-completions
+//! wire — against a scripted loopback server: the
 //! assembly registers the in-memory-configured wrapper, a message ingests,
 //! the framework's own wire speaks to the server this test controls, and the
 //! answer comes back over the outbound edge — with the key provably in the
@@ -131,10 +132,10 @@ async fn start_completions_server() -> (String, Arc<Mutex<Vec<Hit>>>) {
 /// The whole loop over the real module: ingest, answer, and the two key
 /// residence facts — presented on the wire, absent from the store file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key() {
+async fn the_chat_completions_module_answers_over_the_loopback_wire_and_stores_no_key() {
     let (base, hits) = start_completions_server().await;
-    let db = TempDb::new("openrouter");
-    let key = channel("dm-openrouter");
+    let db = TempDb::new("chat-completions");
+    let key = channel("dm-chat-completions");
 
     {
         let store = Store::open_with(db.path(), store_config()).expect("the store opens");
@@ -151,6 +152,9 @@ async fn the_openrouter_module_answers_over_the_loopback_wire_and_stores_no_key(
             assistant_core::AssemblyConfig {
                 reasoning: assistant_core::ReasoningLevel::Low,
                 binding: ModelBinding {
+                    // The framework's own module identifiers: its type id
+                    // and display name, which the binary derives the same
+                    // way. Its name, not this project's endpoint naming.
                     provider_instance: "openrouter-1".into(),
                     provider_display_name: "OpenRouter".into(),
                     vendor: vendor.clone(),

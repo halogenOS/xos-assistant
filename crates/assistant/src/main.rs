@@ -1,5 +1,5 @@
-//! The runnable assistant: one process assembling the core, the `OpenRouter`
-//! provider and the Telegram adapter.
+//! The runnable assistant: one process assembling the core, the
+//! chat-completions provider and the Telegram adapter.
 //!
 //! The binary takes exactly one argument, the configuration file's path. It
 //! reads the configuration, resolves the two secrets through their
@@ -204,10 +204,10 @@ fn run() -> Result<(), StartError> {
     let name = configuration.resolve_name()?;
     let disclosure = configuration.resolve_disclosure()?;
     let bot_token = configuration.secrets.bot_token.resolve("bot_token")?;
-    let openrouter_key = configuration
+    let chat_completions_api_key = configuration
         .secrets
-        .openrouter_key
-        .resolve("openrouter_key")?;
+        .chat_completions_api_key
+        .resolve("chat_completions_api_key")?;
     // Optional by policy, not by leniency: a mirror_token entry that IS
     // configured but cannot be read still refuses the start.
     let mirror_token = configuration
@@ -233,7 +233,7 @@ fn run() -> Result<(), StartError> {
             name,
             disclosure,
             bot_token,
-            openrouter_key,
+            chat_completions_api_key,
             mirror_token,
             system_prompt,
         }))
@@ -287,7 +287,7 @@ struct ServeInputs {
     name: Option<String>,
     disclosure: Option<String>,
     bot_token: String,
-    openrouter_key: String,
+    chat_completions_api_key: String,
     mirror_token: Option<String>,
     system_prompt: String,
 }
@@ -336,9 +336,9 @@ fn log_startup(
             .telegram
             .as_deref()
             .unwrap_or("the real host"),
-        openrouter_endpoint = %configuration
+        chat_completions_endpoint = %configuration
             .endpoints
-            .openrouter
+            .chat_completions
             .as_deref()
             .unwrap_or("the real host"),
         forge_endpoint = %configuration
@@ -370,7 +370,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         name,
         disclosure,
         bot_token,
-        openrouter_key,
+        chat_completions_api_key,
         mirror_token,
         system_prompt,
     } = inputs;
@@ -405,8 +405,8 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     let store = Store::open_with(&configuration.store_path, store_config())?;
     let provider = MemoryConfiguredProvider::new(
         &store,
-        openrouter_key,
-        configuration.endpoints.openrouter.clone(),
+        chat_completions_api_key,
+        configuration.endpoints.chat_completions.clone(),
     )
     .await;
     let vendor = ProviderModule::type_id(&provider).to_owned();

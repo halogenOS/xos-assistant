@@ -1,6 +1,6 @@
 # The runnable process: reads one TOML configuration file, resolves the two
-# secrets indirectly, and assembles the core, the OpenRouter provider and the
-# Telegram adapter into a single binary. Every crate here is recorded in
+# secrets indirectly, and assembles the core, the chat-completions provider and
+# the Telegram adapter into a single binary. Every crate here is recorded in
 # docs/dependency-review.md before this manifest named it.
 [package]
 name = "assistant"
@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 agent-ledger = { path = "../../../agent-ledger/crates/agent-ledger" }
 assistant-adapter-telegram = { path = "../adapters/telegram" }
-assistant-core = { path = "../core", features = ["openrouter"] }
+assistant-core = { path = "../core", features = ["chat_completions"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 # `signal` is the SIGTERM stop, `time` is the driver behind the adapter's
