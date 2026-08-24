@@ -902,28 +902,29 @@ pub(crate) async fn newest_block_id_past_erased(
 // by their differing tenth byte and degrade the window into a
 // calendar-date test.
 //
-// A debt answered by a recognized abstention is excluded (unit 14,
-// 2026-08-23): the window bounds what the assistant SAYS, and an abstained
-// turn said nothing — so the count subtracts every debt whose stored
-// answer is exactly the sentinel, matched through the answer's dispatch
-// anchor, the id of the summoning frontier every block a turn writes
-// carries. The reach is exactly the anchor's: a co-summoner absorbed into
-// an abstained turn keeps its own row's slot spent, because the anchor
-// names the frontier alone — accepted, recorded with the decision. The
-// `blocks` and `block_text` names are the framework's, the deliberate
+// A debt answered by an empty answer is excluded (unit 14, 2026-08-23;
+// re-keyed by unit 22, 2026-08-24): the window bounds what the assistant
+// SAYS, and a silent turn said nothing — the framework commits it as a
+// real empty assistant text block — so the count subtracts every debt
+// whose stored answer trims to nothing, matched through the answer's
+// dispatch anchor, the id of the summoning frontier every block a turn
+// writes carries. The reach is exactly the anchor's: a co-summoner
+// absorbed into a silent turn keeps its own row's slot spent, because the
+// anchor names the frontier alone — accepted, recorded with the decision.
+// The `blocks` and `block_text` names are the framework's, the deliberate
 // coupling decisions 0032 and 0079 record. The SQL trims the ASCII
 // whitespace the wire realistically wraps an answer in; the edge's own
-// recognition trims the full whitespace class, and the one divergence — a
-// sentinel wrapped in exotic whitespace — errs toward counting, the
+// check trims the full whitespace class, and the one divergence — an
+// answer of nothing but exotic whitespace — errs toward counting, the
 // limiting direction.
 
 /// The counted-debt predicate both budget counts share, over the message
 /// alias `m` and the block-header alias `b`: an opened debt — summoned,
 /// not limited — younger than the window, whose modifier arrives as the
-/// query's second parameter, and not answered by a recognized abstention,
-/// whose sentinel arrives as the third. One fragment on purpose: what
-/// consumes budget is one definition, and two spellings of it could drift
-/// apart.
+/// query's second parameter, and not answered by an empty answer — the
+/// framework's committed record of a turn that said nothing. One fragment
+/// on purpose: what consumes budget is one definition, and two spellings
+/// of it could drift apart.
 static COUNTED_DEBT_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "m.{COLUMN_ADDRESSED} = 1 AND m.{COLUMN_LIMITED} IS NULL \
@@ -933,7 +934,7 @@ static COUNTED_DEBT_SQL: LazyLock<String> = LazyLock::new(|| {
            JOIN block_text at ON at.block_id = ab.id \
            WHERE ab.dispatch_anchor = m.block_id \
            AND at.role = 'assistant' \
-           AND trim(at.content, ' ' || char(9) || char(10) || char(13)) = ?3\
+           AND trim(at.content, ' ' || char(9) || char(10) || char(13)) = ''\
          )"
     )
 });
@@ -960,7 +961,7 @@ pub(crate) async fn opened_debts_by_principal(
                  WHERE m.{COLUMN_PRINCIPAL_ID} = ?1 AND {counted}",
                 counted = COUNTED_DEBT_SQL.as_str(),
             ),
-            (principal_id, cutoff, crate::abstention::ABSTENTION_SENTINEL),
+            (principal_id, cutoff),
             |row| row.get(0),
         )?)
     })
@@ -989,11 +990,7 @@ pub(crate) async fn opened_debts_in_conversation(
                  WHERE cb.conversation_id = ?1 AND {counted}",
                 counted = COUNTED_DEBT_SQL.as_str(),
             ),
-            (
-                conversation_id,
-                cutoff,
-                crate::abstention::ABSTENTION_SENTINEL,
-            ),
+            (conversation_id, cutoff),
             |row| row.get(0),
         )?)
     })
@@ -1036,29 +1033,11 @@ pub(crate) async fn conversations_of_principal(
 }
 
 /// The framework's kinds as this consumer composes them: a transparent
-/// delegation on every hook, with exactly one representation judgment of
-/// its own — a finalized assistant answer whose raw stored content is a
-/// machinery sentinel is invisible to the model: the abstention (unit 14,
-/// 2026-08-23) and a still-raw miss (unit 16, 2026-08-24). The model emits
-/// the fixed sentinel as its whole answer — silence, or an unresolved
-/// lookup — and the stored block is the honest record of that turn, but
-/// projecting it into later requests would hand the model its own machinery
-/// token as prose, accumulating tokens in its context turn over turn. An
-/// addressed miss is rewritten to the spoken don't-know line at the
-/// outbound edge before it would project, so it is ordinary prose by then;
-/// only the silent, still-raw sentinels are suppressed. The kind level is
-/// the one seam the projection fold offers a consumer, the same seam
-/// decision 0027 used, so the judgment lives here instead of anywhere in
-/// the machinery.
-///
-/// The invisibility is boundary-invisible on purpose: the two user runs
-/// around a skipped abstention project as two same-role messages, the
-/// shape decision 0027's erased-run closure avoids for FORCED history.
-/// An abstention is this deployment's own design, its answering flows
-/// through one vendor wire that accepts same-role adjacency, and the
-/// alternative — a non-empty placeholder — would put a machinery marker
-/// into the model's mouth; the residual is recorded with the unit's
-/// sentinel decision.
+/// delegation on every hook, projection included (unit 22, 2026-08-24). A
+/// turn the model ended without writing any text is committed by the
+/// framework as a real empty assistant text block, and it projects to the
+/// model as its own empty message — the framework's intent: the model
+/// reads its own silence back as the honest record of that turn.
 ///
 /// Delegation is spelled per hook because the field is a wrapper, not the
 /// derive's delegate directly; a framework hook added later lands here as
@@ -1066,28 +1045,6 @@ pub(crate) async fn conversations_of_principal(
 /// transparency pin in the provenance tests stands watch over the one
 /// defaulted hook whose silent loss would change behavior.
 pub struct FrameworkKind(pub BlockKind);
-
-impl FrameworkKind {
-    /// Whether this is a finalized assistant answer whose RAW stored content
-    /// is a machinery sentinel the model must never see projected back — the
-    /// abstention (unit 14) or a still-raw miss (unit 16). Both are the
-    /// model's own machinery tokens, not prose: projecting either would hand
-    /// the model its own token as an assistant message, exactly the leak the
-    /// abstention suppression was built to prevent. An addressed miss is
-    /// rewritten to the spoken don't-know line before it would project, so
-    /// once resolved it is ordinary prose and no longer matches here — only
-    /// the silent, still-raw sentinel turns (every unaddressed miss, and an
-    /// addressed one in the window before its rewrite) are suppressed.
-    fn projects_raw_sentinel(&self) -> bool {
-        matches!(
-            &self.0,
-            BlockKind::Text(text)
-                if text.role == Some(Role::Assistant)
-                    && (crate::abstention::is_abstention(&text.content)
-                        || crate::abstention::is_miss(&text.content))
-        )
-    }
-}
 
 impl FromBlock for FrameworkKind {
     const DESCRIPTORS: &'static [ContentDescriptor] = BlockKind::DESCRIPTORS;
@@ -1139,23 +1096,14 @@ impl Agency for FrameworkKind {
 
 impl Projection for FrameworkKind {
     fn group_role(&self) -> Option<Role> {
-        if self.projects_raw_sentinel() {
-            return None;
-        }
         self.0.group_role()
     }
 
     fn llm_parts(&self) -> Option<Vec<ContentPart>> {
-        if self.projects_raw_sentinel() {
-            return None;
-        }
         self.0.llm_parts()
     }
 
     fn llm_text(&self) -> Option<String> {
-        if self.projects_raw_sentinel() {
-            return None;
-        }
         self.0.llm_text()
     }
 
@@ -1168,9 +1116,7 @@ impl Projection for FrameworkKind {
 /// kinds through the delegate, the assistant's beside them.
 #[derive(Agency)]
 pub enum AssistantKind {
-    /// The framework's own kinds, resolved through the wrapping delegate
-    /// that silences a raw machinery sentinel — an abstention or a still-raw
-    /// miss — in projection.
+    /// The framework's own kinds, resolved through the wrapping delegate.
     #[agency(delegate)]
     Core(FrameworkKind),
     /// The assistant's recorded channel message.
@@ -1203,7 +1149,6 @@ mod tests {
     use agent_ledger::Store;
 
     use super::*;
-    use crate::abstention::ABSTENTION_SENTINEL;
     use crate::note::{CONTEXT_NOTE_KIND, ContextNote, NoteTopic};
 
     /// One summoned member message appended through the consumer write
@@ -1259,13 +1204,14 @@ mod tests {
         .expect("the anchor writes");
     }
 
-    /// The window's abstention exclusion (unit 14): a debt whose anchored
-    /// answer is exactly the sentinel — surrounding whitespace tolerated —
-    /// stops counting in both budget counts, while a debt answered with
-    /// prose that merely quotes the sentinel keeps its slot spent. The
-    /// window bounds what the assistant SAYS.
+    /// The window's silence refund on its new key (unit 22, AC4): a debt
+    /// whose anchored answer trims to nothing — the framework's committed
+    /// empty block, surrounding whitespace tolerated — stops counting in
+    /// both budget counts, while a debt answered with real text keeps its
+    /// slot spent, a spoken "I don't know" included. The window bounds
+    /// what the assistant SAYS.
     #[tokio::test]
-    async fn a_debt_answered_by_an_abstention_stops_counting() {
+    async fn a_debt_answered_by_an_empty_answer_stops_counting() {
         let store =
             Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
         let conversation = store
@@ -1275,7 +1221,7 @@ mod tests {
         let tx = store.tx();
         let window = NonZeroU64::new(600).expect("a nonzero window");
 
-        let first = summoned_message(&store, conversation, "the abstained ask").await;
+        let first = summoned_message(&store, conversation, "the silent ask").await;
         assert_eq!(
             opened_debts_by_principal(&tx, 7, window)
                 .await
@@ -1284,19 +1230,13 @@ mod tests {
             "an unanswered debt counts"
         );
 
-        anchored_answer(
-            &store,
-            conversation,
-            first,
-            &format!("  {ABSTENTION_SENTINEL}\n"),
-        )
-        .await;
+        anchored_answer(&store, conversation, first, "  \n").await;
         assert_eq!(
             opened_debts_by_principal(&tx, 7, window)
                 .await
                 .expect("the count runs"),
             0,
-            "the abstained debt spends no slot"
+            "the silent debt spends no slot"
         );
         assert_eq!(
             opened_debts_in_conversation(&tx, conversation, window)
@@ -1311,7 +1251,7 @@ mod tests {
             &store,
             conversation,
             second,
-            &format!("the model may reply {ABSTENTION_SENTINEL} to stay silent"),
+            "I don't know — I could not confirm this with a lookup.",
         )
         .await;
         assert_eq!(
@@ -1319,120 +1259,18 @@ mod tests {
                 .await
                 .expect("the count runs"),
             1,
-            "a spoken answer quoting the sentinel keeps its slot spent"
+            "a spoken answer keeps its slot spent, the model's own don't-know \
+             included: real text is what the window bounds"
         );
     }
 
-    /// A silent unaddressed miss still counts its opened debt against the
-    /// principal's budget: the raw `[[miss]]` sentinel is NOT excluded from
-    /// `COUNTED_DEBT_SQL` — only the abstention is. This is deliberate. The
-    /// budget spine reads the summons fact unchanged, and the miss/abstention
-    /// parity that makes a silent miss deliver nothing, introduce nobody and
-    /// spend no disclosure deliberately stops short of the budget: unlike a
-    /// cheap abstention, a miss spent a real in-turn lookup worth bounding, so
-    /// letting it keep its slot errs in the limiting direction. This test pins
-    /// the behavior so it cannot drift silently; a later change that extends
-    /// the exclusion to the silent miss would be a deliberate budget decision,
-    /// not an accident.
-    #[tokio::test]
-    async fn a_silent_miss_still_counts_its_opened_debt() {
-        let store =
-            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
-        let conversation = store
-            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
-            .await
-            .expect("a conversation row");
-        let tx = store.tx();
-        let window = NonZeroU64::new(600).expect("a nonzero window");
-
-        let ask = summoned_message(&store, conversation, "the missed ask").await;
-        anchored_answer(
-            &store,
-            conversation,
-            ask,
-            &format!("  {}\n", crate::abstention::MISS_SENTINEL),
-        )
-        .await;
-
-        assert_eq!(
-            opened_debts_by_principal(&tx, 7, window)
-                .await
-                .expect("the count runs"),
-            1,
-            "the raw miss sentinel is not excluded: the debt still counts, \
-             erring in the limiting direction since the miss spent a lookup"
-        );
-        assert_eq!(
-            opened_debts_in_conversation(&tx, conversation, window)
-                .await
-                .expect("the count runs"),
-            1,
-            "the channel count treats the silent miss the same way"
-        );
-    }
-
-    /// The delegate's one projection judgment (unit 14): a finalized
-    /// assistant answer that is exactly the sentinel — trimmed — projects
-    /// nothing and opens no message boundary, while an answer quoting the
-    /// sentinel as prose, a user message carrying it whole, and every
-    /// ordinary answer project exactly as the framework states them.
+    /// The projection is a pure delegate (unit 22, AC5): the framework's
+    /// committed empty assistant block projects to the model as its own
+    /// empty message — an assistant boundary with an empty text
+    /// contribution — exactly as the framework states it, with no
+    /// suppression in between.
     #[test]
-    fn a_recognized_abstention_is_invisible_to_the_model() {
-        let text_block = |role: Role, content: &str| {
-            let mut fields = serde_json::Map::new();
-            fields.insert("role".into(), json!(role.as_str()));
-            fields.insert("content".into(), json!(content));
-            Block {
-                id: 1,
-                role: Some(role),
-                block_type: "text".into(),
-                created_at: String::new(),
-                dispatch_anchor: None,
-                fields,
-            }
-        };
-        let abstained = AssistantKind::from_block(&text_block(
-            Role::Assistant,
-            &format!(" {ABSTENTION_SENTINEL}\n"),
-        ));
-        assert_eq!(abstained.group_role(), None, "no boundary opens");
-        assert_eq!(abstained.llm_text(), None, "no text contribution");
-        assert!(abstained.llm_parts().is_none(), "no parts contribution");
-
-        let quoting = AssistantKind::from_block(&text_block(
-            Role::Assistant,
-            &format!("reply {ABSTENTION_SENTINEL} to stay silent"),
-        ));
-        assert_eq!(quoting.group_role(), Some(Role::Assistant));
-        assert!(
-            quoting
-                .llm_text()
-                .is_some_and(|t| t.contains(ABSTENTION_SENTINEL)),
-            "prose quoting the sentinel projects whole"
-        );
-
-        let user_sentinel = AssistantKind::from_block(&text_block(Role::User, ABSTENTION_SENTINEL));
-        assert_eq!(
-            user_sentinel.group_role(),
-            Some(Role::User),
-            "only the assistant's own voice abstains"
-        );
-    }
-
-    /// The same projection suppression covers a still-raw miss (unit 16): an
-    /// unaddressed miss is stored as the raw sentinel and never rewritten, so
-    /// without this it would project its machinery token into every later
-    /// model request in the conversation — the exact leak the abstention
-    /// suppression exists to prevent. A finalized assistant answer that is
-    /// exactly the miss sentinel — trimmed — projects nothing and opens no
-    /// boundary; an answer merely quoting it as prose, and a user message
-    /// carrying it whole, project exactly as the framework states them. An
-    /// addressed miss never reaches here as a raw sentinel: the edge rewrites
-    /// it to the don't-know line first, and that prose projects normally.
-    #[test]
-    fn a_raw_miss_sentinel_is_invisible_to_the_model() {
-        use crate::abstention::MISS_SENTINEL;
-
+    fn an_empty_answer_projects_as_the_models_own_empty_message() {
         let text_block = |role: Role, content: &str| {
             let mut fields = serde_json::Map::new();
             fields.insert("role".into(), json!(role.as_str()));
@@ -1447,40 +1285,24 @@ mod tests {
             }
         };
 
-        let missed =
-            AssistantKind::from_block(&text_block(Role::Assistant, &format!(" {MISS_SENTINEL}\n")));
-        assert_eq!(missed.group_role(), None, "no boundary opens");
-        assert_eq!(missed.llm_text(), None, "no text contribution");
-        assert!(missed.llm_parts().is_none(), "no parts contribution");
-
-        let quoting = AssistantKind::from_block(&text_block(
-            Role::Assistant,
-            &format!("I reply {MISS_SENTINEL} when a lookup finds nothing"),
-        ));
-        assert_eq!(quoting.group_role(), Some(Role::Assistant));
-        assert!(
-            quoting
-                .llm_text()
-                .is_some_and(|t| t.contains(MISS_SENTINEL)),
-            "prose quoting the sentinel projects whole"
-        );
-
-        let user_sentinel = AssistantKind::from_block(&text_block(Role::User, MISS_SENTINEL));
+        let silent = AssistantKind::from_block(&text_block(Role::Assistant, ""));
         assert_eq!(
-            user_sentinel.group_role(),
-            Some(Role::User),
-            "only the assistant's own voice misses"
-        );
-
-        let resolved = AssistantKind::from_block(&text_block(
-            Role::Assistant,
-            crate::outbound::DONT_KNOW_ANSWER,
-        ));
-        assert_eq!(
-            resolved.group_role(),
+            silent.group_role(),
             Some(Role::Assistant),
-            "an addressed miss, rewritten to the don't-know line, projects as \
-             the ordinary answer the channel heard"
+            "the empty turn opens its own assistant boundary"
+        );
+        assert_eq!(
+            silent.llm_text(),
+            Some(String::new()),
+            "the contribution is the framework's own empty text"
+        );
+
+        let spoken = AssistantKind::from_block(&text_block(Role::Assistant, "a spoken answer"));
+        assert_eq!(spoken.group_role(), Some(Role::Assistant));
+        assert_eq!(
+            spoken.llm_text(),
+            Some("a spoken answer".to_owned()),
+            "an ordinary answer projects exactly as the framework states it"
         );
     }
 

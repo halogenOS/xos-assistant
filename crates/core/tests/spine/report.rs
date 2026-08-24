@@ -17,9 +17,9 @@ use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::report::{self};
 use assistant_core::{
-    ABSTENTION_SENTINEL, AnsweringMode, ChannelKind, CoreError, ErasureOutcome, FAILURE_NOTICE,
-    IngestReceipt, MODERATION_TEACHING, Observation, ObserveOutcome, ObservedFact,
-    ProtectionConfig, ReplyKind, ReplyTarget,
+    AnsweringMode, ChannelKind, CoreError, ErasureOutcome, FAILURE_NOTICE, IngestReceipt,
+    MODERATION_TEACHING, Observation, ObserveOutcome, ObservedFact, ProtectionConfig, ReplyKind,
+    ReplyTarget,
 };
 use serde_json::json;
 use tokio::sync::{Semaphore, mpsc};
@@ -142,7 +142,9 @@ async fn pin_rules(fixture: &support::Fixture, key: &assistant_core::ChannelKey,
 /// request draws, in arrival order.
 #[derive(Clone, Copy)]
 enum Step {
-    /// Stream this prose and end the turn.
+    /// Stream this prose and end the turn; an empty text streams nothing,
+    /// so the turn ends with no text and the framework commits the empty
+    /// answer block.
     Answer(&'static str),
     /// Call the report tool with this input, narrating first when given
     /// prose; with the hold, announce after the call events and wait for
@@ -229,12 +231,13 @@ fn sequenced_provider(
                         .unwrap_or(Step::Answer(CLOSING_ANSWER));
                     match step {
                         Step::Answer(text) => {
-                            let _ = response_tx
-                                .send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                            let _ =
-                                response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                                    text: text.into(),
-                                }));
+                            if !text.is_empty() {
+                                let _ = response_tx
+                                    .send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                                let _ = response_tx.send(ProviderResponse::Event(
+                                    StreamEvent::TextDelta { text: text.into() },
+                                ));
+                            }
                             let _ = response_tx.send(ProviderResponse::Event(
                                 StreamEvent::MessageEnd {
                                     usage: agent_ledger::providers::Usage::default(),
@@ -406,31 +409,31 @@ async fn a_violating_message_is_assessed_and_the_edge_threads_the_report_before_
     assert!(extra.is_err(), "one report, one answer; got {extra:?}");
 }
 
-/// The report-abstention independence (AC2's closing clause): a turn that
-/// files and then abstains from speaking still delivers the report — the
-/// abstention swallows the answer alone.
+/// The report-silence independence (AC2's closing clause): a turn that
+/// files and then ends with no text still delivers the report — the
+/// empty-answer check swallows the answer alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_turn_that_reports_and_abstains_still_delivers_the_report() {
+async fn a_turn_that_reports_and_says_nothing_still_delivers_the_report() {
     let (provider, handle, _release, _started) = sequenced_provider(vec![
         call(r#"{"message_id":"origin-spam-1"}"#),
-        Step::Answer(ABSTENTION_SENTINEL),
+        Step::Answer(""),
     ]);
     let (fixture, mut replies) =
         report_fixture_with(provider, handle, ProtectionConfig::default()).await;
-    let key = support::authorized_group(&fixture.assistant, "room-report-abstain").await;
+    let key = support::authorized_group(&fixture.assistant, "room-report-silent").await;
     let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
 
     let blocks = settle_shape(
         &fixture.store,
         offense.conversation_id,
-        "the abstained assessment",
+        "the silent assessment",
         &ASSESSED_TURN,
     )
     .await;
     assert_eq!(
         field(&blocks[6], "content"),
-        ABSTENTION_SENTINEL,
-        "the stored answer is the raw sentinel"
+        "",
+        "the stored answer is the framework's empty block"
     );
 
     let only = recv_reply(&mut replies).await;
@@ -439,7 +442,7 @@ async fn a_turn_that_reports_and_abstains_still_delivers_the_report() {
     let extra = replies.try_recv();
     assert!(
         extra.is_err(),
-        "the abstained answer delivers nothing: {extra:?}"
+        "the silent answer delivers nothing: {extra:?}"
     );
 }
 
@@ -657,9 +660,9 @@ async fn with_several_messages_absorbed_the_model_names_the_one_violator() {
 
 // ─── AC4: nothing to report, and the per-origin dedup ────────────────────
 
-/// A quiet assessment files nothing: a turn whose model abstains without
-/// calling the tool leaves no report block and delivers nothing — the
-/// judgment half of AC4 lives in the prompt teaching, pinned at the
+/// A quiet assessment files nothing: a turn whose model stays silent
+/// without calling the tool leaves no report block and delivers nothing —
+/// the judgment half of AC4 lives in the prompt teaching, pinned at the
 /// composition.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_turn_that_calls_no_tool_files_nothing() {
@@ -674,7 +677,7 @@ async fn a_turn_that_calls_no_tool_files_nothing() {
             &key,
             ChannelKind::Group,
             "42",
-            &format!("members talking among themselves {}", support::ABSTAIN_CUE),
+            &format!("members talking among themselves {}", support::SILENT_CUE),
         ),
     )
     .await;

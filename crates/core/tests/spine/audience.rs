@@ -1,6 +1,6 @@
 //! The audience discipline's delivery mechanics (unit 21): a clarifying
 //! question is ordinary answer text — delivered through the same edge as
-//! any answer and never swallowed by the sentinel routing — a clear
+//! any answer and never swallowed by the empty-answer check — a clear
 //! question is answered directly, the disambiguation is two sequential
 //! turns with the prior question in the second turn's projected context,
 //! and the first-interaction disclosure composes onto a clarifying
@@ -9,7 +9,7 @@
 use agent_ledger::Store;
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::schema::store_config;
-use assistant_core::{ABSTENTION_SENTINEL, AnsweringMode, ChannelKind, MISS_SENTINEL};
+use assistant_core::{AnsweringMode, ChannelKind};
 use serde_json::json;
 
 use crate::support::{
@@ -40,19 +40,17 @@ fn message_rows(blocks: &[agent_ledger::Block]) -> Vec<&agent_ledger::Block> {
 }
 
 /// AC3: an ambiguous question draws the clarifying question as an ordinary
-/// delivered answer — not swallowed by the miss or abstention routing. The
-/// sentinel routing matches only an answer whose whole trimmed text is
-/// exactly one sentinel, and a clarifying question is neither, so it falls
-/// through to ordinary delivery; the asker is introduced first, so the
-/// delivered text is the bare question and nothing else.
+/// delivered answer — not swallowed by the empty-answer check, which
+/// matches only an answer whose whole trimmed text is empty, and a
+/// clarifying question is real text, so it falls through to ordinary
+/// delivery; the asker is introduced first, so the delivered text is the
+/// bare question and nothing else.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_ambiguous_question_draws_the_clarifying_question_delivered_whole() {
-    assert_ne!(
-        CLARIFYING_QUESTION.trim(),
-        ABSTENTION_SENTINEL,
-        "the premise of the routing check: the question is not the sentinel"
+    assert!(
+        !CLARIFYING_QUESTION.trim().is_empty(),
+        "the premise of the check: the question is real text"
     );
-    assert_ne!(CLARIFYING_QUESTION.trim(), MISS_SENTINEL);
 
     let fixture = helpful_fixture().await;
     let mut replies = fixture
@@ -223,10 +221,54 @@ async fn the_disambiguation_is_a_normal_two_turn_exchange() {
     );
 }
 
+/// AC7's clarifying half (unit 22): a clarifying question is real text,
+/// so its turn raises the typing cue — one begin once the question's text
+/// flows, one stop at the turn's end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_clarifying_question_raises_the_typing_cue() {
+    let fixture = helpful_fixture().await;
+    let mut composing = fixture.assistant.composing(support::ADAPTER);
+    let mut replies = fixture
+        .assistant
+        .replies(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
+    let room = support::authorized_group(&fixture.assistant, "room-clarify-cue").await;
+
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(
+            &room,
+            ChannelKind::Group,
+            "42",
+            &format!("how do I get the sandboxed feature? {CLARIFY_CUE}"),
+        ),
+    )
+    .await;
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        support::disclosed(CLARIFYING_QUESTION),
+        "the clarifying question reaches the chat"
+    );
+
+    let begun = tokio::time::timeout(support::DEADLINE, composing.recv())
+        .await
+        .expect("the cue arrives before the deadline")
+        .expect("the composing edge outlives the test");
+    assert_eq!(begun.channel, room);
+    assert_eq!(begun.state, assistant_core::ComposingState::Composing);
+    let stopped = tokio::time::timeout(support::DEADLINE, composing.recv())
+        .await
+        .expect("the stop arrives before the deadline")
+        .expect("the composing edge outlives the test");
+    assert_eq!(stopped.channel, room);
+    assert_eq!(stopped.state, assistant_core::ComposingState::Stopped);
+}
+
 /// AC6: a clarifying question, as a new person's first delivered answer,
 /// carries the once-per-person disclosure line — delivery is
-/// content-agnostic past the sentinel checks, so the fold composes onto a
-/// question exactly as onto any first answer.
+/// content-agnostic past the empty-answer check, so the fold composes onto
+/// a question exactly as onto any first answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_first_clarifying_question_carries_the_disclosure_line() {
     let fixture = helpful_fixture().await;

@@ -1,19 +1,20 @@
-//! The helpful answering mode (unit 14): an unaddressed group message
-//! summons a turn through the same debt spine an addressed one takes, the
-//! model's abstention sentinel delivers nothing and spends no
-//! answer-window slot, a rate-limited member's message opens no turn at
-//! all, and a question absorbed into a running turn reaches the model with
-//! a member's intervening answer beside it.
+//! The helpful answering mode (unit 14, silence re-keyed by unit 22): an
+//! unaddressed group message summons a turn through the same debt spine an
+//! addressed one takes, a turn the model ends with no text delivers
+//! nothing and spends no answer-window slot, a rate-limited member's
+//! message opens no turn at all, and a question absorbed into a running
+//! turn reaches the model with a member's intervening answer beside it.
 
 use agent_ledger::Store;
+use agent_ledger::providers::{MessageContent, MessageRole};
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::schema::store_config;
 use assistant_core::tools::wiki;
-use assistant_core::{ABSTENTION_SENTINEL, AnsweringMode, ChannelKind};
+use assistant_core::{AnsweringMode, ChannelKind};
 use serde_json::json;
 
 use crate::support::{
-    self, ABSTAIN_CUE, Fixture, ToolScript, carries, first_answer_to, inbound_unaddressed,
+    self, Fixture, SILENT_CUE, ToolScript, carries, first_answer_to, inbound_unaddressed,
     recv_reply,
 };
 
@@ -73,12 +74,13 @@ async fn an_unaddressed_group_question_is_answered_with_the_line() {
     assert_eq!(rows[0].fields["answer_due"], json!(true), "the opened debt");
 }
 
-/// AC2 and AC4: the abstention sentinel as the whole answer delivers
-/// nothing, introduces nobody, stays out of the next turn's projection,
-/// and spends no answer-window slot — while the spoken answer behind it
-/// spends exactly one, so the limiter still limits.
+/// AC2, AC4 and AC5 (unit 22): a turn the model ends with no text commits
+/// a real empty answer block, delivers nothing, introduces nobody,
+/// projects to the next turn as the model's own empty message, and spends
+/// no answer-window slot — while the spoken answer behind it spends
+/// exactly one, so the limiter still limits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_abstained_turn_speaks_nothing_and_spends_no_window_slot() {
+async fn a_silent_turn_speaks_nothing_and_spends_no_window_slot() {
     // One principal answer per window: the whole test rides on which turns
     // consume it.
     let fixture = helpful_fixture(support::budgets(Some((1, 600)), None)).await;
@@ -87,32 +89,34 @@ async fn an_abstained_turn_speaks_nothing_and_spends_no_window_slot() {
         .replies(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
-    let room = support::authorized_group(&fixture.assistant, "room-abstain").await;
+    let room = support::authorized_group(&fixture.assistant, "room-silent").await;
 
-    // The first message draws the scripted abstention: the turn runs, the
-    // sentinel commits as the stored answer, and nothing is delivered.
+    // The first message draws the scripted silence: the turn runs, ends
+    // with no text, the framework commits the empty answer block, and
+    // nothing is delivered.
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound_unaddressed(
             &room,
             ChannelKind::Group,
             "42",
-            &format!("members talking among themselves {ABSTAIN_CUE}"),
+            &format!("members talking among themselves {SILENT_CUE}"),
         ),
     )
     .await;
     let conversation = receipt.conversation_id;
-    let blocks = support::settle(&fixture.store, conversation, "the abstained turn", 4).await;
+    let blocks = support::settle(&fixture.store, conversation, "the silent turn", 4).await;
     assert_eq!(
         blocks[3].fields["content"],
-        json!(ABSTENTION_SENTINEL),
-        "the stored answer is the raw sentinel: no delivery rewrote it"
+        json!(""),
+        "the framework's committed record of the silent turn is the empty \
+         answer block"
     );
 
-    // The second message is answered: the abstained turn spent no slot, so
+    // The second message is answered: the silent turn spent no slot, so
     // the one-answer budget still admits this debt — and the answer carries
-    // the line, because the abstention introduced nobody. Arriving first on
-    // the edge, it also proves the abstention delivered nothing: the
+    // the line, because the silent turn introduced nobody. Arriving first
+    // on the edge, it also proves the silent turn delivered nothing: the
     // unbounded reply channel preserves order.
     support::ingest_recorded(
         &fixture.assistant,
@@ -122,29 +126,27 @@ async fn an_abstained_turn_speaks_nothing_and_spends_no_window_slot() {
     assert_eq!(
         recv_reply(&mut replies).await.text,
         first_answer_to("a real question"),
-        "the first delivered reply is the second turn's: the abstention \
+        "the first delivered reply is the second turn's: the silent turn \
          delivered nothing and introduced nobody"
     );
     support::settle(&fixture.store, conversation, "the answered turn", 6).await;
 
-    // The answered turn's request skipped the recognized abstention: the
-    // model never reads its own machinery token as prose.
+    // AC5: the answered turn's request carries the empty turn as the
+    // model's own empty assistant message — the projection is a pure
+    // delegate, so the model reads its own silence back.
     {
         let seen = fixture.script.seen.lock().unwrap();
         assert_eq!(seen.len(), 2, "two turns ran");
         assert!(
-            seen[1].iter().any(|message| carries(message, ABSTAIN_CUE)),
+            seen[1].iter().any(|message| carries(message, SILENT_CUE)),
             "the first question still projects to the second turn"
         );
-        // The system prompt's own teaching names the sentinel, so the pin
-        // scopes to the spoken voices: no assistant or user message carries
-        // it — the recognized abstention projects nothing at all.
         assert!(
-            !seen[1]
-                .iter()
-                .filter(|message| message.role != agent_ledger::providers::MessageRole::System)
-                .any(|message| carries(message, ABSTENTION_SENTINEL)),
-            "the recognized abstention stays out of the projection"
+            seen[1].iter().any(|message| {
+                message.role == MessageRole::Assistant
+                    && matches!(&message.content, MessageContent::Text(text) if text.is_empty())
+            }),
+            "the empty turn projects as the model's own empty message"
         );
     }
 
@@ -166,7 +168,7 @@ async fn an_abstained_turn_speaks_nothing_and_spends_no_window_slot() {
     assert_eq!(
         rows[2].fields["limited"],
         json!("principal"),
-        "the spoken answer spent the slot; the abstained one did not"
+        "the spoken answer spent the slot; the silent one did not"
     );
     assert_eq!(
         fixture
@@ -176,6 +178,66 @@ async fn an_abstained_turn_speaks_nothing_and_spends_no_window_slot() {
         2,
         "the refused debt opened no third turn"
     );
+}
+
+/// AC7 at the spine: the typing cue lights only once real text flows. A
+/// turn that says nothing raises no cue at all, and the spoken turn
+/// behind it raises exactly one begin/stop pair — proven by the ordered
+/// composing channel: its first update is the spoken turn's begin.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_cue_stays_dark_for_a_silent_turn_and_lights_for_a_spoken_one() {
+    let fixture = helpful_fixture(assistant_core::ProtectionConfig::default()).await;
+    let mut composing = fixture.assistant.composing(support::ADAPTER);
+    let mut replies = fixture
+        .assistant
+        .replies(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
+    let room = support::authorized_group(&fixture.assistant, "room-cue").await;
+
+    // The silent turn runs to its committed empty answer first, so every
+    // cue it could have raised would sit ahead of the spoken turn's.
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(
+            &room,
+            ChannelKind::Group,
+            "42",
+            &format!("nothing to add here {SILENT_CUE}"),
+        ),
+    )
+    .await;
+    support::settle(
+        &fixture.store,
+        receipt.conversation_id,
+        "the silent turn",
+        4,
+    )
+    .await;
+
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&room, ChannelKind::Group, "42", "a spoken question"),
+    )
+    .await;
+    recv_reply(&mut replies).await;
+
+    let begun = tokio::time::timeout(support::DEADLINE, composing.recv())
+        .await
+        .expect("the spoken turn's cue arrives before the deadline")
+        .expect("the composing edge outlives the test");
+    assert_eq!(
+        begun.channel, room,
+        "the first composing update is the spoken turn's: the silent turn \
+         raised no cue"
+    );
+    assert_eq!(begun.state, assistant_core::ComposingState::Composing);
+    let stopped = tokio::time::timeout(support::DEADLINE, composing.recv())
+        .await
+        .expect("the stop arrives before the deadline")
+        .expect("the composing edge outlives the test");
+    assert_eq!(stopped.channel, room);
+    assert_eq!(stopped.state, assistant_core::ComposingState::Stopped);
 }
 
 /// AC2: a rate-limited member's message opens no turn at all — zero model
@@ -229,10 +291,11 @@ async fn a_rate_limited_members_message_opens_no_turn() {
     );
 }
 
-/// AC4: an ordinary answer that carries the sentinel's words as prose is
-/// delivered untouched — the sentinel is the whole answer or nothing.
+/// AC3's boundary: only a wholly empty answer is swallowed — an ordinary
+/// answer about silence itself is real text and delivers whole, so the
+/// empty-answer check cannot widen into swallowing prose.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_answer_quoting_the_sentinel_as_prose_is_not_swallowed() {
+async fn an_answer_with_real_text_is_never_swallowed() {
     let fixture = helpful_fixture(assistant_core::ProtectionConfig::default()).await;
     let mut replies = fixture
         .assistant
@@ -241,21 +304,17 @@ async fn an_answer_quoting_the_sentinel_as_prose_is_not_swallowed() {
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-prose").await;
 
-    let text = format!("what does {ABSTENTION_SENTINEL} mean?");
+    let text = "when do you stay silent instead of answering?";
     support::ingest_recorded(
         &fixture.assistant,
-        inbound_unaddressed(&room, ChannelKind::Group, "42", &text),
+        inbound_unaddressed(&room, ChannelKind::Group, "42", text),
     )
     .await;
     let reply = recv_reply(&mut replies).await;
     assert_eq!(
         reply.text,
-        first_answer_to(&text),
-        "the sentinel inside prose is prose; the answer delivers whole"
-    );
-    assert!(
-        reply.text.contains(ABSTENTION_SENTINEL),
-        "the premise holds: the delivered answer quotes the sentinel's words"
+        first_answer_to(text),
+        "real prose delivers whole; only the empty answer yields nothing"
     );
 }
 

@@ -138,6 +138,20 @@ pub struct ToolScript {
 /// model's second request.
 pub const TOOL_CLOSING_ANSWER: &str = "The scripted closing answer.";
 
+/// The opening line a held FAILING turn streams before it awaits its
+/// release: real text, so the core's typing cue — keyed on the first
+/// non-empty text delta since unit 22 — is provably up while the stream
+/// is held, and the scripted error then ends the turn before anything
+/// finalizes.
+pub const HELD_TURN_OPENING: &str = "Let me look into that.";
+
+/// Stream one opened text block's prose — the start event and its delta,
+/// the shape every scripted turn opens its text with.
+fn stream_text(response_tx: &mpsc::UnboundedSender<ProviderResponse>, text: String) {
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta { text }));
+}
+
 /// The scripted provider: answers every turn with [`answer_to`] the newest
 /// projected message's text, deterministically. A scripted failure count
 /// makes the next turns fail with a stream error instead; a tool script
@@ -149,9 +163,11 @@ struct ScriptedChat {
     /// Every turn request's projected messages, for the projection pins.
     seen: Arc<Mutex<Vec<Vec<Message>>>>,
     tool_script: Option<ToolScript>,
-    /// When set, every chat turn awaits one release before it streams —
-    /// the composing pins' fixture: the held turn keeps the answer out of
-    /// the wire while the typing action is asserted.
+    /// When set, every chat turn streams its opening text and then awaits
+    /// one release before it ends — the composing pins' fixture: the
+    /// core's typing cue begins at the first real text delta, so a held
+    /// turn shows the cue while its answer provably has not reached the
+    /// wire.
     turn_hold: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
     /// The error text a scripted failure streams; see
     /// [`Fixture::word_failures_as`].
@@ -222,29 +238,36 @@ impl ProviderModule for ScriptedChat {
                     .expect("the request log locks")
                     .push(messages.clone());
                 let hold = turn_hold.lock().expect("the turn hold locks").clone();
-                if let Some(hold) = hold {
-                    hold.notified().await;
-                }
                 if failures
                     .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                         left.checked_sub(1)
                     })
                     .is_ok()
                 {
+                    // A held failing turn streams an opening line first:
+                    // real text raises the core's typing cue, so the
+                    // refresh loop under test provably runs while the
+                    // stream is held open — and the error then kills the
+                    // turn before anything finalizes, so no send follows.
+                    if let Some(hold) = &hold {
+                        stream_text(&response_tx, HELD_TURN_OPENING.into());
+                        hold.notified().await;
+                    }
                     let error = failure_text.lock().expect("the failure text locks").clone();
                     let _ = response_tx.send(ProviderResponse::Error(error));
                     continue;
+                }
+                if let Some(hold) = &hold
+                    && tool_script.is_some()
+                {
+                    hold.notified().await;
                 }
                 if let Some(script) = &tool_script {
                     // Scripted by ledger content: a request already carrying
                     // an answered call closes with the fixed prose, the
                     // opening turn narrates (when scripted) and calls.
                     if messages.iter().any(carries_tool_result) {
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: TOOL_CLOSING_ANSWER.into(),
-                        }));
+                        stream_text(&response_tx, TOOL_CLOSING_ANSWER.into());
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
                                 usage: agent_ledger::providers::Usage::default(),
@@ -259,11 +282,7 @@ impl ProviderModule for ScriptedChat {
                         continue;
                     }
                     if let Some(narration) = &script.narration {
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: narration.clone(),
-                        }));
+                        stream_text(&response_tx, narration.clone());
                     }
                     calls += 1;
                     // The production order: every provider emits its tool
@@ -289,10 +308,14 @@ impl ProviderModule for ScriptedChat {
                 let answer = answer_to(&without_origin_marks(
                     &messages.last().map(message_text).unwrap_or_default(),
                 ));
-                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                    text: answer,
-                }));
+                stream_text(&response_tx, answer);
+                // The hold sits between the streamed text and the message
+                // end: the answer's text is on the stream — so the core's
+                // typing cue is up — while the turn provably has not
+                // completed and nothing can be delivered.
+                if let Some(hold) = &hold {
+                    hold.notified().await;
+                }
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
                     usage: agent_ledger::providers::Usage::default(),
                     stop_reason: StopReason::EndTurn,

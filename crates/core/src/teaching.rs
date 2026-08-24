@@ -1,18 +1,24 @@
 //! The prompt sections the assembly composes from its configuration
-//! (unit 14, 2026-08-23): the name identity, the answering-mode teaching
-//! with the abstention sentinel, and — since unit 15, 2026-08-24 — the
-//! moderation teaching for the deployments that can act on it.
+//! (unit 14, 2026-08-23): the name identity, the answering-mode teaching,
+//! and — since unit 15, 2026-08-24 — the moderation teaching for the
+//! deployments that can act on it.
 //!
 //! The embedder's prompt files stay prose an operator edits; what depends
-//! on configuration — the resolved name, the answering mode, the sentinel's
-//! exact spelling, the moderation capability — is behavior and composes
-//! here, in the core, so the wording cannot drift from the mechanism that
-//! reads it. The composition joins the configured prompt first and the
-//! composed sections after it, and the assembly records the result as
-//! every new conversation's system prompt; like any prompt edit, a changed
-//! name, mode or moderation handle reaches new conversations only.
+//! on configuration — the resolved name, the answering mode, the
+//! moderation capability — is behavior and composes here, in the core, so
+//! the wording cannot drift from the mechanism that reads it. The
+//! composition joins the configured prompt first and the composed sections
+//! after it, and the assembly records the result as every new
+//! conversation's system prompt; like any prompt edit, a changed name,
+//! mode or moderation handle reaches new conversations only.
+//!
+//! Silence needs no vocabulary of its own (unit 22, 2026-08-24): the model
+//! stays silent by ending its turn without writing any text, the framework
+//! commits that turn as a real empty answer, and the outbound edge
+//! delivers it as nothing. When addressed and unable to back an answer
+//! with a lookup, the model says it doesn't know in its own words —
+//! ordinary prose, no machine routing.
 
-use crate::abstention::{ABSTENTION_SENTINEL, MISS_SENTINEL};
 use crate::assembly::AnsweringMode;
 
 /// Whether the moderation teaching composes — and, in the assembly, whether
@@ -89,18 +95,17 @@ fn identity_section(name: &str) -> String {
     )
 }
 
-/// The answering teaching for one mode (rewritten by unit 16, extended by
-/// unit 21, 2026-08-24). Both modes teach the sourcing discipline, the
-/// audience discipline and both sentinels — silence and the honest miss
-/// must have a mechanism wherever a turn runs — and the helpful mode adds
-/// the silence-default judgment for messages that never addressed the
-/// assistant, while the addressed mode adds the follow-up reach: an
-/// unaddressed reply never opens a turn there, so a clarifying question
-/// invites the member to reply to it.
+/// The answering teaching for one mode (rewritten by unit 16 and unit 22,
+/// extended by unit 21, 2026-08-24). Both modes teach the sourcing
+/// discipline, the audience discipline and the end-empty silence — a turn
+/// with nothing to say ends with no text wherever it runs — and the
+/// helpful mode adds the silence-default judgment for messages that never
+/// addressed the assistant, while the addressed mode adds the follow-up
+/// reach: an unaddressed reply never opens a turn there, so a clarifying
+/// question invites the member to reply to it.
 fn answering_section(answering: AnsweringMode) -> String {
     let sourcing = sourcing_rules();
     let audience = audience_rules();
-    let sentinels = sentinel_rules();
     match answering {
         AnsweringMode::Helpful => format!(
             "Every message in a group conversation reaches you, including \
@@ -109,19 +114,21 @@ fn answering_section(answering: AnsweringMode) -> String {
              message setting up group content, members talking among \
              themselves — none of these warrant a reply, and if someone else \
              already answered a question well, stay silent or briefly defer \
-             to them. An answer is the exception, and an answer that makes a \
-             substantive claim must be one you can back with a lookup. \
-             {sourcing} {audience} {sentinels}"
+             to them. When you have nothing to add, end your turn without \
+             writing any text — no placeholder. An answer is the exception, \
+             and an answer that makes a substantive claim must be one you \
+             can back with a lookup. {sourcing} {audience}"
         ),
         AnsweringMode::Addressed => format!(
             "You are brought in when a message addresses you: a mention, a \
              reply to one of your messages, your name, or a direct chat. \
              Answer what was asked of you; when even an addressed message \
-             leaves you nothing useful to say, you may stay silent. \
+             leaves you nothing useful to say, end your turn without \
+             writing any text — no placeholder. \
              {sourcing} {audience} When you ask a clarifying question, \
              invite the member to reply to your message: only a message \
              that addresses you reaches you, so a plain follow-up would \
-             otherwise go unseen. {sentinels}"
+             otherwise go unseen."
         ),
     }
 }
@@ -129,24 +136,26 @@ fn answering_section(answering: AnsweringMode) -> String {
 /// The sourcing discipline, shared by both modes so the operator's rule has
 /// one spelling: the tools are the only source of substantive claims, the
 /// lookup comes before the answer, an unanswering lookup is a miss, no
-/// guesses and no hedged trained knowledge — and the miss sentinel as the
-/// honest whole-answer signal, whose outcome the machinery decides.
+/// guesses and no hedged trained knowledge — and the honest outcomes in
+/// the model's own voice: a plain "I don't know" when addressed, no text
+/// at all otherwise. The addressed-versus-silent choice is the model's
+/// own judgment.
 fn sourcing_rules() -> String {
-    format!(
-        "Your lookup tools are the only source of substantive claims: any \
-         claim about the project — a feature, a procedure, a project fact — \
-         must come from a lookup you made in this turn, never from your \
-         trained knowledge, so look it up before you answer. A lookup \
-         answers a question only when its result actually contains the \
-         answer: a result that is empty, off-topic, or missing the specific \
-         claim is a miss, not a licence to fill the gap from memory. Never \
-         guess and never answer from hedged memory — no \"as far as I \
-         know\", no \"probably\" — and in a compound answer, every \
-         project-specific claim is either confirmed by a lookup or dropped. \
-         When you looked and could not confirm an answer, reply with exactly \
-         {MISS_SENTINEL} and nothing else: whether the asker is told you \
-         don't know, or nothing is said, is decided for you."
-    )
+    "Your lookup tools are the only source of substantive claims: any \
+     claim about the project — a feature, a procedure, a project fact — \
+     must come from a lookup you made in this turn, never from your \
+     trained knowledge, so look it up before you answer. A lookup \
+     answers a question only when its result actually contains the \
+     answer: a result that is empty, off-topic, or missing the specific \
+     claim is a miss, not a licence to fill the gap from memory. Never \
+     guess and never answer from hedged memory — no \"as far as I \
+     know\", no \"probably\" — and in a compound answer, every \
+     project-specific claim is either confirmed by a lookup or dropped. \
+     When you were addressed and a lookup cannot back the answer, say \
+     you don't know, plainly and in your own words — never guess from \
+     memory or offer a hedged recollection. When you were not addressed \
+     and have nothing to add, end the turn with no text."
+        .to_owned()
 }
 
 /// The audience discipline, shared by both modes so it applies wherever a
@@ -169,27 +178,12 @@ fn audience_rules() -> &'static str {
      between using and building, ask one brief clarifying question — \"are \
      you asking how to use it on your device, or how to build it into a \
      ROM?\" — instead of committing to an assumption. A clarifying question \
-     back to the asker is a warranted reply, not an abstention and not a \
-     miss: it makes no substantive claim, so it needs no lookup, while the \
-     real answer that follows the member's reply needs its lookup like any \
-     substantive claim. Never chain clarifying questions: when the reply \
-     still leaves the intent unclear, answer the likeliest reading as well \
-     as your lookups allow instead of asking again."
-}
-
-/// The two sentinels with their distinct meanings, shared by both modes:
-/// social silence and the unresolved lookup are different facts, and the
-/// mechanism that routes them can only tell them apart if the model never
-/// uses one for the other.
-fn sentinel_rules() -> String {
-    format!(
-        "To stay silent, reply with exactly {ABSTENTION_SENTINEL} and \
-         nothing else: that reply is swallowed and no message reaches the \
-         chat. The two sentinels mean different things — {ABSTENTION_SENTINEL} \
-         is social silence, nothing to add; {MISS_SENTINEL} is an unresolved \
-         lookup, you looked and found nothing — never use one for the other, \
-         and never put either inside an ordinary answer."
-    )
+     back to the asker is a warranted reply, not silence and not a \
+     don't-know: it makes no substantive claim, so it needs no lookup, \
+     while the real answer that follows the member's reply needs its \
+     lookup like any substantive claim. Never chain clarifying questions: \
+     when the reply still leaves the intent unclear, answer the likeliest \
+     reading as well as your lookups allow instead of asking again."
 }
 
 #[cfg(test)]
@@ -198,7 +192,7 @@ mod tests {
 
     /// The composition order and the three facts the sections must carry:
     /// the base leads, the name reaches the identity, and each mode's
-    /// teaching names the sentinel exactly once as the silence mechanism.
+    /// teaching states the end-empty silence mechanism.
     #[test]
     fn the_prompt_composes_base_identity_and_mode_teaching() {
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
@@ -212,8 +206,8 @@ mod tests {
                 "the identity names the assistant"
             );
             assert!(
-                prompt.contains(ABSTENTION_SENTINEL),
-                "the teaching carries the sentinel's exact spelling"
+                prompt.contains("end your turn without writing any text — no placeholder"),
+                "the teaching states silence as the empty turn"
             );
         }
         let helpful = composed_system_prompt("b", "n", AnsweringMode::Helpful, false);
@@ -228,34 +222,35 @@ mod tests {
         );
     }
 
-    /// AC7 (unit 16): both modes' teaching carries the sourcing discipline
-    /// verbatim — the tools as the only source of substantive claims, the
-    /// lookup before the answer, the sufficiency rule that an unanswering
-    /// lookup is a miss, the no-guessing and no-hedged-knowledge
-    /// prohibition, and the miss sentinel as the whole-answer signal. The
-    /// addressed mode's gain is exactly this discipline; the
-    /// silence-default framing and the sentinel distinction are pinned in
-    /// the test below.
+    /// AC6 (unit 22, continuing unit 16's AC7): both modes' teaching
+    /// carries the sourcing discipline verbatim — the tools as the only
+    /// source of substantive claims, the lookup before the answer, the
+    /// sufficiency rule that an unanswering lookup is a miss, the
+    /// no-guessing and no-hedged-knowledge prohibition, and the honest
+    /// outcomes in the model's own voice: the plain "I don't know" when
+    /// addressed, the empty turn otherwise — the choice between them being
+    /// the model's own reading of the message. The addressed mode's gain
+    /// is exactly this discipline; the silence-default framing is pinned
+    /// in the test below.
     #[test]
     fn both_modes_teach_the_sourcing_discipline() {
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
             let prompt = composed_system_prompt("b", "n", mode, false);
             for fact in [
-                "Your lookup tools are the only source of substantive claims".to_owned(),
-                "never from your trained knowledge, so look it up before you answer".to_owned(),
+                "Your lookup tools are the only source of substantive claims",
+                "never from your trained knowledge, so look it up before you answer",
                 "a result that is empty, off-topic, or missing the specific \
-                 claim is a miss, not a licence to fill the gap from memory"
-                    .to_owned(),
-                "Never guess and never answer from hedged memory".to_owned(),
-                "every project-specific claim is either confirmed by a lookup or dropped"
-                    .to_owned(),
-                format!(
-                    "When you looked and could not confirm an answer, reply \
-                     with exactly {MISS_SENTINEL} and nothing else"
-                ),
+                 claim is a miss, not a licence to fill the gap from memory",
+                "Never guess and never answer from hedged memory",
+                "every project-specific claim is either confirmed by a lookup or dropped",
+                "When you were addressed and a lookup cannot back the answer, \
+                 say you don't know, plainly and in your own words — never \
+                 guess from memory or offer a hedged recollection",
+                "When you were not addressed and have nothing to add, end \
+                 the turn with no text",
             ] {
                 assert!(
-                    prompt.contains(&fact),
+                    prompt.contains(fact),
                     "the {mode:?} teaching carries: {fact}"
                 );
             }
@@ -286,7 +281,7 @@ mod tests {
                 "When a question is genuinely ambiguous between using and \
                  building, ask one brief clarifying question",
                 "A clarifying question back to the asker is a warranted \
-                 reply, not an abstention and not a miss: it makes no \
+                 reply, not silence and not a don't-know: it makes no \
                  substantive claim, so it needs no lookup",
                 "the real answer that follows the member's reply needs its \
                  lookup like any substantive claim",
@@ -318,33 +313,36 @@ mod tests {
         );
     }
 
-    /// AC7's silence and sentinel half (unit 16): helpful mode leads with
-    /// silence as the default, and both modes name the two sentinels with
-    /// their distinct meanings — social silence against the unresolved
-    /// lookup — plus the never-inside-an-answer rule.
+    /// AC6's silence half (unit 22): helpful mode leads with silence as
+    /// the default and keeps the unit-16 lookup-backed sentence verbatim —
+    /// the new end-empty rule completes it, it does not contradict it —
+    /// and no sentinel vocabulary survives anywhere in either mode's
+    /// prompt.
     #[test]
-    fn silence_is_the_default_and_the_sentinels_carry_distinct_meanings() {
+    fn silence_is_the_default_and_no_sentinel_vocabulary_survives() {
         let helpful = composed_system_prompt("b", "n", AnsweringMode::Helpful, false);
         assert!(
             helpful.contains("Silence is the default"),
             "helpful mode leads with silence"
         );
+        assert!(
+            helpful.contains(
+                "an answer that makes a substantive claim must be one you \
+                 can back with a lookup"
+            ),
+            "the unit-16 lookup-backed sentence stands verbatim"
+        );
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
             let prompt = composed_system_prompt("b", "n", mode, false);
+            for token in ["[[", "]]", "abstain", "abstention", "sentinel"] {
+                assert!(
+                    !prompt.to_lowercase().contains(token),
+                    "the {mode:?} teaching carries no sentinel vocabulary: {token}"
+                );
+            }
             assert!(
-                prompt.contains(&format!(
-                    "{ABSTENTION_SENTINEL} is social silence, nothing to add; \
-                     {MISS_SENTINEL} is an unresolved lookup, you looked and \
-                     found nothing"
-                )),
-                "the {mode:?} teaching tells the sentinels apart"
-            );
-            assert!(
-                prompt.contains(
-                    "never use one for the other, and never put \
-                 either inside an ordinary answer"
-                ),
-                "the {mode:?} teaching bounds both sentinels to the whole answer"
+                prompt.contains("end your turn without writing any text — no placeholder"),
+                "the {mode:?} teaching states the empty turn as the silence mechanism"
             );
         }
     }

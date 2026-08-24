@@ -117,16 +117,23 @@ pub fn without_origin_marks(text: &str) -> String {
         .join("\n")
 }
 
-/// The cue that scripts an abstention: a turn whose newest projected
-/// message carries this text answers with the abstention sentinel as its
-/// whole answer, the way the prompt teaches the model to stay silent.
-pub const ABSTAIN_CUE: &str = "(the quiet cue)";
+/// The cue that scripts a silent turn: a turn whose newest projected
+/// message carries this text ends without streaming any text, the way the
+/// prompt teaches the model to stay silent — and the framework commits
+/// the turn as a real empty assistant text block.
+pub const SILENT_CUE: &str = "(the quiet cue)";
 
-/// The cue that scripts a miss: a turn whose projected question carries
-/// this text answers with the miss sentinel as its whole answer, the way
-/// the prompt teaches the model to admit an unresolved lookup — the
-/// scripted stand-in for a lookup whose result did not contain the claim.
-pub const MISS_CUE: &str = "(the unanswerable cue)";
+/// The cue that scripts a spoken don't-know: a turn whose projected
+/// question carries this text answers with [`DONT_KNOW_LINE`] — the
+/// model's own words for an unresolved lookup, ordinary prose to every
+/// mechanism past the model.
+pub const DONT_KNOW_CUE: &str = "(the unanswerable cue)";
+
+/// The don't-know prose the script answers with on [`DONT_KNOW_CUE`]: the
+/// plain admission the teaching draws when the model was addressed and a
+/// lookup could not back an answer. A fixture string, not product copy —
+/// the live model words its own.
+pub const DONT_KNOW_LINE: &str = "I don't know — I looked this up and could not confirm an answer.";
 
 /// The cue that scripts a clarifying question: a turn whose newest
 /// projected message carries this text answers with
@@ -396,22 +403,26 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                 }
                 let newest =
                     without_origin_marks(&messages.last().map(message_text).unwrap_or_default());
-                let answer = if newest.contains(ABSTAIN_CUE) {
-                    assistant_core::ABSTENTION_SENTINEL.to_owned()
-                } else if newest.contains(MISS_CUE) {
-                    assistant_core::MISS_SENTINEL.to_owned()
+                // The silent cue streams NO text at all: the turn ends
+                // empty and the framework commits the empty answer block —
+                // the way the prompt teaches silence since unit 22.
+                let answer = if newest.contains(SILENT_CUE) {
+                    None
+                } else if newest.contains(DONT_KNOW_CUE) {
+                    Some(DONT_KNOW_LINE.to_owned())
                 } else if newest.contains(CLARIFY_CUE) {
-                    CLARIFYING_QUESTION.to_owned()
+                    Some(CLARIFYING_QUESTION.to_owned())
                 } else {
-                    answer_to(&newest)
+                    Some(answer_to(&newest))
                 };
                 let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                 seen.lock().unwrap().push(messages);
                 reasonings.lock().unwrap().push(reasoning);
-                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                    text: answer,
-                }));
+                if let Some(text) = answer {
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                    let _ =
+                        response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta { text }));
+                }
                 if let Some(hold) = &hold {
                     let _ = hold.started_tx.send(turn);
                     // The hold ends on the test's release or on the turn's
@@ -533,12 +544,12 @@ pub fn tool_scripted_provider(
                         continue;
                     }
                     let answered = messages.iter().any(carries_tool_result);
-                    // The sufficiency script: a question carrying the miss
-                    // cue closes with the miss sentinel after its lookup —
-                    // the taught reaction to a result that did not contain
-                    // the claim — while every other turn closes with the
-                    // ordinary answer.
-                    let missed = messages.iter().any(|m| carries(m, MISS_CUE));
+                    // The sufficiency script: a question carrying the
+                    // don't-know cue closes with the plain don't-know prose
+                    // after its lookup — the taught reaction to a result
+                    // that did not contain the claim — while every other
+                    // turn closes with the ordinary answer.
+                    let missed = messages.iter().any(|m| carries(m, DONT_KNOW_CUE));
                     let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                     seen.lock().unwrap().push(messages);
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
@@ -547,7 +558,7 @@ pub fn tool_scripted_provider(
                             response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
                         let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
                             text: if missed {
-                                assistant_core::MISS_SENTINEL.into()
+                                DONT_KNOW_LINE.into()
                             } else {
                                 CLOSING_ANSWER.into()
                             },
