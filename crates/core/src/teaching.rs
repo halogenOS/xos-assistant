@@ -89,13 +89,17 @@ fn identity_section(name: &str) -> String {
     )
 }
 
-/// The answering teaching for one mode (rewritten by unit 16, 2026-08-24).
-/// Both modes teach the sourcing discipline and both sentinels — silence
-/// and the honest miss must have a mechanism wherever a turn runs — and
-/// the helpful mode adds the silence-default judgment for messages that
-/// never addressed the assistant.
+/// The answering teaching for one mode (rewritten by unit 16, extended by
+/// unit 21, 2026-08-24). Both modes teach the sourcing discipline, the
+/// audience discipline and both sentinels — silence and the honest miss
+/// must have a mechanism wherever a turn runs — and the helpful mode adds
+/// the silence-default judgment for messages that never addressed the
+/// assistant, while the addressed mode adds the follow-up reach: an
+/// unaddressed reply never opens a turn there, so a clarifying question
+/// invites the member to reply to it.
 fn answering_section(answering: AnsweringMode) -> String {
     let sourcing = sourcing_rules();
+    let audience = audience_rules();
     let sentinels = sentinel_rules();
     match answering {
         AnsweringMode::Helpful => format!(
@@ -105,15 +109,19 @@ fn answering_section(answering: AnsweringMode) -> String {
              message setting up group content, members talking among \
              themselves — none of these warrant a reply, and if someone else \
              already answered a question well, stay silent or briefly defer \
-             to them. An answer is the exception, and it must be one you can \
-             back with a lookup. {sourcing} {sentinels}"
+             to them. An answer is the exception, and an answer that makes a \
+             substantive claim must be one you can back with a lookup. \
+             {sourcing} {audience} {sentinels}"
         ),
         AnsweringMode::Addressed => format!(
             "You are brought in when a message addresses you: a mention, a \
              reply to one of your messages, your name, or a direct chat. \
              Answer what was asked of you; when even an addressed message \
              leaves you nothing useful to say, you may stay silent. \
-             {sourcing} {sentinels}"
+             {sourcing} {audience} When you ask a clarifying question, \
+             invite the member to reply to your message: only a message \
+             that addresses you reaches you, so a plain follow-up would \
+             otherwise go unseen. {sentinels}"
         ),
     }
 }
@@ -139,6 +147,34 @@ fn sourcing_rules() -> String {
          {MISS_SENTINEL} and nothing else: whether the asker is told you \
          don't know, or nothing is said, is decided for you."
     )
+}
+
+/// The audience discipline, shared by both modes so it applies wherever a
+/// question is answered (unit 21, 2026-08-24): the same question reads one
+/// way to an end user and another to a builder, the audience is read from
+/// the message and the conversation — never from a profile of the person —
+/// genuine ambiguity draws exactly one brief clarifying question, a clear
+/// question is answered directly, and clarifying questions never chain.
+/// The lookup-backing rule is reconciled here, narrowly: a question back
+/// to the asker makes no substantive claim and needs no lookup, while the
+/// real answer it unlocks needs its lookup exactly as before.
+fn audience_rules() -> &'static str {
+    "The same question often reads one way from an end user who wants to \
+     use a feature on their device and another from a developer who wants \
+     to build it into a ROM or integrate it, and the right answer differs \
+     sharply between the two. Read the audience from what the message and \
+     the conversation show — the words, the level, the prior turns — never \
+     from assumptions about who the person is. When the intent is clear, \
+     answer that reading directly. When a question is genuinely ambiguous \
+     between using and building, ask one brief clarifying question — \"are \
+     you asking how to use it on your device, or how to build it into a \
+     ROM?\" — instead of committing to an assumption. A clarifying question \
+     back to the asker is a warranted reply, not an abstention and not a \
+     miss: it makes no substantive claim, so it needs no lookup, while the \
+     real answer that follows the member's reply needs its lookup like any \
+     substantive claim. Never chain clarifying questions: when the reply \
+     still leaves the intent unclear, answer the likeliest reading as well \
+     as your lookups allow instead of asking again."
 }
 
 /// The two sentinels with their distinct meanings, shared by both modes:
@@ -224,6 +260,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// AC2 (unit 21): both modes' teaching carries the audience discipline
+    /// verbatim — the use-versus-build distinction, the read-the-message
+    /// never-profile-the-person rule, the answer-directly-when-clear rule,
+    /// the ask-one-brief-clarifying-question-on-genuine-ambiguity rule, the
+    /// do-not-chain rule, and the reconciled lookup statement: a clarifying
+    /// question is a warranted reply needing no lookup, while a substantive
+    /// claim still needs one. The helpful mode's silence framing binds the
+    /// lookup duty to the substantive claim, and the addressed mode names
+    /// its follow-up reach.
+    #[test]
+    fn both_modes_teach_the_audience_discipline() {
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            let prompt = composed_system_prompt("b", "n", mode, false);
+            for fact in [
+                "one way from an end user who wants to use a feature on \
+                 their device and another from a developer who wants to \
+                 build it into a ROM or integrate it",
+                "Read the audience from what the message and the \
+                 conversation show — the words, the level, the prior turns \
+                 — never from assumptions about who the person is",
+                "When the intent is clear, answer that reading directly.",
+                "When a question is genuinely ambiguous between using and \
+                 building, ask one brief clarifying question",
+                "A clarifying question back to the asker is a warranted \
+                 reply, not an abstention and not a miss: it makes no \
+                 substantive claim, so it needs no lookup",
+                "the real answer that follows the member's reply needs its \
+                 lookup like any substantive claim",
+                "Never chain clarifying questions: when the reply still \
+                 leaves the intent unclear, answer the likeliest reading as \
+                 well as your lookups allow instead of asking again",
+            ] {
+                assert!(
+                    prompt.contains(fact),
+                    "the {mode:?} teaching carries: {fact}"
+                );
+            }
+        }
+        let helpful = composed_system_prompt("b", "n", AnsweringMode::Helpful, false);
+        assert!(
+            helpful.contains(
+                "an answer that makes a substantive claim must be one you \
+                 can back with a lookup"
+            ),
+            "the reconciled helpful sentence binds the lookup to the claim"
+        );
+        let addressed = composed_system_prompt("b", "n", AnsweringMode::Addressed, false);
+        assert!(
+            addressed.contains(
+                "When you ask a clarifying question, invite the member to \
+                 reply to your message"
+            ),
+            "the addressed teaching names its follow-up reach"
+        );
     }
 
     /// AC7's silence and sentinel half (unit 16): helpful mode leads with

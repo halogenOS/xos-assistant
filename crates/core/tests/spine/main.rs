@@ -7,7 +7,9 @@
 //! acknowledgment (the rules acknowledgment's bounded one-shot generation
 //! and its deterministic fallback),
 //! assembly (the wiring contract), storage (the composed kind and the durable
-//! registry), addressing (the answer-due stamp, the notice, re-engagement),
+//! registry), audience (the clarifying question's ordinary delivery and
+//! the two-turn disambiguation),
+//! addressing (the answer-due stamp, the notice, re-engagement),
 //! protection (the budgets, the limited stamp, the debt authority),
 //! reasoning (the configured effort level on every created conversation
 //! and on the provider's requests),
@@ -31,6 +33,7 @@
 mod acknowledgment;
 mod addressing;
 mod assembly;
+mod audience;
 mod direct_chats;
 mod disclosure;
 mod end_to_end;

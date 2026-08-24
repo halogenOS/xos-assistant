@@ -128,6 +128,20 @@ pub const ABSTAIN_CUE: &str = "(the quiet cue)";
 /// scripted stand-in for a lookup whose result did not contain the claim.
 pub const MISS_CUE: &str = "(the unanswerable cue)";
 
+/// The cue that scripts a clarifying question: a turn whose newest
+/// projected message carries this text answers with
+/// [`CLARIFYING_QUESTION`] as its whole answer, the way the teaching has
+/// the model ask before assuming on a use-versus-build ambiguity
+/// (unit 21).
+pub const CLARIFY_CUE: &str = "(the ambiguous cue)";
+
+/// The clarifying question the script answers with on [`CLARIFY_CUE`]: the
+/// one brief question the teaching draws on a question genuinely ambiguous
+/// between using and building — ordinary prose to every mechanism past the
+/// model, which is the mechanical fact the audience pins prove.
+pub const CLARIFYING_QUESTION: &str =
+    "Are you asking how to use it on your device, or how to build it into a ROM?";
+
 /// The first answer a person is delivered, as the edge stores and sends it:
 /// the disclosure line, a blank line, then the scripted answer to the given
 /// text.
@@ -386,6 +400,8 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                     assistant_core::ABSTENTION_SENTINEL.to_owned()
                 } else if newest.contains(MISS_CUE) {
                     assistant_core::MISS_SENTINEL.to_owned()
+                } else if newest.contains(CLARIFY_CUE) {
+                    CLARIFYING_QUESTION.to_owned()
                 } else {
                     answer_to(&newest)
                 };

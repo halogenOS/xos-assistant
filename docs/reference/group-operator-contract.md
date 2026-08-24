@@ -120,6 +120,20 @@ filing settles it; until then, treat the report path as unproven in
 production and verify the moderation bot's reaction after the first real
 report.
 
+## Follow-ups in addressed answering
+
+Added 2026-08-24, with the audience-differentiation unit. When the
+`answering` key is `addressed`, the assistant reads only messages that
+address it: a mention, a reply to one of its messages, its name, or a
+direct chat. A plain follow-up that does none of these is never seen.
+This matters when the assistant asks a clarifying question — for example,
+whether a member wants to use a feature on their device or build it into
+a ROM — because the member's disambiguating reply must address the
+assistant to be read; replying to the assistant's question is the natural
+way, and the assistant's question invites exactly that. In `helpful`
+answering (the default) every group message reaches the assistant, so a
+plain follow-up is seen without addressing it.
+
 ## The deletion mirror
 
 Added 2026-08-23. When a group administrator replies to a message with the
