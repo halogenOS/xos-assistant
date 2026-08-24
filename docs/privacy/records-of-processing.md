@@ -152,19 +152,24 @@ A general description under Article 30(1)(g), mapped to the mechanisms that ship
 | No decisions about people | No decision capability ships. A member can ask the assistant to relay a report to the group's moderation bot; the assistant detects nothing, files nothing on its own, and the group's human administrators judge the report (added 2026-08-23; the warn and ban lines stay held out of the system prompt, decision 0046). Changed 2026-08-24: the assistant now files the report on its own assessment of the pinned rules — an assessment the human administrators judge; it still decides nothing about anyone (decision 0070), and each message is reported at most once. No automated decision with legal or similarly significant effect is taken. |
 | Transparency | The group's pinned rules announce the assistant and point at the policy, and the privacy command answers deterministically, without a model turn, at most once per chat per window (decision 0053). |
 | Erasure | The operation described in section 8, with its two recorded gaps. |
-| Storage protection at rest | Deployment configuration. Open, see section 10. |
+| Storage protection at rest | The store and the operator-provided credentials sit on an encrypted volume, unlocked by a passphrase entered at each boot and held nowhere on the machine. Deployment configuration; recorded as in place 2026-08-24. |
 
 ## 10. Open dependencies
 
 Stated here exactly as the impact assessment states them, because this record must not
 claim a measure that is not yet in place:
 
-1. **Storage protection at rest** for the message store. Required by the platform's
-   developer terms and relied on by the breach mitigation in the impact assessment. Must
-   be in place before the assistant enters the main community group.
+1. ~~**Storage protection at rest** for the message store.~~ **Closed 2026-08-24.**
+   Required by the platform's developer terms and relied on by the breach mitigation in
+   the impact assessment. The deployment holds the store on an encrypted volume: `/var`,
+   which carries the message store and the operator-provided credentials, is a LUKS
+   volume whose passphrase is entered at each boot and is never stored on the machine.
 2. **The countersigned processor agreement** with Requesty Ltd, returned and on file. The
-   terms are accepted and the clauses apply, and the signature round-trip is outstanding.
-   Must be complete before the main community group.
+   terms are accepted and the clauses apply; what is outstanding is the signature
+   round-trip, which the controller completes when able. Corrected 2026-08-24: an earlier
+   revision of this entry stated that it must be complete before the main community
+   group. That condition was never set by the controller and did not belong in this
+   record.
 3. **The Approved-Models restriction** under clause 5.5 of the processor agreement, which
    would bind the processor to a named set of models and therefore to their retention and
    training terms. Not configured today. Added 2026-08-23 with the correction that zero

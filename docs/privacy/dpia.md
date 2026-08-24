@@ -460,9 +460,9 @@ retrying into noise.
 
 **R8, compromise.** The provider key lives in memory only and is never stored (0020).
 Secrets are referenced indirectly in configuration, never written into it. Storage
-protection at rest is deployment configuration and is tracked as an open item in
-section 11, because the platform's developer terms require it and this assessment cannot
-claim it while it is unproven.
+protection at rest is deployment configuration; it was tracked as an open item while
+unproven, and is closed as of 2026-08-24 — the store and the credentials sit on a LUKS
+volume whose passphrase is entered at each boot and held nowhere on the machine.
 
 **R9, unexpected groups.** Group admission is a stored authorization written only by an
 invitation from the configured operator; every other contact is refused without touching
@@ -488,7 +488,7 @@ cannot be borrowed by a flooder (0030, 0034).
 | R5 | Low | Bounded surface, no action capability. |
 | R6 | Low to medium | Narrow content, named openly, one framework seam away from closed. |
 | R7 | Low | No sanction capability, bounded volume, stated plainly to readers. Extended 2026-08-23 to the model-produced report relay: a misfire is public, administrator-judged and carries no consequence from the assistant. Extended 2026-08-24 to the autonomous assessment: a false positive is now the model's own misjudgment rather than a misread request, bounded the same way — public, administrator-judged, no consequence from the assistant, each message reported at most once — and by the configured reasoning level the judgment runs at. Section 13 carries the assessment. |
-| R8 | Medium until storage protection at rest is confirmed, then low | The one control this assessment cannot yet call shipped. |
+| R8 | Low | Storage protection at rest was the one control this assessment could not call shipped. Confirmed 2026-08-24: the deployment holds the store and the operator-provided credentials on an encrypted volume, so the rating stands at low rather than conditionally. |
 | R9 | Low | Fail-closed authorization, healed on every later contact. |
 | R10 | Low | Whole-conversation removal on deletion. |
 | R11 | Low | Counters bound answering; silence over refusal notices. |
@@ -530,12 +530,16 @@ introducing a bill repealing § 38(1) BDSG by the end of 2026. That is where the
 going. It is not why this decision was taken, and the decision would read the same without
 it.
 
-1. **Storage protection at rest** for the message store, required by the platform's
-   developer terms and relied on by the R8 mitigation. Deployment configuration, not
-   repository work. Must be in place before the main group.
+1. ~~**Storage protection at rest** for the message store~~ — **closed 2026-08-24**,
+   required by the platform's developer terms and relied on by the R8 mitigation.
+   Deployment configuration, not repository work, and now configured: the store and the
+   operator-provided credentials sit on `/var`, a LUKS volume unlocked by a passphrase
+   entered at each boot and held nowhere on the machine.
 2. **The countersigned processor agreement** with Requesty Ltd returned and on file. The
-   terms are accepted and the clauses apply, and the signature round-trip is outstanding.
-   Must be complete before the main group.
+   terms are accepted and the clauses apply; what is outstanding is the signature
+   round-trip, which the controller completes when able. Corrected 2026-08-24: an earlier
+   revision stated that it must be complete before the main group. That condition was
+   never set by the controller and did not belong in this assessment.
 3. **The Approved-Models restriction** under clause 5.5 of the processor agreement, which
    would bind the processor contractually to a named set of models and therefore to their
    retention and training terms. Not configured today. Added 2026-08-23 together with the
