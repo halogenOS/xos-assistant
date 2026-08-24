@@ -171,11 +171,14 @@ fn is_quiet_failure(error: &str) -> bool {
 pub const DONT_KNOW_ANSWER: &str =
     "I don't know. I looked this up and could not find an answer in the project's sources.";
 
-/// The fixed acknowledgment a rules change draws in the chat — deterministic
-/// product behavior, not a model answer, so the wording cannot drift
-/// (decided 2026-08-23). Every real delta draws one (the operator decided,
-/// 2026-08-23): the on-delta comparison is the whole admission check, and an identical
-/// re-pin draws nothing.
+/// The rules acknowledgment's deterministic fallback (unit 20, 2026-08-24;
+/// the fixed primary of 2026-08-23 until then). A real rules delta is
+/// acknowledged with a bounded one-shot model completion in the
+/// assistant's own voice; when that call fails, times out, or returns
+/// nothing usable, this line delivers instead — so every real delta still
+/// draws a visible acknowledgment, exactly the guarantee the fixed wording
+/// carried. The on-delta comparison stays the whole admission check, and
+/// an identical re-pin draws nothing.
 pub const RULES_ACKNOWLEDGMENT: &str =
     "Rules noted. The assistant follows the pinned rules of this group.";
 

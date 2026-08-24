@@ -7,8 +7,7 @@ use agent_ledger::Role;
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::{
     ChannelKind, DeliveryItem, ErasureOutcome, FAILURE_NOTICE, IngestOutcome, Observation,
-    ObserveOutcome, ObservedFact, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
-    composed_disclosure_line,
+    ObserveOutcome, ObservedFact, PRIVACY_UNPUBLISHED, composed_disclosure_line,
 };
 use serde_json::json;
 
@@ -335,9 +334,11 @@ async fn a_person_returning_after_deletion_gets_the_line_again() {
     );
 }
 
-/// AC3: the deterministic replies carry no disclosure — the privacy
-/// command's fixed answer, the rules acknowledgment, and the failure
-/// notice are texts a person wrote, and each arrives exactly as written
+/// AC3: the replies outside the answer path carry no disclosure — the
+/// privacy command's fixed answer and the failure notice are texts a
+/// person wrote and arrive exactly as written, and the rules
+/// acknowledgment (model-generated since unit 20) rides the observation
+/// return, never the answer edge, so no disclosure fold ever touches it —
 /// even when its recipient was never answered before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deterministic_replies_carry_no_disclosure() {
@@ -371,7 +372,9 @@ async fn deterministic_replies_carry_no_disclosure() {
         "a fixed command answer is never introduced"
     );
 
-    // The rules acknowledgment, exactly the fixed wording.
+    // The rules acknowledgment: the model's own text, delivered with no
+    // disclosure line prepended — it is a service confirmation, not a
+    // member answer, so the first-interaction fold never touches it.
     let outcome = fixture
         .assistant
         .observe(Observation {
@@ -387,7 +390,14 @@ async fn deterministic_replies_carry_no_disclosure() {
     else {
         panic!("a first rules note draws the acknowledgment: {outcome:?}");
     };
-    assert_eq!(acknowledgment, RULES_ACKNOWLEDGMENT);
+    assert_eq!(
+        acknowledgment,
+        support::scripted_acknowledgment("Stay civil.")
+    );
+    assert!(
+        !acknowledgment.contains(support::fixture_disclosure().line()),
+        "the acknowledgment is never introduced"
+    );
 
     // The failure notice, for a person whose first turn failed: no answer
     // exists, no introduction rides the notice.

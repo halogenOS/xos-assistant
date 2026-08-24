@@ -45,10 +45,12 @@ this exact contract:
   whole, never cut short — write shorter rules instead.
 
 When the assistant picks up new or changed rules, it says so in the chat
-with one fixed line: "Rules noted. The assistant follows the pinned rules
-of this group." Every real change is confirmed this way, however quickly
-the changes follow each other; re-pinning the same text says nothing,
-because nothing changed.
+with a short confirmation in its own voice, generated from the new rules
+text. When that generation fails or times out, the deterministic fallback
+line delivers instead: "Rules noted. The assistant follows the pinned
+rules of this group." Every real change is confirmed one way or the other,
+however quickly the changes follow each other; re-pinning the same text
+says nothing, because nothing changed.
 
 ## First setup: post fresh, then pin
 

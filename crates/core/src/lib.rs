@@ -48,6 +48,7 @@
 //!   API key never enters the store.
 
 mod abstention;
+mod acknowledgment;
 mod assembly;
 mod authorization;
 mod composing;
