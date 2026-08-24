@@ -1,10 +1,10 @@
 //! The rules-acknowledgment unit (unit 20) at the core's edges: a real
 //! rules delta runs one bounded one-shot completion with the new rules in
 //! its request and delivers the model's text (AC2); every failure mode —
-//! the failed call, the sentinel, the empty result, the over-cap stream,
-//! the timeout — delivers the deterministic fallback instead, so a real
-//! delta never results in silence (AC3, AC6); the admission is unchanged —
-//! an identical re-pin and a title change run no call (AC4); and none of
+//! the failed call, the empty result, the over-cap stream, the timeout —
+//! delivers the deterministic fallback instead, so a real delta never
+//! results in silence (AC3, AC6); the admission is unchanged — an
+//! identical re-pin and a title change run no call (AC4); and none of
 //! the answer machinery is touched: no turn opens, no message block lands,
 //! and no disclosure line rides the acknowledgment (AC5).
 
@@ -14,8 +14,8 @@ use agent_ledger::providers::{MessageContent, MessageRole, ReasoningLevel};
 use agent_ledger::{ProviderResponse, Store, StreamEvent};
 use assistant_core::schema::store_config;
 use assistant_core::{
-    ABSTENTION_SENTINEL, ChannelKey, ChannelKind, DeliveryItem, MISS_SENTINEL, Observation,
-    ObserveOutcome, ObservedFact, ProtectionConfig, RULES_ACKNOWLEDGMENT,
+    ChannelKey, ChannelKind, DeliveryItem, Observation, ObserveOutcome, ObservedFact,
+    ProtectionConfig, RULES_ACKNOWLEDGMENT,
 };
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -218,33 +218,27 @@ async fn a_failed_call_delivers_the_deterministic_fallback() {
     );
 }
 
-/// AC3's sentinel arm: a completion that is nothing but the abstention or
-/// miss sentinel is machinery vocabulary, never a chat line — the fallback
-/// delivers for both.
+/// AC3's silent arm: a completion the model ends without streaming any
+/// text — the way a turn stays silent since unit 22 — is no chat line;
+/// the deterministic fallback delivers instead, so a real delta never
+/// results in silence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_sentinel_result_delivers_the_deterministic_fallback() {
+async fn a_completion_that_streams_no_text_delivers_the_deterministic_fallback() {
     let fixture = support::start_assistant(None).await;
-    let key = authorized_group(&fixture.assistant, "group-ack-sentinel").await;
+    let key = authorized_group(&fixture.assistant, "group-ack-silent").await;
 
-    // The scripted provider answers the cues with the raw sentinels — the
+    // The scripted provider answers the cue by ending without text — the
     // stand-in for a model that misread the instruction as a turn.
-    for cue in [support::ABSTAIN_CUE, support::MISS_CUE] {
-        let outcome = fixture
-            .assistant
-            .observe(rules_pin(&key, &format!("Rules:\n{cue}")))
-            .await
-            .expect("the cued pin is judged");
-        let acknowledgment = delivered(outcome);
-        assert_eq!(
-            acknowledgment, RULES_ACKNOWLEDGMENT,
-            "a sentinel completion falls back to the fixed line"
-        );
-        assert!(
-            !acknowledgment.contains(ABSTENTION_SENTINEL)
-                && !acknowledgment.contains(MISS_SENTINEL),
-            "no machinery sentinel ever reaches the chat"
-        );
-    }
+    let outcome = fixture
+        .assistant
+        .observe(rules_pin(&key, &format!("Rules:\n{}", support::SILENT_CUE)))
+        .await
+        .expect("the cued pin is judged");
+    assert_eq!(
+        delivered(outcome),
+        RULES_ACKNOWLEDGMENT,
+        "a textless completion falls back to the fixed line"
+    );
 }
 
 /// A provider stub whose every completion streams the given fragments and

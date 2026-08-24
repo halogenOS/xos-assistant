@@ -169,15 +169,16 @@ pub struct OperatorConfig {
 /// 2026-08-23): the embedder's `answering` key. Helpful is the default —
 /// the operator's stated economics: with prompt caching the marginal read
 /// is cheap at the community's traffic, so every group message reaches the
-/// model and the model decides whether to speak, abstaining through the
-/// sentinel. A deployment that wants the quiet shape sets `addressed`.
+/// model and the model decides whether to speak, staying silent by ending
+/// its turn with no text. A deployment that wants the quiet shape sets
+/// `addressed`.
 /// The mode enters the machinery at exactly one place: the entry point's
 /// summons resolution ahead of the write-time stamp — everything past the
 /// stamp reads the stored summons fact and stays mode-free.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AnsweringMode {
     /// Every group message summons a turn; the model decides whether to
-    /// speak and abstains through the sentinel.
+    /// speak and stays silent by ending its turn with no text.
     #[default]
     Helpful,
     /// A group message summons a turn only when it addresses the

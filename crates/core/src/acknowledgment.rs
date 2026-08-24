@@ -4,13 +4,12 @@
 //! never a turn. The observation path is deterministic and synchronous,
 //! so the call here is bounded three ways: a request timeout, an output
 //! cap, and the assembly's configured reasoning level. Whatever the call
-//! does — fail, time out, come back empty, over the cap, or as a
-//! machinery sentinel — the caller receives a deliverable text, because
-//! the retired fixed line stands in as the deterministic fallback: a real
-//! delta always delivers something.
+//! does — fail, time out, come back empty, or over the cap — the caller
+//! receives a deliverable text, because the retired fixed line stands in
+//! as the deterministic fallback: a real delta always delivers something.
 //!
 //! Deliberately NOT the answer machinery: no debt opens, no turn runs, no
-//! disclosure fold, no budget row, no co-summoner chain, no abstention
+//! disclosure fold, no budget row, no co-summoner chain, no empty-answer
 //! swallowing. A rules acknowledgment is a service event, not a member
 //! answer, and the probe behind the unit's spec proved a member-less turn
 //! breaks every one of those mechanisms. What is borrowed instead is the
@@ -27,7 +26,6 @@ use agent_ledger::providers::{
 };
 use agent_ledger::{ProviderRegistry, StoreError};
 
-use crate::abstention;
 use crate::assembly::ModelBinding;
 use crate::outbound::RULES_ACKNOWLEDGMENT;
 
@@ -126,9 +124,6 @@ async fn generated(
     if text.is_empty() {
         return Err(GenerationFailure::Empty);
     }
-    if abstention::is_abstention(text) || abstention::is_miss(text) {
-        return Err(GenerationFailure::Sentinel);
-    }
     Ok(text.to_owned())
 }
 
@@ -220,9 +215,6 @@ enum GenerationFailure {
     TimedOut,
     /// The completion finished with nothing but whitespace.
     Empty,
-    /// The whole result was an abstention or miss sentinel — machinery
-    /// vocabulary, never a chat line.
-    Sentinel,
 }
 
 impl fmt::Display for GenerationFailure {
@@ -244,7 +236,6 @@ impl fmt::Display for GenerationFailure {
                 GENERATION_TIMEOUT.as_secs()
             ),
             Self::Empty => write!(f, "the completion was empty or whitespace"),
-            Self::Sentinel => write!(f, "the completion was a machinery sentinel"),
         }
     }
 }

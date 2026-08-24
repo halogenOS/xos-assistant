@@ -80,13 +80,26 @@ Grounded by a cold probe of both repos; the file:line receipts below are its.
   back with a lookup" (`teaching.rs:112-114`) — the new rule completes it, does not contradict it.
 - **The typing cue lights on real text only, 2026-08-24.** The composing edge (`composing.rs`)
   adds a `CoreEvent::StreamStatus` arm: when `label == RESPONDING` it begins the cue for that
-  conversation; it clears on `ConversationState work_due→false` (turn end) as today. The cue no
-  longer lights during the pre-text thinking window or for a turn that says nothing (no
+  conversation; it clears on the stream terminal set — `StreamDone | StreamError | StreamClosed`.
+  The cue no longer lights during the pre-text thinking window or for a turn that says nothing (no
   `responding` → no cue) — the operator's complaint (msg 590) resolved. The cue stays keyed per
   conversation, and the existing 5-minute lost-stop lifetime deadline (`composing.rs:104-124`)
   bounds any missed clear. *Rejected:* deriving the begin from `ConversationState` alone (it
   cannot tell thinking from real text — the whole reason `responding` exists); a wall-clock grace
-  delay (operator rejected it). **Turn-id keying: pending the operator's decision (asked
+  delay (operator rejected it).
+  **AMENDED 2026-08-24, after implementation (orchestrator disposition).** This decision first
+  said the cue clears on `ConversationState work_due→false`. That premise was FALSE and the
+  implementer verified it against the tree, reproducing the failure live before building to the
+  true state. Grounded: `work_due = outcome.owes_turn || outcome.parked` (framework
+  `actor.rs:1358`), and `owes_turn` is a fact about the frontier BLOCK. A `Streaming` block takes
+  the default `awaiting() → None` and is not frontier-transparent (`agency/records.rs:82-96`), so
+  the instant it is inserted — lazily at the FIRST TEXT DELTA, which is exactly when `responding`
+  fires — the frontier stops owing a turn and `work_due` drops to false. Clearing on that edge
+  would stop the cue the moment it lit (a visible flash, reproduced in the adapter tests). The
+  stream terminal set is the framework's real turn-end vocabulary here and is what the existing
+  stream observer and the outbound edge already key on. Consequence, accepted: a tool-bearing turn
+  raises one begin/stop pair per text-bearing stream — correct behaviour, since each pair marks
+  real text actually flowing. **Turn-id keying: pending the operator's decision (asked
   2026-08-24).** The persisted-in-DB turn id already exists as the framework's `dispatch_anchor`;
   the grounded finding is the cue does not need to key on it (per-conversation state + the
   deadline already prevent cross-turn leak, a conversation being serial). If the operator wants
@@ -124,10 +137,11 @@ dependency.
 - **AC6** The teaching no longer contains any sentinel vocabulary and instructs end-empty /
   say-"I don't know"-plainly / model's-own-judgment; the unit-16 lookup-backed sentence is
   retained verbatim — pinned (prompt-composition tests rewritten off the sentinels).
-- **AC7** The typing cue lights on `responding` and clears at turn end: a turn that produces real
-  text raises the cue once text starts (not during pre-text thinking) and stops it at turn end;
-  a turn that says nothing raises NO cue; a clarifying-question reply (real text) raises the cue —
-  pinned. Unit-18 composing pins rewritten to the `responding`-begin derivation.
+- **AC7** The typing cue lights on `responding` and clears on the stream terminal (amended
+  2026-08-24, see the decision): a turn that produces real text raises the cue once text starts
+  (not during pre-text thinking) and stops it at the stream's end; a turn that says nothing raises
+  NO cue; a clarifying-question reply (real text) raises the cue — pinned. Unit-18 composing pins
+  rewritten to the `responding`-begin derivation.
 
 ## Notes for launch
 

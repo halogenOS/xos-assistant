@@ -16,7 +16,7 @@
 //! `direct_chats` (the configuration switch refusing direct channels
 //! before any write), disclosure (the first-interaction line and the
 //! deterministic replies' exemption),
-//! helpful (the answering mode's summons, the abstention sentinel and the
+//! helpful (the answering mode's summons, the silent empty turn and the
 //! unspent window),
 //! projection (role alternation under erasure), speaker (the username
 //! projection), erasure with its stream
@@ -25,9 +25,9 @@
 //! the turn's provenance), `privacy_rights` (the suppression drop, the
 //! self-service commands, the spawned deletion and the privacy tool),
 //! `mirror` (the deletion mirror riding the moderation bot's reply
-//! command), sourcing (the grounded-answer discipline: the literal
-//! addressed fact beside the summons, and the miss sentinel's routing to
-//! silence or the fixed don't-know line), and — behind the openrouter
+//! command), sourcing (the lookup-backed answer discipline: the literal
+//! addressed fact beside the summons, the silent empty turn and the
+//! model's own spoken don't-know), and — behind the openrouter
 //! feature — the real `OpenRouter` module against a loopback server.
 
 mod acknowledgment;

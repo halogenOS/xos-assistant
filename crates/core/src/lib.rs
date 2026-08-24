@@ -47,7 +47,6 @@
 //!   `OpenRouter` module wrapped around an in-memory configuration, so the
 //!   API key never enters the store.
 
-mod abstention;
 mod acknowledgment;
 mod assembly;
 mod authorization;
@@ -71,7 +70,6 @@ mod teaching;
 pub mod tools;
 mod window;
 
-pub use abstention::{ABSTENTION_SENTINEL, MISS_SENTINEL, is_abstention, is_miss};
 pub use assembly::{
     AnsweringMode, AssemblyConfig, Assistant, Budget, DirectChats, ModelBinding, OperatorConfig,
     ProtectionConfig, ScriptedPause,
@@ -89,8 +87,7 @@ pub use message::{
     ObservedFact, OutboundReply, ReplyKind, ReplyTarget, SenderIdentity,
 };
 pub use outbound::{
-    DONT_KNOW_ANSWER, FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED,
-    RULES_ACKNOWLEDGMENT,
+    FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
 };
 pub use teaching::{MODERATION_TEACHING, composed_system_prompt, moderation_taught};
 pub use window::{ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW};

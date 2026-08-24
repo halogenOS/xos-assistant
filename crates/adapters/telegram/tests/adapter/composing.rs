@@ -4,10 +4,11 @@
 //! failed and quiet-failed endings alike — a deterministic reply shows
 //! none, and a failing action send leaves the answer's delivery untouched.
 //!
-//! The determinism fixture is the provider's turn hold: while a turn is
-//! held, its answer provably has not reached the wire, so a typing action
-//! recorded during the hold came before the answer — no scheduling race is
-//! being bet on.
+//! The determinism fixture is the provider's turn hold: a held turn has
+//! streamed its opening text — which raises the core's typing cue, keyed
+//! on the first real text delta — but has not completed, so its answer
+//! provably has not reached the wire and a typing action recorded during
+//! the hold came before the answer. No scheduling race is being bet on.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -51,8 +52,9 @@ async fn a_model_turn_shows_typing_before_the_answer_and_none_after() {
     let (sleep, _) = recording_sleep();
     let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
 
-    // The typing action arrives while the turn is held — before any answer
-    // can exist — aimed at the summoning chat with the platform's action.
+    // The typing action arrives while the turn is held — its text is
+    // streaming but nothing has completed, so no answer can have been
+    // sent — aimed at the summoning chat with the platform's action.
     let actions = server.await_recorded("sendChatAction", 1).await;
     assert_eq!(actions[0].body["chat_id"], json!(chat));
     assert_eq!(actions[0].body["action"], json!("typing"));

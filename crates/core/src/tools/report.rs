@@ -15,7 +15,7 @@
 //! principal id and the fixed report line; the consumer's outbound edge
 //! delivers the line threaded onto the reported message, on the turn's
 //! completion and on its failure alike, independent of whether the turn's
-//! answer is spoken or abstained. The block projects nothing: the filed
+//! answer is spoken or empty. The block projects nothing: the filed
 //! report is machinery, and the model's knowledge of it is the tool
 //! result. The report is an assessment only — the moderation bot's human
 //! administrators decide (decision 0070); the assistant takes no action.
