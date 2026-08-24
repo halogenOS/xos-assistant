@@ -18,7 +18,7 @@ use assistant_core::schema::store_config;
 use assistant_core::{
     ACKNOWLEDGMENT_WINDOW, Assistant, Authority, ChannelKey, ChannelKind, CoreError, DeliveryItem,
     FailureKind, IngestOutcome, Observation, ObserveOutcome, ObservedFact, OperatorConfig,
-    PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
+    PRIVACY_UNPUBLISHED,
 };
 use serde_json::json;
 
@@ -439,12 +439,14 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
 // ─── AC2: notes on the ledger, the acknowledgment, the projection ────────
 
 /// The whole rules flow at the core edge: a rules-prefixed announcement
-/// appends one note and returns its acknowledgment; the same text
-/// re-observed appends and acknowledges nothing; a changed text appends
-/// and acknowledges again immediately — the on-delta comparison is the
-/// only admission check (the operator decided, 2026-08-23), there is no rate window on the
-/// rules path — and the next turn projects the notes to the model in the
-/// system voice, newest wording authoritative.
+/// appends one note and returns its acknowledgment — since unit 20 the
+/// scripted model completion's text, derived from the new rules the
+/// request carried; the same text re-observed appends and acknowledges
+/// nothing; a changed text appends and acknowledges again immediately —
+/// the on-delta comparison is the only admission check (the operator
+/// decided, 2026-08-23), there is no rate window on the rules path — and
+/// the next turn projects the notes to the model in the system voice,
+/// newest wording authoritative.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rules_change_appends_on_delta_acknowledges_each_delta_and_projects_in_the_system_voice()
 {
@@ -469,10 +471,10 @@ async fn a_rules_change_appends_on_delta_acknowledges_each_delta_and_projects_in
         first,
         ObserveOutcome::Observed {
             deliver: Some(DeliveryItem::Acknowledgment(
-                RULES_ACKNOWLEDGMENT.to_owned()
+                support::scripted_acknowledgment("1. Be kind.")
             ))
         },
-        "a fresh rules note carries the fixed acknowledgment, typed"
+        "a fresh rules note carries the model-generated acknowledgment, typed"
     );
 
     let unchanged = fixture
@@ -501,7 +503,7 @@ async fn a_rules_change_appends_on_delta_acknowledges_each_delta_and_projects_in
         changed,
         ObserveOutcome::Observed {
             deliver: Some(DeliveryItem::Acknowledgment(
-                RULES_ACKNOWLEDGMENT.to_owned()
+                support::scripted_acknowledgment("1. Be kind.\n2. Stay on topic.")
             ))
         },
         "a further real delta acknowledges again, whatever the interval"
@@ -1286,7 +1288,7 @@ async fn a_transient_note_append_failure_lands_nothing_and_the_redelivery_lands_
         outcome,
         ObserveOutcome::Observed {
             deliver: Some(DeliveryItem::Acknowledgment(
-                RULES_ACKNOWLEDGMENT.to_owned()
+                support::scripted_acknowledgment("Be kind.")
             ))
         },
         "the redelivered note lands with its acknowledgment"
@@ -1309,10 +1311,10 @@ async fn every_real_change_in_a_pin_burst_appends_and_acknowledges() {
     authorize(&fixture.assistant, &key).await;
 
     for toggle in 0..6 {
-        let text = if toggle % 2 == 0 {
-            "Rules:\nThe first pin."
+        let (text, rules) = if toggle % 2 == 0 {
+            ("Rules:\nThe first pin.", "The first pin.")
         } else {
-            "Rules:\nThe second pin."
+            ("Rules:\nThe second pin.", "The second pin.")
         };
         let outcome = fixture
             .assistant
@@ -1326,7 +1328,7 @@ async fn every_real_change_in_a_pin_burst_appends_and_acknowledges() {
             outcome,
             ObserveOutcome::Observed {
                 deliver: Some(DeliveryItem::Acknowledgment(
-                    RULES_ACKNOWLEDGMENT.to_owned()
+                    support::scripted_acknowledgment(rules)
                 ))
             },
             "every real change in the burst acknowledges"

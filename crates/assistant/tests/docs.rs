@@ -23,7 +23,12 @@
 //! autonomous-moderation unit's AC7 pins: the policy's assessment
 //! sentence, the DPIA's purpose and false-positive residual, the
 //! compliance page's Article-22 note, and the unit's four decision
-//! records with the removed member report among them.
+//! records with the removed member report among them — and the
+//! rules-acknowledgment unit's AC7 pins: the operator contract's
+//! generated-with-fallback wording, the 0051 refinement, the two
+//! no-disclosure records (decision 0079 and unit 12) that no longer group the
+//! now-model-generated acknowledgment among human-written fixed lines, and the
+//! unit's two decision records.
 //! Each pin reads the
 //! committed file the way the repository ships it, so a drifted edit fails
 //! loudly here.
@@ -958,5 +963,88 @@ fn the_autonomous_moderation_units_decisions_are_recorded() {
              message in clear violation"
         ),
         "the report record's row carries its dated change"
+    );
+}
+
+/// The rules-acknowledgment unit's AC7 pins: no shipped document still
+/// names the fixed acknowledgment as the line a rules change draws — the
+/// operator contract teaches the model-generated confirmation with the
+/// fixed line as its fallback, decision 0051 carries the dated refinement,
+/// and the unit's two decision records exist with their dates and rejected
+/// alternatives.
+#[test]
+fn the_rules_acknowledgment_units_docs_teach_the_generated_line_with_its_fallback() {
+    let contract = flattened(&repo_file("docs/reference/group-operator-contract.md"));
+    assert!(
+        contract.contains("a short confirmation in its own voice, generated from the new rules"),
+        "the operator contract teaches the generated acknowledgment"
+    );
+    assert!(
+        contract.contains(
+            "the deterministic fallback line delivers instead: \"Rules noted. \
+             The assistant follows the pinned rules of this group.\""
+        ),
+        "the operator contract keeps the fixed line as the fallback, verbatim"
+    );
+    assert!(
+        !contract.contains("with one fixed line"),
+        "the contract no longer claims the fixed line as the primary"
+    );
+
+    let origin = flattened(&repo_file(
+        "docs/decisions/0051-a-rules-change-is-acknowledged-with-fixed-wording.md",
+    ));
+    assert!(
+        origin.contains("Refined 2026-08-24, with the rules-acknowledgment unit"),
+        "decision 0051 carries the dated refinement toward the generated line"
+    );
+
+    // The no-disclosure records that grouped the acknowledgment among
+    // human-written fixed lines are corrected: it is model output since unit
+    // 20, and its no-disclosure property now rests on the structural reason
+    // (it rides the observation return, never the answer edge), not on a
+    // human having written it.
+    let stored = flattened(&repo_file(
+        "docs/decisions/0079-the-disclosure-line-is-stored-into-the-answer-block.md",
+    ));
+    assert!(
+        stored.contains("Refined 2026-08-24, with the rules-acknowledgment unit")
+            && stored.contains("rides the observation return, never the answer edge"),
+        "decision 0079 corrects the acknowledgment's grouping with the structural reason"
+    );
+    let disclosure_unit = flattened(&repo_file("docs/units/12-first-interaction-disclosure.md"));
+    assert!(
+        disclosure_unit.contains("Refined 2026-08-24, unit 20")
+            && disclosure_unit.contains("rides the observation return, never the answer edge"),
+        "unit 12 no longer groups the acknowledgment among human-written fixed lines"
+    );
+
+    for record in [
+        "docs/decisions/0104-the-rules-acknowledgment-is-a-bounded-one-shot-completion.md",
+        "docs/decisions/0105-the-fixed-line-is-the-acknowledgments-fallback.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-24"),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+    let generation = flattened(&repo_file(
+        "docs/decisions/0104-the-rules-acknowledgment-is-a-bounded-one-shot-completion.md",
+    ));
+    assert!(
+        generation.contains("a request timeout, an output cap"),
+        "the generation record names its bounds"
+    );
+    let fallback = flattened(&repo_file(
+        "docs/decisions/0105-the-fixed-line-is-the-acknowledgments-fallback.md",
+    ));
+    assert!(
+        fallback.contains("ALWAYS draws a visible acknowledgment"),
+        "the fallback record states the delivery guarantee"
     );
 }

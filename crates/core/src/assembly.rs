@@ -23,6 +23,7 @@ use agent_ledger::{
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 
+use crate::acknowledgment;
 use crate::composing;
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
@@ -32,7 +33,6 @@ use crate::message::{
     IngestOutcome, IngestReceipt, Observation, ObserveOutcome, ObservedFact, OutboundReply,
 };
 use crate::note::{self, ContextNote, NoteTopic};
-use crate::outbound::RULES_ACKNOWLEDGMENT;
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::streams::StreamObserver;
 use crate::tools::report::{self, ReportTool};
@@ -280,6 +280,10 @@ pub struct Assistant {
     /// How group messages summon a turn. Read-only after start; consulted
     /// at exactly one place, the ingest entry point's summons resolution.
     answering: AnsweringMode,
+    /// The assistant's resolved name, kept past the prompt and disclosure
+    /// compositions because the rules acknowledgment's one-shot instruction
+    /// speaks in it (unit 20). Read-only after start.
+    name: String,
     /// The resolved first-interaction disclosure, handed to every outbound
     /// edge. Read-only after start.
     disclosure: Arc<crate::disclosure::Disclosure>,
@@ -480,6 +484,7 @@ impl Assistant {
             reasoning,
             system_prompt,
             answering,
+            name,
             disclosure,
             palette,
             streams,
@@ -798,8 +803,11 @@ impl Assistant {
     /// lock, so two equal racing observations append one note; an
     /// authorized, unmapped group channel takes the same winner-only
     /// creation path a first message does, system prompt and palette
-    /// included. Every appended rules note carries the fixed acknowledgment
-    /// back to the adapter; a title note is never acknowledged.
+    /// included. Every appended rules note carries an acknowledgment back
+    /// to the adapter — since unit 20 the bounded one-shot generation's
+    /// in-voice text, with the fixed line as the deterministic fallback, so
+    /// the delivery guarantee is unchanged; a title note is never
+    /// acknowledged.
     ///
     /// A direct-channel observation observes nothing: group facts belong to
     /// groups, and the direct path is untouched by this unit.
@@ -811,7 +819,10 @@ impl Assistant {
     /// [`CoreError::ClaimLost`] if a first-contact claim lost its mapping
     /// row mid-claim. [`CoreError::Store`] if a read or the append fails.
     pub async fn observe(&self, observation: Observation) -> Result<ObserveOutcome, CoreError> {
-        let _no_erasure_mid_observation = self.erasure_fence.read().await;
+        // Named without an underscore because the rules path below releases
+        // it explicitly ahead of the acknowledgment generation; every other
+        // path holds it to its return.
+        let no_erasure_mid_observation = self.erasure_fence.read().await;
         let tx = self.ctx.store().tx();
 
         if let Some((_, stored_kind)) = mapping::find(&tx, &observation.channel).await?
@@ -853,7 +864,7 @@ impl Assistant {
                 // and both append. Mapping resolution sits inside the lock
                 // for the same reason — the loser of a creation race must
                 // see the winner's note, not its own empty conversation.
-                let _one_stamp_at_a_time = self.stamp_lock.lock().await;
+                let one_stamp_at_a_time = self.stamp_lock.lock().await;
                 let conversation_id = match mapping::find(&tx, &observation.channel).await? {
                     Some((existing, _)) => existing,
                     None => {
@@ -883,15 +894,29 @@ impl Assistant {
                         None,
                     )
                     .await?;
+                // The stamp lock covers exactly the read-then-append window
+                // above; the acknowledgment generation below is a bounded
+                // model call, and holding the one ingestion lock across it
+                // would stall every conversation for the call's whole bound.
+                drop(one_stamp_at_a_time);
+                // The erasure fence releases with the lock: the note stands,
+                // and the generation reads no personal data — holding the
+                // fence would only queue an erasure (and, behind it, every
+                // ingestion) on a model's latency.
+                drop(no_erasure_mid_observation);
                 // Every real rules delta is acknowledged (the operator decided,
                 // 2026-08-23): pinning is an administrator-only right, so
                 // no non-admin can trigger this line, and a rate window
                 // here would only silence legitimate rules edits. The
                 // on-delta comparison above is the whole admission check — an
-                // identical re-pin appends nothing and says nothing.
+                // identical re-pin appends nothing, says nothing, and calls
+                // nothing. Since unit 20 the acknowledgment's text is the
+                // bounded one-shot generation's, with the fixed line as the
+                // deterministic fallback — the acknowledgment module states
+                // the bounds and the guarantee.
                 let deliver = match topic {
                     NoteTopic::Rules => Some(DeliveryItem::Acknowledgment(
-                        RULES_ACKNOWLEDGMENT.to_owned(),
+                        self.rules_acknowledgment(conversation_id, &text).await,
                     )),
                     NoteTopic::Title => None,
                 };
@@ -1138,6 +1163,24 @@ impl Assistant {
         )
         .await?
         .is_some_and(|standing| standing.opted_out))
+    }
+
+    /// The rules acknowledgment's text (unit 20): the bounded one-shot
+    /// generation against the assembly's own binding and configured
+    /// reasoning level, or the deterministic fallback — the acknowledgment
+    /// module owns the bounds, the usability judgment and the guarantee.
+    /// Called outside the stamp lock and the erasure fence on purpose: a
+    /// model call holds no ingestion resource.
+    async fn rules_acknowledgment(&self, conversation_id: i64, rules_text: &str) -> String {
+        acknowledgment::rules_acknowledgment(
+            self.ctx.providers(),
+            &self.binding,
+            self.reasoning,
+            &self.name,
+            conversation_id,
+            rules_text,
+        )
+        .await
     }
 
     /// The admitted notice's channel-windowed answer: the fixed policy

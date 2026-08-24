@@ -367,10 +367,15 @@ async fn a_violating_message_is_assessed_and_the_edge_threads_the_report_before_
     assert_eq!(field(&blocks[6], "content"), report::FILED_RESULT);
 
     // The request the model assessed on: the rules note and the offending
-    // message's bracketed id both reached it.
+    // message's bracketed id both reached it. Found by the id it carries —
+    // the rules pin's own acknowledgment completion (unit 20) is recorded
+    // in the same log, so arrival order no longer names the opening turn.
     {
         let requests = fixture.script.seen.lock().unwrap();
-        let opening = requests.first().expect("the opening request was seen");
+        let opening = requests
+            .iter()
+            .find(|request| request.iter().any(|m| carries(m, "[origin-spam-1]")))
+            .expect("the opening request was seen");
         assert!(
             opening
                 .iter()

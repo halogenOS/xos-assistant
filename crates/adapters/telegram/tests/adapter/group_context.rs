@@ -73,8 +73,8 @@ async fn an_operator_add_over_the_wire_admits_the_group() {
     let sends = server.await_recorded("sendMessage", 2).await;
     assert_eq!(
         sends[0].body["text"],
-        json!(assistant_core::RULES_ACKNOWLEDGMENT),
-        "the lookup's rules pickup drew the single acknowledgment"
+        json!(support::answer_to("Be kind.")),
+        "the lookup's rules pickup drew the single model-generated acknowledgment"
     );
     assert_eq!(sends[0].body["chat_id"], json!(chat));
     assert_eq!(sends[1].body["chat_id"], json!(chat));
@@ -479,7 +479,8 @@ async fn a_pin_event_outranks_the_lookups_stale_pin() {
     assert_eq!(sends.len(), 1, "one acknowledgment, for the fresh text");
     assert_eq!(
         sends[0].body["text"],
-        json!(assistant_core::RULES_ACKNOWLEDGMENT)
+        json!(support::answer_to("The fresh rules.")),
+        "the acknowledgment was generated from the fresh text"
     );
 
     let conversation = await_conversations(&fixture.store, 1).await[0];
@@ -538,11 +539,15 @@ async fn a_rules_pin_appends_on_delta_and_acknowledges_each_delta_over_the_wire(
         2,
         "one acknowledgment per real delta; the identical re-pin drew none"
     );
-    for send in &sends {
+    for (send, rules) in sends
+        .iter()
+        .zip(["1. Be kind.", "1. Be kind.\n2. Stay on topic."])
+    {
         assert_eq!(send.body["chat_id"], json!(chat));
         assert_eq!(
             send.body["text"],
-            json!(assistant_core::RULES_ACKNOWLEDGMENT)
+            json!(support::answer_to(rules)),
+            "each delta's acknowledgment was generated from its own text"
         );
     }
 

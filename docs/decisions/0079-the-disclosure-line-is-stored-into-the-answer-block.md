@@ -30,6 +30,15 @@ acknowledgment, the report line, the failure notice — carry no disclosure:
 they are fixed lines a human operator wrote, not model output, and
 burdening a rights reply with it would blur what the line marks.
 
+Refined 2026-08-24, with the rules-acknowledgment unit (unit 20). The rules
+acknowledgment is no longer one of these fixed lines: its words are now a
+bounded one-shot model completion (decision 0104), with the operator's fixed
+line kept only as the deterministic fallback (decision 0105). It still carries
+no disclosure, but for a structural reason, not the human-wrote-it one — the
+acknowledgment rides the observation return, never the answer edge, so the
+disclosure fold never touches it. The other three replies remain human-written
+fixed lines the original reason still describes.
+
 ## Rejected alternatives
 
 - **The earlier draft copy with a fallibility clause.** The operator's

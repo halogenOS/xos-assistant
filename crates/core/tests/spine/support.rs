@@ -136,6 +136,16 @@ pub fn first_answer_to(text: &str) -> String {
     disclosed(&answer_to(text))
 }
 
+/// The acknowledgment a real rules delta delivers under the scripted
+/// provider (unit 20): the one-shot request carries the new rules text
+/// verbatim as its newest message, so the script's derived answer proves
+/// both halves at once — the rules reached the request, and the model's
+/// output is what the chat receives.
+#[must_use]
+pub fn scripted_acknowledgment(rules_text: &str) -> String {
+    answer_to(rules_text)
+}
+
 /// A file path for one test's store, deleted with its sidecar files when this
 /// value drops, so parallel tests never share a database and no run leaves
 /// litter.

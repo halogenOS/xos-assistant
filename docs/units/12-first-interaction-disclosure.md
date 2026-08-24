@@ -30,7 +30,11 @@ carries a one-line disclosure, which is also good hosting.
   young reader understands, per the guidelines' accessibility note. The
   deterministic replies (privacy commands, acknowledgments) carry no
   disclosure: they are fixed lines a human operator wrote, not model output,
-  and burdening a rights reply with it would blur what it marks. Rejected:
+  and burdening a rights reply with it would blur what it marks. (Refined
+  2026-08-24, unit 20: the rules acknowledgment is now model output — a
+  bounded one-shot completion with the fixed line as its fallback — and still
+  carries no disclosure because it rides the observation return, never the
+  answer edge, not because a human wrote it.) Rejected:
   legalese; a disclosure on deterministic lines (nothing machine-generated to
   mark).
 - **The model answers the question honestly, 2026-08-23.** The prompt gains

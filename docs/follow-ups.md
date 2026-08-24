@@ -94,3 +94,16 @@ what resolving it takes. Resolved items move into a decision record.
   trim/refuse-empty logic of resolve_wiki_endpoint, with a parallel start-error
   variant. Correct but duplicated; closing it means one shared resolver
   parameterized by the endpoint name.
+
+- **Unit 20 (rules-ack) close, 2026-08-24 — the one-shot acknowledgment call
+  blocks the observation path.** The rules-delta observe path awaits the bounded
+  model completion inline (up to the 10s timeout), so a rules change delays that
+  update's batch processing until the ack returns or falls back. Bounded and on a
+  rare admin-only path (a pin), so accepted; if rules-change responsiveness ever
+  matters, spawn the generation and deliver the ack via a background task rather
+  than the ObserveOutcome return value.
+- **Unit 20 close, 2026-08-24 — the pinned rules text rides the model request
+  undelimited.** The (admin-controlled) rules text is the user message with no
+  wrapping. Admin-only and the ack is a trivial confirmation, so low risk; a
+  fenced/delimited wrapping would harden it against a crafted rules pin if ever
+  wanted.

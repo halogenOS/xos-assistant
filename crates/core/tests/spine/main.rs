@@ -4,6 +4,8 @@
 //! One test binary on purpose: the scripted provider, the assembly helpers
 //! and the ledger-polling helpers are shared by every module here, and a
 //! single compilation keeps them all exercised. The modules split by concern:
+//! acknowledgment (the rules acknowledgment's bounded one-shot generation
+//! and its deterministic fallback),
 //! assembly (the wiring contract), storage (the composed kind and the durable
 //! registry), addressing (the answer-due stamp, the notice, re-engagement),
 //! protection (the budgets, the limited stamp, the debt authority),
@@ -26,6 +28,7 @@
 //! silence or the fixed don't-know line), and — behind the openrouter
 //! feature — the real `OpenRouter` module against a loopback server.
 
+mod acknowledgment;
 mod addressing;
 mod assembly;
 mod direct_chats;
