@@ -343,9 +343,11 @@ pub enum ReplyKind {
 ///
 /// A live presence cue, not a delivery: it exists only while the process
 /// runs, is never stored, and owes nothing across a restart. The core
-/// derives it from the turn lifecycle — composing from the moment a turn is
-/// owed and being worked, stopped on the turn's completion or failure — so
-/// a deterministic reply, which takes no turn, never composes.
+/// derives it from the turn lifecycle; the authoritative statement of when
+/// the cue is on lives on the composing edge (`crate::composing`) — in
+/// short, on while the model is composing (its thinking and its streaming),
+/// and off during a tool call and a human wait, so a deterministic reply,
+/// which takes no turn, never composes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposingState {
     /// The assistant is composing an answer on the channel.
