@@ -39,8 +39,7 @@ use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
 use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
 use crate::window::{
-    ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, REPORT_WINDOW,
-    ReplyWindow,
+    ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, ReplyWindow,
 };
 use crate::{authorization, identity, mapping, mirror, outbound, privacy, streams};
 
@@ -252,10 +251,15 @@ pub struct AssemblyConfig {
     pub privacy_policy_address: Option<String>,
     /// The moderation bot's handle, already trimmed with its leading `@`
     /// stripped by the configuration layer, which also refuses an empty
-    /// one. Present, the assembly registers the report tool against it;
-    /// absent, the report tool does not register and the palette-delta
-    /// mechanism removes it from conversations that had it. One global
-    /// handle: one deployment serves one community (decided 2026-08-23).
+    /// one. Present UNDER HELPFUL ANSWERING, the assembly registers the
+    /// report tool against it and the composed prompt teaches the
+    /// autonomous assessment (unit 15, 2026-08-24; the shared predicate is
+    /// [`crate::teaching::moderation_taught`]); absent, or under addressed
+    /// answering, the report tool does not register — only helpful mode
+    /// shows the model every message it would judge — and the
+    /// palette-delta mechanism removes it from conversations that had it.
+    /// One global handle: one deployment serves one community (decided
+    /// 2026-08-23).
     pub moderation_handle: Option<String>,
 }
 
@@ -394,10 +398,15 @@ impl Assistant {
             moderation_handle,
         } = config;
         // The two configured-value compositions, resolved once: the prompt
-        // every new conversation records, and the disclosure every outbound
-        // edge introduces with.
-        let system_prompt =
-            crate::teaching::composed_system_prompt(&system_prompt, &name, answering);
+        // every new conversation records — the moderation teaching riding
+        // it exactly when the tool below registers — and the disclosure
+        // every outbound edge introduces with.
+        let system_prompt = crate::teaching::composed_system_prompt(
+            &system_prompt,
+            &name,
+            answering,
+            moderation_handle.is_some(),
+        );
         let disclosure = Arc::new(crate::disclosure::Disclosure::resolve(
             disclosure.as_deref(),
             &name,
@@ -416,20 +425,20 @@ impl Assistant {
         let privacy_replies = Arc::new(ReplyWindow::new(PRIVACY_REPLY_WINDOW, PRIVACY_REPLY_CAP));
         let pending_deletions = Arc::new(PendingDeletions::new());
         // The report tool joins the set here, where the tool set's assembly
-        // finishes: its filing window is constructed at this registration
-        // and the erasure fence is injected beside it, so the tool never
-        // reaches into the assembly. No handle, no registration — and the
-        // palette derived below then names no report tool, which is what
-        // the delta mechanism removes from conversations that had it.
+        // finishes: the erasure fence is injected at this registration, so
+        // the tool never reaches into the assembly. Registration takes the
+        // same predicate the prompt composition took above — a handle AND
+        // helpful answering (unit 15): without both, the tool is absent,
+        // the palette derived below names no report tool, and the delta
+        // mechanism removes it from conversations that had it — so the
+        // prompt never teaches a tool the palette does not carry.
         let mut tools = tools;
-        if let Some(handle) = moderation_handle {
+        if let Some(handle) = moderation_handle
+            && crate::teaching::moderation_taught(true, answering)
+        {
             tools.admit(
                 report::REQUIRED_AUTHORITY,
-                ReportTool::new(
-                    handle,
-                    LineWindow::new(REPORT_WINDOW),
-                    Arc::clone(&erasure_fence),
-                ),
+                ReportTool::new(handle, Arc::clone(&erasure_fence)),
             );
         }
         // The privacy tool joins unconditionally (decided 2026-08-23): the

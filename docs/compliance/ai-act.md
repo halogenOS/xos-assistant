@@ -42,6 +42,20 @@ as an AI system.
   a human judges (the assistant-assesses-a-human-decides rule); the
   impact assessment's review trigger reopens this classification if a
   real moderation capability ever ships.
+
+  Amended 2026-08-24: that standing-capability trigger fired — the assessment is
+  now the assistant's own. It judges each group message against the group's pinned
+  rules and reports a clear violation to the group's moderation bot; the earlier
+  member-initiated report is removed. The classification stands, for the reason the
+  rule states: the capability's whole output is a report to the group's human
+  administrators, who decide — it is not an automated decision producing legal or
+  similarly significant effects on the member (the GDPR Article 22 analysis in the
+  privacy documents reaches the same conclusion for the same reason), and no Annex III
+  category is touched. What the system stores is the report itself — the reported
+  message's identifier and its sender's internal identifier with the fixed command
+  line; no reasoning trace is kept, and this record claims no audit trail beyond
+  what is stored. The impact assessment's addendum of the same date carries the
+  false-positive residual.
 - **Article 50 (transparency): applies**, and is what the rest of this
   page discharges.
 

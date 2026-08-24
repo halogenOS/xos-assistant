@@ -1,28 +1,33 @@
-//! The report at the core's edges (AC4–AC7): the filing over the
-//! tool-scripted provider, the origin-walk target resolution with its
-//! refusals, the atomic report window, the delivery contract on both
-//! stream events, erasure's reach, and the palette supersession that
-//! carries the new tools into existing conversations.
+//! The autonomous moderation report at the core's edges (unit 15, AC2–AC7):
+//! the model assesses a violating group message and files through the tool
+//! naming that message's projected id, the named origin validates against
+//! the turn's co-summoner set, per-origin dedup bounds the re-summon path,
+//! the guards decline with their pinned copy, the threaded delivery holds
+//! on completion and failure alike, erasure reaches the block, and the
+//! registration gates on the handle plus helpful answering.
 
 use std::sync::Arc;
 
 use agent_ledger::{
     Block, CoreEvent, ProviderModule, ProviderRequest, ProviderResponse, Store, StreamEvent,
 };
+use assistant_core::kind::CHAT_MESSAGE_KIND;
+use assistant_core::note::RULES_NOTE_LEAD;
 use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::report::{self};
 use assistant_core::{
-    ChannelKind, CoreError, ErasureOutcome, FAILURE_NOTICE, ProtectionConfig, ReplyKind,
-    ReplyTarget,
+    ABSTENTION_SENTINEL, AnsweringMode, ChannelKind, CoreError, ErasureOutcome, FAILURE_NOTICE,
+    IngestReceipt, MODERATION_TEACHING, Observation, ObserveOutcome, ObservedFact,
+    ProtectionConfig, ReplyKind, ReplyTarget,
 };
 use serde_json::json;
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::support::{
-    self, CLOSING_ANSWER, MODERATION_HANDLE, Round, ScriptHandle, ToolScript, carries_tool_result,
-    channel, field, inbound, inbound_unaddressed, provider_stub, recv_reply,
-    round_scripted_provider, settle_shape, tool_scripted_provider, with_origin, with_reply,
+    self, CLOSING_ANSWER, MODERATION_HANDLE, ScriptHandle, ToolScript, carries, channel, field,
+    inbound, inbound_unaddressed, provider_stub, recv_reply, settle_shape, tool_scripted_provider,
+    with_origin, with_reply,
 };
 
 /// The outbound edge a fixture's replies arrive on.
@@ -34,9 +39,22 @@ fn fixture_line() -> String {
     report::report_line(MODERATION_HANDLE)
 }
 
-/// One assembled report fixture over the given provider: the report tool
-/// alone — no lookups, so the palette and the ledger shapes stay minimal —
-/// under the suite's moderation handle, plus the outbound edge.
+/// The full one-report turn shape on a fresh group conversation: the
+/// offense summons the assessment, the call names it, the report files,
+/// the result records, the turn closes.
+const ASSESSED_TURN: [&str; 7] = [
+    "system_prompt",
+    "tool_palette",
+    "chat_message",
+    "tool_call",
+    "report",
+    "tool_result",
+    "text",
+];
+
+/// One assembled report fixture over the given provider: helpful
+/// answering under the suite's moderation handle — the two conditions the
+/// registration takes — plus the outbound edge.
 async fn report_fixture_with(
     provider: Box<dyn ProviderModule>,
     handle: ScriptHandle,
@@ -65,16 +83,17 @@ async fn report_fixture_on(
     (fixture, replies)
 }
 
-/// The one-turn report fixture: the opening turn calls the report tool
-/// with an empty input, the closing turn answers.
-async fn report_fixture(
+/// The one-turn assessment fixture: the opening turn calls the report tool
+/// with the given input, the closing turn answers.
+async fn assessing_fixture(
+    input: &str,
     narration: Option<String>,
     hold: Option<Arc<support::TurnHold>>,
 ) -> (support::Fixture, Replies) {
     let (provider, handle) = tool_scripted_provider(
         ToolScript {
             tool: report::NAME.into(),
-            input: "{}".into(),
+            input: input.into(),
             narration,
         },
         hold,
@@ -82,22 +101,110 @@ async fn report_fixture(
     report_fixture_with(provider, handle, ProtectionConfig::default()).await
 }
 
-/// A provider that calls the report tool on every turn: the requests of
-/// one binding alternate call, close, call, close — every turn in these
-/// stories is exactly one call round and one closing round, filed or
-/// refused alike, so the alternation is the turn structure itself.
-fn repeating_report_provider() -> (Box<dyn ProviderModule>, ScriptHandle) {
-    let handle = fresh_handle();
+/// Record one offending group line under the given origin — which, under
+/// helpful answering, summons the assessment turn itself — and return its
+/// receipt.
+async fn record_offense(
+    fixture: &support::Fixture,
+    key: &assistant_core::ChannelKey,
+    sender: &str,
+    origin: &str,
+) -> IngestReceipt {
+    support::ingest_recorded(
+        &fixture.assistant,
+        with_origin(
+            inbound_unaddressed(key, ChannelKind::Group, sender, "an offending line"),
+            origin,
+        ),
+    )
+    .await
+}
+
+/// Pin the group's rules through the observation edge, asserting the
+/// acknowledged delta.
+async fn pin_rules(fixture: &support::Fixture, key: &assistant_core::ChannelKey, rules: &str) {
+    let outcome = fixture
+        .assistant
+        .observe(Observation {
+            channel: key.clone(),
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::PinnedAnnouncement(format!("Rules:\n{rules}")),
+        })
+        .await
+        .expect("the rules observation is judged");
+    assert!(
+        matches!(outcome, ObserveOutcome::Observed { deliver: Some(_) }),
+        "the rules delta is observed and acknowledged"
+    );
+}
+
+/// One scripted step of the sequenced provider: what the next model
+/// request draws, in arrival order.
+#[derive(Clone, Copy)]
+enum Step {
+    /// Stream this prose and end the turn.
+    Answer(&'static str),
+    /// Call the report tool with this input, narrating first when given
+    /// prose; with the hold, announce after the call events and wait for
+    /// one permit before the trailing done — the window a test acts in
+    /// while the stream is provably open.
+    Call {
+        input: &'static str,
+        narration: Option<&'static str>,
+        hold_before_done: bool,
+    },
+    /// Fail the stream with this error text.
+    Fail(&'static str),
+    /// Call the report tool twice in one round, both with this input —
+    /// the parallel same-origin shape the tool's filing lock serializes.
+    TwinCall(&'static str),
+}
+
+/// A call step with neither narration nor hold — the common shape.
+fn call(input: &'static str) -> Step {
+    Step::Call {
+        input,
+        narration: None,
+        hold_before_done: false,
+    }
+}
+
+/// Build a provider playing one scripted step per model request, in
+/// arrival order across the binding — the turns in these stories run
+/// strictly in sequence, so the order is deterministic. A request past
+/// the script closes with [`CLOSING_ANSWER`]. Returns the release
+/// semaphore and the started receiver a holding step announces on.
+// The length is the provider's whole wire vocabulary in one match; splitting
+// it would scatter the stream shapes the steps exist to keep side by side.
+#[allow(clippy::too_many_lines)]
+fn sequenced_provider(
+    steps: Vec<Step>,
+) -> (
+    Box<dyn ProviderModule>,
+    ScriptHandle,
+    Arc<Semaphore>,
+    mpsc::UnboundedReceiver<()>,
+) {
+    let handle = ScriptHandle::fresh();
     let observed = handle.clone();
-    let provider = provider_stub("Repeating reporter", "calls the report tool every turn", {
+    let release = Arc::new(Semaphore::new(0));
+    let (started_tx, started) = mpsc::unbounded_channel();
+    let steps = Arc::new(std::sync::Mutex::new(
+        steps.into_iter().collect::<std::collections::VecDeque<_>>(),
+    ));
+    let permits = Arc::clone(&release);
+    let provider = provider_stub("Sequenced", "plays one scripted step per request", {
         move || {
             let (request_tx, mut requests) = mpsc::unbounded_channel();
             let (response_tx, responses) = mpsc::unbounded_channel();
             let turns = Arc::clone(&observed.turns);
+            let seen = Arc::clone(&observed.seen);
             let title_requests = Arc::clone(&observed.title_requests);
+            let steps = Arc::clone(&steps);
+            let started_tx = started_tx.clone();
+            let permits = Arc::clone(&permits);
             tokio::spawn(async move {
                 let mut calls = 0_usize;
-                let mut close_next = false;
                 while let Some(request) = requests.recv().await {
                     let ProviderRequest::Stream { messages, .. } = request else {
                         continue;
@@ -113,107 +220,138 @@ fn repeating_report_provider() -> (Box<dyn ProviderModule>, ScriptHandle) {
                         continue;
                     }
                     turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    seen.lock().unwrap().push(messages);
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
-                    if close_next {
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: CLOSING_ANSWER.into(),
-                        }));
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
-                                usage: agent_ledger::providers::Usage::default(),
-                                stop_reason: agent_ledger::StopReason::EndTurn,
-                            }));
-                    } else {
-                        calls += 1;
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
-                                usage: agent_ledger::providers::Usage::default(),
-                                stop_reason: agent_ledger::StopReason::ToolUse,
-                            }));
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
-                                id: format!("call-{calls}"),
-                                name: report::NAME.into(),
-                            }));
-                        let _ = response_tx.send(ProviderResponse::Event(
-                            StreamEvent::ToolUseInputDelta { json: "{}".into() },
-                        ));
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                    let step = steps
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .unwrap_or(Step::Answer(CLOSING_ANSWER));
+                    match step {
+                        Step::Answer(text) => {
+                            let _ = response_tx
+                                .send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                            let _ =
+                                response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                                    text: text.into(),
+                                }));
+                            let _ = response_tx.send(ProviderResponse::Event(
+                                StreamEvent::MessageEnd {
+                                    usage: agent_ledger::providers::Usage::default(),
+                                    stop_reason: agent_ledger::StopReason::EndTurn,
+                                },
+                            ));
+                        }
+                        Step::Fail(error) => {
+                            let _ = response_tx.send(ProviderResponse::Error(error.into()));
+                            continue;
+                        }
+                        Step::TwinCall(input) => {
+                            let _ = response_tx.send(ProviderResponse::Event(
+                                StreamEvent::MessageEnd {
+                                    usage: agent_ledger::providers::Usage::default(),
+                                    stop_reason: agent_ledger::StopReason::ToolUse,
+                                },
+                            ));
+                            for _ in 0..2 {
+                                calls += 1;
+                                let _ = response_tx.send(ProviderResponse::Event(
+                                    StreamEvent::ToolUseStart {
+                                        id: format!("call-{calls}"),
+                                        name: report::NAME.into(),
+                                    },
+                                ));
+                                let _ = response_tx.send(ProviderResponse::Event(
+                                    StreamEvent::ToolUseInputDelta { json: input.into() },
+                                ));
+                                let _ = response_tx
+                                    .send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                            }
+                        }
+                        Step::Call {
+                            input,
+                            narration,
+                            hold_before_done,
+                        } => {
+                            if let Some(narration) = narration {
+                                let _ = response_tx
+                                    .send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                                let _ = response_tx.send(ProviderResponse::Event(
+                                    StreamEvent::TextDelta {
+                                        text: narration.into(),
+                                    },
+                                ));
+                            }
+                            // The production order: the message end
+                            // finalizes any narration before the tool
+                            // lifecycle streams.
+                            let _ = response_tx.send(ProviderResponse::Event(
+                                StreamEvent::MessageEnd {
+                                    usage: agent_ledger::providers::Usage::default(),
+                                    stop_reason: agent_ledger::StopReason::ToolUse,
+                                },
+                            ));
+                            calls += 1;
+                            let _ = response_tx.send(ProviderResponse::Event(
+                                StreamEvent::ToolUseStart {
+                                    id: format!("call-{calls}"),
+                                    name: report::NAME.into(),
+                                },
+                            ));
+                            let _ = response_tx.send(ProviderResponse::Event(
+                                StreamEvent::ToolUseInputDelta { json: input.into() },
+                            ));
+                            let _ =
+                                response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                            if hold_before_done {
+                                let _ = started_tx.send(());
+                                match permits.acquire().await {
+                                    Ok(permit) => permit.forget(),
+                                    Err(_) => break,
+                                }
+                            }
+                        }
                     }
-                    close_next = !close_next;
                     let _ = response_tx.send(ProviderResponse::Done);
                 }
             });
             (request_tx, responses)
         }
     });
-    (provider, handle)
+    (provider, handle, release, started)
 }
 
-/// The full one-report turn shape on a fresh group conversation: the spam
-/// line, the ask, the call, the filed report, the result, the answer.
-const FILED_TURN: [&str; 8] = [
-    "system_prompt",
-    "tool_palette",
-    "chat_message",
-    "chat_message",
-    "tool_call",
-    "report",
-    "tool_result",
-    "text",
-];
+// ─── AC2: the autonomous filing, end to end at the core edge ─────────────
 
-/// Record one offending group line under the given origin and return its
-/// sender's principal id.
-async fn record_offense(
-    fixture: &support::Fixture,
-    key: &assistant_core::ChannelKey,
-    sender: &str,
-    origin: &str,
-) -> i64 {
-    support::ingest_recorded(
-        &fixture.assistant,
-        with_origin(
-            inbound_unaddressed(key, ChannelKind::Group, sender, "an offending line"),
-            origin,
-        ),
-    )
-    .await
-    .principal_id
-}
-
-/// The member's report ask: addressed, replying to the given origin.
-fn report_ask(key: &assistant_core::ChannelKey, origin: &str) -> assistant_core::InboundMessage {
-    with_reply(
-        inbound(key, ChannelKind::Group, "member-7", "please report this"),
-        ReplyTarget::Message {
-            origin: origin.into(),
-        },
-    )
-}
-
-// ─── AC4: the filing, end to end at the core edge ────────────────────────
-
-/// The whole flow, block by block: the member's reply ask files the report
-/// — the block carries the target origin, the reported principal and the
-/// fixed line, the tool result names the filing — and the edge delivers
-/// the line as a threaded report BEFORE the answer, while the answer
-/// itself stays unthreaded.
+/// The whole flow, block by block: a group message violating the pinned
+/// rules summons a helpful-mode turn whose request carries the rules note
+/// and the message's bracketed id; the model names that id, the origin
+/// validates against the turn's co-summoner set, the report files — the
+/// block carries the target origin, the reported principal and the fixed
+/// line — and the edge delivers the line as a threaded report BEFORE the
+/// answer, while the answer itself stays unthreaded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_members_reply_ask_files_and_the_edge_threads_the_report_before_the_answer() {
-    let (fixture, mut replies) = report_fixture(None, None).await;
+async fn a_violating_message_is_assessed_and_the_edge_threads_the_report_before_the_answer() {
+    let (fixture, mut replies) =
+        assessing_fixture(r#"{"message_id":"origin-spam-1"}"#, None, None).await;
     let key = support::authorized_group(&fixture.assistant, "room-report").await;
-    let spammer = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
+    pin_rules(&fixture, &key, "No spam links.").await;
+    let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
 
-    let receipt =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
     let blocks = settle_shape(
         &fixture.store,
-        receipt.conversation_id,
-        "the filed report turn",
-        &FILED_TURN,
+        offense.conversation_id,
+        "the assessed turn",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "context_note",
+            "chat_message",
+            "tool_call",
+            "report",
+            "tool_result",
+            "text",
+        ],
     )
     .await;
 
@@ -221,12 +359,29 @@ async fn a_members_reply_ask_files_and_the_edge_threads_the_report_before_the_an
     assert_eq!(field(&blocks[5], "target_origin"), "origin-spam-1");
     assert_eq!(
         blocks[5].fields["reported_principal_id"],
-        json!(spammer),
+        json!(offense.principal_id),
         "the block names the offending message's sender for erasure"
     );
     assert_eq!(field(&blocks[5], "line"), fixture_line());
     // The tool result claims filing, not arrival.
     assert_eq!(field(&blocks[6], "content"), report::FILED_RESULT);
+
+    // The request the model assessed on: the rules note and the offending
+    // message's bracketed id both reached it.
+    {
+        let requests = fixture.script.seen.lock().unwrap();
+        let opening = requests.first().expect("the opening request was seen");
+        assert!(
+            opening
+                .iter()
+                .any(|m| carries(m, &format!("{RULES_NOTE_LEAD}No spam links."))),
+            "the rules note rides the assessed request"
+        );
+        assert!(
+            opening.iter().any(|m| carries(m, "[origin-spam-1]")),
+            "the offending message's id is shown to the model"
+        );
+    }
 
     // The delivery order: the report first, threaded; then the answer,
     // unthreaded — decision 0018's judgment stands for answers.
@@ -239,32 +394,181 @@ async fn a_members_reply_ask_files_and_the_edge_threads_the_report_before_the_an
     assert_eq!(
         second.text,
         support::disclosed(CLOSING_ANSWER),
-        "the reporter's first answer opens with the disclosure line"
+        "the summoner's first answer opens with the disclosure line"
     );
     assert_eq!(second.reply_target, None, "the answer stays unthreaded");
     let extra = replies.try_recv();
     assert!(extra.is_err(), "one report, one answer; got {extra:?}");
 }
 
-/// The absorbed-bystander shape (AC4): an unaddressed bystander line with
-/// its own reply target lands mid-narration, NEWER than the asking
-/// co-summoner — and the resolution still reads the co-summoner's target:
-/// a bystander co-summons nothing, so its reply loses even when newer.
+/// The report-abstention independence (AC2's closing clause): a turn that
+/// files and then abstains from speaking still delivers the report — the
+/// abstention swallows the answer alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_bystanders_newer_reply_target_loses_to_the_co_summoners() {
-    let hold = support::TurnHold::new();
+async fn a_turn_that_reports_and_abstains_still_delivers_the_report() {
+    let (provider, handle, _release, _started) = sequenced_provider(vec![
+        call(r#"{"message_id":"origin-spam-1"}"#),
+        Step::Answer(ABSTENTION_SENTINEL),
+    ]);
     let (fixture, mut replies) =
-        report_fixture(Some("One moment.".into()), Some(hold.clone())).await;
-    let key = support::authorized_group(&fixture.assistant, "room-bystander-reply").await;
-    let reported = record_offense(&fixture, &key, "spammer-1", "origin-reported").await;
-    record_offense(&fixture, &key, "spammer-2", "origin-bystanders-target").await;
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-report-abstain").await;
+    let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
 
-    let receipt =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-reported")).await;
-    let conv = receipt.conversation_id;
+    let blocks = settle_shape(
+        &fixture.store,
+        offense.conversation_id,
+        "the abstained assessment",
+        &ASSESSED_TURN,
+    )
+    .await;
+    assert_eq!(
+        field(&blocks[6], "content"),
+        ABSTENTION_SENTINEL,
+        "the stored answer is the raw sentinel"
+    );
 
-    // Mid-narration — before the call block exists — the bystander's own
-    // reply lands, unaddressed, pointing at the OTHER recorded message.
+    let only = recv_reply(&mut replies).await;
+    assert_eq!(only.kind, ReplyKind::Report, "the report goes out alone");
+    assert_eq!(only.reply_target.as_deref(), Some("origin-spam-1"));
+    let extra = replies.try_recv();
+    assert!(
+        extra.is_err(),
+        "the abstained answer delivers nothing: {extra:?}"
+    );
+}
+
+// ─── AC6: the rules reach the model ──────────────────────────────────────
+
+/// The newest rules note is present in the projected request the model
+/// assesses on: two supersessions later, the request carries the newest
+/// statement — a durable note never falls out of a windowed history,
+/// because the projection folds the whole ledger.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_newest_rules_note_projects_into_the_request_the_model_assesses_on() {
+    let (provider, handle) = support::scripted_provider(None);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-rules-context").await;
+    pin_rules(&fixture, &key, "Be kind.").await;
+    pin_rules(&fixture, &key, "No spam links.").await;
+
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "42", "what do the rules say?"),
+    )
+    .await;
+    recv_reply(&mut replies).await;
+    support::settle(&fixture.store, receipt.conversation_id, "the turn", 6).await;
+
+    let requests = fixture.script.seen.lock().unwrap();
+    let request = requests.last().expect("the turn's request was recorded");
+    assert!(
+        request
+            .iter()
+            .any(|m| carries(m, &format!("{RULES_NOTE_LEAD}No spam links."))),
+        "the newest rules note rides the assessed request"
+    );
+    assert!(
+        request
+            .iter()
+            .any(|m| carries(m, &format!("{RULES_NOTE_LEAD}Be kind."))),
+        "the superseded note stays in stream order behind it; the \
+         supersession wording makes the newest authoritative"
+    );
+}
+
+// ─── AC3: the validated target ───────────────────────────────────────────
+
+/// The anti-aiming decline: a named origin outside the turn's co-summoner
+/// set — here, a message an earlier turn already answered — is refused
+/// with the pinned copy and nothing files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_origin_outside_the_turns_assessment_set_is_declined() {
+    let (provider, handle, _release, _started) = sequenced_provider(vec![
+        Step::Answer("Noted."),
+        call(r#"{"message_id":"origin-old"}"#),
+        Step::Answer(CLOSING_ANSWER),
+    ]);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-anti-aiming").await;
+
+    // The earlier message is answered: its debt is settled, so the next
+    // turn is not assessing it.
+    support::ingest_recorded(
+        &fixture.assistant,
+        with_origin(
+            inbound_unaddressed(&key, ChannelKind::Group, "member-3", "the earlier line"),
+            "origin-old",
+        ),
+    )
+    .await;
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        support::disclosed("Noted.")
+    );
+
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        with_origin(
+            inbound_unaddressed(&key, ChannelKind::Group, "member-3", "a fresh line"),
+            "origin-new",
+        ),
+    )
+    .await;
+    let blocks = settle_shape(
+        &fixture.store,
+        receipt.conversation_id,
+        "the declined aim",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "text",
+            "chat_message",
+            "tool_call",
+            "tool_error",
+            "text",
+        ],
+    )
+    .await;
+    assert_eq!(field(&blocks[6], "error"), report::NOT_ASSESSED_ERROR);
+    assert!(
+        !blocks.iter().any(|block| block.block_type == "report"),
+        "an aim outside the assessment set files nothing"
+    );
+    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
+}
+
+/// The multi-co-summoner shape the probe raised: several messages absorbed
+/// into one turn, and the model names the one violator — only that one is
+/// reported, and a co-summoner's stored reply fact steers nothing (the
+/// removed reply-target resolution has no successor to fall back on).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn with_several_messages_absorbed_the_model_names_the_one_violator() {
+    let hold = support::TurnHold::new();
+    let (fixture, mut replies) = assessing_fixture(
+        r#"{"message_id":"origin-b"}"#,
+        Some("One moment.".into()),
+        Some(hold.clone()),
+    )
+    .await;
+    let key = support::authorized_group(&fixture.assistant, "room-absorbed").await;
+
+    let opener = support::ingest_recorded(
+        &fixture.assistant,
+        with_origin(
+            inbound_unaddressed(&key, ChannelKind::Group, "member-3", "a benign question"),
+            "origin-a",
+        ),
+    )
+    .await;
+    let conv = opener.conversation_id;
+
+    // Mid-narration — before the call block exists — two more messages
+    // are absorbed: the violator, and a bystander whose stored reply
+    // points at the OTHER message.
     hold.started().await;
     support::await_ledger(&fixture.store, conv, "the streaming tail", |blocks| {
         blocks
@@ -272,12 +576,23 @@ async fn a_bystanders_newer_reply_target_loses_to_the_co_summoners() {
             .is_some_and(|block| block.block_type.starts_with("streaming"))
     })
     .await;
+    let violator = support::ingest_recorded(
+        &fixture.assistant,
+        with_origin(
+            inbound_unaddressed(&key, ChannelKind::Group, "spammer-2", "the violating line"),
+            "origin-b",
+        ),
+    )
+    .await;
     support::ingest_recorded(
         &fixture.assistant,
         with_reply(
-            inbound_unaddressed(&key, ChannelKind::Group, "bystander-9", "lol that one"),
+            with_origin(
+                inbound_unaddressed(&key, ChannelKind::Group, "member-9", "lol that one"),
+                "origin-c",
+            ),
             ReplyTarget::Message {
-                origin: "origin-bystanders-target".into(),
+                origin: "origin-a".into(),
             },
         ),
     )
@@ -287,11 +602,10 @@ async fn a_bystanders_newer_reply_target_loses_to_the_co_summoners() {
     let blocks = settle_shape(
         &fixture.store,
         conv,
-        "the filed turn behind the bystander",
+        "the absorbed assessment",
         &[
             "system_prompt",
             "tool_palette",
-            "chat_message",
             "chat_message",
             "chat_message",
             "chat_message",
@@ -303,15 +617,32 @@ async fn a_bystanders_newer_reply_target_loses_to_the_co_summoners() {
         ],
     )
     .await;
-    // The premise: the absorbed line is unaddressed and carries a target.
-    assert_eq!(blocks[5].fields["addressed"], json!(false));
+    // The premise: the newest co-summoner carries a stored reply fact —
+    // the shape the removed resolution would have read — and the filed
+    // target is the NAMED violator regardless.
+    assert_eq!(field(&blocks[4], "reply_target"), "origin-a");
+    assert_eq!(field(&blocks[7], "target_origin"), "origin-b");
     assert_eq!(
-        field(&blocks[5], "reply_target"),
-        "origin-bystanders-target"
+        blocks[7].fields["reported_principal_id"],
+        json!(violator.principal_id),
+        "the report names the violator's sender, not the replier's target"
     );
-    // The resolution: the co-summoner's target, not the newer bystander's.
-    assert_eq!(field(&blocks[8], "target_origin"), "origin-reported");
-    assert_eq!(blocks[8].fields["reported_principal_id"], json!(reported));
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block.block_type == "report")
+            .count(),
+        1,
+        "one violator named, one report filed"
+    );
+    // The narration committed ahead of the filing, so it delivers first;
+    // the report follows it, threaded onto the named violator.
+    let narration = recv_reply(&mut replies).await;
+    assert_eq!(narration.kind, ReplyKind::Answer);
+    assert_eq!(narration.text, support::disclosed("One moment."));
+    let filed = recv_reply(&mut replies).await;
+    assert_eq!(filed.kind, ReplyKind::Report);
+    assert_eq!(filed.reply_target.as_deref(), Some("origin-b"));
     while !recv_reply(&mut replies)
         .await
         .text
@@ -319,32 +650,242 @@ async fn a_bystanders_newer_reply_target_loses_to_the_co_summoners() {
     {}
 }
 
-/// The other half of the origin walk (AC4): the ANCHOR carries no reply —
-/// an addressed summons that merely opened the turn — and the report ask,
-/// replying to the offending message, is absorbed mid-narration as a
-/// co-summoner. The filed block's target must be the absorbed ask's: a
-/// resolution reduced to reading the anchor's own stored reply finds
-/// nothing here and refuses the filing instead.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_absorbed_asks_reply_target_answers_for_a_replyless_anchor() {
-    let hold = support::TurnHold::new();
-    let (fixture, mut replies) =
-        report_fixture(Some("One moment.".into()), Some(hold.clone())).await;
-    let key = support::authorized_group(&fixture.assistant, "room-absorbed-ask").await;
-    let spammer = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
+// ─── AC4: nothing to report, and the per-origin dedup ────────────────────
 
-    // The summons: addressed, NOT a reply — it opens the turn and anchors
-    // the dispatch.
+/// A quiet assessment files nothing: a turn whose model abstains without
+/// calling the tool leaves no report block and delivers nothing — the
+/// judgment half of AC4 lives in the prompt teaching, pinned at the
+/// composition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_that_calls_no_tool_files_nothing() {
+    let (provider, handle) = support::scripted_provider(None);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-quiet").await;
+
     let receipt = support::ingest_recorded(
         &fixture.assistant,
-        inbound(&key, ChannelKind::Group, "member-3", "someone is spamming"),
+        inbound_unaddressed(
+            &key,
+            ChannelKind::Group,
+            "42",
+            &format!("members talking among themselves {}", support::ABSTAIN_CUE),
+        ),
+    )
+    .await;
+    let blocks =
+        support::settle(&fixture.store, receipt.conversation_id, "the quiet turn", 4).await;
+    assert!(
+        !blocks.iter().any(|block| block.block_type == "report"),
+        "no call, no report"
+    );
+    let extra = replies.try_recv();
+    assert!(extra.is_err(), "the quiet turn delivers nothing: {extra:?}");
+}
+
+/// The die-after-filing re-summon path, bounded per origin: a turn files
+/// and dies, the unanswered message re-co-summons the next turn, the model
+/// names the same origin again — and the dedup declines it. The decline is
+/// [`report::ALREADY_REPORTED_ERROR`], not the anti-aiming refusal, which
+/// is itself the proof the re-summoned message was back in the assessment
+/// set. One report block, one delivered report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reported_message_is_not_reported_again_when_it_re_summons() {
+    let (provider, handle, _release, _started) = sequenced_provider(vec![
+        call(r#"{"message_id":"origin-spam-1"}"#),
+        Step::Fail("scripted stream failure"),
+        call(r#"{"message_id":"origin-spam-1"}"#),
+        Step::Answer(CLOSING_ANSWER),
+    ]);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-dedup").await;
+    let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
+    let conv = offense.conversation_id;
+
+    // The dying turn still files: the report goes out threaded, ahead of
+    // the failure notice.
+    let first = recv_reply(&mut replies).await;
+    assert_eq!(
+        first.kind,
+        ReplyKind::Report,
+        "the filing outlives the turn"
+    );
+    assert_eq!(first.reply_target.as_deref(), Some("origin-spam-1"));
+    let second = recv_reply(&mut replies).await;
+    assert_eq!(second.kind, ReplyKind::Notice);
+    assert_eq!(second.text, FAILURE_NOTICE);
+
+    // The re-summon: a later message re-engages the conversation, the owed
+    // offense joins the turn's assessment set again, and the repeat naming
+    // is declined by the dedup.
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "member-7", "the second line"),
+    )
+    .await;
+    let blocks = support::await_ledger(&fixture.store, conv, "the declined repeat", |blocks| {
+        blocks.iter().any(|block| block.block_type == "tool_error")
+            && blocks.last().is_some_and(|b| b.block_type == "text")
+    })
+    .await;
+    let declined = blocks
+        .iter()
+        .find(|block| block.block_type == "tool_error")
+        .expect("the repeat records its decline");
+    assert_eq!(field(declined, "error"), report::ALREADY_REPORTED_ERROR);
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block.block_type == "report")
+            .count(),
+        1,
+        "the re-assessed message filed exactly once"
+    );
+    let third = recv_reply(&mut replies).await;
+    assert_eq!(third.kind, ReplyKind::Answer, "no second report goes out");
+    assert_eq!(third.text, support::disclosed(CLOSING_ANSWER));
+    let extra = replies.try_recv();
+    assert!(extra.is_err(), "nothing further arrives: {extra:?}");
+}
+
+/// The parallel half of the dedup: two calls in ONE round naming the same
+/// origin — the runner executes same-round calls in parallel tasks — file
+/// exactly once, because the tool's filing lock serializes the
+/// scan-then-append pair: the second call's scan runs only after the first
+/// call's block landed, and the dedup declines it. Removing the filing
+/// lock from [`report::ReportTool`] races this test: both scans pass
+/// before either append and the same message files twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_parallel_calls_naming_the_same_origin_file_exactly_once() {
+    let (provider, handle, _release, _started) = sequenced_provider(vec![
+        Step::TwinCall(r#"{"message_id":"origin-spam-1"}"#),
+        Step::Answer(CLOSING_ANSWER),
+    ]);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-twin-calls").await;
+    let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
+    let conv = offense.conversation_id;
+
+    let blocks = support::await_ledger(&fixture.store, conv, "the settled twin round", |blocks| {
+        blocks.iter().any(|b| b.block_type == "tool_result")
+            && blocks.iter().any(|b| b.block_type == "tool_error")
+            && blocks.last().is_some_and(|b| b.block_type == "text")
+    })
+    .await;
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block.block_type == "report")
+            .count(),
+        1,
+        "two parallel same-origin calls file exactly one report"
+    );
+    let filed = blocks
+        .iter()
+        .find(|block| block.block_type == "tool_result")
+        .expect("one of the two calls files");
+    assert_eq!(field(filed, "content"), report::FILED_RESULT);
+    let declined = blocks
+        .iter()
+        .find(|block| block.block_type == "tool_error")
+        .expect("the other call records its decline");
+    assert_eq!(field(declined, "error"), report::ALREADY_REPORTED_ERROR);
+
+    let first = recv_reply(&mut replies).await;
+    assert_eq!(first.kind, ReplyKind::Report, "one report goes out");
+    assert_eq!(first.reply_target.as_deref(), Some("origin-spam-1"));
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        support::disclosed(CLOSING_ANSWER)
+    );
+    let extra = replies.try_recv();
+    assert!(extra.is_err(), "no second report delivers: {extra:?}");
+}
+
+/// The transient-failure half of the dedup: a filing whose append failed
+/// spends nothing — the dedup scan finds no stored report, so the healed
+/// re-assessment files cleanly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transient_append_failure_leaves_the_origin_reportable() {
+    let (provider, handle, _release, _started) = sequenced_provider(vec![
+        call(r#"{"message_id":"origin-spam-1"}"#),
+        Step::Fail("scripted stream failure"),
+        call(r#"{"message_id":"origin-spam-1"}"#),
+        Step::Answer(CLOSING_ANSWER),
+    ]);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-sabotage").await;
+
+    support::sabotage_appends(&fixture.store, report::REPORT_TABLE).await;
+    let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
+    let conv = offense.conversation_id;
+    let blocks = support::await_ledger(&fixture.store, conv, "the sabotaged turn", |blocks| {
+        blocks.iter().any(|block| block.block_type == "tool_error")
+    })
+    .await;
+    let error = blocks
+        .iter()
+        .find(|block| block.block_type == "tool_error")
+        .map(|block| field(block, "error"))
+        .expect("the sabotaged filing records its error");
+    assert!(
+        error.contains("right now"),
+        "the failed append is the transient error: {error}"
+    );
+    assert_eq!(recv_reply(&mut replies).await.text, FAILURE_NOTICE);
+
+    // Healed, the re-summoned assessment files: the failure filed nothing,
+    // so the dedup has nothing to decline.
+    support::heal_appends(&fixture.store, report::REPORT_TABLE).await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "member-7", "the second line"),
+    )
+    .await;
+    support::await_ledger(&fixture.store, conv, "the healed filing", |blocks| {
+        blocks.iter().any(|block| block.block_type == "report")
+            && blocks.last().is_some_and(|b| b.block_type == "text")
+    })
+    .await;
+    assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        support::disclosed(CLOSING_ANSWER)
+    );
+}
+
+// ─── AC5: the guards ─────────────────────────────────────────────────────
+
+/// The self-report guard over a co-summoner the turn really absorbed: a
+/// named message resolving to the assistant's own stored voice declines —
+/// reachable now that the model names ids — with the pinned copy, and
+/// nothing files. (The unrecorded-principal sibling is pinned at the pure
+/// resolution: the schema's NOT NULL keeps that shape out of every stored
+/// ledger, so no runtime choreography can build it.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_named_message_in_the_assistants_own_voice_is_declined() {
+    let hold = support::TurnHold::new();
+    let (fixture, mut replies) = assessing_fixture(
+        r#"{"message_id":"origin-probe"}"#,
+        Some("One moment.".into()),
+        Some(hold.clone()),
+    )
+    .await;
+    let key = support::authorized_group(&fixture.assistant, "room-guards").await;
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "member-7", "watch the next line"),
     )
     .await;
     let conv = receipt.conversation_id;
 
-    // Mid-narration — before the call block exists — the report ask lands,
-    // addressed and replying to the offending message: an absorbed
-    // co-summoner.
+    // Mid-narration, the probe row is absorbed into the turn's span: a
+    // summoned co-summoner in the assistant's own stored voice — no
+    // ingestion writes this shape, so the public write surface stands in
+    // for the in-principle adapters the guard covers.
     hold.started().await;
     support::await_ledger(&fixture.store, conv, "the streaming tail", |blocks| {
         blocks
@@ -352,44 +893,120 @@ async fn an_absorbed_asks_reply_target_answers_for_a_replyless_anchor() {
             .is_some_and(|block| block.block_type.starts_with("streaming"))
     })
     .await;
-    support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
+    let mut fields = serde_json::Map::new();
+    fields.insert("text".into(), json!("a probe line"));
+    fields.insert("origin".into(), json!("origin-probe"));
+    fields.insert("principal_id".into(), json!(1));
+    fields.insert("authority".into(), json!("member"));
+    fields.insert("addressed".into(), json!(true));
+    fields.insert("answer_due".into(), json!(false));
+    fixture
+        .store
+        .append_consumer_block(
+            conv,
+            Some(agent_ledger::Role::Assistant),
+            CHAT_MESSAGE_KIND,
+            fields,
+            None,
+        )
+        .await
+        .expect("the probe row appends");
     hold.release();
 
     let blocks = settle_shape(
         &fixture.store,
         conv,
-        "the filed turn behind the absorbed ask",
+        "the declined probe",
         &[
             "system_prompt",
             "tool_palette",
             "chat_message",
             "chat_message",
-            "chat_message",
             "text",
             "tool_call",
-            "report",
-            "tool_result",
+            "tool_error",
             "text",
         ],
     )
     .await;
-    // The premise: the anchoring summons stored no reply, and the absorbed
-    // ask is the one row carrying the target.
-    assert_eq!(blocks[3].fields["addressed"], json!(true));
-    assert!(
-        blocks[3].fields.get("reply_target").is_none(),
-        "the summons is not a reply"
+    assert_eq!(
+        field(&blocks[6], "error"),
+        report::SELF_REPORT_ERROR,
+        "the self-report shape records its pinned decline"
     );
-    assert_eq!(blocks[4].fields["addressed"], json!(true));
-    assert_eq!(field(&blocks[4], "reply_target"), "origin-spam-1");
-    // The resolution: the absorbed ask's target, through the origin walk.
-    assert_eq!(field(&blocks[7], "target_origin"), "origin-spam-1");
-    assert_eq!(blocks[7].fields["reported_principal_id"], json!(spammer));
+    assert!(
+        !blocks.iter().any(|block| block.block_type == "report"),
+        "the assistant does not report itself"
+    );
     while !recv_reply(&mut replies)
         .await
         .text
         .ends_with(CLOSING_ANSWER)
     {}
+}
+
+/// The remaining declines: a call naming no id draws the needs-a-target
+/// copy, and a direct conversation draws the group-only copy — before the
+/// named origin is even looked at.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_targetless_call_and_a_direct_conversation_are_declined() {
+    for (name, dm, input, expected) in [
+        ("missing target", false, "{}", report::NEEDS_TARGET_ERROR),
+        (
+            "direct conversation",
+            true,
+            r#"{"message_id":"origin-dm"}"#,
+            report::GROUP_ONLY_ERROR,
+        ),
+    ] {
+        let (fixture, mut replies) = assessing_fixture(input, None, None).await;
+        let receipt = if dm {
+            support::ingest_recorded(
+                &fixture.assistant,
+                with_origin(
+                    inbound(
+                        &channel("dm-report"),
+                        ChannelKind::Direct,
+                        "42",
+                        "look at this",
+                    ),
+                    "origin-dm",
+                ),
+            )
+            .await
+        } else {
+            let key = support::authorized_group(&fixture.assistant, "room-targetless").await;
+            record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await
+        };
+        let blocks = settle_shape(
+            &fixture.store,
+            receipt.conversation_id,
+            "the declined call",
+            &[
+                "system_prompt",
+                "tool_palette",
+                "chat_message",
+                "tool_call",
+                "tool_error",
+                "text",
+            ],
+        )
+        .await;
+        assert_eq!(
+            field(&blocks[4], "error"),
+            expected,
+            "the {name} call records its pinned decline"
+        );
+        assert!(
+            !blocks.iter().any(|block| block.block_type == "report"),
+            "the {name} call files nothing"
+        );
+        assert_eq!(
+            recv_reply(&mut replies).await.text,
+            support::disclosed(CLOSING_ANSWER),
+            "the {name} turn still closes with the model's answer"
+        );
+    }
 }
 
 /// The debt walk's read-through set carries the report kind: a filed
@@ -400,9 +1017,11 @@ async fn an_absorbed_asks_reply_target_answers_for_a_replyless_anchor() {
 /// tail and the debt would die under it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn debt_propagation_reads_through_a_filed_report_at_the_stamp() {
-    let (fixture, _replies) = report_fixture_with(
+    let fixture = support::start_assistant_full(
+        Store::in_memory_with(store_config()).expect("an in-memory store opens"),
         support::silent_provider(),
-        fresh_handle(),
+        ScriptHandle::fresh(),
+        ToolSet::new(),
         ProtectionConfig::default(),
     )
     .await;
@@ -466,9 +1085,11 @@ async fn debt_propagation_reads_through_a_filed_report_at_the_stamp() {
 /// the report pin above fails without its entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn debt_propagation_reads_through_a_superseding_palette_at_the_stamp() {
-    let (fixture, _replies) = report_fixture_with(
+    let fixture = support::start_assistant_full(
+        Store::in_memory_with(store_config()).expect("an in-memory store opens"),
         support::silent_provider(),
-        fresh_handle(),
+        ScriptHandle::fresh(),
+        ToolSet::new(),
         ProtectionConfig::default(),
     )
     .await;
@@ -528,384 +1149,7 @@ async fn debt_propagation_reads_through_a_superseding_palette_at_the_stamp() {
     );
 }
 
-// ─── AC5: the bounds and the failure shapes ──────────────────────────────
-
-/// The refusal shapes, each a recorded tool error with the pinned wording
-/// and no report block: an ask without a reply, a reply to the assistant's
-/// own message, and a reply pointing at a message the ledger never
-/// recorded.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_no_reply_self_report_and_unrecorded_target_asks_are_refused() {
-    for (name, ask_reply, expected) in [
-        ("no reply", None, report::NEEDS_REPLY_ERROR),
-        (
-            "self report",
-            Some(ReplyTarget::AssistantMessage),
-            report::SELF_REPORT_ERROR,
-        ),
-        (
-            "unrecorded target",
-            Some(ReplyTarget::Message {
-                origin: "origin-nobody-recorded".into(),
-            }),
-            report::UNRECORDED_TARGET_ERROR,
-        ),
-    ] {
-        let (fixture, mut replies) = report_fixture(None, None).await;
-        let key = support::authorized_group(&fixture.assistant, "room-refusals").await;
-        let mut ask = inbound(&key, ChannelKind::Group, "member-7", "report please");
-        ask.reply_target = ask_reply;
-        let receipt = support::ingest_recorded(&fixture.assistant, ask).await;
-        let blocks = settle_shape(
-            &fixture.store,
-            receipt.conversation_id,
-            "the refused turn",
-            &[
-                "system_prompt",
-                "tool_palette",
-                "chat_message",
-                "tool_call",
-                "tool_error",
-                "text",
-            ],
-        )
-        .await;
-        assert_eq!(
-            field(&blocks[4], "error"),
-            expected,
-            "the {name} ask records its pinned refusal"
-        );
-        assert_eq!(
-            recv_reply(&mut replies).await.text,
-            support::disclosed(CLOSING_ANSWER),
-            "the {name} turn still closes with the model's answer"
-        );
-        let extra = replies.try_recv();
-        assert!(extra.is_err(), "no report went out for {name}: {extra:?}");
-    }
-}
-
-/// The direct-conversation refusal: reports belong to groups, and a DM ask
-/// draws the pinned group-only error with nothing filed.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_direct_conversation_ask_is_refused() {
-    let (fixture, mut replies) = report_fixture(None, None).await;
-    let key = channel("dm-report");
-    let ask = with_reply(
-        inbound(&key, ChannelKind::Direct, "42", "report this"),
-        ReplyTarget::Message {
-            origin: "origin-anything".into(),
-        },
-    );
-    let receipt = support::ingest_recorded(&fixture.assistant, ask).await;
-    let blocks = settle_shape(
-        &fixture.store,
-        receipt.conversation_id,
-        "the refused direct turn",
-        &[
-            "system_prompt",
-            "tool_palette",
-            "chat_message",
-            "tool_call",
-            "tool_error",
-            "text",
-        ],
-    )
-    .await;
-    assert_eq!(field(&blocks[4], "error"), report::GROUP_ONLY_ERROR);
-    assert_eq!(
-        recv_reply(&mut replies).await.text,
-        support::disclosed(CLOSING_ANSWER)
-    );
-}
-
-/// The report window (AC5): the second ask inside the window is declined
-/// with the no-retry result and files nothing. The window's REOPENING is
-/// pinned under paused time on the injected primitive itself, in the
-/// window module beside its clock — not because a paused full assembly
-/// cannot run (the confirm window's spine pin runs one), but because the
-/// store's actor is an external thread: the paused clock auto-advances
-/// while a store roundtrip is in flight, so a window measured through
-/// the full assembly could expire mid-operation and the reopening pin
-/// would be racing its own clock.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_second_ask_inside_the_window_is_declined() {
-    let (provider, handle) = repeating_report_provider();
-    let (fixture, mut replies) =
-        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
-    let key = support::authorized_group(&fixture.assistant, "room-window").await;
-    record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
-
-    let receipt =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    let conv = receipt.conversation_id;
-    settle_shape(&fixture.store, conv, "the first filed turn", &FILED_TURN).await;
-    assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
-    assert_eq!(
-        recv_reply(&mut replies).await.text,
-        support::disclosed(CLOSING_ANSWER)
-    );
-
-    // The second ask, inside the window: declined, nothing filed.
-    support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    let blocks = support::await_ledger(&fixture.store, conv, "the declined turn", |blocks| {
-        blocks.len() == FILED_TURN.len() + 4
-            && blocks.last().is_some_and(|b| b.block_type == "text")
-    })
-    .await;
-    assert_eq!(blocks[FILED_TURN.len() + 2].block_type, "tool_error");
-    assert_eq!(
-        field(&blocks[FILED_TURN.len() + 2], "error"),
-        report::DECLINED_RESULT
-    );
-    assert_eq!(
-        blocks
-            .iter()
-            .filter(|block| block.block_type == "report")
-            .count(),
-        1,
-        "the declined ask filed nothing"
-    );
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
-}
-
-/// The spend-after-append ordering (AC5): a transiently failed append
-/// spends nothing — the sabotaged ask records the transient error and no
-/// block, and the healed retry files, undeclined.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_transient_append_failure_spends_no_window_slot() {
-    let (provider, handle) = repeating_report_provider();
-    let (fixture, mut replies) =
-        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
-    let key = support::authorized_group(&fixture.assistant, "room-sabotage").await;
-    record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
-
-    support::sabotage_appends(&fixture.store, report::REPORT_TABLE).await;
-    let receipt =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    let conv = receipt.conversation_id;
-    let blocks = settle_shape(
-        &fixture.store,
-        conv,
-        "the sabotaged turn",
-        &[
-            "system_prompt",
-            "tool_palette",
-            "chat_message",
-            "chat_message",
-            "tool_call",
-            "tool_error",
-            "text",
-        ],
-    )
-    .await;
-    let error = field(&blocks[5], "error");
-    assert!(
-        error.contains("right now"),
-        "the failed append is the transient error: {error}"
-    );
-    assert_eq!(
-        recv_reply(&mut replies).await.text,
-        support::disclosed(CLOSING_ANSWER)
-    );
-
-    // Healed, the retry files: the failure spent no window slot.
-    support::heal_appends(&fixture.store, report::REPORT_TABLE).await;
-    support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    support::await_ledger(&fixture.store, conv, "the healed filing", |blocks| {
-        blocks.iter().any(|block| block.block_type == "report")
-            && blocks.last().is_some_and(|b| b.block_type == "text")
-    })
-    .await;
-    assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
-    assert_eq!(recv_reply(&mut replies).await.text, CLOSING_ANSWER);
-}
-
-/// A provider that files on its opening request — narrating first when
-/// given prose, in the production order that finalizes the narration
-/// before the call — and errors the continuation carrying the tool
-/// result.
-fn files_then_dies_provider(
-    narration: Option<&'static str>,
-) -> (Box<dyn ProviderModule>, ScriptHandle) {
-    let handle = fresh_handle();
-    let observed = handle.clone();
-    let provider = provider_stub(
-        "Files then dies",
-        "files a report, then errors",
-        move || {
-            let (request_tx, mut requests) = mpsc::unbounded_channel();
-            let (response_tx, responses) = mpsc::unbounded_channel();
-            let title_requests = Arc::clone(&observed.title_requests);
-            tokio::spawn(async move {
-                while let Some(request) = requests.recv().await {
-                    let ProviderRequest::Stream { messages, .. } = request else {
-                        continue;
-                    };
-                    // Titles are off (decision 0077): count the regression,
-                    // answer nothing.
-                    if messages
-                        .iter()
-                        .any(|m| support::carries(m, support::TITLE_INSTRUCTION_MARK))
-                    {
-                        title_requests.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        let _ = response_tx.send(ProviderResponse::Done);
-                        continue;
-                    }
-                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
-                    if messages.iter().any(carries_tool_result) {
-                        let _ = response_tx
-                            .send(ProviderResponse::Error("scripted stream failure".into()));
-                        continue;
-                    }
-                    if let Some(narration) = narration {
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: narration.into(),
-                        }));
-                    }
-                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
-                        usage: agent_ledger::providers::Usage::default(),
-                        stop_reason: agent_ledger::StopReason::ToolUse,
-                    }));
-                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
-                        id: "call-1".into(),
-                        name: report::NAME.into(),
-                    }));
-                    let _ =
-                        response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseInputDelta {
-                            json: "{}".into(),
-                        }));
-                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
-                    let _ = response_tx.send(ProviderResponse::Done);
-                }
-            });
-            (request_tx, responses)
-        },
-    );
-    (provider, handle)
-}
-
-/// The failure half of the delivery contract (AC5): a turn that errors
-/// after filing still delivers the report — threaded, ahead of the notice
-/// — and, with no narration committed, nothing else arrives.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_turn_that_errors_after_filing_still_delivers_the_report_beside_the_notice() {
-    let (provider, handle) = files_then_dies_provider(None);
-    let (fixture, mut replies) =
-        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
-    let key = support::authorized_group(&fixture.assistant, "room-dying-turn").await;
-    record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
-    support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-
-    let first = recv_reply(&mut replies).await;
-    assert_eq!(
-        first.kind,
-        ReplyKind::Report,
-        "the filing outlives the turn"
-    );
-    assert_eq!(first.text, fixture_line());
-    assert_eq!(first.reply_target.as_deref(), Some("origin-spam-1"));
-    let second = recv_reply(&mut replies).await;
-    assert_eq!(
-        second.kind,
-        ReplyKind::Notice,
-        "the notice follows the report"
-    );
-    assert_eq!(second.text, FAILURE_NOTICE);
-    let extra = replies.try_recv();
-    assert!(
-        extra.is_err(),
-        "no model answer exists to deliver: {extra:?}"
-    );
-}
-
-/// The failure wake reads the whole owed tail, wider than the report
-/// alone, on purpose: a turn that narrates, files, then dies delivers
-/// everything the dead turn already put on the ledger, in ledger order —
-/// the finalized narration, the threaded report, then the notice. The
-/// delivery cursor is one high-water mark per conversation, so
-/// withholding the committed narration would either drop it for good
-/// (the cursor passes it with the report) or repeat the report on the
-/// next wake, and the delivery contract refuses re-delivered reports.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_narrating_turn_that_dies_delivers_narration_report_then_notice() {
-    let (provider, handle) = files_then_dies_provider(Some("One moment."));
-    let (fixture, mut replies) =
-        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
-    let key = support::authorized_group(&fixture.assistant, "room-dying-narrator").await;
-    record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
-    support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-
-    let first = recv_reply(&mut replies).await;
-    assert_eq!(
-        first.kind,
-        ReplyKind::Answer,
-        "the committed narration delivers first, in ledger order"
-    );
-    assert_eq!(
-        first.text,
-        support::disclosed("One moment."),
-        "the dead turn's narration is still the person's first answer"
-    );
-    assert_eq!(first.reply_target, None, "narration stays unthreaded");
-    let second = recv_reply(&mut replies).await;
-    assert_eq!(
-        second.kind,
-        ReplyKind::Report,
-        "the filing follows its prose"
-    );
-    assert_eq!(second.text, fixture_line());
-    assert_eq!(second.reply_target.as_deref(), Some("origin-spam-1"));
-    let third = recv_reply(&mut replies).await;
-    assert_eq!(third.kind, ReplyKind::Notice, "the notice closes the turn");
-    assert_eq!(third.text, FAILURE_NOTICE);
-    let extra = replies.try_recv();
-    assert!(extra.is_err(), "nothing further arrives: {extra:?}");
-}
-
-/// The budget composition (AC5): a report ask consumes one answer slot
-/// like any addressed turn — under a one-answer budget the next addressed
-/// ask is recorded limited and summons nothing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_report_ask_consumes_an_answer_slot() {
-    let (provider, handle) = repeating_report_provider();
-    let (fixture, mut replies) =
-        report_fixture_with(provider, handle, support::budgets(Some((1, 600)), None)).await;
-    let key = support::authorized_group(&fixture.assistant, "room-budget").await;
-    record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
-
-    let receipt =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    let conv = receipt.conversation_id;
-    settle_shape(&fixture.store, conv, "the filed turn", &FILED_TURN).await;
-    assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
-    assert_eq!(
-        recv_reply(&mut replies).await.text,
-        support::disclosed(CLOSING_ANSWER)
-    );
-
-    // The same member's next addressed ask crosses the one-answer budget.
-    support::ingest_recorded(
-        &fixture.assistant,
-        inbound(&key, ChannelKind::Group, "member-7", "and another thing"),
-    )
-    .await;
-    let blocks = support::await_ledger(&fixture.store, conv, "the limited ask", |blocks| {
-        blocks.len() == FILED_TURN.len() + 1
-    })
-    .await;
-    let limited = blocks.last().expect("the limited ask is newest");
-    assert_eq!(limited.fields["limited"], json!("principal"));
-    assert_eq!(
-        limited.fields["answer_due"],
-        json!(false),
-        "the report ask spent the slot: the next ask is refused"
-    );
-}
-
-// ─── AC6: erasure and absence ────────────────────────────────────────────
+// ─── Erasure's reach and the fence ───────────────────────────────────────
 
 /// The reported person's erasure nulls the block's target while the line
 /// stays, and a report still undelivered at that moment goes out as
@@ -913,45 +1157,37 @@ async fn a_report_ask_consumes_an_answer_slot() {
 /// answer.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_reported_persons_erasure_nulls_the_target_and_the_edge_skips_it() {
-    let hold = support::TurnHold::new();
-    let rounds = vec![
-        Round {
+    let (provider, handle, release, mut started) = sequenced_provider(vec![
+        Step::Call {
+            input: r#"{"message_id":"origin-spam-1"}"#,
             narration: None,
-            hold_after_finalize: false,
             hold_before_done: true,
-            call: Some(report::NAME),
         },
-        Round {
-            narration: None,
-            hold_after_finalize: false,
-            hold_before_done: false,
-            call: None,
-        },
-    ];
-    let (provider, handle) = round_scripted_provider(rounds, Arc::clone(&hold));
+        Step::Answer(CLOSING_ANSWER),
+    ]);
     let (fixture, mut replies) =
         report_fixture_with(provider, handle, ProtectionConfig::default()).await;
     let key = support::authorized_group(&fixture.assistant, "room-erased-target").await;
-    let spammer = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
-
-    let receipt =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    let conv = receipt.conversation_id;
+    let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
+    let conv = offense.conversation_id;
 
     // The round holds before its trailing done: the report is filed, the
     // stream provably open, nothing delivered yet.
-    hold.started().await;
+    tokio::time::timeout(support::DEADLINE, started.recv())
+        .await
+        .expect("the round holds before its done")
+        .expect("the provider outlives the test");
     support::await_ledger(&fixture.store, conv, "the filed report", |blocks| {
         blocks.iter().any(|block| block.block_type == "report")
     })
     .await;
     let outcome = fixture
         .assistant
-        .erase_principal(spammer)
+        .erase_principal(offense.principal_id)
         .await
         .expect("the erasure runs");
     assert!(matches!(outcome, ErasureOutcome::Erased { .. }));
-    hold.release();
+    release.add_permits(1);
 
     let blocks = support::await_ledger(&fixture.store, conv, "the settled turn", |blocks| {
         blocks.last().is_some_and(|b| b.block_type == "text")
@@ -981,206 +1217,283 @@ async fn the_reported_persons_erasure_nulls_the_target_and_the_edge_skips_it() {
     );
 }
 
-/// After the reported person's erasure, a fresh ask replying to the erased
-/// message resolves nothing — the nulled origin matches no recorded
-/// message, so no report can re-materialize what erasure removed.
+/// After the reported person's erasure, a later assessment naming the
+/// erased origin resolves nothing: the nulled origin matches no
+/// co-summoner, so no report can re-materialize what erasure removed. The
+/// trigger's own stored reply target survives as the recorded residual of
+/// decision 0063 — a reply recorded after the erasure completed sits
+/// where no erasure pass will match it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_erased_targets_origin_cannot_be_re_reported() {
-    let (fixture, mut replies) = report_fixture(None, None).await;
+    let (provider, handle, _release, _started) = sequenced_provider(vec![
+        Step::Answer("Noted."),
+        call(r#"{"message_id":"origin-spam-1"}"#),
+        Step::Answer(CLOSING_ANSWER),
+    ]);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
     let key = support::authorized_group(&fixture.assistant, "room-re-report").await;
-    let spammer = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
+    let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
+    let conv = offense.conversation_id;
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        support::disclosed("Noted.")
+    );
+    support::await_ledger(&fixture.store, conv, "the first turn's close", |blocks| {
+        blocks.last().is_some_and(|b| b.block_type == "text")
+    })
+    .await;
+
     let outcome = fixture
         .assistant
-        .erase_principal(spammer)
+        .erase_principal(offense.principal_id)
         .await
         .expect("the erasure runs");
     assert!(matches!(outcome, ErasureOutcome::Erased { .. }));
 
-    let receipt =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    let blocks = settle_shape(
-        &fixture.store,
-        receipt.conversation_id,
-        "the refused re-report",
-        &[
-            "system_prompt",
-            "tool_palette",
-            "chat_message",
-            "chat_message",
-            "tool_call",
-            "tool_error",
-            "text",
-        ],
+    let trigger = support::ingest_recorded(
+        &fixture.assistant,
+        with_reply(
+            with_origin(
+                inbound_unaddressed(&key, ChannelKind::Group, "member-7", "look at that one"),
+                "origin-trigger",
+            ),
+            ReplyTarget::Message {
+                origin: "origin-spam-1".into(),
+            },
+        ),
     )
     .await;
-    assert_eq!(field(&blocks[5], "error"), report::UNRECORDED_TARGET_ERROR);
-    // The recorded residual, pinned as PRESENT on purpose (decision 0063's
-    // refinements): the ask was recorded after the erasure completed, so
-    // its row stores the erased person's message identifier where no
-    // erasure pass will ever match it — the identity rows are gone and the
-    // person's next appearance resolves to a new principal. The
-    // ingestion-time reach key that closes this ships as its own unit;
-    // until it does, this assertion is the tree's record of what stays.
-    assert_eq!(
-        field(&blocks[3], "reply_target"),
-        "origin-spam-1",
-        "the post-erasure ask keeps its stored reply target"
+    let blocks = support::await_ledger(&fixture.store, conv, "the refused repeat", |blocks| {
+        blocks.iter().any(|block| block.block_type == "tool_error")
+            && blocks.last().is_some_and(|b| b.block_type == "text")
+    })
+    .await;
+    let declined = blocks
+        .iter()
+        .find(|block| block.block_type == "tool_error")
+        .expect("the refused aim records its decline");
+    assert_eq!(field(declined, "error"), report::NOT_ASSESSED_ERROR);
+    assert!(
+        !blocks.iter().any(|block| block.block_type == "report"),
+        "nothing re-materializes the erased origin"
     );
+    // The recorded residual, pinned as PRESENT on purpose (decision 0063's
+    // refinements): the trigger was recorded after the erasure completed,
+    // so its row stores the erased person's message identifier where no
+    // erasure pass will ever match it. The ingestion-time reach key that
+    // closes this ships as its own unit; until it does, this assertion is
+    // the tree's record of what stays.
+    let trigger_row = blocks
+        .iter()
+        .find(|block| block.fields.get("origin") == Some(&json!("origin-trigger")))
+        .expect("the trigger row is recorded");
+    assert_eq!(field(trigger_row, "reply_target"), "origin-spam-1");
+    assert_eq!(trigger.conversation_id, conv);
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        support::disclosed(CLOSING_ANSWER)
+        support::disclosed(CLOSING_ANSWER),
+        "the trigger's sender is a new person; their first answer opens with the line"
     );
 }
 
-/// The reporter's own erasure nulls the reply-target column on their
-/// message rows through the author-keyed pass, while the structural
-/// assistant-reply fact stays; and a non-reply stores no target at all.
+/// The author-keyed erasure pass nulls a replier's stored reply target
+/// beside their prose, while a non-reply stores no target at all — the
+/// reply fact is two people's data and erasure reaches it from the
+/// author's end here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_reporters_erasure_nulls_their_reply_target_and_a_non_reply_stores_none() {
-    let (fixture, mut replies) = report_fixture(None, None).await;
-    let key = support::authorized_group(&fixture.assistant, "room-reporter-erasure").await;
+async fn the_repliers_erasure_nulls_their_reply_target_and_a_non_reply_stores_none() {
+    let (provider, handle) = support::scripted_provider(None);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-replier-erasure").await;
     record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
-    let reporter =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    settle_shape(
-        &fixture.store,
-        reporter.conversation_id,
-        "the filed turn",
-        &FILED_TURN,
+    recv_reply(&mut replies).await;
+    let reply_receipt = support::ingest_recorded(
+        &fixture.assistant,
+        with_reply(
+            inbound_unaddressed(&key, ChannelKind::Group, "member-7", "look at this"),
+            ReplyTarget::Message {
+                origin: "origin-spam-1".into(),
+            },
+        ),
     )
     .await;
-    while !recv_reply(&mut replies)
-        .await
-        .text
-        .ends_with(CLOSING_ANSWER)
-    {}
+    recv_reply(&mut replies).await;
+    support::await_ledger(
+        &fixture.store,
+        reply_receipt.conversation_id,
+        "both turns settled",
+        |blocks| {
+            blocks
+                .iter()
+                .filter(|block| block.block_type == "text")
+                .count()
+                == 2
+        },
+    )
+    .await;
 
     let outcome = fixture
         .assistant
-        .erase_principal(reporter.principal_id)
+        .erase_principal(reply_receipt.principal_id)
         .await
         .expect("the erasure runs");
     assert!(matches!(outcome, ErasureOutcome::Erased { .. }));
     let blocks = fixture
         .store
-        .list_blocks(reporter.conversation_id)
+        .list_blocks(reply_receipt.conversation_id)
         .await
         .expect("the ledger reads");
-    let ask = blocks
+    let reply_row = blocks
         .iter()
-        .filter(|block| block.block_type == "chat_message")
+        .filter(|block| block.block_type == CHAT_MESSAGE_KIND)
         .nth(1)
-        .expect("the ask row stands");
+        .expect("the reply row stands");
     assert!(
-        ask.fields.get("reply_target").is_none(),
+        reply_row.fields.get("reply_target").is_none(),
         "the author-keyed pass nulled the reply target"
     );
     assert!(
-        ask.fields.get("text").is_none(),
+        reply_row.fields.get("text").is_none(),
         "the same pass erased the prose"
     );
-    let offense = blocks
+    let offense_row = blocks
         .iter()
-        .find(|block| block.block_type == "chat_message")
+        .find(|block| block.block_type == CHAT_MESSAGE_KIND)
         .expect("the offending row stands");
     assert!(
-        offense.fields.get("reply_target").is_none(),
+        offense_row.fields.get("reply_target").is_none(),
         "a non-reply stored no target to begin with"
     );
 }
 
 /// The reported person's erasure also reaches the reply-target copies
-/// OTHER people's rows hold (added 2026-08-23): a reply
-/// stores the replied-to message's platform id, which is the replied-to
-/// person's data wherever it sits — the author-keyed pass alone would
-/// null it on the erased person's own rows while leaving a verbatim copy
-/// on every row that replied to them. The target-keyed pass nulls exactly
-/// that copy and nothing else of the replier's — and both erasure passes
-/// stay keyed per row (pinned 2026-08-23): a peer room whose
-/// offense carries the SAME platform message id under a DIFFERENT,
-/// non-erased sender keeps its replier's stored target and its report's
-/// target origin, so a pass widened past its key fails here.
+/// OTHER people's rows hold: a reply stores the replied-to message's
+/// platform id, which is the replied-to person's data wherever it sits.
+/// Both erasure passes stay keyed per row: a peer room whose offense
+/// carries the SAME platform message id under a DIFFERENT, non-erased
+/// sender keeps its replier's stored target and its report's target
+/// origin, so a pass widened past its key fails here.
+// The length is the two-room story itself: two assessed offenses, two
+// repliers, one erasure, and the per-row keying pinned on both sides.
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_reported_persons_erasure_nulls_the_repliers_stored_reply_target() {
-    let (fixture, mut replies) = report_fixture(None, None).await;
+    let (provider, handle, _release, _started) = sequenced_provider(vec![
+        call(r#"{"message_id":"origin-spam-1"}"#),
+        Step::Answer(CLOSING_ANSWER),
+        Step::Answer("Seen."),
+        call(r#"{"message_id":"origin-spam-1"}"#),
+        Step::Answer(CLOSING_ANSWER),
+        Step::Answer("Seen."),
+    ]);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+
+    // Room one: the offense is assessed and reported, then a member's
+    // reply to it is recorded.
     let key = support::authorized_group(&fixture.assistant, "room-target-pass").await;
     let spammer = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
-    let reporter =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    settle_shape(
-        &fixture.store,
-        reporter.conversation_id,
-        "the filed turn",
-        &FILED_TURN,
+    assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
+    recv_reply(&mut replies).await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        with_reply(
+            inbound_unaddressed(&key, ChannelKind::Group, "member-7", "look at that"),
+            ReplyTarget::Message {
+                origin: "origin-spam-1".into(),
+            },
+        ),
     )
     .await;
-    while !recv_reply(&mut replies)
-        .await
-        .text
-        .ends_with(CLOSING_ANSWER)
-    {}
+    recv_reply(&mut replies).await;
 
     // The peer room: a different sender's offense under the same platform
-    // message id — ids are unique only per channel — reported the same way.
+    // message id — ids are unique only per channel — assessed the same
+    // way, with its own replier.
     let peer_key = support::authorized_group(&fixture.assistant, "room-target-pass-peer").await;
-    let peer_sender = record_offense(&fixture, &peer_key, "other-9", "origin-spam-1").await;
-    assert_ne!(peer_sender, spammer, "the peer offense has its own sender");
-    let peer =
-        support::ingest_recorded(&fixture.assistant, report_ask(&peer_key, "origin-spam-1")).await;
-    settle_shape(
-        &fixture.store,
-        peer.conversation_id,
-        "the peer room's filed turn",
-        &FILED_TURN,
+    let peer = record_offense(&fixture, &peer_key, "other-9", "origin-spam-1").await;
+    assert_ne!(
+        peer.principal_id, spammer.principal_id,
+        "the peer offense has its own sender"
+    );
+    assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
+    recv_reply(&mut replies).await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        with_reply(
+            inbound_unaddressed(&peer_key, ChannelKind::Group, "member-8", "look at that"),
+            ReplyTarget::Message {
+                origin: "origin-spam-1".into(),
+            },
+        ),
     )
     .await;
-    while !recv_reply(&mut replies)
-        .await
-        .text
-        .ends_with(CLOSING_ANSWER)
-    {}
+    recv_reply(&mut replies).await;
+    support::await_ledger(
+        &fixture.store,
+        peer.conversation_id,
+        "the peer room settled",
+        |blocks| {
+            blocks
+                .iter()
+                .filter(|block| block.block_type == "text")
+                .count()
+                == 2
+        },
+    )
+    .await;
 
     let outcome = fixture
         .assistant
-        .erase_principal(spammer)
+        .erase_principal(spammer.principal_id)
         .await
         .expect("the erasure runs");
     assert!(matches!(outcome, ErasureOutcome::Erased { .. }));
 
     let blocks = fixture
         .store
-        .list_blocks(reporter.conversation_id)
+        .list_blocks(spammer.conversation_id)
         .await
         .expect("the ledger reads");
-    let ask = blocks
+    let reply_row = blocks
         .iter()
-        .filter(|block| block.block_type == "chat_message")
+        .filter(|block| block.block_type == CHAT_MESSAGE_KIND)
         .nth(1)
-        .expect("the ask row stands");
+        .expect("the replier's row stands");
     assert!(
-        ask.fields.get("reply_target").is_none(),
+        reply_row.fields.get("reply_target").is_none(),
         "the target-keyed pass nulled the replier's copy of the erased person's message id"
     );
     assert_eq!(
-        field(ask, "text"),
-        "please report this",
+        field(reply_row, "text"),
+        "look at that",
         "the replier's own prose stays; only the erased person's identifier left the row"
     );
+    let report_row = blocks
+        .iter()
+        .find(|block| block.block_type == "report")
+        .expect("the report block stands");
+    assert!(
+        report_row.fields.get("target_origin").is_none(),
+        "the report pass nulled the erased person's report target"
+    );
 
-    // The peer room survives whole: its replier's target names another
-    // person's message, and its report names another reported principal.
+    // The peer room survives whole: its rows name another person's
+    // message under the same platform id.
     let peer_blocks = fixture
         .store
         .list_blocks(peer.conversation_id)
         .await
         .expect("the peer ledger reads");
-    let peer_ask = peer_blocks
+    let peer_reply = peer_blocks
         .iter()
-        .filter(|block| block.block_type == "chat_message")
+        .filter(|block| block.block_type == CHAT_MESSAGE_KIND)
         .nth(1)
-        .expect("the peer ask row stands");
+        .expect("the peer replier's row stands");
     assert_eq!(
-        field(peer_ask, "reply_target"),
+        field(peer_reply, "reply_target"),
         "origin-spam-1",
         "the target-keyed pass is keyed per row: the same platform id under \
          a different sender in another conversation survives"
@@ -1197,7 +1510,7 @@ async fn the_reported_persons_erasure_nulls_the_repliers_stored_reply_target() {
     );
     assert_eq!(
         peer_report.fields["reported_principal_id"],
-        json!(peer_sender),
+        json!(peer.principal_id),
         "the surviving report still names its own reported person"
     );
 }
@@ -1215,11 +1528,11 @@ const UNSETTLED_ASK: &str = "the unsettled ask";
 fn racing_report_provider() -> (
     Box<dyn ProviderModule>,
     ScriptHandle,
-    Arc<tokio::sync::Semaphore>,
+    Arc<Semaphore>,
     mpsc::UnboundedReceiver<()>,
 ) {
-    let handle = fresh_handle();
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let handle = ScriptHandle::fresh();
+    let release = Arc::new(Semaphore::new(0));
     let (started_tx, started) = mpsc::unbounded_channel();
     let observed = handle.clone();
     let permits = Arc::clone(&release);
@@ -1256,7 +1569,10 @@ fn racing_report_provider() -> (
                         }));
                         std::future::pending::<()>().await;
                     }
-                    let resolved = messages.iter().filter(|m| carries_tool_result(m)).count();
+                    let resolved = messages
+                        .iter()
+                        .filter(|m| support::carries_tool_result(m))
+                        .count();
                     if resolved == 0 {
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
@@ -1274,7 +1590,9 @@ fn racing_report_provider() -> (
                                 name: report::NAME.into(),
                             }));
                         let _ = response_tx.send(ProviderResponse::Event(
-                            StreamEvent::ToolUseInputDelta { json: "{}".into() },
+                            StreamEvent::ToolUseInputDelta {
+                                json: r#"{"message_id":"origin-spam-1"}"#.into(),
+                            },
                         ));
                         let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
                     } else {
@@ -1298,19 +1616,18 @@ fn racing_report_provider() -> (
     (provider, handle, release, started)
 }
 
-/// A filing racing an erasure waits on the fence (AC6): while the erasure
-/// holds it exclusively — provably, from its interrupt going out to its
-/// loud settle failure — the tool's filing appends nothing, and the
-/// report lands only after the erasure released. Deleting the fence hold
-/// in the tool's filing fails this test: the report block would land
-/// inside the held window.
+/// A filing racing an erasure waits on the fence: while the erasure holds
+/// it exclusively — provably, from its interrupt going out to its loud
+/// settle failure — the tool's filing appends nothing, and the report
+/// lands only after the erasure released. Deleting the fence hold in the
+/// tool's filing fails this test: the report block would land inside the
+/// held window.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_filing_racing_an_erasure_waits_on_the_fence() {
     let (provider, handle, release, mut started) = racing_report_provider();
     let (fixture, mut replies) =
         report_fixture_with(provider, handle, ProtectionConfig::default()).await;
     let key = support::authorized_group(&fixture.assistant, "room-fence-race").await;
-    let spammer = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
 
     // The reported person's own direct chat, held open by the deaf
     // stream: the erasure will interrupt it and stay on the fence for its
@@ -1325,7 +1642,6 @@ async fn a_filing_racing_an_erasure_waits_on_the_fence() {
         ),
     )
     .await;
-    assert_eq!(dm.principal_id, spammer, "one platform sender, one person");
     support::await_ledger(
         &fixture.store,
         dm.conversation_id,
@@ -1334,11 +1650,14 @@ async fn a_filing_racing_an_erasure_waits_on_the_fence() {
     )
     .await;
 
-    // The report ask reaches the round's pause: the turn is open and the
-    // tool has not run.
-    let receipt =
-        support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    let conv = receipt.conversation_id;
+    // The group offense reaches the round's pause: the turn is open and
+    // the tool has not run.
+    let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
+    assert_eq!(
+        dm.principal_id, offense.principal_id,
+        "one platform sender, one person"
+    );
+    let conv = offense.conversation_id;
     tokio::time::timeout(support::DEADLINE, started.recv())
         .await
         .expect("the round pauses before its call")
@@ -1348,7 +1667,7 @@ async fn a_filing_racing_an_erasure_waits_on_the_fence() {
     // interrupt on the bus proves it holds the fence now, and between
     // polls the future sits still with the fence held — a stable window.
     let mut events = fixture.bus.subscribe();
-    let mut erasure = Box::pin(fixture.assistant.erase_principal(spammer));
+    let mut erasure = Box::pin(fixture.assistant.erase_principal(offense.principal_id));
     let holding = std::time::Instant::now() + support::DEADLINE;
     'held: loop {
         assert!(
@@ -1410,7 +1729,7 @@ async fn a_filing_racing_an_erasure_waits_on_the_fence() {
     );
 }
 
-// ─── AC7: registration, the palette, and the supersession ────────────────
+// ─── AC7: the gating, the palette, and the supersession ──────────────────
 
 /// The stored tool list of one palette block.
 fn palette_names(block: &Block) -> Vec<String> {
@@ -1422,7 +1741,7 @@ fn fresh_handle() -> ScriptHandle {
     ScriptHandle::fresh()
 }
 
-/// The full registered set of a reporting deployment, sorted as the
+/// The full registered set of a moderating deployment, sorted as the
 /// palette records it: the three production lookups, the always-registered
 /// privacy tool, and the report tool.
 fn reporting_palette() -> Vec<String> {
@@ -1435,12 +1754,113 @@ fn reporting_palette() -> Vec<String> {
     ]
 }
 
-/// A pre-unit group conversation whose stored palette predates this unit
-/// gains both new tools on its first activity: the delta append supersedes
-/// the old two-lookup list with the full registered set, and the gained
-/// report tool files in the very next turn.
+/// The gating, all four corners (AC7): the tool registers and the prompt
+/// teaches exactly under a handle plus helpful answering; addressed mode
+/// or a missing handle leaves both out — no instruction for a capability
+/// that is not there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_pre_unit_palette_gains_the_wiki_and_report_tools_on_first_activity() {
+async fn the_teaching_and_the_tool_gate_on_the_handle_and_helpful_mode() {
+    // Handle plus helpful: the recorded prompt carries the teaching and
+    // the palette names the tool.
+    let (fixture, _replies) = report_fixture_with(
+        support::silent_provider(),
+        fresh_handle(),
+        ProtectionConfig::default(),
+    )
+    .await;
+    let key = support::authorized_group(&fixture.assistant, "room-gating-on").await;
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "42", "recorded under both"),
+    )
+    .await;
+    let blocks = fixture
+        .store
+        .list_blocks(receipt.conversation_id)
+        .await
+        .expect("the ledger reads");
+    assert_eq!(
+        field(&blocks[0], "content"),
+        support::composed_moderating_prompt(),
+        "the recorded prompt is the moderating composition"
+    );
+    assert!(
+        field(&blocks[0], "content").contains(MODERATION_TEACHING),
+        "the recorded prompt carries the moderation teaching"
+    );
+    assert!(
+        palette_names(&blocks[1]).contains(&report::NAME.to_owned()),
+        "the palette names the report tool"
+    );
+
+    // Addressed with a handle: no teaching, no tool.
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let fixture = support::start_assistant_reporting_as(
+        store,
+        support::silent_provider(),
+        fresh_handle(),
+        ToolSet::new(),
+        ProtectionConfig::default(),
+        AnsweringMode::Addressed,
+    )
+    .await;
+    let key = support::authorized_group(&fixture.assistant, "room-gating-addressed").await;
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "42", "recorded addressed"),
+    )
+    .await;
+    let blocks = fixture
+        .store
+        .list_blocks(receipt.conversation_id)
+        .await
+        .expect("the ledger reads");
+    assert!(
+        !field(&blocks[0], "content").contains(MODERATION_TEACHING),
+        "addressed mode teaches no moderation even with the handle"
+    );
+    assert!(
+        !palette_names(&blocks[1]).contains(&report::NAME.to_owned()),
+        "addressed mode registers no report tool even with the handle"
+    );
+
+    // Helpful without a handle: no teaching, no tool.
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let fixture = support::start_assistant_answering(
+        store,
+        None,
+        ProtectionConfig::default(),
+        AnsweringMode::Helpful,
+    )
+    .await;
+    let key = support::authorized_group(&fixture.assistant, "room-gating-handleless").await;
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "42", "recorded handleless"),
+    )
+    .await;
+    let blocks = fixture
+        .store
+        .list_blocks(receipt.conversation_id)
+        .await
+        .expect("the ledger reads");
+    assert!(
+        !field(&blocks[0], "content").contains(MODERATION_TEACHING),
+        "no handle, no moderation teaching"
+    );
+    assert!(
+        !palette_names(&blocks[1]).contains(&report::NAME.to_owned()),
+        "no handle, no registered report tool"
+    );
+}
+
+/// A pre-unit group conversation whose stored palette predates this unit
+/// gains the current tools on its first activity — and because that first
+/// activity is itself a summoned assessment, the gained report tool files
+/// in the very same turn: the delta append lands ahead of the message, so
+/// the turn's admission reads the fresh palette.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pre_unit_palette_gains_the_report_tool_and_files_on_first_activity() {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let conversation = store
         .create_conversation(
@@ -1483,42 +1903,42 @@ async fn a_pre_unit_palette_gains_the_wiki_and_report_tools_on_first_activity() 
     let (provider, handle) = tool_scripted_provider(
         ToolScript {
             tool: report::NAME.into(),
-            input: "{}".into(),
+            input: r#"{"message_id":"origin-spam-1"}"#.into(),
             narration: None,
         },
         None,
     );
     let key = channel("room-pre-unit-palette");
-    let (fixture, mut replies) = {
-        let fixture = support::start_assistant_reporting(
-            store,
-            provider,
-            handle,
-            support::production_toolset(),
-            ProtectionConfig::default(),
-        )
-        .await;
-        let replies = fixture
-            .assistant
-            .replies(support::ADAPTER)
-            .await
-            .expect("the outbound edge opens");
-        (fixture, replies)
-    };
+    let fixture = support::start_assistant_reporting(
+        store,
+        provider,
+        handle,
+        support::production_toolset(),
+        ProtectionConfig::default(),
+    )
+    .await;
+    let mut replies = fixture
+        .assistant
+        .replies(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
     support::authorize(&fixture.assistant, &key).await;
 
-    // The first activity: the offense lands, and the palette supersedes.
+    // The first activity: the offense lands behind the superseding
+    // palette, summons the assessment, and the gained tool files.
     record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
     let blocks = support::await_ledger(
         &fixture.store,
         conversation,
-        "the superseding palette",
+        "the superseding palette and the filed report",
         |blocks| {
             blocks
                 .iter()
                 .filter(|block| block.block_type == "tool_palette")
                 .count()
                 == 2
+                && blocks.iter().any(|block| block.block_type == "report")
+                && blocks.last().is_some_and(|b| b.block_type == "text")
         },
     )
     .await;
@@ -1532,14 +1952,6 @@ async fn a_pre_unit_palette_gains_the_wiki_and_report_tools_on_first_activity() 
         reporting_palette(),
         "the delta append carries the full registered set, report included"
     );
-
-    // The gained report tool admits and files on the next ask.
-    support::ingest_recorded(&fixture.assistant, report_ask(&key, "origin-spam-1")).await;
-    support::await_ledger(&fixture.store, conversation, "the filed report", |blocks| {
-        blocks.iter().any(|block| block.block_type == "report")
-            && blocks.last().is_some_and(|b| b.block_type == "text")
-    })
-    .await;
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
     assert_eq!(
         recv_reply(&mut replies).await.text,
@@ -1547,7 +1959,7 @@ async fn a_pre_unit_palette_gains_the_wiki_and_report_tools_on_first_activity() 
     );
 }
 
-/// No handle configured (AC7): the report tool is absent from a fresh
+/// No handle configured: the report tool is absent from a fresh
 /// conversation's palette — the wiki tool stands with the other lookups —
 /// and REMOVED from a pre-existing conversation's palette by the delta
 /// append on its first activity under the handleless process.
@@ -1556,8 +1968,8 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
     let db = support::TempDb::new("handle-removed");
     let key = channel("room-handle-removed");
 
-    // Process one, handle configured: the group's palette names the full
-    // set, report included.
+    // Process one, handle configured under helpful answering: the group's
+    // palette names the full set, report included.
     let conversation = support::process_runtime().block_on(async {
         let store = Store::open_with(db.path(), store_config()).expect("the first store opens");
         let fixture = support::start_assistant_reporting(

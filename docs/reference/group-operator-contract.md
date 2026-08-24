@@ -87,6 +87,18 @@ answered as ordinary conversation and nothing is ever filed. What the
 assistant says in that answer is the model's own prose — no mechanism
 scripts a "cannot report" line.
 
+Changed 2026-08-24, with the autonomous-moderation unit: the report is now
+the assistant's own assessment. It judges each group message against the
+group's pinned rules and files the same `/report@<handle>` reply when a
+message clearly violates them — nobody asks, and member-initiated
+reporting is removed. Each message is reported at most once, ever, in
+place of the earlier per-group report window. The capability exists only
+when the `moderation_handle` key is set AND the `answering` key is
+`helpful` (the default): in `addressed` mode the assistant does not read
+the messages it would judge, so the tool does not exist there either. The
+group's administrators judge every report, exactly as before; the
+assistant takes no action of its own (decision 0070).
+
 Three platform-side switches make the filing reach the moderation bot, and
 all three are the operator's to set:
 

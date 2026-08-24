@@ -85,7 +85,9 @@ pub struct Configuration {
     /// value.
     pub privacy_policy: Option<String>,
     /// The moderation bot's handle the report tool files toward; absent
-    /// leaves the report tool unregistered. Resolved through
+    /// leaves the report tool unregistered, and so does the `addressed`
+    /// answering mode even with the handle set — the autonomous assessment
+    /// needs both (unit 15, 2026-08-24). Resolved through
     /// [`Configuration::resolve_moderation_handle`], which trims, strips a
     /// leading `@` and refuses an empty value.
     pub moderation_handle: Option<String>,

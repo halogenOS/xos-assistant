@@ -301,6 +301,13 @@ first is named in the public policy; the answer-block gap joins R6.
   > report and the wiki fetch this unit added — the review trigger "any moderation
   > capability shipping" fired and is answered there.
 
+  > Amended 2026-08-24: the report became the assistant's own assessment — it judges
+  > each group message against the pinned rules and reports a clear violation itself;
+  > member-initiated reporting is removed. The trigger fired again and the addendum in
+  > section 13 answers it. The warn and ban lines stay held; the
+  > assistant-assesses-a-human-decides rule (decision 0070) binds the new path
+  > structurally.
+
 ## 4. Necessity and proportionality
 
 **Is storing every message necessary?** Purposes 1 and 2 cannot be served by storing only
@@ -480,7 +487,7 @@ cannot be borrowed by a flooder (0030, 0034).
 | R4 | Medium | Accepted by the operator on 2026-08-23 for the mention capability. Not solvable while the capability exists. Bounded by the processor retaining nothing, by the terms of the chosen model at the provider layer, and by the identifier being the one the group already sees. |
 | R5 | Low | Bounded surface, no action capability. |
 | R6 | Low to medium | Narrow content, named openly, one framework seam away from closed. |
-| R7 | Low | No sanction capability, bounded volume, stated plainly to readers. Extended 2026-08-23 to the model-produced report relay: a misfire is public, administrator-judged and carries no consequence from the assistant. |
+| R7 | Low | No sanction capability, bounded volume, stated plainly to readers. Extended 2026-08-23 to the model-produced report relay: a misfire is public, administrator-judged and carries no consequence from the assistant. Extended 2026-08-24 to the autonomous assessment: a false positive is now the model's own misjudgment rather than a misread request, bounded the same way — public, administrator-judged, no consequence from the assistant, each message reported at most once — and by the configured reasoning level the judgment runs at. Section 13 carries the assessment. |
 | R8 | Medium until storage protection at rest is confirmed, then low | The one control this assessment cannot yet call shipped. |
 | R9 | Low | Fail-closed authorization, healed on every later contact. |
 | R10 | Low | Whole-conversation removal on deletion. |
@@ -654,3 +661,65 @@ even when the model misfires, and the wiki fetch carries no personal data. The o
 judgment of section 8 stands:
 the residual risk is not high in the meaning of Article 36(1). The warn and ban
 lines remain held out, and their shipping remains a review trigger.
+
+> Superseded in part 2026-08-24: the report is no longer human-initiated — section 13
+> assesses the autonomous form. Everything else in this addendum stands as the record
+> of the shipped mechanism it described.
+
+## 13. Addendum, 2026-08-24: the autonomous moderation assessment
+
+The review trigger "any moderation capability shipping" fired a second time: the
+assistant now assesses each group message against the group's pinned rules on its own
+initiative and reports a clear violation to the group's moderation bot. Member-initiated
+reporting is removed as redundant. This document is a draft amended in place, per its
+own status line.
+
+**The assessment, described.** Under the helpful answering mode every group message
+already reaches the model. The prompt now also teaches it to judge each message against
+the newest pinned rules — guaranteed present in its context, the way the system prompt
+is — and, on a clear violation, to file a report naming the violating message by the
+identifier shown beside it in the conversation. The tool validates that identifier
+against the set of messages the turn is actually assessing, so the model cannot aim a
+report at an old message, an invented identifier or another chat; each message is
+reported at most once, however many turns re-assess it; and the report record stores
+what it always stored — the reported message's identifier, its sender's internal
+identifier, and the fixed command line. The judgment is reasoned: the configured
+reasoning level sizes the model's thinking, and the teaching instructs it to think
+before it reports and to leave borderline calls, rule-absent messages and rule-less
+groups unreported.
+
+**The processing purpose.** Autonomous assessment joins the stated purposes under the
+same legitimate interest as the rest — running an assistant in our own community groups,
+which includes keeping them within their own pinned rules. It reads no message the
+helpful mode did not already read and stores nothing beyond the existing report record.
+It does add one element to what a request carries to the provider: so the model can name
+the message it assesses, each user message in the projection now opens with that
+message's platform identifier — an opaque per-message reference, travelling beside the
+public handle already transmitted (the transmitted-identifier line above), carried only
+inside the request, retained by the processor under the zero-retention terms, and nulled
+by erasure together with the message it marks. It is not an identity identifier — the
+numeric account identifier and the display name still stay on the machine — so the
+identity-minimisation posture at the provider boundary is unchanged; beyond that one
+projection element and the unchanged report record, the assessment discloses nothing new.
+The public policy states the assessment in plain words.
+
+**The human-decides bound.** The assistant assesses, the moderation bot's human
+administrators decide (decision 0070, structural): the report is the capability's whole
+output, no warn, mute, removal or ban exists, and the administrators can ignore any
+report. This is not an automated decision within the meaning of Article 22 GDPR: the
+output is a report to humans who decide, not an effect on the member.
+
+**The false-positive residual.** A wrong report is now the model's own misjudgment —
+nobody asked for it — and it pings the administrators and names a member's message in
+front of them. That exposure is the accepted residual of an assessment-only capability,
+recorded plainly: it is bounded by the human decision (no consequence follows from the
+assistant), by the per-origin bound (one report per message, ever), by publicity (the
+report is a visible reply in the same channel, correctable where it happened), and by
+the reasoning the judgment runs at. No reasoning trace is stored — what is stored is
+the report itself — and this assessment claims no audit trail beyond that. The residual
+joins R7.
+
+**Judgment.** The assessment is machine-made, human-judged, bounded per message,
+erasable and public. The overall judgment of section 8 stands: the residual risk is
+not high in the meaning of Article 36(1). The warn and ban lines remain held out, and
+their shipping remains a review trigger.

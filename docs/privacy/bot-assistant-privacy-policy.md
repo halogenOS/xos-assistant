@@ -31,8 +31,10 @@ to offer help when it can answer a question — on the same basis and under the 
 as everything else here (added 2026-08-23).
 
 _Purpose:_ answering questions in the groups, reading the conversation for
-context, limiting how much the assistant answers per person and per chat, and passing on a
-report when a member asks for one.
+context, limiting how much the assistant answers per person and per chat, and reporting a
+message that breaks the group's pinned rules to the group's moderation bot (changed
+2026-08-24: the assistant makes that assessment itself; the earlier member-asked report
+is gone).
 _Legal basis:_ Article 6(1)(f) GDPR, our legitimate interest in running an assistant in our
 own community groups. You can object at any time, see below.
 
@@ -44,9 +46,8 @@ display name. We
 store beside each message the platform's send time and the time it reached us, which
 message it replied to, whether it was addressed to the assistant, whether you were an
 administrator then, and whether an answer was due or a limit refused one. We take the
-identity data and your administrator standing from the chat platform, the rules from the
-group, a report from the member who asked for it. We take nothing about you from anywhere
-else.
+identity data and your administrator standing from the chat platform, and the rules from
+the group. We take nothing about you from anywhere else.
 
 _Purpose:_ attributing messages, addressing you in an answer, letting the operator act on
 abuse, and making deletion possible at all.
@@ -71,12 +72,15 @@ _Purpose and legal basis:_ as under Messages. The sending is how an answer gets 
 We show no advertising and run no analytics, tracking or profiling. We do not sell, rent or
 pass on what you write for marketing, and neither we nor our processor train a language
 model on it. We make no automated decision about you within the meaning of Article 22 GDPR.
-The assistant does not moderate: it cannot warn, remove or ban anybody, and it watches
-nobody. It can pass a report to the group's moderation bot when a member replies to a
-message and asks for one, and the group's administrators decide what happens. The same
-language model that writes the answers writes that relay, so it can misfire and report a
-message nobody meant; it goes out as a public reply, so you see it. We store the reported
-message's identifier with the report and empty it when the reported person is deleted.
+The assistant does not moderate: it cannot warn, remove or ban anybody. It does read the
+group's messages and judge them against the group's pinned rules, and when a message
+clearly breaks them it reports that message to the group's moderation bot — the group's
+administrators decide what happens, and the assistant itself takes no action (changed
+2026-08-24: this assessment is the assistant's own; before, a member had to ask for a
+report). The same language model that writes the answers makes that judgment, so it can
+misfire and report a message that broke no rule; the report goes out as a public reply,
+so you see it. We store the reported message's identifier with the report and empty it
+when the reported person is deleted.
 Answers are model-written and can be wrong.
 
 **Recipients and processors**

@@ -90,5 +90,5 @@ pub use message::{
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
 };
-pub use teaching::composed_system_prompt;
-pub use window::{ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, REPORT_WINDOW};
+pub use teaching::{MODERATION_TEACHING, composed_system_prompt, moderation_taught};
+pub use window::{ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW};

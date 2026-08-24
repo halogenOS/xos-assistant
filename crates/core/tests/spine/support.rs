@@ -58,10 +58,22 @@ pub const FIXTURE_ANSWERING: assistant_core::AnsweringMode =
     assistant_core::AnsweringMode::Addressed;
 
 /// The whole system prompt a fixture assembly records, as the core
-/// composes it.
+/// composes it — the default fixtures configure no moderation handle.
 #[must_use]
 pub fn composed_prompt() -> String {
-    assistant_core::composed_system_prompt(SYSTEM_PROMPT, NAME, FIXTURE_ANSWERING)
+    assistant_core::composed_system_prompt(SYSTEM_PROMPT, NAME, FIXTURE_ANSWERING, false)
+}
+
+/// The system prompt a reporting fixture records: helpful answering with
+/// the moderation handle configured, so the moderation teaching rides it.
+#[must_use]
+pub fn composed_moderating_prompt() -> String {
+    assistant_core::composed_system_prompt(
+        SYSTEM_PROMPT,
+        NAME,
+        assistant_core::AnsweringMode::Helpful,
+        true,
+    )
 }
 
 /// The fixture's resolved disclosure: the line composed from [`NAME`],
@@ -86,6 +98,23 @@ pub fn disclosed(answer: &str) -> String {
 #[must_use]
 pub fn answer_to(text: &str) -> String {
     format!("The scripted answer to: {text}")
+}
+
+/// The projected text with every message's bracketed id mark removed —
+/// what the scripted provider derives its answer from. The projection
+/// opens each recorded message with its origin in brackets (unit 15), the
+/// way a model reads past an id to the words; stripping here keeps the
+/// suite's answer pins about the words while the marks themselves are
+/// pinned where the projection rule is.
+#[must_use]
+pub fn without_origin_marks(text: &str) -> String {
+    text.lines()
+        .map(|line| match line.find("] ") {
+            Some(end) if line.starts_with('[') => &line[end + 2..],
+            _ => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The cue that scripts an abstention: a turn whose newest projected
@@ -335,7 +364,8 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                     let _ = response_tx.send(ProviderResponse::Error(failure));
                     continue;
                 }
-                let newest = messages.last().map(message_text).unwrap_or_default();
+                let newest =
+                    without_origin_marks(&messages.last().map(message_text).unwrap_or_default());
                 let answer = if newest.contains(ABSTAIN_CUE) {
                     assistant_core::ABSTENTION_SENTINEL.to_owned()
                 } else {
@@ -852,14 +882,37 @@ pub async fn start_assistant_answering(
 pub const MODERATION_HANDLE: &str = "moderation_fixture_bot";
 
 /// Assemble a running assistant with the report tool registered: the
-/// suite's [`MODERATION_HANDLE`] beside the given tool set, under the
-/// default operator wiring — the seam the report tests use.
+/// suite's [`MODERATION_HANDLE`] beside the given tool set, under helpful
+/// answering — the two conditions the registration takes since unit 15 —
+/// and the default operator wiring. The seam the report tests use.
 pub async fn start_assistant_reporting(
     store: Store,
     provider: Box<dyn ProviderModule>,
     script: ScriptHandle,
     tools: ToolSet,
     protection: ProtectionConfig,
+) -> Fixture {
+    start_assistant_reporting_as(
+        store,
+        provider,
+        script,
+        tools,
+        protection,
+        assistant_core::AnsweringMode::Helpful,
+    )
+    .await
+}
+
+/// The reporting seam with the answering mode spelled out — for the
+/// gating pins that prove an addressed deployment registers no report
+/// tool even with the handle configured.
+pub async fn start_assistant_reporting_as(
+    store: Store,
+    provider: Box<dyn ProviderModule>,
+    script: ScriptHandle,
+    tools: ToolSet,
+    protection: ProtectionConfig,
+    answering: assistant_core::AnsweringMode,
 ) -> Fixture {
     start_assistant_config(
         store,
@@ -870,7 +923,7 @@ pub async fn start_assistant_reporting(
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: binding(),
             system_prompt: SYSTEM_PROMPT.into(),
-            answering: FIXTURE_ANSWERING,
+            answering,
             name: NAME.into(),
             disclosure: None,
             protection,

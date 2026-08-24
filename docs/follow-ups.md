@@ -38,3 +38,31 @@ what resolving it takes. Resolved items move into a decision record.
   vocabulary misleads a reader of the configuration. Closing it means a
   neutral provider name across config, crate and docs with a compatibility
   alias for the old key.
+
+- **Unit 15 close, 2026-08-24 — the rules-note in-context guarantee is a
+  guarantee of the request payload, not of what the model retains at scale.**
+  The autonomous assessment rests on the newest rules note being in the
+  model's context (decision 0094); the projection folds the whole loaded,
+  never-windowed ledger into the request, so on a conversation whose history
+  grows past the model's context the provider truncates and nothing pins the
+  rules note as the survivor — the assessment would silently degrade to
+  judging from rules it no longer sees, exactly when a busy group needs it.
+  Near-term low-risk (fresh deployments, large model context, per-conversation
+  ledgers), but the fix is a windowed projection that keeps the system prompt
+  AND the newest rules note pinned regardless of history length, with an
+  acceptance criterion proving the note survives a context-exceeding history.
+
+- **Unit 15 close, 2026-08-24 — report filing serializes on one global lock.**
+  The per-origin dedup replaced the per-channel `LineWindow` with a single
+  process-wide `tokio::sync::Mutex<()>` on the shared report tool, held across
+  the whole store transaction, so a slow append while filing in one channel
+  blocks filing in every other channel. Reports are rare, so the impact is
+  low, but the lock is broader than its stated same-origin-dedup reason.
+  Closing it means keying the dedup guard per conversation (or per origin)
+  rather than globally.
+
+- **Unit 15 close, 2026-08-24 — report filing makes two linear passes over the
+  never-windowed ledger.** Each filing scans the full conversation ledger
+  twice (the dedup check and the append's own load). Rare-path, so low impact,
+  but it grows with the retention-free history. Closing it means a bounded
+  lookup for the prior-report check instead of a full scan.

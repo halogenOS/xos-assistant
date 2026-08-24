@@ -151,6 +151,14 @@ group and not only on a website, which is why the pinned rules carry it.
   > moment it happens, carries no sanction from the assistant, and reaches human judgment
   > either way. The balancing above holds on those three facts, not on a claim that
   > nothing is decided. The impact assessment's addendum carries the detail.
+
+  > Amended 2026-08-24: the assessment is now the assistant's own — it judges each
+  > group message against the pinned rules and reports a clear violation itself;
+  > member-initiated reporting is removed. The three facts the balancing holds on are
+  > unchanged: a report is public where it happens, carries no sanction from the
+  > assistant, and reaches human judgment — the group's administrators decide, and each
+  > message is reported at most once. The impact assessment's second addendum carries
+  > the detail, the false-positive residual included.
 - **No profiling, no scoring, no targeting.** The counters count messages in a window and
   nothing else.
 - **No new audience.** The people in the group already saw the message and the handle
@@ -284,6 +292,10 @@ again:
    > Amended 2026-08-23: the report capability shipped WITH its assessment — the
    > impact assessment's addendum of the same date — so this safeguard is met, not
    > removed. The condition continues to bind the held-out warn and ban lines.
+
+   > Amended 2026-08-24: the autonomous assessment shipped WITH its assessment the
+   > same way — the impact assessment's addendum of that date. The condition
+   > continues to bind the held-out warn and ban lines.
 8. Group admission restricted to the operator's own invitation, fail-closed (decision
    0052).
 
