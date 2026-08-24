@@ -5,6 +5,16 @@
 //! directory contributes, joined in file-name order with a blank line — one
 //! file is the common case, and a split into several stays possible without
 //! touching this loader.
+//!
+//! What this repository ships is the prose every deployment shares: the
+//! project context and the conduct rules. **The persona — who the assistant
+//! is and how it speaks — is deliberately not here** (decided 2026-08-24).
+//! A character belongs to the deployment that wears it, not to the shared
+//! source, and keeping it out means changing a voice is a deployment edit
+//! rather than a new revision of the bot. A deployment supplies its own file
+//! in this directory; the numbering leaves room between the context and the
+//! conduct for exactly that. A deployment that supplies none simply has no
+//! persona, which is a coherent thing to be rather than an error.
 
 use std::path::Path;
 
