@@ -21,8 +21,10 @@
 //! the turn's provenance), `privacy_rights` (the suppression drop, the
 //! self-service commands, the spawned deletion and the privacy tool),
 //! `mirror` (the deletion mirror riding the moderation bot's reply
-//! command), and — behind the openrouter feature — the real `OpenRouter`
-//! module against a loopback server.
+//! command), sourcing (the grounded-answer discipline: the literal
+//! addressed fact beside the summons, and the miss sentinel's routing to
+//! silence or the fixed don't-know line), and — behind the openrouter
+//! feature — the real `OpenRouter` module against a loopback server.
 
 mod addressing;
 mod assembly;
@@ -42,6 +44,7 @@ mod projection;
 mod protection;
 mod reasoning;
 mod report;
+mod sourcing;
 mod speaker;
 mod storage;
 mod support;

@@ -12,7 +12,7 @@
 //! every new conversation's system prompt; like any prompt edit, a changed
 //! name, mode or moderation handle reaches new conversations only.
 
-use crate::abstention::ABSTENTION_SENTINEL;
+use crate::abstention::{ABSTENTION_SENTINEL, MISS_SENTINEL};
 use crate::assembly::AnsweringMode;
 
 /// Whether the moderation teaching composes — and, in the assembly, whether
@@ -89,34 +89,71 @@ fn identity_section(name: &str) -> String {
     )
 }
 
-/// The answering teaching for one mode. Both modes teach the sentinel —
-/// silence must have a mechanism wherever a turn runs — and the helpful
-/// mode adds the judgment for messages that never addressed the assistant.
+/// The answering teaching for one mode (rewritten by unit 16, 2026-08-24).
+/// Both modes teach the sourcing discipline and both sentinels — silence
+/// and the honest miss must have a mechanism wherever a turn runs — and
+/// the helpful mode adds the silence-default judgment for messages that
+/// never addressed the assistant.
 fn answering_section(answering: AnsweringMode) -> String {
-    let sentinel = format!(
-        "To stay silent, reply with exactly {ABSTENTION_SENTINEL} and nothing \
-         else: that reply is swallowed and no message reaches the chat. Never \
-         put {ABSTENTION_SENTINEL} inside an ordinary answer."
-    );
+    let sourcing = sourcing_rules();
+    let sentinels = sentinel_rules();
     match answering {
         AnsweringMode::Helpful => format!(
             "Every message in a group conversation reaches you, including \
              messages that do not address you, and you decide whether to \
-             speak. Answer only when you can genuinely help: a real question \
-             you can answer from your sources or your own knowledge, or a \
-             message that otherwise warrants a reply. Stay silent for members \
-             talking among themselves, for anything you have no information \
-             on, and when a lookup comes back empty — never guess an \
-             answer. If someone else already answered a question well, stay \
-             silent or briefly defer to them. {sentinel}"
+             speak. Silence is the default: a statement that asks nothing, a \
+             message setting up group content, members talking among \
+             themselves — none of these warrant a reply, and if someone else \
+             already answered a question well, stay silent or briefly defer \
+             to them. An answer is the exception, and it must be one you can \
+             back with a lookup. {sourcing} {sentinels}"
         ),
         AnsweringMode::Addressed => format!(
             "You are brought in when a message addresses you: a mention, a \
              reply to one of your messages, your name, or a direct chat. \
              Answer what was asked of you; when even an addressed message \
-             leaves you nothing useful to say, you may stay silent. {sentinel}"
+             leaves you nothing useful to say, you may stay silent. \
+             {sourcing} {sentinels}"
         ),
     }
+}
+
+/// The sourcing discipline, shared by both modes so the operator's rule has
+/// one spelling: the tools are the only source of substantive claims, the
+/// lookup comes before the answer, an unanswering lookup is a miss, no
+/// guesses and no hedged trained knowledge — and the miss sentinel as the
+/// honest whole-answer signal, whose outcome the machinery decides.
+fn sourcing_rules() -> String {
+    format!(
+        "Your lookup tools are the only source of substantive claims: any \
+         claim about the project — a feature, a procedure, a project fact — \
+         must come from a lookup you made in this turn, never from your \
+         trained knowledge, so look it up before you answer. A lookup \
+         answers a question only when its result actually contains the \
+         answer: a result that is empty, off-topic, or missing the specific \
+         claim is a miss, not a licence to fill the gap from memory. Never \
+         guess and never answer from hedged memory — no \"as far as I \
+         know\", no \"probably\" — and in a compound answer, every \
+         project-specific claim is either confirmed by a lookup or dropped. \
+         When you looked and could not confirm an answer, reply with exactly \
+         {MISS_SENTINEL} and nothing else: whether the asker is told you \
+         don't know, or nothing is said, is decided for you."
+    )
+}
+
+/// The two sentinels with their distinct meanings, shared by both modes:
+/// social silence and the unresolved lookup are different facts, and the
+/// mechanism that routes them can only tell them apart if the model never
+/// uses one for the other.
+fn sentinel_rules() -> String {
+    format!(
+        "To stay silent, reply with exactly {ABSTENTION_SENTINEL} and \
+         nothing else: that reply is swallowed and no message reaches the \
+         chat. The two sentinels mean different things — {ABSTENTION_SENTINEL} \
+         is social silence, nothing to add; {MISS_SENTINEL} is an unresolved \
+         lookup, you looked and found nothing — never use one for the other, \
+         and never put either inside an ordinary answer."
+    )
 }
 
 #[cfg(test)]
@@ -153,6 +190,71 @@ mod tests {
             addressed.contains("when a message addresses you"),
             "addressed mode teaches the summons shape"
         );
+    }
+
+    /// AC7 (unit 16): both modes' teaching carries the sourcing discipline
+    /// verbatim — the tools as the only source of substantive claims, the
+    /// lookup before the answer, the sufficiency rule that an unanswering
+    /// lookup is a miss, the no-guessing and no-hedged-knowledge
+    /// prohibition, and the miss sentinel as the whole-answer signal. The
+    /// addressed mode's gain is exactly this discipline; the
+    /// silence-default framing and the sentinel distinction are pinned in
+    /// the test below.
+    #[test]
+    fn both_modes_teach_the_sourcing_discipline() {
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            let prompt = composed_system_prompt("b", "n", mode, false);
+            for fact in [
+                "Your lookup tools are the only source of substantive claims".to_owned(),
+                "never from your trained knowledge, so look it up before you answer".to_owned(),
+                "a result that is empty, off-topic, or missing the specific \
+                 claim is a miss, not a licence to fill the gap from memory"
+                    .to_owned(),
+                "Never guess and never answer from hedged memory".to_owned(),
+                "every project-specific claim is either confirmed by a lookup or dropped"
+                    .to_owned(),
+                format!(
+                    "When you looked and could not confirm an answer, reply \
+                     with exactly {MISS_SENTINEL} and nothing else"
+                ),
+            ] {
+                assert!(
+                    prompt.contains(&fact),
+                    "the {mode:?} teaching carries: {fact}"
+                );
+            }
+        }
+    }
+
+    /// AC7's silence and sentinel half (unit 16): helpful mode leads with
+    /// silence as the default, and both modes name the two sentinels with
+    /// their distinct meanings — social silence against the unresolved
+    /// lookup — plus the never-inside-an-answer rule.
+    #[test]
+    fn silence_is_the_default_and_the_sentinels_carry_distinct_meanings() {
+        let helpful = composed_system_prompt("b", "n", AnsweringMode::Helpful, false);
+        assert!(
+            helpful.contains("Silence is the default"),
+            "helpful mode leads with silence"
+        );
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            let prompt = composed_system_prompt("b", "n", mode, false);
+            assert!(
+                prompt.contains(&format!(
+                    "{ABSTENTION_SENTINEL} is social silence, nothing to add; \
+                     {MISS_SENTINEL} is an unresolved lookup, you looked and \
+                     found nothing"
+                )),
+                "the {mode:?} teaching tells the sentinels apart"
+            );
+            assert!(
+                prompt.contains(
+                    "never use one for the other, and never put \
+                 either inside an ordinary answer"
+                ),
+                "the {mode:?} teaching bounds both sentinels to the whole answer"
+            );
+        }
     }
 
     /// AC7's prompt half at the composition itself: the moderation teaching

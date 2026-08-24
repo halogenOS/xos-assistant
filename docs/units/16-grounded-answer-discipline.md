@@ -1,13 +1,13 @@
 # Unit 16 — grounded-answer discipline (and the literal-addressed fact)
 
 Date: 2026-08-24. Revision 2, rewritten after a cold probe found that revision 1
-would have broken two just-merged units. The operator's rule (msg 574): "No
-guessing. Even if the model says dont know, they are not allowed to give any
-information from trained knowledge. The lookup must happen and the reaction is
-either nothing or dont know." The live failure: asked "How do I use sandboxed
-play in xos", the assistant looked up (a guessed page name that 404'd) and a
-commit, found nothing, and answered from training — "As far as I know, sandboxed
-Google Play is primarily a GrapheneOS feature…".
+would have broken two just-merged units. The operator's rule is absolute: the
+assistant may never answer a substantive question from its trained knowledge —
+the lookup must happen, and when it finds nothing the reaction is either silence
+or a plain admission of not knowing, never a guess. The failure that prompted
+it: asked how to use a specific feature, the assistant ran a lookup (on a
+guessed page name that 404'd) and a second lookup, found nothing, and then
+answered from training with a hedged guess instead of admitting the miss.
 
 Revision 1 tried to key the miss outcome on a per-message "addressed" fact the
 MODEL would read, and to re-point the report tool and the disclosure fold onto
@@ -87,8 +87,8 @@ mechanism consumer, and moves the miss decision out of the model entirely.
   nothing", and would wrongly answer "don't know" to an addressed "lol").
 
 - **Silence is the default in helpful mode; the grounded answer earns its way
-  out, 2026-08-24.** Restating unit 14's intent with the test's force (owner msg
-  564: not a reply to every message). A statement that asks nothing, a message
+  out, 2026-08-24.** Restating unit 14's intent with the live test's force — the
+  assistant is not a reply to every message. A statement that asks nothing, a message
   setting up group content, members talking among themselves — none warrant a
   reply; the assistant stays silent (the abstention sentinel). The teaching leads
   with silence as the default and frames the grounded answer as the exception

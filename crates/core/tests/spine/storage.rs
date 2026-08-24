@@ -270,14 +270,15 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
             Store::open_with(db.path(), store_config()).expect("the configured store opens");
         // The rewind: undo exactly what the steps past version eleven do —
         // restore the column the retirement step drops, with a stored
-        // value, and drop the suppression flag the privacy-self-service
-        // step adds — and set the version back, leaving that unit's disk
-        // shape. The written value proves the drop deletes data, not just
-        // an empty surface.
+        // value, and drop the suppression flag and the literal-addressed
+        // column the later steps add — and set the version back, leaving
+        // that unit's disk shape. The written value proves the drop
+        // deletes data, not just an empty surface.
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(
                 "ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
+                 ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
                  INSERT INTO principals (adapter, external_id, display_name, username)
                      VALUES ('test-adapter', '42', 'Ada Lovelace', 'ada');",
             )?;
@@ -294,7 +295,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
         .expect("the version-eleven store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        13,
+        14,
         "the appended steps advanced the domain's version"
     );
     let (columns, row): (Vec<String>, (String, String, Option<String>)) =
@@ -341,17 +342,96 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
     );
 }
 
-/// AC1 of the helpful-mode unit (unit 14): the unit appends no migration
-/// step — a store the previous unit's binary wrote already carries this
-/// build's recorded version, so it reopens with no schema change at all.
-/// The pinned number is the shipped step count; a unit that appends a step
-/// updates this pin deliberately, beside its own upgrade test.
-#[tokio::test]
-async fn the_helpful_mode_unit_appends_no_migration_step() {
-    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+/// AC1 of the grounded-answer unit (unit 16): a store the previous unit's
+/// binary wrote — version thirteen, its message table without the literal
+/// column — upgrades cleanly through the appended literal-addressed step.
+/// The column arrives with its safe default: every historical row reads
+/// NULL, which the one reader folds to the silent outcome, and the recast
+/// `addressed` column is untouched — a pre-upgrade row's stored summons
+/// reads back exactly as it was written, so no summons reader changes
+/// meaning. The pinned version is the shipped step count; a unit that
+/// appends a step updates it deliberately, beside its own upgrade test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() {
+    let db = TempDb::new("v13-upgrade");
+    let conversation;
+    {
+        let store =
+            Store::open_with(db.path(), store_config()).expect("the configured store opens");
+        assert_eq!(
+            support::domain_migration_version(&store).await,
+            14,
+            "the domain's recorded version is the grounded-answer unit's"
+        );
+        // One recorded summoned message, then the rewind: drop exactly the
+        // column the literal-addressed step adds and set the version back,
+        // leaving the previous unit's disk shape with a stored row in it.
+        conversation = store
+            .create_conversation(
+                "scripted-1".into(),
+                "script-model".into(),
+                "Script Model".into(),
+                support::VENDOR.into(),
+            )
+            .await
+            .expect("a conversation row");
+        let mut fields = serde_json::Map::new();
+        fields.insert("text".into(), json!("a pre-upgrade summoned ask"));
+        fields.insert("principal_id".into(), json!(1));
+        fields.insert("authority".into(), json!("member"));
+        fields.insert("addressed".into(), json!(true));
+        fields.insert("answer_due".into(), json!(true));
+        store
+            .append_consumer_block(
+                conversation,
+                Some(Role::User),
+                CHAT_MESSAGE_KIND,
+                fields,
+                None,
+            )
+            .await
+            .expect("the pre-upgrade row appends");
+        agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;"
+            ))?;
+            Ok(())
+        })
+        .await
+        .expect("the store rewinds to the previous unit's shape");
+        support::rewind_domain_migration_version(&store, 13).await;
+        // The first store closes before the reopen, so the upgrade reads
+        // the disk, not a live connection.
+    }
+
+    let reopened = Store::open_with(db.path(), store_config())
+        .expect("the version-thirteen store reopens under the shipped configuration");
     assert_eq!(
-        support::domain_migration_version(&store).await,
-        13,
-        "the domain's recorded version is the deletion-mirror unit's"
+        support::domain_migration_version(&reopened).await,
+        14,
+        "the appended step advanced the domain's version"
     );
+    let blocks = reopened
+        .list_blocks(conversation)
+        .await
+        .expect("the upgraded ledger reads");
+    match AssistantKind::from_block(&blocks[0]) {
+        AssistantKind::ChatMessage(message) => {
+            assert_eq!(
+                message.addressed,
+                Some(true),
+                "the recast summons column is untouched by the upgrade"
+            );
+            assert_eq!(
+                message.literal_addressed, None,
+                "the historical row reads the safe default: no literal value"
+            );
+        }
+        AssistantKind::Core(_)
+        | AssistantKind::ToolPalette(_)
+        | AssistantKind::ContextNote(_)
+        | AssistantKind::Report(_) => {
+            panic!("the upgraded row resolved through the delegate")
+        }
+    }
 }

@@ -122,6 +122,12 @@ pub fn without_origin_marks(text: &str) -> String {
 /// whole answer, the way the prompt teaches the model to stay silent.
 pub const ABSTAIN_CUE: &str = "(the quiet cue)";
 
+/// The cue that scripts a miss: a turn whose projected question carries
+/// this text answers with the miss sentinel as its whole answer, the way
+/// the prompt teaches the model to admit an unresolved lookup — the
+/// scripted stand-in for a lookup whose result did not contain the claim.
+pub const MISS_CUE: &str = "(the unanswerable cue)";
+
 /// The first answer a person is delivered, as the edge stores and sends it:
 /// the disclosure line, a blank line, then the scripted answer to the given
 /// text.
@@ -368,6 +374,8 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                     without_origin_marks(&messages.last().map(message_text).unwrap_or_default());
                 let answer = if newest.contains(ABSTAIN_CUE) {
                     assistant_core::ABSTENTION_SENTINEL.to_owned()
+                } else if newest.contains(MISS_CUE) {
+                    assistant_core::MISS_SENTINEL.to_owned()
                 } else {
                     answer_to(&newest)
                 };
@@ -499,6 +507,12 @@ pub fn tool_scripted_provider(
                         continue;
                     }
                     let answered = messages.iter().any(carries_tool_result);
+                    // The sufficiency script: a question carrying the miss
+                    // cue closes with the miss sentinel after its lookup —
+                    // the taught reaction to a result that did not contain
+                    // the claim — while every other turn closes with the
+                    // ordinary answer.
+                    let missed = messages.iter().any(|m| carries(m, MISS_CUE));
                     let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                     seen.lock().unwrap().push(messages);
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
@@ -506,7 +520,11 @@ pub fn tool_scripted_provider(
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
                         let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: CLOSING_ANSWER.into(),
+                            text: if missed {
+                                assistant_core::MISS_SENTINEL.into()
+                            } else {
+                                CLOSING_ANSWER.into()
+                            },
                         }));
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
