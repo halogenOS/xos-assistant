@@ -1812,10 +1812,13 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
 /// The scripted raw host's page body for the happy-path pins.
 const WIKI_PAGE: &str = "# Home\n\nWelcome to the halogenOS wiki.\n";
 
-/// One wiki tool set over a scripted server and a timeout.
-fn wiki_tools(base: String, timeout: Duration) -> ToolSet {
+/// One wiki tool set over a raw host, an index host and a timeout.
+fn wiki_tools(base: String, index_base: String, timeout: Duration) -> ToolSet {
     let mut tools = ToolSet::new();
-    tools.admit(wiki::REQUIRED_AUTHORITY, WikiLookup::new(base, timeout));
+    tools.admit(
+        wiki::REQUIRED_AUTHORITY,
+        WikiLookup::new(base, index_base, timeout),
+    );
     tools
 }
 
@@ -1825,7 +1828,11 @@ fn wiki_tools(base: String, timeout: Duration) -> ToolSet {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_wiki_lookup_reads_a_page_end_to_end() {
     let host = LookupServer::start(LookupAnswer::Text(200, WIKI_PAGE.into())).await;
-    let tools = wiki_tools(host.base(), wiki::DEFAULT_TIMEOUT);
+    let tools = wiki_tools(
+        host.base(),
+        support::UNROUTABLE.into(),
+        wiki::DEFAULT_TIMEOUT,
+    );
     let script = ToolScript {
         tool: wiki::NAME.into(),
         input: r#"{"page":"Home"}"#.into(),
@@ -1879,8 +1886,8 @@ async fn a_missing_wiki_page_and_a_timeout_become_tool_errors() {
             LookupAnswer::Text(404, "404: Not Found".into()),
             Duration::from_secs(10),
             "the wiki has no page named `Guessed-Page` — a page is named by its title \
-             with spaces as dashes, parentheses literal; fetch the Home page or the \
-             _Sidebar page to see the page names"
+             with spaces as dashes, parentheses literal; call this tool with no page \
+             to list the wiki's page names"
                 .to_owned(),
         ),
         (
@@ -1891,7 +1898,7 @@ async fn a_missing_wiki_page_and_a_timeout_become_tool_errors() {
         ),
     ] {
         let host = LookupServer::start(answer).await;
-        let tools = wiki_tools(host.base(), timeout);
+        let tools = wiki_tools(host.base(), support::UNROUTABLE.into(), timeout);
         let script = ToolScript {
             tool: wiki::NAME.into(),
             input: r#"{"page":"Guessed-Page"}"#.into(),
@@ -1967,7 +1974,7 @@ async fn the_wiki_cache_serves_repeats_caches_the_missing_page_and_clears_at_the
 
     // A repeat inside the TTL: one request on the wire.
     let host = LookupServer::start(LookupAnswer::Text(200, WIKI_PAGE.into())).await;
-    let tool = WikiLookup::new(host.base(), wiki::DEFAULT_TIMEOUT);
+    let tool = WikiLookup::new(host.base(), support::UNROUTABLE, wiki::DEFAULT_TIMEOUT);
     for _ in 0..2 {
         let outcome = call_wiki(&tool, &store, r#"{"page":"Home"}"#).await;
         assert!(
@@ -1984,7 +1991,7 @@ async fn the_wiki_cache_serves_repeats_caches_the_missing_page_and_clears_at_the
     // A missing page is cached alike: two calls, one request, the same
     // named error both times.
     let missing = LookupServer::start(LookupAnswer::Text(404, "404: Not Found".into())).await;
-    let guessing = WikiLookup::new(missing.base(), wiki::DEFAULT_TIMEOUT);
+    let guessing = WikiLookup::new(missing.base(), support::UNROUTABLE, wiki::DEFAULT_TIMEOUT);
     for _ in 0..2 {
         let outcome = call_wiki(&guessing, &store, r#"{"page":"Guessed-Page"}"#).await;
         assert!(
@@ -2001,7 +2008,11 @@ async fn the_wiki_cache_serves_repeats_caches_the_missing_page_and_clears_at_the
     // The cap: one page past it clears the cache whole, so the first
     // page's next ask meets the wire again.
     let capped_host = LookupServer::start(LookupAnswer::Text(200, WIKI_PAGE.into())).await;
-    let capped = WikiLookup::new(capped_host.base(), wiki::DEFAULT_TIMEOUT);
+    let capped = WikiLookup::new(
+        capped_host.base(),
+        support::UNROUTABLE,
+        wiki::DEFAULT_TIMEOUT,
+    );
     for n in 0..=wiki::CACHE_CAP {
         let input = format!("{{\"page\":\"Page-{n}\"}}");
         let outcome = call_wiki(&capped, &store, &input).await;
@@ -2029,7 +2040,7 @@ async fn an_over_bound_wiki_page_is_truncated_with_the_marker() {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let long_page = "x".repeat(wiki::RESULT_LIMIT + 500);
     let host = LookupServer::start(LookupAnswer::Text(200, long_page)).await;
-    let tool = WikiLookup::new(host.base(), wiki::DEFAULT_TIMEOUT);
+    let tool = WikiLookup::new(host.base(), support::UNROUTABLE, wiki::DEFAULT_TIMEOUT);
     let outcome = call_wiki(&tool, &store, r#"{"page":"Home"}"#).await;
     let ToolOutcome::Done(text) = outcome else {
         panic!("the over-bound page still answers");
@@ -2042,5 +2053,231 @@ async fn an_over_bound_wiki_page_is_truncated_with_the_marker() {
         text.chars().count(),
         wiki::RESULT_LIMIT + wiki::TRUNCATION_MARKER.chars().count(),
         "the bound counts characters of the page, the marker rides after it"
+    );
+}
+
+// ─── The wiki page enumeration over the scripted index host ──────────────
+
+/// The captured real wiki index — the rendered landing HTML the scripted
+/// index host serves, with a link to every content page.
+const WIKI_INDEX: &str = include_str!("../fixtures/wiki-index.html");
+
+/// Every content page the captured index links, in the tool's page-name
+/// shape, sorted — including the feature page that the hand-written
+/// sidebar and the entry page do NOT link, the live gap the enumeration
+/// exists to close.
+const WIKI_INDEX_PAGES: [&str; 15] = [
+    "AIDL-HALs",
+    "Button-Backlight-Control",
+    "Code-of-Conduct",
+    "Configurable-Dark-Mode-Tones",
+    "Contact-and-maintainership",
+    "Encryption-auto-detection",
+    "Fixing-errors",
+    "Fixing-runtime-errors",
+    "Font-System",
+    "Home",
+    "Integrating-Sandboxed-Google-Play-(16.2)",
+    "Porting-from-other-ROMs",
+    "Porting-from-other-ROMs-(Legacy)",
+    "Project-Standards",
+    "System-AIDL-Services",
+];
+
+/// The unlinked feature page — present in the index, absent from the
+/// sidebar and the entry page.
+const UNLINKED_PAGE: &str = "Integrating-Sandboxed-Google-Play-(16.2)";
+
+/// The enumeration end to end: called with no page name, the tool GETs the
+/// rendered index once from the index host — never the raw host — and the
+/// full sorted page list is the result block the model reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_wiki_enumeration_lists_every_page_end_to_end() {
+    let raw_host = LookupServer::start(LookupAnswer::Text(200, WIKI_PAGE.into())).await;
+    let index_host = LookupServer::start(LookupAnswer::Text(200, WIKI_INDEX.into())).await;
+    let tools = wiki_tools(raw_host.base(), index_host.base(), wiki::DEFAULT_TIMEOUT);
+    let script = ToolScript {
+        tool: wiki::NAME.into(),
+        input: "{}".into(),
+        narration: None,
+    };
+    let (fixture, mut replies) = tool_fixture(script, None, tools).await;
+
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
+            &channel("dm-wiki-list"),
+            ChannelKind::Direct,
+            "42",
+            "what pages does the wiki have?",
+        ),
+    )
+    .await;
+    let blocks = settle_shape(
+        &fixture.store,
+        receipt.conversation_id,
+        "the enumeration turn",
+        &[
+            "system_prompt",
+            "tool_palette",
+            "chat_message",
+            "tool_call",
+            "tool_result",
+            "text",
+        ],
+    )
+    .await;
+    assert_eq!(
+        field(&blocks[4], "content"),
+        WIKI_INDEX_PAGES.join("\n"),
+        "the result is the full sorted page list in the page-name shape"
+    );
+    let requests = index_host.requests();
+    assert_eq!(requests.len(), 1, "the index was fetched once");
+    assert_eq!(requests[0].path, "/halogenOS/android_manifest/wiki");
+    assert!(
+        raw_host.requests().is_empty(),
+        "the page list never touches the raw host"
+    );
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        support::disclosed(CLOSING_ANSWER)
+    );
+}
+
+/// The list-then-fetch round trip: a name the enumeration returned — the
+/// unlinked feature page among them — feeds straight back into the page
+/// fetch, unmangled, and resolves against the raw host at the page path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_listed_page_name_feeds_back_into_the_fetch() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let raw_host = LookupServer::start(LookupAnswer::Text(200, WIKI_PAGE.into())).await;
+    let index_host = LookupServer::start(LookupAnswer::Text(200, WIKI_INDEX.into())).await;
+    let tool = WikiLookup::new(raw_host.base(), index_host.base(), wiki::DEFAULT_TIMEOUT);
+
+    let outcome = call_wiki(&tool, &store, "{}").await;
+    let ToolOutcome::Done(list) = outcome else {
+        panic!("the enumeration answers the page list");
+    };
+    let names: Vec<&str> = list.lines().collect();
+    assert_eq!(names, WIKI_INDEX_PAGES, "one page name per line, sorted");
+    for name in &names {
+        assert!(
+            wiki::valid_page_name(name),
+            "a listed name passes the fetch's own predicate: {name}"
+        );
+    }
+    assert!(
+        names.contains(&UNLINKED_PAGE),
+        "the page the sidebar and the entry page do not link is listed"
+    );
+
+    let input = format!("{{\"page\":\"{UNLINKED_PAGE}\"}}");
+    let outcome = call_wiki(&tool, &store, &input).await;
+    assert!(
+        matches!(&outcome, ToolOutcome::Done(text) if text == WIKI_PAGE),
+        "the listed name resolves as a fetch"
+    );
+    let requests = raw_host.requests();
+    assert_eq!(requests.len(), 1, "one page fetch on the raw wire");
+    assert_eq!(
+        requests[0].path,
+        format!("/wiki/halogenOS/android_manifest/{UNLINKED_PAGE}.md"),
+        "the name reaches the raw host exactly as listed"
+    );
+}
+
+/// A 200 index the scan finds no page links in is a loud tool error, not a
+/// silent empty list: an empty answer would read as "the wiki has no pages"
+/// and, under the grounded-answer discipline, silence every question the wiki
+/// could answer. A markup shift that broke the scan must surface, not hide.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_index_with_no_page_links_errors_rather_than_answering_empty() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let raw_host = LookupServer::start(LookupAnswer::Text(200, WIKI_PAGE.into())).await;
+    let index_host = LookupServer::start(LookupAnswer::Text(
+        200,
+        "<html><body>a landing page with no wiki page links at all</body></html>".into(),
+    ))
+    .await;
+    let tool = WikiLookup::new(raw_host.base(), index_host.base(), wiki::DEFAULT_TIMEOUT);
+
+    let ToolOutcome::Error(message) = call_wiki(&tool, &store, "{}").await else {
+        panic!("a 200 index with no page links must be a tool error, not an answer");
+    };
+    assert!(
+        message.contains("no page links were found"),
+        "the error names the unreadable index: {message}"
+    );
+    assert!(
+        raw_host.requests().is_empty(),
+        "the page list never touches the raw host"
+    );
+}
+
+/// The bounded-GET contract on the index: a served index is cached under
+/// the TTL like a page, a missing index is a clean tool error, and a
+/// transport failure surfaces uncached — the wire is asked again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_index_answer_is_cached_and_a_wire_failure_is_not() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+
+    // A repeat inside the TTL: one request on the wire.
+    let index_host = LookupServer::start(LookupAnswer::Text(200, WIKI_INDEX.into())).await;
+    let tool = WikiLookup::new(
+        support::UNROUTABLE,
+        index_host.base(),
+        wiki::DEFAULT_TIMEOUT,
+    );
+    for _ in 0..2 {
+        let outcome = call_wiki(&tool, &store, "{}").await;
+        assert!(
+            matches!(&outcome, ToolOutcome::Done(list) if list == &WIKI_INDEX_PAGES.join("\n")),
+            "the list answers from the wire, then from the cache"
+        );
+    }
+    assert_eq!(
+        index_host.requests().len(),
+        1,
+        "the repeat inside the TTL asked the wire nothing"
+    );
+
+    // A missing index is the named tool error, not a raw status.
+    let missing = LookupServer::start(LookupAnswer::Text(404, "404: Not Found".into())).await;
+    let unlisted = WikiLookup::new(support::UNROUTABLE, missing.base(), wiki::DEFAULT_TIMEOUT);
+    let outcome = call_wiki(&unlisted, &store, "{}").await;
+    assert!(
+        matches!(
+            &outcome,
+            ToolOutcome::Error(error)
+                if error == "the wiki index answered: not found — the page list cannot \
+                             be read right now"
+        ),
+        "the missing index is a clean tool error"
+    );
+
+    // A transport failure surfaces and is never cached: the second call
+    // meets the wire again.
+    let stalled = LookupServer::start(LookupAnswer::Stall(Duration::from_secs(5))).await;
+    let timing_out = WikiLookup::new(
+        support::UNROUTABLE,
+        stalled.base(),
+        Duration::from_millis(100),
+    );
+    for _ in 0..2 {
+        let outcome = call_wiki(&timing_out, &store, "{}").await;
+        assert!(
+            matches!(
+                &outcome,
+                ToolOutcome::Error(error)
+                    if error == "the wiki index did not answer within the time bound"
+            ),
+            "the timeout surfaces as the named error"
+        );
+    }
+    assert_eq!(
+        stalled.requests().len(),
+        2,
+        "a wire failure is never cached — the retry reached the wire"
     );
 }

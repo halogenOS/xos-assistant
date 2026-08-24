@@ -11,9 +11,9 @@ use serde_json::Value;
 pub(crate) const ORGANIZATION: &str = "halogenOS";
 
 /// The largest answer body a lookup reads before refusing, in bytes —
-/// shared by all three fetches: the two JSON dialects answering one object
-/// each, and the wiki's plain-text page read. A body past this bound is
-/// not an answer this unit has a reading for.
+/// shared by every fetch: the two JSON dialects answering one object
+/// each, and the wiki's plain-text page and rendered-index reads. A body
+/// past this bound is not an answer this unit has a reading for.
 pub(crate) const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// The client every lookup performs its one bounded GET with: the given

@@ -413,6 +413,7 @@ pub async fn start_assistant() -> Fixture {
                 mirror: UNROUTABLE.into(),
                 mirror_token: None,
                 wiki: UNROUTABLE.into(),
+                wiki_index: UNROUTABLE.into(),
             },
         ),
     )
@@ -451,6 +452,7 @@ pub async fn start_assistant_direct_off() -> Fixture {
                 mirror: UNROUTABLE.into(),
                 mirror_token: None,
                 wiki: UNROUTABLE.into(),
+                wiki_index: UNROUTABLE.into(),
             },
         ),
         None,
