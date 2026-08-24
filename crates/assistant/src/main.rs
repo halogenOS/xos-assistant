@@ -446,6 +446,19 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     )
     .await?;
 
+    // Before serving: a channel whose conversation recorded an older prompt
+    // starts a new one, so an edited prompt reaches the groups already being
+    // served instead of only the next group to appear. Startup is the one
+    // moment the composed prompt can have moved — it comes from configuration
+    // and from files read at boot — so this runs here and never again.
+    let retired = assistant.retire_stale_prompts().await?;
+    if retired > 0 {
+        tracing::info!(
+            channels = retired,
+            "the system prompt changed; those channels start new conversations"
+        );
+    }
+
     log_startup(
         &configuration,
         wiki_endpoint.as_deref(),

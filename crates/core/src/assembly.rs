@@ -19,7 +19,8 @@ use std::sync::Arc;
 use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{ProviderInstance, StoreTx};
 use agent_ledger::{
-    CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext, Store, spawn_reactor,
+    BlockKind, CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext, Store,
+    spawn_reactor,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 
@@ -810,6 +811,74 @@ impl Assistant {
     /// the delivery guarantee is unchanged; a title note is never
     /// acknowledged.
     ///
+    /// Retire every mapped conversation whose recorded system prompt is no
+    /// longer the one this process composes, so an edited prompt reaches the
+    /// groups already being served.
+    ///
+    /// A conversation records the composed prompt once, when it is created.
+    /// That was the whole story while a deployment's wording never moved, and
+    /// it stopped being the whole story the moment one did: the operator
+    /// edited the prose, the deployment shipped, and every live group kept
+    /// answering under the wording it had started with, with nothing saying
+    /// so. The prompt had changed and the assistant had not.
+    ///
+    /// This runs once at startup, which is exactly when the composed prompt
+    /// can differ — it is composed from configuration and from files read at
+    /// boot, so nothing can change it while the process runs. Each mapped
+    /// channel's conversation is read for its system prompt; where that text
+    /// differs from the one composed now, the channel's mapping is dropped.
+    /// The next message on that channel then takes the ordinary unmapped
+    /// path and creates a fresh conversation carrying the current prompt.
+    ///
+    /// Nothing is rewritten and nothing is deleted. The old conversation
+    /// stays in the ledger exactly as it was — readable, exportable, and
+    /// reachable by erasure through the same principal it always was — and
+    /// the channel simply moves on from it. That is the append-only answer
+    /// to a changed prompt: not a mutated record, but a new conversation
+    /// beside the old one.
+    ///
+    /// The cost is stated rather than hidden: the group's earlier
+    /// conversation no longer rides in the model's context, so the assistant
+    /// starts that channel fresh. A prompt edit is a change of instructions,
+    /// and carrying half a conversation under new instructions is its own
+    /// kind of wrong.
+    ///
+    /// Returns how many channels were retired.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Store`] if a mapping read, a block read or the unmapping
+    /// fails.
+    pub async fn retire_stale_prompts(&self) -> Result<usize, CoreError> {
+        let store = self.ctx.store();
+        let tx = store.tx();
+        let mut retired = 0;
+        for record in mapping::all(&tx).await? {
+            let blocks = store.list_blocks(record.conversation_id).await?;
+            let recorded = blocks
+                .iter()
+                .find_map(|block| match AssistantKind::from_block(block) {
+                    AssistantKind::Core(kind::FrameworkKind(BlockKind::SystemPrompt(prompt))) => {
+                        Some(prompt.content)
+                    }
+                    _ => None,
+                });
+            // An absent prompt retires too: a mapped conversation that never
+            // recorded one cannot be serving the current wording either, and
+            // leaving it mapped would keep that silence permanent.
+            if recorded.as_deref() == Some(self.system_prompt.as_str()) {
+                continue;
+            }
+            mapping::delete_by_conversation(&tx, record.conversation_id).await?;
+            retired += 1;
+            tracing::info!(
+                conversation_id = record.conversation_id,
+                "the recorded system prompt is stale; the channel starts a new conversation"
+            );
+        }
+        Ok(retired)
+    }
+
     /// A direct-channel observation observes nothing: group facts belong to
     /// groups, and the direct path is untouched by this unit.
     ///
