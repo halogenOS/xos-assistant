@@ -65,8 +65,12 @@ pub struct LookupEndpoints {
     pub mirror: String,
     /// The mirror's optional bearer token, absent for anonymous reads.
     pub mirror_token: Option<String>,
-    /// The raw wiki base URL the wiki lookup queries.
+    /// The raw wiki base URL the wiki lookup reads page content from.
     pub wiki: String,
+    /// The forge base URL the wiki lookup's page enumeration reads the
+    /// rendered wiki index from — a second host on purpose: the raw host
+    /// serves pages but no index.
+    pub wiki_index: String,
 }
 
 impl ToolSet {
@@ -100,7 +104,7 @@ impl ToolSet {
         );
         set.admit(
             wiki::REQUIRED_AUTHORITY,
-            WikiLookup::new(endpoints.wiki, wiki::DEFAULT_TIMEOUT),
+            WikiLookup::new(endpoints.wiki, endpoints.wiki_index, wiki::DEFAULT_TIMEOUT),
         );
         set
     }
@@ -169,6 +173,7 @@ mod tests {
         assert_eq!(commit::DEFAULT_BASE_URL, "https://git.halogenos.org");
         assert_eq!(release::DEFAULT_BASE_URL, "https://api.github.com");
         assert_eq!(wiki::DEFAULT_BASE_URL, "https://raw.githubusercontent.com");
+        assert_eq!(wiki::DEFAULT_INDEX_BASE_URL, "https://github.com");
     }
 
     #[test]
@@ -180,6 +185,7 @@ mod tests {
             mirror: "http://127.0.0.1:1".into(),
             mirror_token: None,
             wiki: "http://127.0.0.1:1".into(),
+            wiki_index: "http://127.0.0.1:1".into(),
         });
         let (_, names) = set.into_registry();
         assert_eq!(

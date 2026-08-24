@@ -124,6 +124,11 @@ enum StartError {
     #[error("the endpoints.wiki key must carry an address; omit it for the real host")]
     WikiEndpointEmpty,
 
+    /// The wiki index endpoint override is present but empty or
+    /// whitespace. Omitting the key is how the real forge host is chosen.
+    #[error("the endpoints.wiki_index key must carry an address; omit it for the real host")]
+    WikiIndexEndpointEmpty,
+
     /// A secret reference names both sources or neither.
     #[error("the secret `{key}` must name exactly one of `env` or `file`")]
     SecretRef { key: &'static str },
@@ -195,6 +200,7 @@ fn run() -> Result<(), StartError> {
     let privacy_policy = configuration.resolve_privacy_policy()?;
     let moderation_handle = configuration.resolve_moderation_handle()?;
     let wiki_endpoint = configuration.resolve_wiki_endpoint()?;
+    let wiki_index_endpoint = configuration.resolve_wiki_index_endpoint()?;
     let name = configuration.resolve_name()?;
     let disclosure = configuration.resolve_disclosure()?;
     let bot_token = configuration.secrets.bot_token.resolve("bot_token")?;
@@ -223,6 +229,7 @@ fn run() -> Result<(), StartError> {
             privacy_policy,
             moderation_handle,
             wiki_endpoint,
+            wiki_index_endpoint,
             name,
             disclosure,
             bot_token,
@@ -276,6 +283,7 @@ struct ServeInputs {
     privacy_policy: Option<String>,
     moderation_handle: Option<String>,
     wiki_endpoint: Option<String>,
+    wiki_index_endpoint: Option<String>,
     name: Option<String>,
     disclosure: Option<String>,
     bot_token: String,
@@ -291,6 +299,7 @@ fn resolved_lookup_endpoints(
     configuration: &Configuration,
     mirror_token: Option<String>,
     wiki_endpoint: Option<&str>,
+    wiki_index_endpoint: Option<&str>,
 ) -> LookupEndpoints {
     LookupEndpoints {
         forge: configuration
@@ -305,12 +314,18 @@ fn resolved_lookup_endpoints(
             .unwrap_or_else(|| release::DEFAULT_BASE_URL.into()),
         mirror_token,
         wiki: wiki_endpoint.map_or_else(|| wiki::DEFAULT_BASE_URL.into(), ToOwned::to_owned),
+        wiki_index: wiki_index_endpoint
+            .map_or_else(|| wiki::DEFAULT_INDEX_BASE_URL.into(), ToOwned::to_owned),
     }
 }
 
 /// One startup line naming every resolved path and endpoint — never a
 /// secret.
-fn log_startup(configuration: &Configuration, wiki_endpoint: Option<&str>) {
+fn log_startup(
+    configuration: &Configuration,
+    wiki_endpoint: Option<&str>,
+    wiki_index_endpoint: Option<&str>,
+) {
     tracing::info!(
         store = %configuration.store_path.display(),
         telegram_state = %configuration.telegram_state_path.display(),
@@ -337,6 +352,7 @@ fn log_startup(configuration: &Configuration, wiki_endpoint: Option<&str>) {
             .as_deref()
             .unwrap_or("the real host"),
         wiki_endpoint = %wiki_endpoint.unwrap_or("the real host"),
+        wiki_index_endpoint = %wiki_index_endpoint.unwrap_or("the real host"),
         "the assistant is up"
     );
 }
@@ -350,6 +366,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         privacy_policy,
         moderation_handle,
         wiki_endpoint,
+        wiki_index_endpoint,
         name,
         disclosure,
         bot_token,
@@ -406,6 +423,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         &configuration,
         mirror_token,
         wiki_endpoint.as_deref(),
+        wiki_index_endpoint.as_deref(),
     ));
     let assistant = Assistant::start(
         store,
@@ -428,7 +446,11 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     )
     .await?;
 
-    log_startup(&configuration, wiki_endpoint.as_deref());
+    log_startup(
+        &configuration,
+        wiki_endpoint.as_deref(),
+        wiki_index_endpoint.as_deref(),
+    );
 
     tokio::select! {
         _ = sigterm.recv() => {

@@ -304,10 +304,15 @@ pub struct Endpoints {
     pub forge: Option<String>,
     /// The mirror API's base URL — the release lookup's host.
     pub mirror: Option<String>,
-    /// The wiki's raw base address — the wiki lookup's host. Resolved
-    /// through [`Configuration::resolve_wiki_endpoint`], which trims and
-    /// refuses an empty value.
+    /// The wiki's raw base address — the wiki lookup's page-content host.
+    /// Resolved through [`Configuration::resolve_wiki_endpoint`], which
+    /// trims and refuses an empty value.
     pub wiki: Option<String>,
+    /// The forge base address the wiki lookup's page enumeration reads the
+    /// rendered wiki index from. Resolved through
+    /// [`Configuration::resolve_wiki_index_endpoint`], which trims and
+    /// refuses an empty value.
+    pub wiki_index: Option<String>,
 }
 
 /// The protection table: the answering budgets, four fields with per-field
@@ -467,6 +472,26 @@ impl Configuration {
         match &self.endpoints.wiki {
             Some(address) => match address.trim() {
                 "" => Err(StartError::WikiEndpointEmpty),
+                trimmed => Ok(Some(trimmed.to_owned())),
+            },
+            None => Ok(None),
+        }
+    }
+
+    /// The wiki index's base address — the page enumeration's host —
+    /// `None` when the key is absent, under which the real forge host
+    /// stands.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::WikiIndexEndpointEmpty`] when the key is present but
+    /// empty or whitespace — an empty base would build unroutable
+    /// addresses silently; omitting the key is how the real host is
+    /// chosen. A surviving address resolves trimmed.
+    pub fn resolve_wiki_index_endpoint(&self) -> Result<Option<String>, StartError> {
+        match &self.endpoints.wiki_index {
+            Some(address) => match address.trim() {
+                "" => Err(StartError::WikiIndexEndpointEmpty),
                 trimmed => Ok(Some(trimmed.to_owned())),
             },
             None => Ok(None),
@@ -1103,6 +1128,35 @@ mod tests {
             .expect_err("an empty address must be refused");
         assert!(
             matches!(refused, StartError::WikiEndpointEmpty),
+            "the refusal names the empty address; got {refused}"
+        );
+    }
+
+    #[test]
+    fn the_wiki_index_endpoint_resolves_trimmed_and_refuses_empty() {
+        let configuration = loaded(
+            "log = \"stderr\"",
+            "[endpoints]\nwiki_index = \" http://127.0.0.1:1 \"\n",
+        );
+        assert_eq!(
+            configuration
+                .resolve_wiki_index_endpoint()
+                .expect("the address resolves")
+                .as_deref(),
+            Some("http://127.0.0.1:1")
+        );
+        assert_eq!(
+            loaded("log = \"stderr\"", "")
+                .resolve_wiki_index_endpoint()
+                .expect("the absent key resolves"),
+            None,
+            "no override by default — the real forge host stands"
+        );
+        let refused = loaded("log = \"stderr\"", "[endpoints]\nwiki_index = \"  \"\n")
+            .resolve_wiki_index_endpoint()
+            .expect_err("an empty address must be refused");
+        assert!(
+            matches!(refused, StartError::WikiIndexEndpointEmpty),
             "the refusal names the empty address; got {refused}"
         );
     }

@@ -88,3 +88,9 @@ what resolving it takes. Resolved items move into a decision record.
   sentinel is delivered as written. The teaching governs this and a scripted
   turn pins the intended path; a live-transcript replay of a real failed lookup
   would raise confidence that the model complies in practice.
+
+- **Unit 17 close, 2026-08-24 — the two endpoint resolvers are duplicated.**
+  resolve_wiki_index_endpoint in the binary's config is byte-for-byte the
+  trim/refuse-empty logic of resolve_wiki_endpoint, with a parallel start-error
+  variant. Correct but duplicated; closing it means one shared resolver
+  parameterized by the endpoint name.

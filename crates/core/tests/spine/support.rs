@@ -1087,6 +1087,7 @@ pub fn production_toolset() -> ToolSet {
         mirror: UNROUTABLE.into(),
         mirror_token: None,
         wiki: UNROUTABLE.into(),
+        wiki_index: UNROUTABLE.into(),
     })
 }
 
