@@ -7,12 +7,14 @@ license.workspace = true
 [lints]
 workspace = true
 
-# The OpenRouter wire is opt-in: the tests run over scripted providers, and the
-# binary crate is what turns the real wire on. The feature name mirrors the
-# framework's, and enabling it here only re-exposes the framework's module
-# wrapped around an in-memory configuration.
+# The chat-completions wire is opt-in: the tests run over scripted providers,
+# and the binary crate is what turns the real wire on. The feature is named for
+# the interface spoken — an OpenAI-compatible chat-completions endpoint — while
+# the framework feature it enables keeps that project's own `openrouter` name.
+# Enabling it here only re-exposes the framework's module wrapped around an
+# in-memory configuration.
 [features]
-openrouter = ["agent-ledger/openrouter"]
+chat_completions = ["agent-ledger/openrouter"]
 
 # The framework is a sibling checkout, not a registry crate: it has no public
 # home yet, so the path names the expected layout (see the README).
@@ -32,7 +34,7 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync"] }
 tracing = "0.1"
 
-# Test-only. The OpenRouter suite's scripted completions server is a plain
+# Test-only. The chat-completions suite's scripted completions server is a plain
 # listener on the loopback interface written against tokio's own networking,
 # so it needs `net` and `io-util` and no new crate; `test-util` is what the
 # window-expiry pins pause and advance the clock with. Cargo unifies

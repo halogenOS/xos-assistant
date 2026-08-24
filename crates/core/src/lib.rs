@@ -43,9 +43,10 @@
 //!   admission, the provenance reading the anchor gate takes, and the
 //!   admission wrapper enforcing both; the assembly takes its
 //!   [`tools::ToolSet`] and registers every tool behind that wrapper.
-//! - `provider` (behind the `openrouter` feature) — the framework's
-//!   `OpenRouter` module wrapped around an in-memory configuration, so the
-//!   API key never enters the store.
+//! - `provider` (behind the `chat_completions` feature) — the framework's
+//!   `OpenRouter` module, reused as the shared chat-completions wire against
+//!   any OpenAI-compatible endpoint, wrapped around an in-memory
+//!   configuration so the API key never enters the store.
 
 mod acknowledgment;
 mod assembly;
@@ -62,7 +63,7 @@ pub mod mirror;
 pub mod note;
 mod outbound;
 pub mod privacy;
-#[cfg(feature = "openrouter")]
+#[cfg(feature = "chat_completions")]
 pub mod provider;
 pub mod schema;
 mod streams;

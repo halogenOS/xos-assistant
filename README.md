@@ -10,7 +10,7 @@ ledger framework, records inbound messages as ledger blocks, takes turns against
 registered provider, and yields replies on a subscription edge. The Telegram adapter
 speaks the Bot API directly — long polling in, plain sends out — with its update offset
 persisted in a state file the embedder names (decisions 0013–0019). The live model is
-in: the assistant answers through the OpenRouter provider with its key held in memory and
+in: the assistant answers through the chat-completions provider with its key held in memory and
 never stored, addressing decides which messages are answered (a direct message, a
 mention, a reply to the assistant), a failed turn tells the chat once — except a
 provider refusal for lack of balance, which stays out of the chat entirely — and the
@@ -98,8 +98,8 @@ file path per secret — and never appear in the file itself:
     [secrets.bot_token]
     env = "ASSISTANT_BOT_TOKEN"
 
-    [secrets.openrouter_key]
-    file = "openrouter.key"
+    [secrets.chat_completions_api_key]
+    file = "chat-completions.key"
 
     # Optional: a mirror API token for the release lookup. Absent, the
     # lookup runs unauthenticated at the mirror's lower rate limit.
@@ -120,7 +120,8 @@ file path per secret — and never appear in the file itself:
     telegram = "<the operator's numeric Telegram user id>"
 
 The `[endpoints]` table can override any of the five hosts the process talks to —
-`telegram`, `openrouter`, `forge` (the commit lookup's canonical forge, default
+`telegram`, `chat_completions` (the OpenAI-compatible model endpoint), `forge` (the commit
+lookup's canonical forge, default
 `https://git.halogenos.org`), `mirror` (the release lookup's API host, default
 `https://api.github.com`) and `wiki` (the wiki lookup's raw host, default
 `https://raw.githubusercontent.com`); omitted entries keep the real hosts, and the
@@ -222,7 +223,7 @@ Cargo runs inside the Nix development shell, which provides the toolchain:
 - `crates/adapters/telegram` — the Telegram adapter: translation between the Telegram Bot
   API and the core's message model.
 - `crates/assistant` — the runnable process: configuration, secret indirection, logging,
-  and the assembled core with the OpenRouter provider and the Telegram adapter.
+  and the assembled core with the chat-completions provider and the Telegram adapter.
 - `prompts` — the assistant's system prompt, loaded at start and recorded per
   conversation at its creation.
 - `docs/decisions` — decision records, numbered in order.
