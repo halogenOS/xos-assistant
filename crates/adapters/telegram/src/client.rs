@@ -414,7 +414,39 @@ impl BotClient {
         chunk: &str,
         reply_to: Option<i64>,
     ) -> Result<(), ClientError> {
-        let mut body = serde_json::json!({ "chat_id": chat_id, "text": chunk });
+        match self
+            .send_body(chat_id, &crate::formatting::to_html(chunk), true, reply_to)
+            .await
+        {
+            Err(ClientError::Refused { description }) if Self::rejects_formatting(&description) => {
+                // The formatting was refused, so the formatting is what goes.
+                // An answer arriving with its asterisks showing is a blemish;
+                // an answer not arriving is the bug this fallback exists for,
+                // and the converter cannot be trusted absolutely against
+                // prose nobody has seen yet.
+                tracing::warn!(
+                    chat_id,
+                    %description,
+                    "the formatted send was refused; the same text goes out unformatted"
+                );
+                self.send_body(chat_id, chunk, false, reply_to).await
+            }
+            other => other,
+        }
+    }
+
+    /// One `sendMessage`, formatted or plain.
+    async fn send_body(
+        &self,
+        chat_id: i64,
+        text: &str,
+        formatted: bool,
+        reply_to: Option<i64>,
+    ) -> Result<(), ClientError> {
+        let mut body = serde_json::json!({ "chat_id": chat_id, "text": text });
+        if formatted {
+            body["parse_mode"] = serde_json::json!("HTML");
+        }
         if let Some(message_id) = reply_to {
             body["reply_parameters"] = serde_json::json!({
                 "message_id": message_id,
@@ -436,6 +468,20 @@ impl BotClient {
         let body = serde_json::json!({ "chat_id": chat_id });
         let response = self.request("getChatAdministrators", &body, None).await?;
         self.decode(response).await
+    }
+
+    /// Whether a refusal names the formatting rather than the message. The
+    /// API answers a malformed entity with a parse complaint; every other
+    /// refusal — a blocked bot, a chat that is gone, a member who left — is
+    /// about the send itself, and retrying it unformatted would only fail
+    /// again, more slowly.
+    fn rejects_formatting(description: &str) -> bool {
+        let lowered = description.to_ascii_lowercase();
+        lowered.contains("parse entities")
+            || lowered.contains("can't parse")
+            || lowered.contains("cannot parse")
+            || lowered.contains("unsupported start tag")
+            || lowered.contains("unmatched end tag")
     }
 
     /// One method call under the rate-limit contract, which binds every

@@ -20,6 +20,7 @@
 mod authority;
 mod client;
 mod driver;
+mod formatting;
 mod state;
 mod translate;
 
