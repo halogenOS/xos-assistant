@@ -107,3 +107,11 @@ what resolving it takes. Resolved items move into a decision record.
   wrapping. Admin-only and the ack is a trivial confirmation, so low risk; a
   fenced/delimited wrapping would harden it against a crafted rules pin if ever
   wanted.
+
+- **Unit 21 close, 2026-08-24 — the addressed-mode clarifying-question note
+  explains turn mechanics to the model.** The Addressed branch tells the model
+  "only a message that addresses you reaches you, so a plain follow-up would
+  otherwise go unseen" — a bit of internal reach mechanics in a model-facing
+  prompt. It gives the model the reason to invite a reply (arguably helpful) and
+  only affects addressed mode (not the helpful-mode deployment), so it is a nit;
+  a tighter wording would state the instruction without the mechanism rationale.
