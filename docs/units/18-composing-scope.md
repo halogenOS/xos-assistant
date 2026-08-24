@@ -17,30 +17,38 @@ re-emits the event whenever the scheduler's outcome changes — including when
 `awaiting` changes mid-turn — so the transitions are observable on the same bus
 the edge already subscribes to. The `Awaiting` values are the phase: `System` is
 "an unresolved tool call, a pending request" — the tool-executing window;
-`Model` is "a model turn is warranted (user text, tool results, harness
-messages)" — the thinking-and-streaming window; `User` / `OutOfBand` are a human
-owing a reply or an approval. The edge today discards `awaiting` entirely.
+`Model` is "a model turn is warranted" — the thinking window ahead of the
+stream; the streaming tail itself awaits nobody, so `awaiting` is `None` once
+the provider's first delta lands; `User` / `OutOfBand` are a human owing a reply
+or an approval. So the two phases "typing" should cover — thinking and streaming
+— are `Some(Model)` and `None`, and the two it should not — a tool call and a
+human wait — are `Some(System)` and `Some(User)`/`Some(OutOfBand)`. The edge
+today discards `awaiting` entirely.
 
 ## Decisions taken with this unit
 
-- **The composing cue is on only while the model owes the turn's next move,
-  2026-08-24.** The derivation gains the phase: the cue is on when the turn is
-  owed and unlatched AND the frontier awaits the MODEL — thinking and streaming
-  — and off otherwise, so it stops while a tool call is unresolved
+- **The composing cue is on while the model is composing — thinking and
+  streaming — and off for the not-the-model windows, 2026-08-24.** The
+  derivation gains the phase: the cue is on when the turn is owed and unlatched
+  AND the frontier is not in a not-the-model window, so it holds through the
+  thinking window (`awaiting == Model`) and the streaming tail (`awaiting ==
+  None`, the stream awaits nobody), and drops while a tool call is unresolved
   (`awaiting == System`) and while a human is owed a reply or an approval
   (`awaiting == User` / `OutOfBand`). Concretely the derived predicate becomes
-  `work_due && !latched && awaiting == Some(Awaiting::Model)`, replacing
-  `work_due && !latched`. The implementer verifies against the framework that a
-  streaming answer holds `awaiting == Model` throughout (not a transient other
-  value), and that a pending tool call publishes `awaiting == System`; if the
-  true mapping differs, it builds to the true mapping — the binding intent is
-  that the cue tracks the model's own activity and drops during tool execution
-  and human waits. Rejected: excluding only `awaiting == System` and leaving the
-  cue on for `User`/`OutOfBand` (this deployment has no interactive tools today,
-  but "on while a human is owed" is the same misrepresentation as "on during a
-  tool call"); a per-tool timer or a debounce in the adapter (the phase is a
-  framework fact already on the bus — deriving the cue from it is exact, a timer
-  is a guess).
+  `work_due && !latched && !matches!(awaiting, Some(System | User | OutOfBand))`,
+  replacing `work_due && !latched` — a strict narrowing of the old all-turn
+  behavior that removes exactly the tool-execution and human-wait windows and
+  leaves thinking and streaming on as before. This keys off the true framework
+  mapping, verified against it: the thinking window publishes `Model`, a pending
+  tool call publishes `System`, and the streaming tail publishes `None` — so
+  keying on `== Some(Model)` alone would leave the cue dark through the whole
+  streamed answer, the exact phase "typing" must cover. Rejected: `awaiting ==
+  Some(Awaiting::Model)` (drops the streaming tail, which awaits nobody — the cue
+  goes dark while the answer streams); excluding only `awaiting == System` and
+  leaving the cue on for `User`/`OutOfBand` ("on while a human is owed" is the
+  same misrepresentation as "on during a tool call"); a per-tool timer or a
+  debounce in the adapter (the phase is a framework fact already on the bus —
+  deriving the cue from it is exact, a timer is a guess).
 - **Each tool call is one stop and one resume, and the existing edge machinery
   is untouched, 2026-08-24.** Keying on `awaiting` means a turn with tool calls
   now yields more transitions: the cue begins when the model starts, stops when
@@ -59,10 +67,10 @@ owing a reply or an approval. The edge today discards `awaiting` entirely.
 ## The unit's contract
 
 The composing edge's derived predicate changes from `work_due && !latched` to
-`work_due && !latched && awaiting == Some(Awaiting::Model)` (or the true
-model-owes-the-move mapping the implementer verifies), so the cue tracks the
-model's thinking and streaming and drops during a tool call and during a human
-wait. The `awaiting` field is already on the `ConversationState` event; no
+`work_due && !latched && !matches!(awaiting, Some(System | User | OutOfBand))`,
+so the cue tracks the model's thinking (`Model`) and streaming (`None`) and
+drops during a tool call (`System`) and during a human wait (`User` /
+`OutOfBand`). The `awaiting` field is already on the `ConversationState` event; no
 framework change is needed and none is made. The edge's dedup, lifetime
 deadline, lag handling, channel resolution and error swallowing are unchanged.
 No configuration change, no new dependency, no adapter behavior change (the
@@ -80,6 +88,12 @@ adapter still only translates a begin/stop into the platform's typing action).
 - **AC3** A plain turn with no tool call is unchanged: one begin at the start and
   one stop at commit, no extra transitions — pinned (the prior single-begin/
   single-stop pin holds under the new derivation).
+- **AC3b** The streaming tail holds the cue: a state with `work_due` true,
+  unlatched, and `awaiting == None` (the stream awaiting nobody) keeps the cue
+  on — proven by a turn that thinks (begin), calls a tool (stop), then streams
+  its answer with `awaiting == None` (RESUME, not left dark), then commits (stop)
+  — the ordered begin/stop/begin/stop pins that the streaming `None` state turns
+  the cue back on, which `awaiting == Some(Model)` alone would not.
 - **AC4** The cue is off during a human wait: an `awaiting == User` or
   `OutOfBand` state with `work_due` true and unlatched yields no begin (or a
   stop if one was open) — pinned.
