@@ -270,6 +270,14 @@ impl Agency for ContextNote {
 /// join system lines instead of overwriting, so a note never erases the
 /// system prompt. A malformed row is boundary-invisible and contributes
 /// nothing.
+///
+/// The rules note is guaranteed in the model's context while one exists
+/// (unit 15, 2026-08-24): the projection folds the conversation's whole
+/// loaded ledger — no window trims history — and a note is a durable
+/// block, so every stored rules note rides every later request the way
+/// the system prompt does, the newest one authoritative under the
+/// supersession wording. The autonomous moderation assessment rests on
+/// exactly this: the model judges against rules it can always see.
 impl Projection for ContextNote {
     fn group_role(&self) -> Option<Role> {
         self.line().map(|_| Role::System)

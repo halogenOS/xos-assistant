@@ -115,8 +115,9 @@ pub fn storable_speaker(handle: &str) -> bool {
     !handle.is_empty() && !handle.contains(':') && !handle.chars().any(char::is_whitespace)
 }
 /// The platform's own id for the message this one replies to, opaque —
-/// what the report tool resolves its target through and what reply
-/// threading names (decided 2026-08-23). NULL for a non-reply, for a reply
+/// what reply threading names (decided 2026-08-23; the report tool's
+/// reply-target resolution left this column on 2026-08-24, when the tool
+/// gained its validated origin parameter). NULL for a non-reply, for a reply
 /// without a usable id, and for a reply to one of the assistant's own
 /// messages. Personal data of TWO people at once: the row's author chose
 /// to store it, and its value is the replied-to person's own message
@@ -135,9 +136,11 @@ pub fn storable_speaker(handle: &str) -> bool {
 /// the reply-target migration step, so pre-migration rows read NULL.
 pub const COLUMN_REPLY_TARGET: &str = "reply_target";
 /// Whether the message replies to one of the assistant's own messages —
-/// the fact the report tool's self-report refusal reads (decided
-/// 2026-08-23). Structure, not personal data: erasure leaves it. Added by
-/// the reply-target migration step, so pre-migration rows read NULL.
+/// a stored addressing fact (decided 2026-08-23; the report tool stopped
+/// reading it on 2026-08-24, when its self-report refusal moved to the
+/// named message's own stored voice). Structure, not personal data:
+/// erasure leaves it. Added by the reply-target migration step, so
+/// pre-migration rows read NULL.
 pub const COLUMN_REPLY_TO_ASSISTANT: &str = "reply_to_assistant";
 
 /// What an erased message contributes to a projected request in place of its
@@ -147,6 +150,23 @@ pub const COLUMN_REPLY_TO_ASSISTANT: &str = "reply_to_assistant";
 /// message built from these contributions alone. A fixed marker carries none
 /// of the person's words, so the erasure's promise holds.
 pub const ERASED_MARKER: &str = "[message erased]";
+
+/// The projected id mark of one recorded message: the stored origin in
+/// brackets, ahead of the speaker prefix and the text (unit 15,
+/// 2026-08-24). The mark is what lets the model NAME a message — the
+/// report tool takes the id it shows, validated against the turn's own
+/// assessment set — so it rides every user-voiced live message that has a
+/// stored origin, in every mode: the projection is a per-block reading
+/// with no configuration access, and an id beside a message is honest
+/// context wherever it appears. The erased placeholder never carries it
+/// (erasure nulls the origin with the text), and the mark is prose like
+/// the speaker prefix: a member who types a bracketed id into their
+/// message forges bytes the model cannot tell apart, and the tool's
+/// co-summoner validation is what bounds where such a forgery can aim.
+#[must_use]
+pub fn projected_origin_mark(origin: &str) -> String {
+    format!("[{origin}]")
+}
 
 /// Why a message's own debt was never taken — the stored vocabulary of the
 /// limited stamp. The two budget kinds read as "this message's own debt was
@@ -471,18 +491,27 @@ impl ChatMessage {
     ///
     /// A user-voiced message with a stored speaker projects as the speaker,
     /// a colon and a space, then the text (decision 0066) — the handle the
-    /// model may address the person by. Everything else projects bare: a
-    /// handleless sender's message (no substitute identifier leaves the
-    /// machine, per decision 0056), any non-user voice, and the erased
-    /// marker — the erasure pass nulls the speaker with the text, and even
-    /// a row it half-reached keeps the placeholder exactly as it is.
+    /// model may address the person by — and a user-voiced message with a
+    /// stored origin opens with [`projected_origin_mark`] ahead of that
+    /// (unit 15, 2026-08-24): the id the model names when it reports.
+    /// Everything else projects bare: a handleless sender's message (no
+    /// substitute identifier leaves the machine, per decision 0056), any
+    /// non-user voice, and the erased marker — the erasure pass nulls the
+    /// speaker and the origin with the text, and even a row it
+    /// half-reached keeps the placeholder exactly as it is, unmarked.
     fn projected_text(&self) -> String {
         let Some(text) = &self.text else {
             return ERASED_MARKER.to_owned();
         };
-        match &self.speaker {
+        let line = match &self.speaker {
             Some(speaker) if self.role == Some(Role::User) => format!("{speaker}: {text}"),
             _ => text.clone(),
+        };
+        match &self.origin {
+            Some(origin) if self.role == Some(Role::User) => {
+                format!("{} {line}", projected_origin_mark(origin))
+            }
+            _ => line,
         }
     }
 }
@@ -1257,6 +1286,75 @@ mod tests {
             user_sentinel.group_role(),
             Some(Role::User),
             "only the assistant's own voice abstains"
+        );
+    }
+
+    /// The projected id mark (unit 15), every branch at the kind: a
+    /// user-voiced message with a stored origin opens with the bracketed
+    /// id — ahead of the speaker prefix where one stands, ahead of the
+    /// bare text where none does — while a non-user voice, an origin-less
+    /// row and the erased placeholder all project unmarked. The mark is
+    /// what the model names a message by when it reports, so its exact
+    /// composition is pinned here beside the rule.
+    #[test]
+    fn the_projection_marks_exactly_the_user_voiced_messages_with_an_origin() {
+        assert_eq!(projected_origin_mark("id-9"), "[id-9]");
+
+        let row = |role: Option<Role>,
+                   text: Option<&str>,
+                   speaker: Option<&str>,
+                   origin: Option<&str>| {
+            let mut fields = serde_json::Map::new();
+            if let Some(text) = text {
+                fields.insert(COLUMN_TEXT.into(), json!(text));
+            }
+            if let Some(speaker) = speaker {
+                fields.insert(COLUMN_SPEAKER.into(), json!(speaker));
+            }
+            if let Some(origin) = origin {
+                fields.insert(COLUMN_ORIGIN.into(), json!(origin));
+            }
+            <ChatMessage as agent_ledger::LeafKind>::parse(&Block {
+                id: 1,
+                role,
+                block_type: CHAT_MESSAGE_KIND.into(),
+                created_at: String::new(),
+                dispatch_anchor: None,
+                fields,
+            })
+        };
+
+        assert_eq!(
+            row(Some(Role::User), Some("the ask"), Some("ada"), Some("id-9")).projected_text(),
+            "[id-9] ada: the ask",
+            "the mark leads, then the speaker prefix, then the text"
+        );
+        assert_eq!(
+            row(Some(Role::User), Some("the ask"), None, Some("id-9")).projected_text(),
+            "[id-9] the ask",
+            "a handleless message still shows its id"
+        );
+        assert_eq!(
+            row(Some(Role::User), Some("the ask"), None, None).projected_text(),
+            "the ask",
+            "no stored origin, no mark"
+        );
+        assert_eq!(
+            row(
+                Some(Role::Assistant),
+                Some("the answer"),
+                None,
+                Some("id-9")
+            )
+            .projected_text(),
+            "the answer",
+            "only the user's voice carries the mark"
+        );
+        assert_eq!(
+            row(Some(Role::User), None, None, Some("id-9")).projected_text(),
+            ERASED_MARKER,
+            "the erased placeholder projects unmarked, even on a synthetic \
+             row whose origin outlived the text"
         );
     }
 

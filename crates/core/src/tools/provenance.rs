@@ -95,32 +95,14 @@ pub fn turn_reading(ledger: &[Block], call_block_id: i64) -> Authority {
     fold(origin, span)
 }
 
-/// What the newest co-summoner's stored reply says, if any — the report
-/// tool's target resolution (decided 2026-08-23), riding the same debt
-/// origin walk as [`turn_reading`] and never the bare anchor: decision
-/// 0043 records the exact shape in which the anchor is a bystander's line.
-/// The candidates are the turn's co-summoners alone — the span's
-/// own-debt-takers between the anchor and the call, then the origin set's
-/// takers in the anchor's chain — read newest first, and the first one
-/// carrying a stored reply fact answers. A bystander's reply target is
-/// never read: an unaddressed line co-summons nothing, so its reply loses
-/// to the co-summoner's even when it is newer. `None` when no co-summoner
-/// carries a reply — the null anchor and the unloadable shapes included,
-/// each one more absence folded to the refusing side.
-pub(crate) fn newest_co_summoner_reply(
-    ledger: &[Block],
-    call_block_id: i64,
-) -> Option<StoredReply> {
-    co_summoners(ledger, call_block_id)
-        .iter()
-        .find_map(stored_reply)
-}
-
 /// The turn's co-summoners as loaded rows, newest first: the span's
 /// own-debt-takers between the anchor and the call, then the origin set's
-/// takers in the anchor's chain — the one walk behind the report tool's
-/// reply resolution and the privacy tool's principal resolution (2026-08-23,
-/// the privacy-self-service unit). Empty for every unloadable shape — a
+/// takers in the anchor's chain — the one walk behind the privacy tool's
+/// principal resolution (2026-08-23, the privacy-self-service unit), the
+/// disclosure fold, and the report tool's target validation (2026-08-24,
+/// the autonomous-moderation unit: a named origin must belong to one of
+/// these rows, so the model can aim a report only at a message it is
+/// assessing this turn). Empty for every unloadable shape — a
 /// null anchor, a call or anchor missing from the vector, a non-message
 /// frontier, a chain of pure propagators — each one more absence folded to
 /// the refusing side, exactly as the reading folds them downward.
@@ -165,24 +147,6 @@ pub(crate) fn co_summoners(ledger: &[Block], call_block_id: i64) -> Vec<ChatMess
     .into_iter()
     .flatten();
     span.chain(chain).collect()
-}
-
-/// One co-summoner's stored reply fact, if it carries one.
-fn stored_reply(message: &ChatMessage) -> Option<StoredReply> {
-    if message.reply_to_assistant == Some(true) {
-        return Some(StoredReply::ToAssistant);
-    }
-    message.reply_target.clone().map(StoredReply::Target)
-}
-
-/// What one stored reply points at, read back from a co-summoner's row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StoredReply {
-    /// A reply to another person's message, by that message's origin.
-    Target(String),
-    /// A reply to one of the assistant's own messages — the shape the
-    /// report tool refuses with its own error.
-    ToAssistant,
 }
 
 /// The anchor's contribution: the minimum sender authority over the debt
@@ -439,9 +403,9 @@ mod tests {
         }
     }
 
-    /// One stored chat message carrying a reply to another person's
-    /// message — the [`chat_block`] shape plus the translated reply fact.
-    fn replying_chat_block(id: i64, authority: Authority, addressed: bool, target: &str) -> Block {
+    /// One stored chat message under an exact origin — the [`chat_block`]
+    /// shape plus the platform id the report tool's validation matches.
+    fn origin_chat_block(id: i64, authority: Authority, addressed: bool, origin: &str) -> Block {
         Block {
             id,
             role: Some(Role::User),
@@ -449,50 +413,50 @@ mod tests {
             created_at: String::new(),
             dispatch_anchor: None,
             fields: ChatMessage::stored_fields(
-                "a recorded reply",
+                "a recorded line",
                 crate::kind::RecordedSender {
                     principal_id: 1,
                     authority,
                     speaker: None,
                 },
+                Some(origin),
                 None,
-                Some(&crate::message::ReplyTarget::Message {
-                    origin: target.into(),
-                }),
                 "2026-08-22T00:00:00Z",
                 crate::kind::Stamp::compose(addressed, authority, None, None),
             ),
         }
     }
 
-    /// The resolution reads the turn's co-summoners, never the bare anchor:
-    /// the anchor is an addressed summons carrying NO reply, and the reply
-    /// answering the walk is the absorbed own-debt-taker's — a body reduced
-    /// to reading the anchor's own stored reply answers `None` here and
-    /// fails. A turn whose co-summoners carry no reply at all refuses with
-    /// `None`, the report tool's needs-a-reply shape.
+    /// The co-summoner set the validators read, pinned directly: the
+    /// span's own-debt-takers newest first, then the anchor chain's — and
+    /// never the bystander, whose unaddressed line co-summons nothing.
+    /// This set is the report tool's whole aiming bound: an origin outside
+    /// it names no reportable message, however real the message is.
     #[test]
-    fn the_reply_resolution_reads_the_co_summoners_not_the_bare_anchor() {
+    fn the_co_summoner_set_holds_the_takers_newest_first_and_no_bystander() {
         let ledger = vec![
-            chat_block(1, Authority::Member, false, None),
-            chat_block(2, Authority::Admin, true, None),
-            replying_chat_block(3, Authority::Member, true, "origin-absorbed"),
+            origin_chat_block(1, Authority::Member, false, "origin-bystander"),
+            origin_chat_block(2, Authority::Admin, true, "origin-anchor"),
+            origin_chat_block(3, Authority::Member, true, "origin-absorbed"),
             call_block(5, Some(2)),
         ];
+        let origins: Vec<Option<String>> = co_summoners(&ledger, 5)
+            .into_iter()
+            .map(|message| message.origin)
+            .collect();
         assert_eq!(
-            newest_co_summoner_reply(&ledger, 5),
-            Some(StoredReply::Target("origin-absorbed".into())),
-            "the absorbed co-summoner's stored reply answers for the replyless anchor"
+            origins,
+            vec![
+                Some("origin-absorbed".to_owned()),
+                Some("origin-anchor".to_owned())
+            ],
+            "the absorbed taker reads first, the anchor's chain second, \
+             and the bystander's line is in no turn's assessment set"
         );
 
-        let replyless = vec![
-            chat_block(2, Authority::Admin, true, None),
-            call_block(5, Some(2)),
-        ];
-        assert_eq!(
-            newest_co_summoner_reply(&replyless, 5),
-            None,
-            "no co-summoner carries a reply, so the resolution refuses"
+        assert!(
+            co_summoners(&ledger, 999).is_empty(),
+            "a call the vector does not hold folds to the empty set"
         );
     }
 

@@ -1,65 +1,34 @@
-//! AC4 over the adapter: a member replies to an offending message and asks
-//! for a report — the tool files it, and the wire carries the fixed line as
-//! a platform reply to the offending message's id, before the answer, with
+//! AC2 over the adapter: a group message violating the pinned rules opens
+//! a helpful-mode turn, the scripted model names that message's platform
+//! id, the tool files — and the wire carries the fixed line as a platform
+//! reply to the offending message's id, before the answer, with
 //! send-without-reply tolerance stated on the request itself.
 
 use std::sync::Arc;
 
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::report;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    self, BOT_USERNAME, MODERATION_HANDLE, TOOL_CLOSING_ANSWER, TempStateFile, ToolScript,
-    authorize_group, await_conversations, date_of, message_id_of, recording_sleep, spawn_adapter,
-    start_assistant_moderating,
+    self, MODERATION_HANDLE, TOOL_CLOSING_ANSWER, TempStateFile, ToolScript, authorize_group,
+    await_conversations, message_id_of, recording_sleep, spawn_adapter, start_assistant_moderating,
 };
 
-/// A group message replying to ANOTHER member's message while mentioning
-/// the bot — the report ask's wire shape: addressed by mention, replying
-/// to the offending line.
-fn reply_ask_update(
-    update_id: i64,
-    chat_id: i64,
-    asker_id: i64,
-    replied_message_id: i64,
-    replied_author_id: i64,
-) -> Value {
-    json!({
-        "update_id": update_id,
-        "message": {
-            "message_id": message_id_of(update_id),
-            "date": date_of(update_id),
-            "chat": { "id": chat_id, "type": "group" },
-            "from": { "id": asker_id, "first_name": format!("Person {asker_id}") },
-            "text": format!("@{BOT_USERNAME} please report this"),
-            "reply_to_message": {
-                "message_id": replied_message_id,
-                "date": date_of(update_id) - 10,
-                "chat": { "id": chat_id, "type": "group" },
-                "from": {
-                    "id": replied_author_id,
-                    "first_name": format!("Person {replied_author_id}")
-                },
-                "text": "an offending line",
-            },
-        },
-    })
-}
-
-/// The whole report round trip over the wire: the spam line is recorded,
-/// the member's reply ask files the report, and the wire shows the fixed
-/// line sent as a platform reply — the current reply parameters, the
-/// offending message's id, send-without-reply tolerance — BEFORE the
-/// answer, which itself carries no reply parameters.
+/// The whole autonomous report round trip over the wire: the offending
+/// line arrives unaddressed, summons the helpful-mode assessment, the
+/// scripted model names its platform id, and the wire shows the fixed line
+/// sent as a platform reply — the current reply parameters, the offending
+/// message's id, send-without-reply tolerance — BEFORE the answer, which
+/// itself carries no reply parameters.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_reply_ask_files_and_the_wire_threads_the_report_before_the_answer() {
+async fn a_violating_message_is_assessed_and_the_wire_threads_the_report_before_the_answer() {
     let chat = -500;
     let fixture = start_assistant_moderating(
         Some(ToolScript {
             tool: report::NAME.into(),
-            input: "{}".into(),
+            input: format!(r#"{{"message_id":"{}"}}"#, message_id_of(1)),
             narration: None,
         }),
         ToolSet::new(),
@@ -70,10 +39,9 @@ async fn a_reply_ask_files_and_the_wire_threads_the_report_before_the_answer() {
     let server = BotApiServer::start().await;
     server.set_chat_info(chat, "The kernel room", None);
 
-    // The offending line arrives first, unaddressed and recorded; the
-    // member's reply ask follows.
+    // The offending line arrives unaddressed: under helpful answering it
+    // summons the assessment itself — nobody asks for a report.
     server.push_update(support::group_update(1, chat, 900, "an offending line"));
-    server.push_update(reply_ask_update(2, chat, 7, message_id_of(1), 900));
 
     let state = TempStateFile::new("report-e2e");
     let (sleep, _) = recording_sleep();
@@ -100,7 +68,7 @@ async fn a_reply_ask_files_and_the_wire_threads_the_report_before_the_answer() {
     assert_eq!(
         sends[1].body["text"],
         json!(support::disclosed(TOOL_CLOSING_ANSWER)),
-        "the reporter's first answer opens with the disclosure line"
+        "the summoner's first answer opens with the disclosure line"
     );
     assert_eq!(
         sends[1].body.get("reply_parameters"),
@@ -157,7 +125,7 @@ async fn an_over_cap_reply_threads_only_its_first_chunk() {
     let fixture = start_assistant_moderating(
         Some(ToolScript {
             tool: report::NAME.into(),
-            input: "{}".into(),
+            input: format!(r#"{{"message_id":"{}"}}"#, message_id_of(1)),
             narration: None,
         }),
         ToolSet::new(),
@@ -169,7 +137,6 @@ async fn an_over_cap_reply_threads_only_its_first_chunk() {
     server.set_chat_info(chat, "The kernel room", None);
 
     server.push_update(support::group_update(1, chat, 900, "an offending line"));
-    server.push_update(reply_ask_update(2, chat, 7, message_id_of(1), 900));
 
     let state = TempStateFile::new("report-chunking");
     let (sleep, _) = recording_sleep();

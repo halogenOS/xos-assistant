@@ -4,12 +4,16 @@
 //! state. Two bounds live in this module:
 //!
 //! - [`LineWindow`] — at most one fixed line per channel per window: the
-//!   privacy notice's answer and the report filing each keep an instance.
+//!   privacy notice's answer keeps the one instance.
 //!   The rules acknowledgment left this bound on 2026-08-23: pinning is an
 //!   administrator-only right, so the pin-toggling spammer the window was
 //!   built against cannot exist, and the window only silenced legitimate
 //!   rules edits — the on-delta note comparison is the rules path's whole
-//!   admission check now.
+//!   admission check now. The report filing left on 2026-08-24, with the
+//!   autonomous-moderation unit: a channel-wide time window suppresses
+//!   DISTINCT violations in a bad hour, and the report path bounds itself
+//!   per origin instead — each message reported at most once, in the
+//!   report tool's own dedup over the stored report blocks.
 //! - [`ReplyWindow`] — up to a cap of replies per key per window, the
 //!   privacy family's per-person bound, carrying the one writing of the
 //!   grant-exactly-with-the-action protocol in [`ReplyWindow::grant_with`].
@@ -35,16 +39,6 @@ use tokio::time::Instant;
 /// notice window it still measures answers a real vector — a flood of
 /// failed or repeated triggers anyone in the chat can cause.
 pub const ACKNOWLEDGMENT_WINDOW: Duration = Duration::from_mins(5);
-
-/// At most one filed report per channel inside this window — the report
-/// tool's own bound (decided 2026-08-23), a named constant of its own
-/// instead of the acknowledgment length, because the two lines answer
-/// different threats: an acknowledgment is a courtesy line, a report pings
-/// every group administrator through the moderation bot. The window is
-/// process memory, and the re-argument is this unit's own instead of the
-/// courtesy-line rationale: for THIS bound a restart forgives at most one
-/// extra report, which is one extra ping — accepted.
-pub const REPORT_WINDOW: Duration = Duration::from_mins(5);
 
 /// The rights replies' own per-person window (decided 2026-08-23), the same
 /// length as the acknowledgment window: the four privacy commands and the
@@ -83,8 +77,7 @@ impl LineWindow {
     /// `false` is the recorded silence within it. Expired windows are swept
     /// here, so the map holds only channels inside a live window. The
     /// check and the spend are one atomic step under the lock — two racing
-    /// callers cannot both be granted — which is what makes this the
-    /// report bound's atomic grant.
+    /// callers cannot both be granted.
     pub(crate) async fn grants(&self, channel: i64) -> bool {
         let mut granted = self.granted.lock().await;
         let now = Instant::now();
@@ -94,16 +87,6 @@ impl LineWindow {
         }
         granted.insert(channel, now);
         true
-    }
-
-    /// Hand a grant back: the granted action failed transiently before it
-    /// stood, so the channel's window closes again as if never opened. This
-    /// is how a spend-only-after-the-append ordering rides an atomic grant:
-    /// the grant is taken first — so a concurrent second ask is declined —
-    /// and revoked when the append does not stand, so a redelivered ask is
-    /// not silenced by a failure that delivered nothing.
-    pub(crate) async fn revoke(&self, channel: i64) {
-        self.granted.lock().await.remove(&channel);
     }
 }
 
@@ -210,61 +193,6 @@ mod tests {
         assert!(
             window.granted.lock().await.len() < 3,
             "expired entries are swept on access"
-        );
-    }
-
-    /// The report window's own reopening, under paused time: one grant per
-    /// channel inside [`REPORT_WINDOW`], and the expired window grants
-    /// again. Pinned on the primitive because the assembly injects exactly
-    /// this instance into the report tool — and because the window
-    /// arithmetic stays exact here: the store's actor is an external
-    /// thread, so under a paused full assembly the auto-advancing clock
-    /// can jump while a store roundtrip is in flight and expire a window
-    /// mid-operation. A paused full assembly itself works — the confirm
-    /// window's spine pin runs one — but its clock cannot be trusted to
-    /// sit still between two store reads.
-    #[tokio::test(start_paused = true)]
-    async fn the_report_window_declines_within_and_reopens_past_its_length() {
-        let window = LineWindow::new(REPORT_WINDOW);
-        assert!(window.grants(1).await, "the first filing takes the grant");
-        assert!(
-            !window.grants(1).await,
-            "a second ask inside the window is declined"
-        );
-        tokio::time::advance(
-            REPORT_WINDOW
-                .checked_sub(Duration::from_secs(1))
-                .expect("the window is longer than a second"),
-        )
-        .await;
-        assert!(
-            !window.grants(1).await,
-            "still inside the window, still declined"
-        );
-        tokio::time::advance(Duration::from_secs(2)).await;
-        assert!(
-            window.grants(1).await,
-            "past the window, the channel files again"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_revoked_grant_spends_nothing() {
-        let window = LineWindow::new(REPORT_WINDOW);
-        assert!(window.grants(1).await, "the first ask takes the grant");
-        window.revoke(1).await;
-        assert!(
-            window.grants(1).await,
-            "a revoked grant closes the window again, as if never opened"
-        );
-        assert!(
-            !window.grants(1).await,
-            "the re-taken grant is spent normally"
-        );
-        window.revoke(2).await;
-        assert!(
-            window.grants(2).await,
-            "revoking an unopened channel is a no-op"
         );
     }
 

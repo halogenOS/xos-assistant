@@ -66,9 +66,11 @@
 //!
 //! A filed report block delivers as its stored fixed line, marked
 //! [`ReplyKind::Report`] and threaded onto the reported message's origin —
-//! on BOTH stream events: with the answer on the turn's completion, where
-//! ledger order puts it before the answer text so the member's
-//! confirmation reads after the deed, and on the turn's failure ahead of
+//! independent of the answer: an abstained turn's report still goes out,
+//! since the abstention recognition below touches only [`ReplyKind::Answer`]
+//! blocks — and on BOTH stream events: with the answer on the turn's
+//! completion, where ledger order puts it before the answer text, and on
+//! the turn's failure ahead of
 //! the notice, so a turn that dies after filing still files. The failure
 //! wake runs the same stored-state read as a completion, so a dead turn's
 //! already-finalized narration delivers beside its report instead of

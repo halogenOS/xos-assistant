@@ -1,5 +1,6 @@
-//! AC8's documentation pins: the prompt's returned report bullet with its
-//! tool teaching, the 0046 closure, the 0044 amendment, the 0045
+//! AC8's documentation pins: the report teaching's move out of the prompt
+//! (unit 15; the bullet's earlier return is recorded in decision 0046 and
+//! its removal in decision 0091), the 0046 closure, the 0044 amendment, the 0045
 //! narrowing, the unit-5 no-write amendment, and the four privacy drafts'
 //! dated updates — joined by the username-projection unit's AC4 pins (the
 //! prompt's mention line, the DPIA's dated note and the three decision
@@ -18,7 +19,11 @@
 //! administrator-deletion sentence with its reply-route scope, the DPIA's
 //! mirror paragraph with the in-flight-turn window, the operator
 //! reference's piggyback section with its reply-only and bare-token
-//! bounds, and the unit's five decision records.
+//! bounds, and the unit's five decision records — and the
+//! autonomous-moderation unit's AC7 pins: the policy's assessment
+//! sentence, the DPIA's purpose and false-positive residual, the
+//! compliance page's Article-22 note, and the unit's four decision
+//! records with the removed member report among them.
 //! Each pin reads the
 //! committed file the way the repository ships it, so a drifted edit fails
 //! loudly here.
@@ -41,25 +46,73 @@ fn flattened(content: &str) -> String {
     content.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The report teaching left the operator's prompt with unit 15: the
+/// member-initiated flow is removed (decision 0091), and the autonomous
+/// teaching composes in the core, exactly where the tool registers — so
+/// the prompt file carries no report instruction at all, and the composed
+/// constant carries the whole of it.
 #[test]
-fn the_prompt_regains_the_report_bullet_tied_to_the_tool() {
+fn the_report_teaching_moved_from_the_prompt_to_the_composition() {
     let prompt = repo_file("prompts/assistant.md");
     assert!(
-        prompt.contains("* /report when it needs human judgment"),
-        "the gated bullet returned verbatim, per decision 0046"
+        !prompt.contains("/report"),
+        "the prompt no longer names the report command"
     );
     assert!(
-        prompt.contains("use the report_spam tool"),
-        "the tool teaching names the report tool"
+        !prompt.contains("report_spam"),
+        "the prompt no longer teaches the report tool; the composition does"
     );
     assert!(
-        prompt.contains("it is the only way to report"),
-        "the tool is taught as the only way to report"
+        flattened(&prompt).contains("rule enforcement with a light reminder in text"),
+        "the prose reminder stays the prompt's own enforcement voice"
+    );
+
+    let teaching = assistant_core::MODERATION_TEACHING;
+    assert!(
+        teaching.contains("the report_spam tool"),
+        "the composed teaching names the tool"
     );
     assert!(
-        prompt.contains("Never write the /report command into an answer yourself"),
-        "the model is told never to write the moderation command in prose"
+        teaching.contains("never write the report command into an answer yourself"),
+        "the composed teaching keeps the never-type-the-command rule"
     );
+    assert!(
+        teaching.contains("The tool is the only way to report"),
+        "the composed teaching keeps the only-way rule"
+    );
+}
+
+/// AC8's content pin: the shipped base prose lost the hardcoded
+/// community-rules list and the addressed-only stay-quiet framing, and the
+/// composed system prompt built from it inherits neither. The group's rules
+/// reach the model through exactly one channel — the pinned rules note —
+/// and the composed answering teaching alone governs when the assistant
+/// speaks.
+#[test]
+fn the_base_prose_carries_no_rules_list_and_no_stay_quiet_framing() {
+    use assistant_core::AnsweringMode;
+
+    let base = repo_file("prompts/assistant.md");
+    let composed = [
+        assistant_core::composed_system_prompt(&base, "Probe", AnsweringMode::Helpful, true),
+        assistant_core::composed_system_prompt(&base, "Probe", AnsweringMode::Addressed, false),
+    ];
+    for (name, prose) in std::iter::once(("the shipped base prose", &base)).chain(
+        composed
+            .iter()
+            .map(|prompt| ("a composed system prompt", prompt)),
+    ) {
+        let flat = flattened(prose);
+        for leak in [
+            "Community rules",
+            "applies to everyone",
+            "Do not ask for ETA repeatedly",
+            "stay quiet during regular conversations",
+            "stay quiet",
+        ] {
+            assert!(!flat.contains(leak), "{name} still carries: {leak:?}");
+        }
+    }
 }
 
 #[test]
@@ -468,7 +521,8 @@ fn the_four_privacy_drafts_carry_their_dated_report_updates() {
     for (draft, marker) in [
         (
             "docs/privacy/bot-assistant-privacy-policy.md",
-            "It can pass a report to the group's\nmoderation bot when a member replies to a message and asks for one",
+            "it reports that message to the group's moderation bot — the group's \
+             administrators decide what happens, and the assistant itself takes no action",
         ),
         (
             "docs/privacy/dpia.md",
@@ -776,5 +830,133 @@ fn the_helpful_mode_units_decisions_are_recorded_with_dates_and_rejected_alterna
         ))
         .contains("the sentinel is the whole answer or it is no abstention"),
         "the sentinel's whole-answer rule is recorded as decided"
+    );
+}
+
+// ─── The autonomous-moderation unit's pins (AC7, 2026-08-24) ─────────────
+
+#[test]
+fn the_autonomous_moderation_unit_ships_its_policy_dpia_and_compliance_updates() {
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains(
+            "It does read the group's messages and judge them against the group's \
+             pinned rules"
+        ),
+        "the policy's moderation sentence is the assistant's own assessment"
+    );
+    assert!(
+        policy.contains(
+            "the group's administrators decide what happens, and the assistant itself \
+             takes no action"
+        ),
+        "the policy keeps the human decision and the no-action bound"
+    );
+    assert!(
+        policy.contains("it can misfire and report a message that broke no rule"),
+        "the policy names the false positive honestly"
+    );
+    assert!(
+        !policy.contains("when a member replies to a message and asks for one"),
+        "the member-initiated description left the policy with the flow"
+    );
+
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    assert!(
+        dpia.contains("## 13. Addendum, 2026-08-24: the autonomous moderation assessment"),
+        "the impact assessment carries the unit's addendum"
+    );
+    assert!(
+        dpia.contains(
+            "Autonomous assessment joins the stated purposes under the same legitimate \
+             interest"
+        ),
+        "the addendum records the processing purpose under the standing basis"
+    );
+    assert!(
+        dpia.contains("**The false-positive residual.**"),
+        "the addendum records the false-positive residual by name"
+    );
+    assert!(
+        dpia.contains("the configured reasoning level sizes the model's thinking"),
+        "the addendum names the reasoning dependency"
+    );
+    assert!(
+        dpia.contains("the output is a report to humans who decide, not an effect on the member"),
+        "the addendum states the Article 22 conclusion's reason"
+    );
+
+    let record = flattened(&repo_file("docs/compliance/ai-act.md").replace("\n> ", "\n"));
+    assert!(
+        record.contains("Amended 2026-08-24: that standing-capability trigger fired"),
+        "the compliance page answers the standing-capability trigger with its date"
+    );
+    assert!(
+        record.contains(
+            "it is not an automated decision producing legal or similarly significant \
+             effects on the member"
+        ),
+        "the compliance page states the not-an-Article-22-decision conclusion"
+    );
+    assert!(
+        record.contains("no reasoning trace is kept, and this record claims no audit trail"),
+        "the compliance page claims no reasoning-audit trail the artifact does not keep"
+    );
+    assert!(
+        record.contains("What the system stores is the report itself"),
+        "the compliance page states what is stored instead"
+    );
+}
+
+#[test]
+fn the_autonomous_moderation_units_decisions_are_recorded() {
+    for record in [
+        "docs/decisions/0091-the-report-names-its-target-validated-against-the-assessment-set.md",
+        "docs/decisions/0092-a-message-is-reported-at-most-once-per-origin.md",
+        "docs/decisions/0093-the-moderation-teaching-composes-only-where-it-can-act.md",
+        "docs/decisions/0094-the-rules-note-is-guaranteed-in-the-models-context.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-24"),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+    let target = flattened(&repo_file(
+        "docs/decisions/0091-the-report-names-its-target-validated-against-the-assessment-set.md",
+    ));
+    assert!(
+        target.contains("Member-initiated reporting is removed as redundant"),
+        "the removed member report is recorded as decided"
+    );
+    assert!(
+        target.contains("must belong to a message the model is actually assessing this turn"),
+        "the validation bound is recorded as decided"
+    );
+    let dedup = flattened(&repo_file(
+        "docs/decisions/0092-a-message-is-reported-at-most-once-per-origin.md",
+    ));
+    assert!(
+        dedup.contains("Per-origin dedup replaces the report window"),
+        "the window's replacement is recorded as decided"
+    );
+
+    // The sibling drafts carry their dated changes beside the policy's.
+    let lia = flattened(&repo_file("docs/privacy/lia.md"));
+    assert!(
+        lia.contains("Amended 2026-08-24: the assessment is now the assistant's own"),
+        "the balancing carries its dated amendment"
+    );
+    let records = flattened(&repo_file("docs/privacy/records-of-processing.md"));
+    assert!(
+        records.contains(
+            "Changed 2026-08-24: written when the assistant's own assessment finds a \
+             message in clear violation"
+        ),
+        "the report record's row carries its dated change"
     );
 }

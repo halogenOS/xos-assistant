@@ -286,7 +286,9 @@ impl ProviderModule for ScriptedChat {
                     let _ = response_tx.send(ProviderResponse::Done);
                     continue;
                 }
-                let answer = answer_to(&messages.last().map(message_text).unwrap_or_default());
+                let answer = answer_to(&without_origin_marks(
+                    &messages.last().map(message_text).unwrap_or_default(),
+                ));
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
                     text: answer,
@@ -317,6 +319,21 @@ fn carries(message: &Message, needle: &str) -> bool {
             .iter()
             .any(|part| matches!(part, WirePart::Text { text } if text.contains(needle))),
     }
+}
+
+/// The projected text with every message's bracketed id mark removed —
+/// what the scripted answer derives from. The core's projection opens each
+/// recorded message with its origin in brackets (unit 15), the way a model
+/// reads past an id to the words; stripping here keeps the suite's answer
+/// pins about the words.
+fn without_origin_marks(text: &str) -> String {
+    text.lines()
+        .map(|line| match line.find("] ") {
+            Some(end) if line.starts_with('[') => &line[end + 2..],
+            _ => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// One projected message's whole text, in either content mode.
@@ -408,7 +425,14 @@ pub async fn start_assistant_with_tools(
     tool_script: Option<ToolScript>,
     tools: assistant_core::tools::ToolSet,
 ) -> Fixture {
-    start_assistant_moderating(tool_script, tools, None).await
+    assemble(
+        tool_script,
+        tools,
+        None,
+        assistant_core::DirectChats::default(),
+        assistant_core::AnsweringMode::Addressed,
+    )
+    .await
 }
 
 /// The moderation handle the report round-trip configures — the report
@@ -431,12 +455,16 @@ pub async fn start_assistant_direct_off() -> Fixture {
         ),
         None,
         assistant_core::DirectChats::Off,
+        assistant_core::AnsweringMode::Addressed,
     )
     .await
 }
 
-/// The widest named seam: the tool script, the tool set, and an optional
-/// moderation handle whose presence registers the report tool.
+/// The moderating seam: the tool script, the tool set, and an optional
+/// moderation handle — under HELPFUL answering, because the report tool's
+/// registration takes a handle plus helpful mode since unit 15, and the
+/// autonomous assessment only exists where every message reaches the
+/// model.
 pub async fn start_assistant_moderating(
     tool_script: Option<ToolScript>,
     tools: assistant_core::tools::ToolSet,
@@ -447,6 +475,7 @@ pub async fn start_assistant_moderating(
         tools,
         moderation_handle,
         assistant_core::DirectChats::default(),
+        assistant_core::AnsweringMode::Helpful,
     )
     .await
 }
@@ -457,6 +486,7 @@ async fn assemble(
     tools: assistant_core::tools::ToolSet,
     moderation_handle: Option<String>,
     direct_chats: assistant_core::DirectChats,
+    answering: assistant_core::AnsweringMode,
 ) -> Fixture {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let failures = Arc::new(AtomicUsize::new(0));
@@ -488,7 +518,7 @@ async fn assemble(
                 model_display_name: "Script Model".into(),
             },
             system_prompt: "You are the adapter suite's scripted assistant fixture.".into(),
-            answering: assistant_core::AnsweringMode::Addressed,
+            answering,
             name: NAME.into(),
             disclosure: None,
             protection: assistant_core::ProtectionConfig::default(),
