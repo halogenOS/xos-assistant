@@ -92,13 +92,27 @@ the conversation, so it can carry a member's words.
   without a bound it can send a member's handle, their name or their quoted words to the
   search provider — a recipient outside the EU receiving something no member asked to have
   sent. Two mechanisms, and the second is the one that holds: the tool's description states
-  that a query names a topic and never a person, and the tool itself refuses a query
-  carrying a platform handle or a display name drawn from the conversation, answering with
-  what it refused and why so the model rewrites the query rather than losing the turn.
+  that a query names a topic and never a person, and the tool itself refuses a query that
+  deliberately names one, answering with what it refused and why so the model rewrites the
+  query rather than losing the turn.
   *Rejected:* prompt instruction alone — an instruction the model may or may not follow is
   not a bound and cannot be tested; *rejected:* silently stripping the offending token — the
   model would then believe it searched for something it did not, and would read the results
   as answering a question nobody asked.
+- **What counts as naming a person is the deliberate form, not the coincidental one,
+  2026-08-25.** The guard refuses two things and only two: a platform handle written in its
+  handle form, and a member's full display name of two or more parts appearing in sequence.
+  A single word is never matched, however exactly it happens to equal somebody's name or
+  handle. The reason is the operator's ruling of this date, and it is the right one: a
+  member called Dick does not make a search for dough or for dick a submission of personal
+  data, and a search for jarvis is a legitimate search about a subject even while a member
+  holds that handle. A query landing on a member's name by coincidence is chance; the guard
+  exists for the deliberate case, where the model writes the handle form because it means
+  the person.
+  *Rejected:* matching bare display names token by token — it refuses ordinary searches
+  constantly, and the false refusals would arrive far more often than the true ones, which
+  is how a guard gets switched off; *rejected:* refusing on any word that matches a member
+  name, for the same reason stated more bluntly.
 - **The check matches on a normalised query, not on the characters as typed, 2026-08-25.**
   A guard that compares raw text is defeated by spacing a handle out, and the model is the
   one writing the text, so an easy evasion is an evasion that will eventually be taken. The
@@ -124,9 +138,10 @@ total and whether more remain. A provider failure reaches the model as a stated 
 with a next step, never as a bare status and never as an empty result; a failure never
 reaches the chat. The query is bounded and refused whole when it is too long. No page is
 fetched, no link is followed, and nothing is stored beyond the ordinary record of the tool
-call and its result. A query naming a person — a platform handle, or a display name drawn
-from the conversation — is refused by the tool with its reason, so no member identifier
-reaches the provider. The record of processing and the impact assessment name the search
+call and its result. A query that deliberately names a person — a platform handle in handle
+form, or a member's multi-part display name in sequence — is refused by the tool with its
+reason, while a query that merely happens to contain a word somebody is called goes through
+untouched. The record of processing and the impact assessment name the search
 provider as a recipient before this ships.
 
 ## Acceptance criteria
@@ -151,19 +166,23 @@ provider as a recipient before this ships.
   path, since that is where a key is most often printed.
 - **AC7** The query is bounded: an over-long query is refused with a message naming the
   limit, and no truncated query is sent — pinned.
-- **AC7b** No member identifier leaves: a query carrying a platform handle is refused, a
-  query carrying a display name present in the conversation is refused, the refusal states
-  what it refused and why, and in both cases nothing is sent to the provider — pinned by
-  asserting on the stub server that no request arrived, since a test that only checks the
-  return value cannot tell a refusal from a request that was made and discarded. A query
-  naming no person passes untouched, pinned, so the guard is proven not to swallow ordinary
-  searches.
+- **AC7b** No deliberate member identifier leaves: a query carrying a platform handle in
+  handle form is refused, and so is one carrying a member's multi-part display name in
+  sequence; the refusal states what it refused and why; and in both cases nothing is sent to
+  the provider — pinned by asserting on the stub server that no request arrived, since a
+  test reading only the return value cannot tell a refusal from a request that was made and
+  discarded.
 - **AC7c** The guard survives evasion: a handle spaced out character by character, one
   broken up by dots, hyphens or underscores, one carrying zero-width characters, one in
   mixed case and one written with confusable characters are each refused — pinned per
-  form, with the stub server asserting no request arrived. A query whose at sign belongs to
-  an email address, a scoped package name or a version string is NOT refused, pinned, since
-  a guard that refuses ordinary technical queries would be turned off within a week.
+  form, with the stub server asserting no request arrived.
+- **AC7d** The guard does not refuse ordinary searches, and this criterion carries as much
+  weight as AC7b. Each of these passes untouched, pinned, with a member present in the
+  conversation whose handle or name is exactly the word in question: a single common word
+  that equals a member's handle; a single common word that equals a member's first name; a
+  query whose at sign belongs to an email address, a scoped package name or a version
+  string. A guard that refuses ordinary technical searches is a guard that gets switched
+  off, which protects nobody.
 - **AC8** The documents move: the record of processing carries the search provider as a
   recipient with what it receives, and the impact assessment carries the transfer —
   checked, and pinned by the documentation suite the repository already runs.
