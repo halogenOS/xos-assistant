@@ -99,6 +99,20 @@ the conversation, so it can carry a member's words.
   not a bound and cannot be tested; *rejected:* silently stripping the offending token — the
   model would then believe it searched for something it did not, and would read the results
   as answering a question nobody asked.
+- **The check matches on a normalised query, not on the characters as typed, 2026-08-25.**
+  A guard that compares raw text is defeated by spacing a handle out, and the model is the
+  one writing the text, so an easy evasion is an evasion that will eventually be taken. The
+  query is normalised before matching and the normalisation is the whole point of the
+  mechanism: Unicode normalised to a canonical composed form, case folded, zero-width and
+  formatting characters removed, confusable characters folded to their plain equivalents,
+  and every run of separators — spaces, dots, hyphens, underscores — collapsed away, so
+  `@ h a n d l e`, `@h.a.n.d.l.e` and `@handle` are one string by the time the check sees
+  them. The refusal names what was matched, not the normalised form, so the model reads its
+  own words back. Matching is on the normalised query only; what is sent to the provider is
+  always the query as written, never the normalised text.
+  *Rejected:* matching raw text (the evasion above); *rejected:* rejecting any query
+  containing an at sign (an email address, a package name and a version string all carry one
+  and none of them names a member).
 
 ## The unit's contract
 
@@ -144,6 +158,12 @@ provider as a recipient before this ships.
   return value cannot tell a refusal from a request that was made and discarded. A query
   naming no person passes untouched, pinned, so the guard is proven not to swallow ordinary
   searches.
+- **AC7c** The guard survives evasion: a handle spaced out character by character, one
+  broken up by dots, hyphens or underscores, one carrying zero-width characters, one in
+  mixed case and one written with confusable characters are each refused — pinned per
+  form, with the stub server asserting no request arrived. A query whose at sign belongs to
+  an email address, a scoped package name or a version string is NOT refused, pinned, since
+  a guard that refuses ordinary technical queries would be turned off within a week.
 - **AC8** The documents move: the record of processing carries the search provider as a
   recipient with what it receives, and the impact assessment carries the transfer —
   checked, and pinned by the documentation suite the repository already runs.
