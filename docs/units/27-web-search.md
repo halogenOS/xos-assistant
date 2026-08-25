@@ -87,6 +87,18 @@ the conversation, so it can carry a member's words.
 - **The query is the model's, and it is bounded, 2026-08-25.** The tool takes a query
   string with a stated maximum length, refusing an over-long one with a message that says
   so rather than truncating a member's words into something they did not say.
+- **A query is about a subject, never about a person, and the tool enforces that rather
+  than asking for it, 2026-08-25.** The model composes the query from the conversation, so
+  without a bound it can send a member's handle, their name or their quoted words to the
+  search provider — a recipient outside the EU receiving something no member asked to have
+  sent. Two mechanisms, and the second is the one that holds: the tool's description states
+  that a query names a topic and never a person, and the tool itself refuses a query
+  carrying a platform handle or a display name drawn from the conversation, answering with
+  what it refused and why so the model rewrites the query rather than losing the turn.
+  *Rejected:* prompt instruction alone — an instruction the model may or may not follow is
+  not a bound and cannot be tested; *rejected:* silently stripping the offending token — the
+  model would then believe it searched for something it did not, and would read the results
+  as answering a question nobody asked.
 
 ## The unit's contract
 
@@ -98,7 +110,9 @@ total and whether more remain. A provider failure reaches the model as a stated 
 with a next step, never as a bare status and never as an empty result; a failure never
 reaches the chat. The query is bounded and refused whole when it is too long. No page is
 fetched, no link is followed, and nothing is stored beyond the ordinary record of the tool
-call and its result. The record of processing and the impact assessment name the search
+call and its result. A query naming a person — a platform handle, or a display name drawn
+from the conversation — is refused by the tool with its reason, so no member identifier
+reaches the provider. The record of processing and the impact assessment name the search
 provider as a recipient before this ships.
 
 ## Acceptance criteria
@@ -123,6 +137,13 @@ provider as a recipient before this ships.
   path, since that is where a key is most often printed.
 - **AC7** The query is bounded: an over-long query is refused with a message naming the
   limit, and no truncated query is sent — pinned.
+- **AC7b** No member identifier leaves: a query carrying a platform handle is refused, a
+  query carrying a display name present in the conversation is refused, the refusal states
+  what it refused and why, and in both cases nothing is sent to the provider — pinned by
+  asserting on the stub server that no request arrived, since a test that only checks the
+  return value cannot tell a refusal from a request that was made and discarded. A query
+  naming no person passes untouched, pinned, so the guard is proven not to swallow ordinary
+  searches.
 - **AC8** The documents move: the record of processing carries the search provider as a
   recipient with what it receives, and the impact assessment carries the transfer —
   checked, and pinned by the documentation suite the repository already runs.
