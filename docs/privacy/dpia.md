@@ -208,7 +208,9 @@ fails closed and withdraws (decision 0052).
   and the public username of each speaker.
 - **Sub-processors of the processor, in two layers.** The infrastructure Requesty runs the
   service on, Amazon Web Services in Frankfurt, for which Requesty stays answerable to us.
-  And the model providers it routes to, Google today, for which Requesty answers for the
+  And the model providers it routes to, a category rather than a name (generalised
+  2026-08-27: the provider follows the model chosen, exactly as this assessment already
+  declines to pin the model), for which Requesty answers for the
   choice, for the written terms and for reporting that provider's published position
   accurately, but not for that provider's own breach of it. Corrected 2026-08-23: zero
   data retention binds Requesty alone. Whether a model provider keeps a request or trains
