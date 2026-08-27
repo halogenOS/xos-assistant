@@ -35,3 +35,16 @@ answer-threading decision comes later.
 
 - **Threading answers now.** A product-texture change smuggled into a
   plumbing unit; the operator's call.
+
+---
+
+Amended 2026-08-24: the bold clause above — the model's answers stay unthreaded —
+is superseded by decision 0106, which is the answer-threading decision this record
+left open. An answer now sets the reply target of the one message the turn absorbed
+that literally addressed the assistant, and nothing when none or several did. The
+plumbing this record built is unchanged and carries it: the same optional target,
+the same reply parameters, the same send-without-reply tolerance, the same
+first-chunk rule. One addition to the adapter's half, decision 0109: where the
+platform refuses a send that carried a target, the same text goes out once more
+without it, because the tolerance stated on the request covers only a target the
+platform can no longer find.

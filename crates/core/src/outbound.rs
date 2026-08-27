@@ -63,6 +63,25 @@
 //! notice and the report line are fixed texts a person wrote and are never
 //! touched.
 //!
+//! # An answer threads onto the one person who addressed the assistant
+//! (unit 26, 2026-08-24)
+//!
+//! An answer is delivered as a reply to the message it answers when the
+//! turn absorbed exactly one message that literally addressed the
+//! assistant; [`answer_target`] below states the whole rule. The
+//! summoning frontier is deliberately not consulted — it names whatever
+//! line the dispatch woke on, routinely a bystander's — so the target is
+//! read from the turn's absorbed messages instead, where the addressed
+//! fact is stored per message. Nobody addressed the assistant, or several
+//! did, and the answer goes out plain; in no case is it withheld.
+//!
+//! The thread carries its own recovery, stated here and obeyed by the
+//! adapter ([`ReplyThread`]): an answer whose threaded send the platform
+//! refuses goes out once more plain, because an answer must never be lost
+//! to a courtesy, while a report's line is threaded or not delivered —
+//! it is the moderation bot's command shape, which files nothing when it
+//! is not a reply and would stand in the group as a bare command line.
+//!
 //! # The report's delivery (2026-08-23)
 //!
 //! A filed report block delivers as its stored fixed line, marked
@@ -98,7 +117,8 @@ use tokio::sync::mpsc;
 use crate::disclosure::Disclosure;
 use crate::kind::{AssistantKind, FrameworkKind};
 use crate::mapping;
-use crate::message::{OutboundReply, ReplyKind};
+use crate::message::{OutboundReply, ReplyKind, ReplyThread};
+use crate::tools::provenance;
 
 /// The one failure notice a failed turn yields, uniform across failure
 /// causes: the wire flattens a provider's refusal to prose before the core
@@ -333,7 +353,7 @@ async fn deliver_answers_and_reports(
             Deliverable::Reply {
                 text,
                 kind,
-                reply_target,
+                threading,
             } => {
                 // The empty-answer check comes FIRST, on the raw stored
                 // text (unit 22): the model ended its turn without writing
@@ -361,6 +381,19 @@ async fn deliver_answers_and_reports(
                         .await?
                 } else {
                     text
+                };
+                // The thread's target, where the block named a rule instead
+                // of an origin (unit 26): the lookup walks the turn's
+                // absorbed messages, so it belongs here, where the loaded
+                // ledger already is, and not in the block-pure reading
+                // below. It runs on the text that goes out, disclosure line
+                // included, because that is the prose the moderation
+                // command shape is read from.
+                let reply_target = match threading {
+                    Threading::Onto(thread) => Some(thread),
+                    Threading::OntoTheAddressedMessage => {
+                        answer_target(&blocks, block_id, &text).map(ReplyThread::OntoOrPlainly)
+                    }
                 };
                 let reply = OutboundReply {
                     channel: channel.clone(),
@@ -453,14 +486,28 @@ async fn recover_from_lag(
     Ok(())
 }
 
+/// Where a deliverable reply threads, as far as one block can state it:
+/// the block either names the thread itself or names the rule that
+/// resolves one. A rule exists because [`deliverable_of`] reads a single
+/// block and holds no ledger, while the answer's target is a fact about
+/// the turn around it.
+enum Threading {
+    /// The thread the block carries — the report's stored target, onto
+    /// which the line goes or nowhere.
+    Onto(ReplyThread),
+    /// Onto the one message that addressed the assistant this turn,
+    /// resolved by the caller over the loaded ledger ([`answer_target`]).
+    OntoTheAddressedMessage,
+}
+
 /// What one undelivered block means to this edge.
 enum Deliverable {
-    /// A reply to yield: an answer's prose unthreaded, or a report's
-    /// stored line threaded onto its target.
+    /// A reply to yield: an answer's prose, or a report's stored line,
+    /// each with where it threads.
     Reply {
         text: String,
         kind: ReplyKind,
-        reply_target: Option<String>,
+        threading: Threading,
     },
     /// A report gone undeliverable — its target origin nulled by the
     /// reported person's erasure, or a row the store did not produce —
@@ -472,9 +519,12 @@ enum Deliverable {
 /// not carry. Decoded through the composed kind's one parse path: the
 /// framework ingests a completed stream as a committed text block in the
 /// assistant's voice, streaming tails parse to their own kinds, and the
-/// report kind carries its stored line and target. The answer stays
-/// unthreaded on purpose — decision 0018's judgment stands; only the
-/// report's delivery threads.
+/// report kind carries its stored line and target. The report names its
+/// own origin, and names it as the only place its line can go — the line
+/// is the moderation bot's command shape, which files nothing as a plain
+/// message; the answer names the rule instead of an origin, since the
+/// message it answers is a fact about the turn and this reading holds one
+/// block.
 fn deliverable_of(block: &Block) -> Option<Deliverable> {
     match AssistantKind::from_block(block) {
         AssistantKind::Core(FrameworkKind(BlockKind::Text(text)))
@@ -483,17 +533,64 @@ fn deliverable_of(block: &Block) -> Option<Deliverable> {
             Some(Deliverable::Reply {
                 text: text.content,
                 kind: ReplyKind::Answer,
-                reply_target: None,
+                threading: Threading::OntoTheAddressedMessage,
             })
         }
         AssistantKind::Report(report) => match (report.line, report.target_origin) {
             (Some(line), Some(target)) => Some(Deliverable::Reply {
                 text: line,
                 kind: ReplyKind::Report,
-                reply_target: Some(target),
+                threading: Threading::Onto(ReplyThread::OntoOnly(target)),
             }),
             _ => Some(Deliverable::Skipped),
         },
+        _ => None,
+    }
+}
+
+/// The origin an answer threads onto, `None` for a plain send (unit 26,
+/// 2026-08-24).
+///
+/// The turn's absorbed messages are walked — the same reading the tool
+/// admission and the report's aiming take, over the ledger already loaded
+/// — and the target is the stored origin of the one message that
+/// literally addressed the assistant. Exactly one yields a target: none
+/// means nobody addressed it, which is every helpful-mode answer to
+/// ordinary chatter, and several mean the turn answered a crowd, where
+/// naming one tells the others they were ignored. Never the newest, never
+/// the summoning frontier: the frontier is the line the dispatch woke on,
+/// which is routinely a bystander's. An addressed message whose origin an
+/// erasure nulled, or one recorded before the origin was stored, yields
+/// nothing and the answer goes out plain.
+///
+/// An answer whose own prose carries a reply-acted command shape threads
+/// onto nothing. The moderation bot files a report from a REPLY carrying
+/// the report shape and deletes from a REPLY carrying the deletion
+/// command, so a threaded answer repeating either — a member asking what
+/// the command does, a model slip, an injected line — would become a real
+/// command against the message it threaded onto, bypassing every check
+/// the real path performs. The shapes come from the one list in
+/// [`crate::reply_commands`] (decision 0108, widened 2026-08-27). This is
+/// a routing choice and not prose sanitation: nothing is rewritten,
+/// stripped, refused or withheld, and the text goes out exactly as
+/// written.
+fn answer_target(ledger: &[Block], answer_block_id: i64, text: &str) -> Option<String> {
+    if let Some(shape) = crate::reply_commands::ACTED_FROM_REPLIES
+        .iter()
+        .find(|lead| text.contains(*lead))
+    {
+        tracing::debug!(
+            answer_block_id,
+            shape,
+            "the answer's prose carries a reply-acted command shape; it goes out plain"
+        );
+        return None;
+    }
+    let mut addressed = provenance::co_summoners(ledger, answer_block_id)
+        .into_iter()
+        .filter(|message| message.literal_addressed == Some(true));
+    match (addressed.next(), addressed.next()) {
+        (Some(only), None) => only.origin,
         _ => None,
     }
 }

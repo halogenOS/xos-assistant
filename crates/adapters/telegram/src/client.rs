@@ -56,6 +56,13 @@ const CHAT_ACTION_WAIT_CEILING: Duration = crate::driver::TYPING_REFRESH;
 /// The HTTP status the platform rate-limits with.
 const TOO_MANY_REQUESTS: u16 = 429;
 
+/// The status range that says the request itself was wrong, so the API
+/// declined it and performed nothing: the client-error range, rate limits
+/// excluded above. A status outside it — a server error from the API or
+/// from whatever sits in front of it — says only that the answer failed,
+/// never that the send did not happen.
+const CLIENT_ERROR_STATUSES: std::ops::Range<u16> = 400..500;
+
 /// What a wire operation fails with. Constructed only in this module, and
 /// never from a raw transport error's text without redaction — the token
 /// travels in the URL, so the URL never travels in an error.
@@ -82,6 +89,66 @@ pub(crate) enum ClientError {
     /// bounds, so the request fails at once instead of waiting.
     #[error("rate-limited with a stated wait of {stated_seconds}s, past the honored ceiling")]
     RateLimitWaitOverCeiling { stated_seconds: u64 },
+}
+
+impl ClientError {
+    /// Whether the platform answered this request by declining it: the API
+    /// replied, refused, and delivered nothing. Both shapes the API
+    /// declines in are named — a client-error status, and a success status
+    /// carrying `ok: false` — because the platform uses the first for a bad
+    /// request and the second for the rest.
+    ///
+    /// A server-error status is deliberately outside, and the range is why
+    /// the status is read instead of matched whole: a 500 from the API, or
+    /// a 502 or 504 from whatever fronts it, does not say the send was not
+    /// performed. It leaves the message's fate exactly as unknown as a
+    /// transport failure does, and repeating an unknown fate is how the
+    /// same text reaches the chat twice. A transport failure and an
+    /// undecodable answer are outside for that same reason, and a spent
+    /// rate-limit bound asks for time, not for a different request.
+    fn is_refusal(&self) -> bool {
+        match self {
+            Self::Status { status } => CLIENT_ERROR_STATUSES.contains(status),
+            Self::Refused { .. } => true,
+            Self::Transport { .. }
+            | Self::Decode { .. }
+            | Self::RateLimitedOut
+            | Self::RateLimitWaitOverCeiling { .. } => false,
+        }
+    }
+}
+
+/// How one send threads, in the platform's own terms: the decoded message
+/// id, carrying the core's stated recovery for a threaded send the
+/// platform refuses. Built only by
+/// [`translate::send_thread`](crate::translate::send_thread), which is
+/// where the core's [`assistant_core::ReplyThread`] is read; nothing here
+/// consults the reply's kind, because what a reply is worth without its
+/// thread is the core's judgment and not the wire's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SendThread {
+    /// No target: the text goes out as a plain message.
+    Plain,
+    /// Onto the message, and plain where the platform refuses that send.
+    OntoOrPlainly(i64),
+    /// Onto the message or not at all; a refusal is the send's failure.
+    OntoOnly(i64),
+}
+
+impl SendThread {
+    /// The message the first chunk threads onto, if any.
+    fn target(self) -> Option<i64> {
+        match self {
+            Self::Plain => None,
+            Self::OntoOrPlainly(message_id) | Self::OntoOnly(message_id) => Some(message_id),
+        }
+    }
+
+    /// Whether a refused threaded send is followed by one plain send of
+    /// the same text.
+    fn plain_when_refused(self) -> bool {
+        matches!(self, Self::OntoOrPlainly(_))
+    }
 }
 
 /// A send that did not deliver its whole reply. The delivered count exists
@@ -354,33 +421,35 @@ impl BotClient {
         Ok(())
     }
 
-    /// Send one reply's text to its chat, threaded onto `reply_to` where
-    /// one is given. Text past the platform's message cap goes out as
-    /// consecutive chunks, per decision 0019: the cap is the platform's,
-    /// and dropping or truncating the reply instead would lose the answer.
+    /// Send one reply's text to its chat, threaded as `thread` states.
+    /// Text past the platform's message cap goes out as consecutive
+    /// chunks, per decision 0019: the cap is the platform's, and dropping
+    /// or truncating the reply instead would lose the answer.
     /// Only the first chunk threads (2026-08-23): a thread is one answer,
     /// and the platform shows the continuation chunks right under it. The
     /// reply travels as the platform's current reply parameters — the old
     /// reply field was replaced two platform versions ago — with
     /// send-without-reply tolerance, so a deleted target degrades to a
-    /// plain send. A chunk that fails ends the reply there: sending the
-    /// tail after a lost middle would deliver a spliced statement, so the
-    /// caller drops the rest with it — and the error carries how many
+    /// plain send. Every other refusal of a threaded send is met by
+    /// [`Self::send_chunk_threaded`], which recovers exactly where the
+    /// core asked for it. A chunk that fails ends the reply there: sending
+    /// the tail after a lost middle would deliver a spliced statement, so
+    /// the caller drops the rest with it — and the error carries how many
     /// chunks were already delivered, because "dropped" and "cut short in
     /// the chat" are different outcomes to report.
     pub(crate) async fn send_message(
         &self,
         chat_id: i64,
         text: &str,
-        reply_to: Option<i64>,
+        thread: SendThread,
     ) -> Result<(), SendError> {
         for (delivered_chunks, chunk) in chunks_within_cap(text).into_iter().enumerate() {
             let threaded = if delivered_chunks == 0 {
-                reply_to
+                thread
             } else {
-                None
+                SendThread::Plain
             };
-            if let Err(error) = self.send_chunk(chat_id, chunk, threaded).await {
+            if let Err(error) = self.send_chunk_threaded(chat_id, chunk, threaded).await {
                 return Err(SendError {
                     delivered_chunks,
                     error,
@@ -388,6 +457,47 @@ impl BotClient {
             }
         }
         Ok(())
+    }
+
+    /// One chunk's send, with the thread's own recovery where the core
+    /// asked for one (2026-08-24): where the platform refuses a send that
+    /// carried a reply target, the same text goes out once more without
+    /// it.
+    ///
+    /// An answer must never be lost to the courtesy of threading, and the
+    /// tolerance stated on the request covers exactly one cause — a target
+    /// the platform can no longer find. Every other cause reaches here: a
+    /// target in another chat, a topic the platform will not reply into,
+    /// any refusal a future platform version invents. The recovery is
+    /// bounded to that one cause and that one attempt, because it is the
+    /// thread that failed and not the text: an untargeted send that fails
+    /// fails, and a second refusal is returned as the send's own failure.
+    ///
+    /// It is bounded to the replies the core asked it for, too. A reply
+    /// that arrived as [`SendThread::OntoOnly`] is worth nothing without
+    /// its thread — the report's line files nothing unless it is a reply —
+    /// so its refusal stays the send's failure, and the caller drops it as
+    /// it always did. Which replies those are is stated by the core and
+    /// read off the thread here; this module never asks what kind of reply
+    /// it is holding.
+    async fn send_chunk_threaded(
+        &self,
+        chat_id: i64,
+        chunk: &str,
+        thread: SendThread,
+    ) -> Result<(), ClientError> {
+        let Err(error) = self.send_chunk(chat_id, chunk, thread.target()).await else {
+            return Ok(());
+        };
+        if !thread.plain_when_refused() || !error.is_refusal() {
+            return Err(error);
+        }
+        tracing::warn!(
+            chat_id,
+            %error,
+            "the threaded send was refused; the same text goes out plain"
+        );
+        self.send_chunk(chat_id, chunk, None).await
     }
 
     /// One typing action for a chat — the platform's rendering of the

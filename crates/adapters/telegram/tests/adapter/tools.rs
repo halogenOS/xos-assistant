@@ -16,8 +16,8 @@ use tokio::net::TcpListener;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    self, TOOL_CLOSING_ANSWER, TempStateFile, ToolScript, await_conversations, private_update,
-    recording_sleep, spawn_adapter, start_assistant_with_tools,
+    self, TOOL_CLOSING_ANSWER, TempStateFile, ToolScript, await_conversations, message_id_of,
+    private_update, recording_sleep, spawn_adapter, start_assistant_with_tools,
 };
 
 /// The scripted call's input — non-empty by the script's contract.
@@ -218,7 +218,16 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
 
 /// The narration variant: a turn that narrates before calling the tool
 /// delivers both texts to the chat — the narration and the closing answer,
-/// in that order — with both standing in the ledger.
+/// in that order — with both standing in the ledger, and each threaded
+/// onto the message it answers.
+///
+/// Both threading is the rule doing its job, not a slip (unit 26): each
+/// delivered answer names the one message that addressed the assistant
+/// among what the turn had absorbed when that text was written, and here
+/// that is the same ask for both. Threading only the turn's first text
+/// would put the quote on "let me look that up" and leave the answer
+/// itself loose, and a turn's last text is not knowable at delivery: a
+/// text is delivered when its stream ends, rounds before the turn does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn narration_before_the_call_delivers_both_texts_to_the_chat() {
     const NARRATION: &str = "Let me look that commit up.";
@@ -249,6 +258,14 @@ async fn narration_before_the_call_delivers_both_texts_to_the_chat() {
     // line; the closing answer behind it arrives bare.
     let introduced = support::disclosed(NARRATION);
     assert_eq!(texts, vec![introduced.as_str(), TOOL_CLOSING_ANSWER]);
+    for send in &sends {
+        assert_eq!(
+            send.body["reply_parameters"]["message_id"],
+            json!(message_id_of(1)),
+            "every text this turn delivers is a reply to the one message \
+             that addressed the assistant"
+        );
+    }
 
     // Both stand in the ledger, in the production order: the message end
     // finalizes the narration text before the drained tool lifecycle

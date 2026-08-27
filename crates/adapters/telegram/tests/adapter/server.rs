@@ -85,6 +85,10 @@ struct ServerState {
     /// the fixture for the failed-typing-action pin. Unset, actions
     /// succeed plainly.
     failing_chat_actions: Mutex<bool>,
+    /// The answer every `sendMessage` carrying reply parameters is served,
+    /// as a status and a description. Unset, a threaded send is served
+    /// like any other.
+    refused_threading: Mutex<Option<(u16, String)>>,
 }
 
 /// The running scripted server. Dropping it stops accepting; the per-test
@@ -222,6 +226,22 @@ impl BotApiServer {
         scripts.push_back(SendScript::Failing);
     }
 
+    /// Script every send carrying reply parameters to answer the given
+    /// status and description; a send without them is served normally. Both
+    /// are the test's to choose: the description so a pin can name a cause
+    /// other than a deleted target — the one cause the request's own
+    /// tolerance already covers — and the status so a pin can tell the
+    /// platform declining the request (a client error) from the platform
+    /// failing to answer for it (a server error), which says nothing about
+    /// whether the send was performed.
+    pub fn refuse_threaded_sends(&self, status: u16, description: &str) {
+        *self
+            .state
+            .refused_threading
+            .lock()
+            .expect("the threading refusal locks") = Some((status, description.to_owned()));
+    }
+
     /// Script every `sendChatAction` from here on to answer a server
     /// failure.
     pub fn fail_chat_actions(&self) {
@@ -355,6 +375,37 @@ async fn read_more(stream: &mut TcpStream, buffered: &mut Vec<u8>) -> Option<()>
     }
 }
 
+/// Answer one `sendMessage` from the scripts: the threading refusal
+/// first, then the send script. The threading refusal is read ahead and
+/// consumes none of the send script — a threaded send never reached the
+/// script's outcome — and it applies only to a send that carries reply
+/// parameters, so a plain send, a retry included, is served normally.
+fn send_answer(state: &Arc<ServerState>, body: &Value) -> (u16, Value) {
+    let refusal = state
+        .refused_threading
+        .lock()
+        .expect("the threading refusal locks")
+        .clone();
+    if let (Some((status, description)), Some(_)) = (refusal, body.get("reply_parameters")) {
+        return (status, json!({ "ok": false, "description": description }));
+    }
+    let script = state
+        .send_scripts
+        .lock()
+        .expect("the send scripts lock")
+        .pop_front();
+    match script {
+        Some(SendScript::RateLimited(refusal)) => rate_limit_answer(&refusal),
+        Some(SendScript::Failing) => (
+            500,
+            json!({ "ok": false, "description": "scripted send failure" }),
+        ),
+        Some(SendScript::Delivered) | None => {
+            (200, json!({ "ok": true, "result": { "message_id": 1 } }))
+        }
+    }
+}
+
 /// Answer one request from the script, recording it first.
 async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16, Value) {
     state
@@ -395,23 +446,7 @@ async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16
                 None => get_updates(state, &body).await,
             }
         }
-        "sendMessage" => {
-            let script = state
-                .send_scripts
-                .lock()
-                .expect("the send scripts lock")
-                .pop_front();
-            match script {
-                Some(SendScript::RateLimited(refusal)) => rate_limit_answer(&refusal),
-                Some(SendScript::Failing) => (
-                    500,
-                    json!({ "ok": false, "description": "scripted send failure" }),
-                ),
-                Some(SendScript::Delivered) | None => {
-                    (200, json!({ "ok": true, "result": { "message_id": 1 } }))
-                }
-            }
-        }
+        "sendMessage" => send_answer(state, &body),
         "getChat" => chat_info_answer(state, &body),
         "sendChatAction" => {
             if *state

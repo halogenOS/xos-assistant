@@ -73,7 +73,8 @@ async fn a_violating_message_is_assessed_and_the_wire_threads_the_report_before_
     assert_eq!(
         sends[1].body.get("reply_parameters"),
         None,
-        "the answer stays unthreaded"
+        "the offending line never addressed the assistant, so the answer \
+         carries no reply target"
     );
 
     // The ledger: the report block names the offending message's origin
@@ -106,6 +107,64 @@ async fn a_violating_message_is_assessed_and_the_wire_threads_the_report_before_
     assert_eq!(
         stored.fields["reported_principal_id"], offense.fields["principal_id"],
         "the block names the offending message's sender"
+    );
+}
+
+/// A refused threaded report is dropped, never re-sent plain (unit 26).
+/// The plain recovery exists so an answer is not lost to the courtesy of
+/// threading; a report's line is not in that position. It is the
+/// moderation bot's own command shape, which the bot acts on only as a
+/// reply, so plain it files nothing and leaves a bare command line
+/// standing in the group where before nothing stood. The core states that
+/// per reply and the adapter obeys, which is why the wire shows the
+/// refused report gone and the answer behind it untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_threaded_report_is_dropped_instead_of_going_out_plain() {
+    let chat = -502;
+    let fixture = start_assistant_moderating(
+        Some(ToolScript {
+            tool: report::NAME.into(),
+            input: format!(r#"{{"message_id":"{}"}}"#, message_id_of(1)),
+            narration: None,
+        }),
+        ToolSet::new(),
+        Some(MODERATION_HANDLE.into()),
+    )
+    .await;
+    authorize_group(&fixture.assistant, chat).await;
+    let server = BotApiServer::start().await;
+    server.set_chat_info(chat, "The kernel room", None);
+    // A cause the request's own tolerance does not cover, refused as a
+    // bad request — the same shape that makes an ANSWER go out plain.
+    server.refuse_threaded_sends(400, "Bad Request: message thread not found");
+
+    server.push_update(support::group_update(1, chat, 900, "an offending line"));
+
+    let state = TempStateFile::new("report-refused-thread");
+    let (sleep, _) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+
+    // Two sends: the report's refused threaded attempt, then the answer —
+    // which is unthreaded here, the offending line having addressed
+    // nobody, so it is served normally. A plain retry of the report would
+    // have taken the second slot instead.
+    let sends = server.await_recorded("sendMessage", 2).await;
+    assert_eq!(
+        sends[0].body["reply_parameters"]["message_id"],
+        json!(message_id_of(1)),
+        "the report's one attempt threads onto the offending message"
+    );
+    assert_eq!(
+        sends[1].body["text"],
+        json!(support::disclosed(TOOL_CLOSING_ANSWER)),
+        "the send after the refusal is the answer, not the report line \
+         again: the refused report is dropped, as it was before"
+    );
+    assert_eq!(
+        sends[1].body.get("reply_parameters"),
+        None,
+        "the offending line never addressed the assistant, so the answer \
+         carries no reply target"
     );
 }
 
@@ -177,6 +236,7 @@ async fn an_over_cap_reply_threads_only_its_first_chunk() {
     assert_eq!(
         sends[2].body.get("reply_parameters"),
         None,
-        "the answer stays unthreaded"
+        "the offending line never addressed the assistant, so the answer \
+         carries no reply target"
     );
 }

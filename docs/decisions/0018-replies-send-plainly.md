@@ -26,3 +26,12 @@ now carries an optional reply target and the adapter threads onto it with
 send-without-reply tolerance, first chunk only. The judgment of this record stands
 for the model's ANSWERS: they still send plainly, and only the report's delivery
 threads.
+
+Amended 2026-08-24: the answer clause above is superseded by decision 0106. An answer
+threads onto the one message the turn absorbed that literally addressed the assistant,
+and only when exactly one did; every other case still sends plainly. The reason this
+record refused threading is intact and is what shapes the new rule: threading onto the
+newest message, or onto the summoning frontier, quote-replies a bystander in a busy
+group. Neither is what the new rule reads — it reads the addressed fact stored on each
+absorbed message, and a turn with no single addressed message keeps this record's plain
+send.

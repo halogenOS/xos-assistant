@@ -353,9 +353,10 @@ static SUPPRESSION_FLAG_MIGRATION: LazyLock<String> = LazyLock::new(|| {
 /// discipline. One nullable boolean column on the message table, stored
 /// beside the untouched summons column: the safe default is NULL, and that
 /// absence is genuinely safe because no historical row is ever read for its
-/// literal value — the one reader, the outbound miss-routing, reads only
-/// the current turn's dispatch-anchor message, and folds an absent value to
-/// the silent outcome. Structure, not personal data: erasure leaves it. No
+/// literal value — the one reader, the outbound answer threading, reads
+/// only the messages the current turn absorbed, and folds an absent value
+/// to unaddressed, which sends the answer plain. Structure, not personal
+/// data: erasure leaves it. No
 /// frozen vocabulary list: the step closes a boolean, not an enum — the
 /// reply-target step's own precedent.
 static LITERAL_ADDRESSED_MIGRATION: LazyLock<String> = LazyLock::new(|| {

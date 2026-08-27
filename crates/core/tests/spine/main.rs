@@ -27,7 +27,9 @@
 //! `mirror` (the deletion mirror riding the moderation bot's reply
 //! command), sourcing (the lookup-backed answer discipline: the literal
 //! addressed fact beside the summons, the silent empty turn and the
-//! model's own spoken don't-know), and — behind the `chat_completions`
+//! model's own spoken don't-know), threading (which message an answer is
+//! delivered as a reply to, and when it goes out plain), and — behind the
+//! `chat_completions`
 //! feature — the framework's real `OpenRouter` module, the shared
 //! chat-completions wire, against a loopback server.
 
@@ -55,4 +57,5 @@ mod sourcing;
 mod speaker;
 mod storage;
 mod support;
+mod threading;
 mod tools;

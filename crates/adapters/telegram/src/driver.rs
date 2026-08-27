@@ -62,7 +62,7 @@ use assistant_core::{
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::authority::AdminCache;
-use crate::client::{BotClient, BotIdentity, Update};
+use crate::client::{BotClient, BotIdentity, SendThread, Update};
 use crate::translate::{self, LookupScope, Translation};
 use crate::{ADAPTER_NAME, AdapterError, Config, Sleep, state};
 
@@ -601,7 +601,7 @@ async fn report(
 /// Deliver one returned fixed text to its chat; a failure is logged and the
 /// item dropped, the same rule the reply consumer applies to a failed send.
 async fn send_item(client: &BotClient, chat_id: i64, text: &str) {
-    if let Err(failure) = client.send_message(chat_id, text, None).await {
+    if let Err(failure) = client.send_message(chat_id, text, SendThread::Plain).await {
         tracing::warn!(chat_id, error = %failure.error, "a returned item did not send; dropped");
     }
 }
@@ -719,11 +719,13 @@ async fn consume_composing(
     }
 }
 
-/// Send each reply from the edge to its chat, sequentially — threaded onto
-/// its reply target where the core set one, decoded through the same
-/// naming rule the inbound side stored it under. A send that spends its
-/// bounded rate-limit retry — or fails outright — is logged and dropped,
-/// and the consumer moves on to the next reply. The chat's typing
+/// Send each reply from the edge to its chat, sequentially — threaded as
+/// the core's reply thread states, decoded through the same naming rule
+/// the inbound side stored the origin under, recovery included: whether a
+/// refused thread re-sends the text plainly is the core's statement, not
+/// this consumer's reading of what kind of reply it holds. A send that
+/// spends its bounded rate-limit retry — or fails outright — is logged and
+/// dropped, and the consumer moves on to the next reply. The chat's typing
 /// refresher, if one still runs, is stopped ahead of the send: the answer
 /// ends the composing it announced, even when the core's stop transition
 /// was lost to the lossy cue.
@@ -738,11 +740,8 @@ async fn consume_replies(
             continue;
         };
         typing.stop(chat_id);
-        let reply_to = reply
-            .reply_target
-            .as_deref()
-            .and_then(translate::message_id_of);
-        if let Err(failure) = client.send_message(chat_id, &reply.text, reply_to).await {
+        let thread = translate::send_thread(reply.reply_target.as_ref());
+        if let Err(failure) = client.send_message(chat_id, &reply.text, thread).await {
             // Two different outcomes, per decision 0019: nothing reached the
             // chat, or earlier chunks did and the tail was dropped with the
             // failing one — the log must state which one happened.
