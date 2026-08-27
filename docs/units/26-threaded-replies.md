@@ -70,6 +70,11 @@ convenience, so this unit renders nothing new to the model.
   stays a plain message instead. This preserves 0046's reasoning rather than overturning it,
   and it is not the prose sanitation 0046 rejected: nothing is rewritten, stripped or
   refused — the text goes out exactly as written, unthreaded.
+  *Amended 2026-08-27:* the guard covers every reply-acted command shape, not the
+  report lead alone — the deletion command the mirror records is acted on from a
+  reply the same way, and the fix pass proved the narrower guard leaves that path
+  open. The shapes are enumerated once, in `reply_commands.rs`, and the guard reads
+  the list; decision 0108 carries the same amendment.
 - **A refused target retries plainly and the answer is never lost, 2026-08-24.** Where the
   platform refuses a send that carried a reply target, the adapter sends the same text once
   more without it. The retry is bounded to that one cause and that one attempt: it is the

@@ -19,7 +19,7 @@ use assistant_core::tools::report::{self};
 use assistant_core::{
     AnsweringMode, ChannelKind, CoreError, ErasureOutcome, FAILURE_NOTICE, IngestReceipt,
     MODERATION_TEACHING, Observation, ObserveOutcome, ObservedFact, ProtectionConfig, ReplyKind,
-    ReplyTarget,
+    ReplyTarget, ReplyThread,
 };
 use serde_json::json;
 use tokio::sync::{Semaphore, mpsc};
@@ -332,7 +332,8 @@ fn sequenced_provider(
 /// validates against the turn's co-summoner set, the report files — the
 /// block carries the target origin, the reported principal and the fixed
 /// line — and the edge delivers the line as a threaded report BEFORE the
-/// answer, while the answer itself stays unthreaded.
+/// answer, while the answer itself quotes nobody: no message this turn
+/// absorbed addressed the assistant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_violating_message_is_assessed_and_the_edge_threads_the_report_before_the_answer() {
     let (fixture, mut replies) =
@@ -391,12 +392,20 @@ async fn a_violating_message_is_assessed_and_the_edge_threads_the_report_before_
         );
     }
 
-    // The delivery order: the report first, threaded; then the answer,
-    // unthreaded — decision 0018's judgment stands for answers.
+    // The delivery order: the report first, threaded onto the offending
+    // message; then the answer, which threads onto nothing — the offending
+    // line never addressed the assistant, helpful answering summoned this
+    // turn, and an answer is a reply only to the member who asked
+    // (unit 26).
     let first = recv_reply(&mut replies).await;
     assert_eq!(first.kind, ReplyKind::Report);
     assert_eq!(first.text, fixture_line());
-    assert_eq!(first.reply_target.as_deref(), Some("origin-spam-1"));
+    assert_eq!(
+        first.reply_target,
+        Some(ReplyThread::OntoOnly("origin-spam-1".into())),
+        "the report is threaded onto the offending message or not \
+         delivered: its line files nothing as a plain message"
+    );
     let second = recv_reply(&mut replies).await;
     assert_eq!(second.kind, ReplyKind::Answer);
     assert_eq!(
@@ -404,7 +413,10 @@ async fn a_violating_message_is_assessed_and_the_edge_threads_the_report_before_
         support::disclosed(CLOSING_ANSWER),
         "the summoner's first answer opens with the disclosure line"
     );
-    assert_eq!(second.reply_target, None, "the answer stays unthreaded");
+    assert_eq!(
+        second.reply_target, None,
+        "nobody addressed the assistant, so the answer quotes nobody"
+    );
     let extra = replies.try_recv();
     assert!(extra.is_err(), "one report, one answer; got {extra:?}");
 }
@@ -438,7 +450,10 @@ async fn a_turn_that_reports_and_says_nothing_still_delivers_the_report() {
 
     let only = recv_reply(&mut replies).await;
     assert_eq!(only.kind, ReplyKind::Report, "the report goes out alone");
-    assert_eq!(only.reply_target.as_deref(), Some("origin-spam-1"));
+    assert_eq!(
+        only.reply_target,
+        Some(ReplyThread::OntoOnly("origin-spam-1".into()))
+    );
     let extra = replies.try_recv();
     assert!(
         extra.is_err(),
@@ -650,7 +665,10 @@ async fn with_several_messages_absorbed_the_model_names_the_one_violator() {
     assert_eq!(narration.text, support::disclosed("One moment."));
     let filed = recv_reply(&mut replies).await;
     assert_eq!(filed.kind, ReplyKind::Report);
-    assert_eq!(filed.reply_target.as_deref(), Some("origin-b"));
+    assert_eq!(
+        filed.reply_target,
+        Some(ReplyThread::OntoOnly("origin-b".into()))
+    );
     while !recv_reply(&mut replies)
         .await
         .text
@@ -719,7 +737,12 @@ async fn a_reported_message_is_not_reported_again_when_it_re_summons() {
         ReplyKind::Report,
         "the filing outlives the turn"
     );
-    assert_eq!(first.reply_target.as_deref(), Some("origin-spam-1"));
+    assert_eq!(
+        first.reply_target,
+        Some(ReplyThread::OntoOnly("origin-spam-1".into())),
+        "the report is threaded onto the offending message or not \
+         delivered: its line files nothing as a plain message"
+    );
     let second = recv_reply(&mut replies).await;
     assert_eq!(second.kind, ReplyKind::Notice);
     assert_eq!(second.text, FAILURE_NOTICE);
@@ -803,7 +826,12 @@ async fn two_parallel_calls_naming_the_same_origin_file_exactly_once() {
 
     let first = recv_reply(&mut replies).await;
     assert_eq!(first.kind, ReplyKind::Report, "one report goes out");
-    assert_eq!(first.reply_target.as_deref(), Some("origin-spam-1"));
+    assert_eq!(
+        first.reply_target,
+        Some(ReplyThread::OntoOnly("origin-spam-1".into())),
+        "the report is threaded onto the offending message or not \
+         delivered: its line files nothing as a plain message"
+    );
     assert_eq!(
         recv_reply(&mut replies).await.text,
         support::disclosed(CLOSING_ANSWER)

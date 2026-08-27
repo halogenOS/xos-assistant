@@ -2,7 +2,9 @@
 //! through the injectable sleep — the stated wait, the three-attempt bound,
 //! and the drop past it — with no real waiting anywhere; the same contract
 //! on the poll side; and the message cap, under which a long reply is
-//! delivered as chunks instead of refused whole.
+//! delivered as chunks instead of refused whole. Unit 26's AC6 joins them:
+//! a refused threaded send retries once without the target, so the answer
+//! arrives.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +14,7 @@ use serde_json::json;
 use crate::server::BotApiServer;
 use crate::support::{
     TempStateFile, answer_to, await_chat_messages, await_conversations, first_answer_to,
-    private_update, recording_sleep, spawn_adapter, start_assistant,
+    message_id_of, private_update, recording_sleep, spawn_adapter, start_assistant,
 };
 
 /// Two rate-limited attempts, then success: each refusal hands its stated
@@ -248,6 +250,107 @@ async fn a_failed_later_chunk_ends_the_reply_and_the_tail_is_never_sent() {
         // Bare: the person's introduction was stored with the cut reply's
         // first chunk, which did deliver.
         "the send after the failure is the next reply, not the dropped tail"
+    );
+}
+
+/// A refused threaded send delivers anyway (unit 26): the platform declines
+/// the send that carried the reply target with a cause its own tolerance
+/// does not cover, and the same text goes out once more without the target.
+/// The answer arrives instead of being dropped, and exactly one retry is
+/// spent — the second message's pair of sends is what proves the count, since
+/// an unbounded retry would fill the wire between them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_threaded_send_retries_plain_and_the_answer_arrives() {
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    // Not "message to be replied not found": that cause is what the
+    // request's own tolerance absorbs, and this pin is about the rest.
+    // A 400 is the platform declining the request itself, which is what
+    // says the send was not performed.
+    server.refuse_threaded_sends(400, "Bad Request: message thread not found");
+    server.push_update(private_update(1, 5, "the threaded ask"));
+
+    let state = TempStateFile::new("refused-thread");
+    let (sleep, _) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+
+    // The direct chat addresses the assistant, so the answer threads onto
+    // the ask; the refusal sends it plain.
+    let sends = server.await_recorded("sendMessage", 2).await;
+    assert_eq!(
+        sends[0].body["reply_parameters"]["message_id"],
+        json!(message_id_of(1)),
+        "the first attempt threads onto the ask"
+    );
+    assert_eq!(
+        sends[1].body.get("reply_parameters"),
+        None,
+        "the retry carries no target"
+    );
+    assert_eq!(
+        sends[1].body["text"],
+        json!(first_answer_to("the threaded ask")),
+        "the same text arrives; the answer is not lost to the thread"
+    );
+    assert_eq!(sends[1].body["chat_id"], json!(5));
+
+    // The next answer takes its own two sends and no more: one refused
+    // threaded attempt, one plain retry.
+    server.push_update(private_update(2, 5, "the second ask"));
+    let sends = server.await_recorded("sendMessage", 4).await;
+    assert_eq!(sends.len(), 4, "two sends per answer: one retry each");
+    assert_eq!(
+        sends[2].body["reply_parameters"]["message_id"],
+        json!(message_id_of(2))
+    );
+    assert_eq!(
+        sends[3].body["text"],
+        json!(answer_to("the second ask")),
+        "the second answer arrives plain, bare of the disclosure line"
+    );
+}
+
+/// A server error on a threaded send is NOT a refusal, so nothing is sent
+/// twice (unit 26). A 500 from the API — or a 502 from whatever fronts it —
+/// says the answer failed, never that the message was not delivered; the
+/// recovery is for a platform that declined and performed nothing, and
+/// re-sending an unknown fate is how one answer reaches the chat twice.
+/// The send fails as it did before threading gained a recovery: logged and
+/// dropped by the consumer.
+///
+/// Two asks drive it, because the absence of a retry is proven by what
+/// follows: the second ask's threaded attempt is the very next send, so
+/// no plain re-send of the first answer sits between them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_server_error_on_a_threaded_send_is_never_re_sent_plain() {
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    server.refuse_threaded_sends(500, "Internal Server Error: try again later");
+    server.push_update(private_update(1, 5, "the first ask"));
+
+    let state = TempStateFile::new("threaded-server-error");
+    let (sleep, _) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+
+    let sends = server.await_recorded("sendMessage", 1).await;
+    assert_eq!(
+        sends[0].body["reply_parameters"]["message_id"],
+        json!(message_id_of(1)),
+        "the answer threads onto the ask"
+    );
+
+    server.push_update(private_update(2, 5, "the second ask"));
+    let sends = server.await_recorded("sendMessage", 2).await;
+    assert_eq!(
+        sends.len(),
+        2,
+        "one send per answer: a server error buys no second attempt"
+    );
+    assert_eq!(
+        sends[1].body["reply_parameters"]["message_id"],
+        json!(message_id_of(2)),
+        "the next send is the second ask's threaded attempt, so the first \
+         answer was never re-sent plain"
     );
 }
 

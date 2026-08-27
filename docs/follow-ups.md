@@ -118,3 +118,22 @@ what resolving it takes. Resolved items move into a decision record.
   prompt. It gives the model the reason to invite a reply (arguably helpful) and
   only affects addressed mode (not the helpful-mode deployment), so it is a nit;
   a tighter wording would state the instruction without the mechanism rationale.
+
+- **Unit 26 (threaded replies) fix pass, 2026-08-25 — the never-threaded guard
+  knows one of the two reply-invoked command shapes.** An answer is never
+  threaded when its prose carries `REPORT_LINE_LEAD`, per decision 0108. The
+  core records a second shape acted on from a reply: `mirror::DELETION_COMMAND`,
+  which an administrator invokes by replying with it, so the same hazard ends in
+  a deletion instead of a report — while the assistant itself holds
+  administrator standing, which is a deployment's choice. The unit's spec scopes
+  the guard to the report lead deliberately, so widening it widens 0108 and is
+  not the fix pass's to take. Resolving it means either amending 0108 to cover
+  every reply-invoked command shape — with the shapes coming from one record
+  that `mirror.rs` and the guard both read, instead of a second literal in the
+  guard — or recording in 0108 why `/del` stays out. The disagreement is pinned:
+  `crates/core/tests/spine/threading.rs`,
+  `an_answer_carrying_the_deletion_command_shape_delivers_plainly`, ignored and
+  failing by design until 0108 answers.
+  **Resolved 2026-08-27:** the guard was widened. Decision 0108 carries the dated
+  amendment, the shapes come from the one list in `crates/core/src/reply_commands.rs`
+  that the guard reads, and the pin is un-ignored and green.

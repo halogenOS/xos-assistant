@@ -368,6 +368,47 @@ pub struct ComposingUpdate {
     pub state: ComposingState,
 }
 
+/// Where one outbound reply threads, and what the core wants done when the
+/// platform refuses that threaded send (2026-08-24).
+///
+/// The two travel together because they are one decision about one reply,
+/// and it is the core's: whether the words still mean something once the
+/// thread is gone is a fact about the words. An adapter that read
+/// [`ReplyKind`] to work the recovery out for itself would be deciding,
+/// and adapters decide nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplyThread {
+    /// Threaded onto this origin, and where the platform refuses that
+    /// send, the same text goes out once more without a target
+    /// (decision 0109). The thread is a courtesy, and an answer must never
+    /// be lost to a courtesy.
+    OntoOrPlainly(String),
+    /// Threaded onto this origin or not delivered at all. The report's
+    /// line is the moderation bot's own command shape, which means what it
+    /// means only as a reply: sent plainly it files nothing and leaves a
+    /// bare command line standing in the group, so a refused send stays
+    /// the send's own failure, logged and dropped exactly as before
+    /// threading gained a recovery.
+    OntoOnly(String),
+}
+
+impl ReplyThread {
+    /// The platform origin the reply threads onto.
+    #[must_use]
+    pub fn target(&self) -> &str {
+        match self {
+            Self::OntoOrPlainly(origin) | Self::OntoOnly(origin) => origin,
+        }
+    }
+
+    /// Whether the same text goes out once more without the target when
+    /// the platform refuses the threaded send.
+    #[must_use]
+    pub fn plain_when_refused(&self) -> bool {
+        matches!(self, Self::OntoOrPlainly(_))
+    }
+}
+
 /// One reply on its way out of the core, bound to the channel it answers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboundReply {
@@ -378,15 +419,18 @@ pub struct OutboundReply {
     /// Whether this is the assistant's answer, the core's failure notice,
     /// or a filed report's line.
     pub kind: ReplyKind,
-    /// The platform origin of the message this reply answers, where the
-    /// reply threads (decided 2026-08-23, the deferral of decision 0018
-    /// falling due). The adapter translates it into the platform's reply
-    /// parameters with send-without-reply tolerance — a deleted target
-    /// degrades to a plain send — and threads only the first chunk. The
-    /// model's answers stay unthreaded in this unit: only the report's
-    /// delivery sets a target, and the field exists for whatever
-    /// answer-threading decision comes later.
-    pub reply_target: Option<String>,
+    /// The message this reply threads onto and how a refused thread is
+    /// recovered, where it threads at all (decided 2026-08-23, the
+    /// deferral of decision 0018 falling due). The adapter translates the
+    /// origin into the platform's reply parameters with send-without-reply
+    /// tolerance — a deleted target degrades to a plain send — and threads
+    /// only the first chunk. A report's delivery names the reported
+    /// message's origin; an answer names the origin of the one message
+    /// that addressed the assistant this turn, and `None` says the reply
+    /// goes out plain: the notice, an answer nobody or several addressed,
+    /// and an answer whose prose carries the moderation command shape
+    /// (2026-08-24).
+    pub reply_target: Option<ReplyThread>,
 }
 
 #[cfg(test)]

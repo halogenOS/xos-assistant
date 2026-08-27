@@ -1132,7 +1132,7 @@ impl Assistant {
     /// addressed it, or when helpful answering evaluates every message.
     /// The literal addressed fact rides beside it (unit 16) — the
     /// adapter's own flag, before the mode folded in — stored with the
-    /// stamp for the outbound miss-routing alone. Everything past this
+    /// stamp for the outbound answer threading alone. Everything past this
     /// resolution — the budget consultation, the stamp, the unlatch, and
     /// every later reader of the stored summons — is mode-free.
     fn resolved_summons(&self, message: &InboundMessage) -> kind::Summons {

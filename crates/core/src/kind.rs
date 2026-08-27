@@ -67,13 +67,15 @@ pub const COLUMN_ADDRESSED: &str = "addressed";
 /// chat. Stored BESIDE the recast summons, which keeps its column and every
 /// one of its readers — the budgets, the unlatch, the co-summoner rule, the
 /// report scoping and the disclosure fold all stay on [`COLUMN_ADDRESSED`].
-/// Exactly ONE consumer reads this column: the outbound miss-routing, which
-/// decides whether a turn that found no answer owes its asker a spoken
-/// "don't know" or silence. Structure, not personal data: erasure leaves
-/// it. Added by the literal-addressed migration step, so pre-migration rows
-/// read NULL — never a decision input, because only the current turn's
-/// dispatch-anchor message is read, at outbound time, and an absent value
-/// folds to silence.
+/// Exactly ONE consumer reads this column: the outbound edge's answer
+/// threading (unit 26, 2026-08-24), which names the message an answer is
+/// delivered as a reply to. It must be the literal fact and not the
+/// recast summons — helpful mode summons the assistant for every message,
+/// and quote-replying someone who never addressed it, in front of the
+/// group, is not a courtesy. Structure, not personal data: erasure leaves
+/// it. Added by the literal-addressed migration step, so pre-migration
+/// rows read NULL — never a decision input, because an absent value folds
+/// to unaddressed and the answer goes out plain.
 pub const COLUMN_LITERAL_ADDRESSED: &str = "literal_addressed";
 /// Whether the message owes the model a turn — the write-time stamp the
 /// entry point decides once at insert: true when the message is summoned
@@ -265,7 +267,7 @@ pub struct RecordedSender<'a> {
 /// summons — the adapter's addressed fact OR the helpful mode's
 /// every-message evaluation, what the whole debt spine reads — and the
 /// literal addressed fact as the adapter alone recorded it, what the
-/// outbound miss-routing reads. Carried as one value so the two booleans
+/// outbound answer threading reads. Carried as one value so the two booleans
 /// can never swap places between the resolution and the stamp. The literal
 /// fact is stored, never derived: helpful is mutable configuration, and an
 /// addressed helpful-mode message would be indistinguishable after the
@@ -294,8 +296,8 @@ pub struct Stamp {
     pub addressed: bool,
     /// Whether the user literally addressed the assistant, per
     /// [`Summons::literal_addressed`] — stored under
-    /// [`COLUMN_LITERAL_ADDRESSED`], read only by the outbound
-    /// miss-routing.
+    /// [`COLUMN_LITERAL_ADDRESSED`], read only by the outbound answer
+    /// threading.
     pub literal_addressed: bool,
     /// Which budget refused the message's own debt, if any.
     pub limited: Option<LimitedBy>,
@@ -323,7 +325,7 @@ impl Stamp {
     /// message's own summons fact — and a fresh taken debt opens at its
     /// sender's own authority. The literal fact passes through untouched:
     /// no rule here reads it, only the store carries it to the outbound
-    /// miss-routing.
+    /// answer threading.
     #[must_use]
     pub fn compose(
         summons: Summons,
@@ -405,8 +407,8 @@ pub struct ChatMessage {
     /// Whether the user literally addressed the assistant, per
     /// [`COLUMN_LITERAL_ADDRESSED`]. `None` on every pre-migration row and
     /// on a block the store did not produce; the one reader — the outbound
-    /// miss-routing — folds that absence to unaddressed, the silent
-    /// direction.
+    /// answer threading — folds that absence to unaddressed, and the
+    /// answer goes out plain.
     pub literal_addressed: Option<bool>,
     /// Whether the message owes the model a turn, stamped at the write.
     /// `None` only for a block the store did not produce; the awaiting hook
@@ -1380,8 +1382,8 @@ mod tests {
     /// helpful-mode message composes summons=true — its debt opens, it
     /// counts, it co-summons — with literal=false; an addressed one
     /// composes both true; and the stored fields carry both columns
-    /// exactly as composed, so the debt spine and the miss-routing read
-    /// two facts from one write.
+    /// exactly as composed, so the debt spine and the answer threading
+    /// read two facts from one write.
     #[test]
     fn the_literal_fact_is_stored_beside_the_undisturbed_summons() {
         let unaddressed_helpful = Stamp::compose(

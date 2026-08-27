@@ -16,11 +16,13 @@ use chrono::{DateTime, Utc};
 
 use assistant_core::{
     Authority, ChannelKey, ChannelKind, InvokedCommand, Observation, ObservedFact, ReplyTarget,
-    SenderIdentity,
+    ReplyThread, SenderIdentity,
 };
 
 use crate::ADAPTER_NAME;
-use crate::client::{BotIdentity, ChatInfo, Incoming, MemberState, MemberUpdate, Update};
+use crate::client::{
+    BotIdentity, ChatInfo, Incoming, MemberState, MemberUpdate, SendThread, Update,
+};
 
 /// What one update translates to.
 pub(crate) enum Translation {
@@ -329,6 +331,25 @@ pub(crate) fn chat_id_of(key: &ChannelKey) -> Option<i64> {
 /// adapter did not mint; the send goes out unthreaded.
 pub(crate) fn message_id_of(origin: &str) -> Option<i64> {
     origin.parse().ok()
+}
+
+/// The core's reply thread in the platform's terms: the origin decoded
+/// through [`message_id_of`], carrying the recovery the core stated for a
+/// refused threaded send. A reply the core threads nowhere, and an origin
+/// this adapter did not mint, both send plain — the same outcome, since a
+/// target the platform cannot be told about is no target.
+pub(crate) fn send_thread(thread: Option<&ReplyThread>) -> SendThread {
+    let Some(thread) = thread else {
+        return SendThread::Plain;
+    };
+    let Some(message_id) = message_id_of(thread.target()) else {
+        return SendThread::Plain;
+    };
+    if thread.plain_when_refused() {
+        SendThread::OntoOrPlainly(message_id)
+    } else {
+        SendThread::OntoOnly(message_id)
+    }
 }
 
 /// The configured name as a usable wake trigger, lowercased for the

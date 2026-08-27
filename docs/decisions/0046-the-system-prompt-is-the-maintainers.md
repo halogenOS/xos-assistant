@@ -68,3 +68,12 @@ the assistant's answers are unthreaded (decision 0059 keeps them so), so stray
 prose is noise, not a filed report. Rejected: outbound prose sanitation —
 censoring the assistant's own speech on a pattern is the bolted-on conditional
 the structure rule forbids. Gates 1, 3 and 4 stay held.
+
+Annotated 2026-08-24: answers thread from decision 0106 onward, so the premise the
+residual above rests on — the assistant's answers are unthreaded — no longer holds
+on its own. Decision 0108 is what preserves the reasoning: an answer whose prose
+carries the moderation command lead is delivered as a plain message, never as a
+reply, so stray prose remains noise and files nothing. The rejection above still
+stands and is not what 0108 does: nothing is rewritten, stripped, refused or
+withheld — the text goes out exactly as the model wrote it, and only the routing
+changes.

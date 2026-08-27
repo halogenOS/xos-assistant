@@ -99,10 +99,13 @@ pub fn turn_reading(ledger: &[Block], call_block_id: i64) -> Authority {
 /// own-debt-takers between the anchor and the call, then the origin set's
 /// takers in the anchor's chain — the one walk behind the privacy tool's
 /// principal resolution (2026-08-23, the privacy-self-service unit), the
-/// disclosure fold, and the report tool's target validation (2026-08-24,
+/// disclosure fold, the report tool's target validation (2026-08-24,
 /// the autonomous-moderation unit: a named origin must belong to one of
 /// these rows, so the model can aim a report only at a message it is
-/// assessing this turn). Empty for every unloadable shape — a
+/// assessing this turn), and the outbound edge's answer threading
+/// (2026-08-24: the answer is delivered as a reply to the one of these
+/// rows that literally addressed the assistant). Empty for every
+/// unloadable shape — a
 /// null anchor, a call or anchor missing from the vector, a non-message
 /// frontier, a chain of pure propagators — each one more absence folded to
 /// the refusing side, exactly as the reading folds them downward.
