@@ -257,7 +257,8 @@ async fn erasing_one_principal_reaches_its_prose_and_nothing_else() {
             .is_empty(),
         "A's direct blocks are collected with the conversation"
     );
-    let b_blocks = store.list_blocks(conv_b).await.expect("B's ledger reads");
+    let b_blocks =
+        support::consumer_view(&store.list_blocks(conv_b).await.expect("B's ledger reads"));
     assert_eq!(
         b_blocks.len(),
         4,

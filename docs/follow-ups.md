@@ -21,6 +21,16 @@ what resolving it takes. Resolved items move into a decision record.
   wording is authoritative; a superseding-block mechanism in the framework
   — already on its improvements list — would compact the superseded ones
   out of the projection.
+- **A debt behind a date crossing has no behavioral pin** (date-marker
+  fallout, 2026-08-28). The consumer's debt walk now reads through the
+  framework's date records at both of its blind sites, but the shape that
+  would distinguish a fixed walk from a broken one — an owing message
+  standing behind a date marker that is itself the tail — needs two appends
+  on two different local dates, and the seams that drive the date are the
+  framework's own `pub(crate)` ones. The consumer cannot construct it, so
+  no fixture exists for that half here. Resolving this means a pin on the
+  framework's stamped append seam, at date-crossing granularity, in the
+  framework's suite.
 
 - **The Article 50(2) due-diligence check awaits the first live turn**
   (first-interaction disclosure, 2026-08-23). The compliance record relies
@@ -137,3 +147,26 @@ what resolving it takes. Resolved items move into a decision record.
   **Resolved 2026-08-27:** the guard was widened. Decision 0108 carries the dated
   amendment, the shapes come from the one list in `crates/core/src/reply_commands.rs`
   that the guard reads, and the pin is un-ignored and green.
+
+- **A dated ledger sends the model two adjacent system messages** (date-marker
+  fallout, 2026-08-28). Open question, recorded with what is known, not settled
+  here. A production request now opens with the prompt's system message and the
+  date marker's dated line as a second system message directly behind it. The
+  framework would have joined them: `blocks_to_messages` groups a run of blocks
+  sharing a projection role into one message. The consumer's `tool_palette` sits
+  between them and projects no role at all, and a role-less block ends the open
+  run — so the group closes at the prompt and a fresh system group opens at the
+  marker. Same-role adjacency is what strict vendors reject, and the suite
+  already pins against it for exactly that reason
+  (`crates/core/tests/spine/projection.rs`, `assert_alternation_holds`) — over
+  synthetic ledgers, which carry no marker, so the shape the runtime actually
+  sends is outside that pin. The scripted provider the suite runs on accepts
+  anything, so no test here can fail on it either;
+  `crates/core/tests/spine/date_marker.rs` records the two-message shape as the
+  observed fact. The question is where the join belongs: the framework's render,
+  grouping a same-role run across role-less blocks, or the deployment's vendor
+  module, folding the leading system messages at the wire. It is not the
+  consumer's to answer by giving the palette a role, which would put the tool
+  list in the model's system voice. Whichever answer, it must be settled before
+  the deployment's framework pin moves onto a date-marking framework, because
+  the first live request after that carries the adjacency to a real vendor.

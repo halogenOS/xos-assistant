@@ -16,8 +16,8 @@ use tokio::net::TcpListener;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    self, TOOL_CLOSING_ANSWER, TempStateFile, ToolScript, await_conversations, message_id_of,
-    private_update, recording_sleep, spawn_adapter, start_assistant_with_tools,
+    self, TOOL_CLOSING_ANSWER, TempStateFile, ToolScript, await_conversations, await_shape,
+    message_id_of, private_update, recording_sleep, spawn_adapter, start_assistant_with_tools,
 };
 
 /// The scripted call's input — non-empty by the script's contract.
@@ -123,28 +123,6 @@ fn commit_tools(forge: &ScriptedForge) -> ToolSet {
         CommitLookup::new(forge.base.clone(), commit::DEFAULT_TIMEOUT),
     );
     tools
-}
-
-/// Await the conversation's settled tool turn: exactly this block-type
-/// shape, the newest a finalized text.
-async fn await_shape(store: &agent_ledger::Store, conversation: i64, shape: &[&str]) -> Vec<Block> {
-    let expected: Vec<String> = shape.iter().map(|s| (*s).to_owned()).collect();
-    let deadline = std::time::Instant::now() + support::DEADLINE;
-    loop {
-        let blocks = store
-            .list_blocks(conversation)
-            .await
-            .expect("the ledger reads");
-        let types: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
-        if types == expected.iter().map(String::as_str).collect::<Vec<_>>() {
-            return blocks;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out awaiting the ledger shape {expected:?}; have {types:?}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
 }
 
 /// The stored field of one block, as text.

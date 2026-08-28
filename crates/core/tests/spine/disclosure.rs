@@ -73,11 +73,13 @@ async fn the_first_answer_carries_the_line_and_the_second_does_not() {
     // delivery happens after the stored prepend, so this read is not racing
     // the rewrite.
     let conv = receipt.conversation_id;
-    let blocks = fixture
-        .store
-        .list_blocks(conv)
-        .await
-        .expect("the ledger reads");
+    let blocks = support::consumer_view(
+        &fixture
+            .store
+            .list_blocks(conv)
+            .await
+            .expect("the ledger reads"),
+    );
     assert_eq!(blocks[3].role, Some(Role::Assistant));
     assert_eq!(
         blocks[3].fields["content"],

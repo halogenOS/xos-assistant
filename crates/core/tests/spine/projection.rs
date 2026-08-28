@@ -193,11 +193,13 @@ async fn a_really_erased_group_ledger_projects_alternating() {
         }
     );
 
-    let blocks = fixture
-        .store
-        .list_blocks(conv)
-        .await
-        .expect("the erased ledger reads");
+    let blocks = support::consumer_view(
+        &fixture
+            .store
+            .list_blocks(conv)
+            .await
+            .expect("the erased ledger reads"),
+    );
     let messages = blocks_to_messages::<AssistantKind>(&blocks);
     assert_alternation_holds(&messages, "the really erased group ledger");
     // The positive anchors first, so the clauses above cannot pass over a

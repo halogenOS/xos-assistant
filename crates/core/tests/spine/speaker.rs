@@ -560,10 +560,12 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         14,
         "the appended steps advanced the domain's version to the newest"
     );
-    let blocks = reopened
-        .list_blocks(conversation)
-        .await
-        .expect("the upgraded ledger reads");
+    let blocks = support::consumer_view(
+        &reopened
+            .list_blocks(conversation)
+            .await
+            .expect("the upgraded ledger reads"),
+    );
     assert_eq!(blocks.len(), 1);
     match AssistantKind::from_block(&blocks[0]) {
         AssistantKind::ChatMessage(message) => {

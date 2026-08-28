@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use agent_ledger::agency::{DateMarker, LeafKind};
 use agent_ledger::providers::{
     BoxFuture, ContentPart as WirePart, Message, MessageContent, ModelInfo, ProviderRx, ProviderTx,
     ReasoningLevel,
@@ -1384,8 +1385,56 @@ pub async fn await_ledger(
     }
 }
 
+/// The ledger as the consumer's own content: every block the assistant or a
+/// member put there, and none of the framework's date records.
+///
+/// The framework writes a `date_marker` on the first user-voiced append of
+/// a day — its own calendar entry, ordered before the block that tripped
+/// it, carrying no consumer content. It is a real ledger row and the
+/// consumer must survive it, but a test that spells out what the assistant
+/// recorded is asserting about consumer content, and the calendar shifting
+/// that content by one row is not a behavior change. So the suite's counts,
+/// kind sequences and positional reads all judge this view, in one place,
+/// instead of each test carrying its own arithmetic about the framework's
+/// records. The kind is named through the framework leaf's own `KINDS`,
+/// never a literal here.
+///
+/// What the marker itself does — that it exists, where it sits, how often
+/// it is written, and how it reaches the model — is pinned by the suite's
+/// `date_marker` module, which reads the raw ledger on purpose.
+#[must_use]
+pub fn consumer_view(blocks: &[Block]) -> Vec<Block> {
+    blocks
+        .iter()
+        .filter(|block| !DateMarker::KINDS.contains(&block.block_type.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Poll one conversation until `accept` says its CONSUMER VIEW
+/// ([`consumer_view`]) has the shape awaited, and return that view.
+///
+/// The one place the view meets the wait: `accept` judges the same rows the
+/// caller then reads positionally, so a test can never wait on a raw ledger
+/// and index into a filtered one. Every awaited read that spells out consumer
+/// content goes through here instead of wrapping [`await_ledger`] by hand.
+pub async fn viewed_ledger(
+    store: &Store,
+    conversation_id: i64,
+    what: &str,
+    accept: impl Fn(&[Block]) -> bool,
+) -> Vec<Block> {
+    consumer_view(
+        &await_ledger(store, conversation_id, what, |blocks| {
+            accept(&consumer_view(blocks))
+        })
+        .await,
+    )
+}
+
 /// An acceptance closure for [`await_ledger`]: the turn has settled — the
-/// ledger holds exactly `len` blocks and the newest is a finalized `text`
+/// consumer view ([`consumer_view`]) holds exactly `len` blocks and the
+/// newest is a finalized `text`
 /// answer. The length alone is not settledness: an open stream's in-flight
 /// answer is a real `streaming` block that counts toward the length and is
 /// replaced by the final `text` block at a new id, so a gate that only
@@ -1393,14 +1442,21 @@ pub async fn await_ledger(
 /// mid-turn message.
 pub fn settled(len: usize) -> impl Fn(&[Block]) -> bool {
     move |blocks: &[Block]| {
+        let blocks = consumer_view(blocks);
         blocks.len() == len && blocks.last().is_some_and(|b| b.block_type == "text")
     }
 }
 
 /// Await one conversation's settled turn — `len` blocks with the finalized
-/// answer last, per [`settled`] — and return the blocks.
+/// answer last, per [`settled`] — and return the consumer view of them, so
+/// a caller's positional read counts the same rows the gate did.
+///
+/// [`settled`] filters the blocks it is handed, and [`viewed_ledger`] hands
+/// it the view already: the second pass is a no-op kept on purpose, because
+/// [`settled`] is a standalone predicate that must also hold against a raw
+/// ledger a caller polls itself.
 pub async fn settle(store: &Store, conversation_id: i64, what: &str, len: usize) -> Vec<Block> {
-    await_ledger(store, conversation_id, what, settled(len)).await
+    viewed_ledger(store, conversation_id, what, settled(len)).await
 }
 
 /// Await one conversation's failed turn settling: its error signal, and then
@@ -1440,8 +1496,9 @@ pub async fn await_failure_latch(
 }
 
 /// Await one conversation's settled turn by its exact block-type shape —
-/// every stored type matches `shape` in order, newest block the finalized
-/// text — and return the blocks.
+/// every stored type in the consumer view ([`consumer_view`]) matches
+/// `shape` in order, newest block the finalized text — and return that
+/// view.
 pub async fn settle_shape(
     store: &Store,
     conversation_id: i64,
@@ -1449,7 +1506,7 @@ pub async fn settle_shape(
     shape: &[&str],
 ) -> Vec<Block> {
     let expected: Vec<String> = shape.iter().map(|s| (*s).to_owned()).collect();
-    await_ledger(store, conversation_id, what, |blocks| {
+    viewed_ledger(store, conversation_id, what, |blocks| {
         blocks.len() == expected.len()
             && blocks
                 .iter()
