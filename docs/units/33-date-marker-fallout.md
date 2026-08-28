@@ -22,8 +22,12 @@ marker can be a conversation's LAST block through real, public paths:
 deep-copies a role-less group ending in a marker (pinned by the framework's own test,
 `store/descriptors.rs:3327-3381`), and `copy_junction_up_to` copies through such a
 group. The dated line's format is pinned in the framework (the render golden at
-`providers/render/tests.rs:521-563` and the kind's unit tests in
-`agency/date_marker.rs:36-92`) and never in the consumer. The date-driving seams
+`providers/render/tests.rs:521-563` and the kind's unit tests at
+`agency/date_marker.rs:104-230`) and never in the consumer — the consumer tree holds
+zero occurrences of the line or the kind's name today. The kind is nameable without a
+string literal: `BlockKind::DateMarker` is root-exported and matchable; the leaf's
+`KINDS` declaration lives on `agency::DateMarker` (not re-exported at the crate root).
+The date-driving seams
 (`DateStamp`, `insert_user_blocks_dated`, `append_consumer_block_stamped`) are
 `pub(crate)` — a consumer test cannot cross a date boundary, so a single consumer run
 yields at most one marker per conversation, placed below its first user-voiced row.
@@ -57,7 +61,22 @@ The core lib test (`kind::tests::the_read_answers_past_kind_runs_and_erased_rows
 `kind.rs:1520`) already pins the read's correct behavior — its own append trips a
 marker into the run, and the read must return the block behind — and currently fails
 returning the marker's id. The walk's spine pins live in
-`spine/addressing.rs:269-401`; `assembly.rs` itself contains no test module.
+`spine/addressing.rs:269-460`; `assembly.rs` itself contains no test module.
+
+**Why the tail half carries no fixture.** A bare marker tail is observationally
+identical under the broken and the fixed tail condition — both answer "no debt", one by
+misjudging the marker, one by reading past it to nothing — so a test on that shape
+passes either way and pins nothing. The shape that would distinguish, a debt BEHIND a
+marker tail, needs a date boundary between two appends, which only the framework's
+`pub(crate)` seams can drive; and it is unreachable in today's consumer anyway — every
+consumer append brings its message in the marker's own transaction, and the consumer
+never calls the empty-vec insert. On top of that, `reconcile_palette` runs before the
+walk on every ingest (`assembly.rs:671`) and appends a palette to any conversation not
+in its per-process memory, so a store-constructed marker tail is re-tailed by a palette
+before the walk ever sees it. The tail half of the fix is structural consistency,
+verified by the recording's shape, not by a fixture; a behavioral pin at date-crossing
+granularity belongs to the framework's stamped seam and is recorded as a framework
+follow-up, not this unit's test.
 
 **The test fallout, three mechanical shapes.** Roughly 31 failures gate on
 `settle_shape`'s exact kind sequence, roughly 25 on `settled(len)`'s exact count, and a
@@ -69,11 +88,14 @@ message). The adapter suite's kind-sequence await is `await_shape`, module-local
 module. All three shapes are the same blindness: expectations enumerate consumer
 content and the framework record shifted it.
 
-**Sweep, already verified.** These production walks are unaffected, checked on this
-tree: `tools/provenance.rs` (`chain_step`'s catch-all reads unknown kinds through),
-`outbound.rs` (`deliverable_of` returns None for unknown kinds), `streams.rs`, and the
-note/palette newest-row reads (kind-filtered joins). The implementer confirms rather
-than re-derives.
+**Sweep, already verified.** These production ledger readers are unaffected, checked
+on this tree: `tools/provenance.rs` (`chain_step`'s catch-all `_ => Extends` reads a
+marker through), `outbound.rs` (`deliverable_of`'s `_ => None` skips it),
+`streams.rs:281` (prefix match), the note/palette newest-row reads (kind-filtered
+joins), `erasure.rs:160-186` (per-block `ChatMessage` matches),
+`retire_stale_prompts` (`assembly.rs:852-925`, `find_map` on `SystemPrompt`),
+`window.rs` and `disclosure` (in-memory), `mirror` (inbound-only), and
+`acknowledgment` (kind-filtered). The implementer confirms rather than re-derives.
 
 ## Decisions taken with this unit
 
@@ -91,18 +113,22 @@ than re-derives.
   *rejected:* fixing only the read — the tail condition runs first and a marker tail
   would still swallow the walk (found by the second cold round); *rejected:* per-caller
   filtering — the same decision recorded per caller.
-- **The tail pin uses the public bare-marker construction, 2026-08-28.**
-  `insert_user_blocks(conv, vec![])` on a fresh conversation strands a bare marker as
-  the ledger tail through a public seam. One spine case pins the tail condition with
-  it: the walk on that conversation answers "no debt" cleanly, and a member message
-  ingested AFTER that marker still has its debt found and answered. The
-  debt-BEHIND-a-marker-tail shape (a marker stranded above an owing message) requires
-  a date boundary between two appends, which only the framework's `pub(crate)` seams
-  can drive — it is covered by the same single recording the constructible pin proves,
-  and pinning it at date-crossing granularity is the framework's follow-up, not this
-  unit's. *Rejected:* inventing a construction around the private seams; *rejected:*
-  claiming (as an earlier revision did) that no public construction exists at all —
-  the empty-vec insert is one call.
+- **The tail half is verified by the recording's shape, and no fixture is built,
+  2026-08-28.** The tail condition's marker transparency is enforced by consuming the
+  same single recording as the read, and checked mechanically — the recording has
+  exactly two consuming sites, cited file:line — plus the walk's contract comment
+  stating the rule. No spine fixture exists for it, deliberately: a bare marker tail
+  answers "no debt" under broken and fixed code alike, so a test on the one
+  publicly-constructible shape pins nothing (and `reconcile_palette` re-tails such a
+  conversation with a palette before the walk runs anyway); the distinguishing
+  debt-behind shape needs a framework-private date crossing and is unreachable in
+  today's consumer. A vacuous test labeled a pin fails the operator's quality bar
+  harder than an honestly-stated structural argument. This closed after three cold
+  rounds relocated the fixture question (none possible → one call exists → that call
+  is vacuous); per the machine's practice rules, two relocations mean cut. *Rejected:*
+  the bare-tail spine case (vacuous, above); *rejected:* a fixture invented around the
+  `pub(crate)` seams; *rejected:* widening the framework seam for a consumer test —
+  the behavioral pin at date-crossing granularity is the framework's follow-up.
 - **The interior pin is the core lib test, and no spine twin is built, 2026-08-28.**
   An interior marker above a LIVE owing message needs two same-run markers — a date
   crossing — so no consumer spine fixture can build it. The lib test's ledger already
@@ -113,11 +139,16 @@ than re-derives.
   2026-08-28.** The spine support and the adapter support each gain a single view —
   the ledger without `date_marker` blocks — and every count gate (`settled`), kind
   sequence (`settle_shape`, the adapter's `await_shape`, which moves into the adapter
-  support), index assertion, and projected-message count reads through it. No test
-  adds one to a length or splices a marker into an expected kind list. *Rejected:*
+  support), index assertion, and projected-message count IN THE FAILING SET reads
+  through it. The radius is exactly the failing tests: a currently-green raw assertion
+  stays raw even where it is marker-sensitive (`spine/group_context.rs:1607-1618`
+  asserts an exact raw kind sequence and passes because its fixture makes no
+  user-voiced append) — it moves through the view when and if it breaks. No test adds
+  one to a length or splices a marker into an expected kind list. *Rejected:*
   updating expectations in place — it smears the marker over every test and breaks
-  again on the next record kind; *rejected:* a shared test-support crate — a new crate
-  for one predicate, coupling the suites.
+  again on the next record kind; *rejected:* routing green tests through the view too
+  — it widens the diff past the fallout for no behavioral gain; *rejected:* a shared
+  test-support crate — a new crate for one predicate, coupling the suites.
 - **The marker fact gets one consumer pin, midnight-safe, 2026-08-28.** One new spine
   test pins what the consumer relies on: after a fresh conversation's first ingest,
   exactly one `date_marker`, ordered before that ingest's chat message; after a second
@@ -130,7 +161,7 @@ than re-derives.
   re-records the framework's format decision and races midnight.
 - **The scope is the fallout, 2026-08-28.** The unit changes the shared transparency
   recording with its two readers, the two suites' supports, the tests the three
-  fallout shapes name, and the two new pins (tail case and marker fact). It does not
+  fallout shapes name, and the one new pin (the marker fact). It does not
   widen the framework seam, does not add a consumer projection for markers, and does
   not touch the deployment repository's framework pin — that bump is a separate,
   owner-approved step.
@@ -142,7 +173,8 @@ framework date record never settles a debt walk — feeds both the tail conditio
 the past-erased read, so a debt behind any run of markers, erased rows, notes,
 palettes and reports is still found, and a stranded marker tail neither hides a debt
 nor breaks the walk. The core lib test passes as written and is the read's pin; the
-public empty-append construction pins the tail condition. Both test suites assert
+tail half is verified by the recording's two-site shape and its stated comments. Both
+test suites assert
 consumer behavior through a support-owned view of the ledger that excludes framework
 date records. Exactly one new test pins the marker's presence, ordering, per-date
 cardinality, and its dated line arriving as its own system message. Production
@@ -159,16 +191,17 @@ beyond restoring the debt the marker was swallowing.
   `kind.rs:1520` passes as written — its assertion and its caller-supplied list
   unedited.
 - **AC3** The tail condition is transparent to markers through the SAME single
-  recording as the read (cited file:line): the bare-marker-tail spine case passes —
-  `insert_user_blocks(conv, vec![])` on a fresh conversation, the walk answers
-  "no debt" cleanly, and a member message ingested after that marker draws its
-  answering turn.
+  recording as the read — checked mechanically: the recording has exactly two
+  consuming sites (the read's SQL exclusion and the tail condition), cited file:line,
+  and the walk's contract comment plus the read's doc comment (`kind.rs:838-841`,
+  whose "past erased rows alone" sentence the change falsifies) state the rule. No
+  fixture exists for the tail half, per the decision recording why.
 - **AC4** The marker pin passes as specified: one marker on first ingest, ordered
   before that ingest's chat message; no second marker with the same stored date on the
   second ingest, judged by stored dates; the dated line present in the recorded
   request as its own system message after the prompt's, matched only by its stable
   lead.
-- **AC5** No test outside the two support modules and the pins names the marker kind
+- **AC5** No test outside the two support modules and the pin names the marker kind
   or adjusts a count for it — checked mechanically by counting the use sites of the
   framework's `DateMarker` kind name (constant and raw string) in each suite.
 - **AC6** The dated line's format is never re-recorded in the consumer: the only
@@ -177,13 +210,16 @@ beyond restoring the debt the marker was swallowing.
 ## Notes for launch
 
 - Branches from `main` (worktree `~/projects/halogenos-assistant-markers`, branch
-  `unit/date-marker-fallout`). Sites: `core/src/kind.rs` (the read and the lib test
-  left as written), `core/src/assembly.rs:59` and `:1521-1573` (the transparency
-  recording beside `DEBT_READ_THROUGH`, the tail condition, the walk's contract
-  comment), `core/tests/spine/support.rs` and the failing spine modules (the walk's
-  existing spine pins are in `spine/addressing.rs:269-401`),
+  `unit/date-marker-fallout`). Sites: `core/src/kind.rs` (the read, its doc comment's
+  empty-slice sentence updated, the lib test left as written),
+  `core/src/assembly.rs:59` and `:1521-1573` (the transparency recording beside
+  `DEBT_READ_THROUGH`, the tail condition, the walk's contract comment),
+  `core/tests/spine/support.rs` and the failing spine modules (the walk's existing
+  spine pins are in `spine/addressing.rs:269-460`),
   `adapters/telegram/tests/adapter/` (its support module gains the view;
-  `await_shape` moves there from `tools.rs:130`), and the two new spine pins.
+  `await_shape` moves there from `tools.rs:130`), and the marker-fact pin in a new
+  spine module `core/tests/spine/date_marker.rs`, registered in the suite's
+  `main.rs`.
 - The failure inventory as measured on 2026-08-28 (60 spine by module: tools 19,
   report 8, end_to_end 4, helpful 4, privacy_rights 4, speaker 4, audience 2,
   disclosure 2, erasure 2, mirror 2, protection 2, sourcing 2, storage 2,
