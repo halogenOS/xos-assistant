@@ -1,16 +1,22 @@
 //! The runtime-facts unit at the core's edges (unit 32, AC3 and AC5): an
 //! ordinary member's question makes the scripted model call the tool, the
-//! recorded result carries the four fact lines exactly as the rendering
-//! writes them, and the model id in them is the one the answering
-//! conversation runs on — never the fixture's default, never anything the
-//! model remembers, and never a configured id the conversation was not
-//! created under.
+//! recorded result carries the fact lines exactly as the rendering writes
+//! them, and the model id in them is the one the answering conversation
+//! runs on — never the fixture's default, never anything the model
+//! remembers, and never a configured id the conversation was not created
+//! under.
 //!
-//! The byte-exact rendering, the coarse uptime, the anchor read once and
-//! the ignored input are pinned beside the rendering itself, in the tool's
-//! own module; what only the assembled core can prove is here: the
-//! registration, the palette entry, and the conversation's own model
-//! reaching the result across a configuration change.
+//! Unit 34's clock lines ride the same byte-exact pin (AC2): the result
+//! recorded by a real turn is the rendering of a reading taken while that
+//! turn ran, so the date and time reach the ledger through the assembled
+//! core and not only through the rendering's own tests.
+//!
+//! The byte-exact rendering, the coarse uptime, the anchor read once, the
+//! absent zone parts and the ignored input are pinned beside the rendering
+//! itself, in the tool's own module; what only the assembled core can
+//! prove is here: the registration, the palette entry, and the
+//! conversation's own model reaching the result across a configuration
+//! change.
 //!
 //! The blocks are found by kind, never by position: this unit claims
 //! nothing about where a block sits in the ledger, and the framework may
@@ -20,6 +26,7 @@ use std::time::Duration;
 
 use agent_ledger::Block;
 use agent_ledger::Store;
+use agent_ledger::store::ClockReading;
 use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::runtime;
@@ -82,6 +89,10 @@ async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
     .await;
     let room = support::authorized_group(&fixture.assistant, "room-runtime-facts").await;
 
+    // The clock the tool will read, bracketed around the turn: the result
+    // is byte-exact against one of the two, which is the honest form of
+    // "the reading the call took" for a clock that keeps moving.
+    let before = ClockReading::now_local();
     // "A" is an ordinary member, not the configured operator: the tool is
     // reached at member authority, through the palette, never by calling
     // the handler.
@@ -107,6 +118,7 @@ async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
         },
     )
     .await;
+    let after = ClockReading::now_local();
 
     assert!(
         palette_names(&blocks).contains(&runtime::NAME.to_owned()),
@@ -115,17 +127,22 @@ async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
     assert_eq!(field(&only(&blocks, "tool_call"), "name"), runtime::NAME);
     // A process seconds old renders a zero uptime, which makes the whole
     // result byte-exact end to end — the model id from the conversation's
-    // own record, the version and revision compiled in.
+    // own record, the version and revision compiled in, and the date and
+    // time from the clock read while the turn ran.
     let result = field(&only(&blocks, "tool_result"), "content");
-    assert_eq!(
-        result,
+    let expected = |clock: &ClockReading| {
         runtime::fact_lines(
             CONFIGURED_MODEL,
             runtime::VERSION,
             runtime::REVISION,
-            Duration::ZERO
-        ),
-        "the result states the model this conversation runs on, not the fixture default"
+            Duration::ZERO,
+            clock,
+        )
+    };
+    assert!(
+        result == expected(&before) || result == expected(&after),
+        "the result states the model this conversation runs on and the clock as of the \
+         call, bracketed by {before:?} and {after:?}: {result}"
     );
     assert!(
         !result.contains("script-model"),
