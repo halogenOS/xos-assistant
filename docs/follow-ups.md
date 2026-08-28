@@ -170,3 +170,11 @@ what resolving it takes. Resolved items move into a decision record.
   list in the model's system voice. Whichever answer, it must be settled before
   the deployment's framework pin moves onto a date-marking framework, because
   the first live request after that carries the adjacency to a real vendor.
+  **Tested live 2026-08-28, deployment route clear:** a chat completion with two
+  adjacent system messages (the prompt's, then the dated line) sent through the
+  deployment's configured model route returned 200 and the model's reasoning
+  quoted the dated line back, so the current vendor both accepts and reads the
+  shape. The pin bump is not blocked on this.
+  The general question stays open for stricter vendors a later deployment might
+  bind: the framework-render-versus-vendor-module choice above is still the
+  answer to write, but nothing forces it before this deployment moves.
