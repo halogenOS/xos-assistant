@@ -1778,8 +1778,9 @@ fn fresh_handle() -> ScriptHandle {
 }
 
 /// The full registered set of a moderating deployment, sorted as the
-/// palette records it: the three production lookups, the always-registered
-/// privacy tool, and the report tool.
+/// palette records it: the three production lookups, the two
+/// always-registered tools — privacy and runtime facts — and the report
+/// tool.
 fn reporting_palette() -> Vec<String> {
     vec![
         "lookup_commit".into(),
@@ -1787,6 +1788,7 @@ fn reporting_palette() -> Vec<String> {
         "lookup_wiki".into(),
         assistant_core::tools::rights::NAME.into(),
         report::NAME.into(),
+        assistant_core::tools::runtime::NAME.into(),
     ]
 }
 
@@ -2073,9 +2075,10 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
                 "lookup_commit".to_owned(),
                 "lookup_release".to_owned(),
                 "lookup_wiki".to_owned(),
-                assistant_core::tools::rights::NAME.to_owned()
+                assistant_core::tools::rights::NAME.to_owned(),
+                assistant_core::tools::runtime::NAME.to_owned()
             ],
-            "the report tool is removed; the lookups and the privacy tool stand"
+            "the report tool is removed; the lookups and the unconfigured tools stand"
         );
 
         let fresh = support::ingest_recorded(

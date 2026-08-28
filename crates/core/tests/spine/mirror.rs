@@ -839,6 +839,7 @@ async fn the_direct_channel_admission_precedes_the_mirror() {
         script,
         support::production_toolset(),
         assistant_core::AssemblyConfig {
+            started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
             system_prompt: support::SYSTEM_PROMPT.into(),

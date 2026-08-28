@@ -17,6 +17,7 @@ mod prompt;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Instant;
 
 use agent_ledger::{EventBus, ProviderModule, ProviderRegistry, Store};
 use assistant_adapter_telegram::{AdapterError, TelegramAdapter};
@@ -187,6 +188,10 @@ fn main() -> ExitCode {
 /// secrets, prompt, logging, runtime — everything that can refuse does so
 /// before the store is touched or a connection is opened.
 fn run() -> Result<(), StartError> {
+    // The uptime anchor, taken before anything else the start does: the
+    // assistant states how long this process has been up, so the instant
+    // must be the process's own and never a later step's.
+    let started_at = Instant::now();
     let mut arguments = std::env::args_os().skip(1);
     let (Some(config_path), None) = (arguments.next(), arguments.next()) else {
         return Err(StartError::Usage);
@@ -236,6 +241,7 @@ fn run() -> Result<(), StartError> {
             chat_completions_api_key,
             mirror_token,
             system_prompt,
+            started_at,
         }))
 }
 
@@ -290,6 +296,8 @@ struct ServeInputs {
     chat_completions_api_key: String,
     mirror_token: Option<String>,
     system_prompt: String,
+    /// The instant the start sequence began — the process's uptime anchor.
+    started_at: Instant,
 }
 
 /// The lookup hosts the production tool set is pointed at: the configured
@@ -373,6 +381,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         chat_completions_api_key,
         mirror_token,
         system_prompt,
+        started_at,
     } = inputs;
     // The stop handler installs before anything reaches the network: the
     // startup identity read below can precede the serve loop by a moment,
@@ -442,6 +451,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
             direct_chats: configuration.direct_chats.resolve(),
             privacy_policy_address: privacy_policy,
             moderation_handle,
+            started_at,
         },
     )
     .await?;

@@ -886,6 +886,7 @@ pub async fn start_assistant_operators(
         script,
         tools,
         assistant_core::AssemblyConfig {
+            started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: binding(),
             system_prompt: SYSTEM_PROMPT.into(),
@@ -917,6 +918,7 @@ pub async fn start_assistant_answering(
         script,
         production_toolset(),
         assistant_core::AssemblyConfig {
+            started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: binding(),
             system_prompt: SYSTEM_PROMPT.into(),
@@ -976,6 +978,7 @@ pub async fn start_assistant_reporting_as(
         script,
         tools,
         assistant_core::AssemblyConfig {
+            started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: binding(),
             system_prompt: SYSTEM_PROMPT.into(),
@@ -997,6 +1000,7 @@ pub async fn start_assistant_reporting_as(
 /// that assembles by hand and varies nothing.
 pub fn assembly_config() -> assistant_core::AssemblyConfig {
     assistant_core::AssemblyConfig {
+        started_at: std::time::Instant::now(),
         reasoning: assistant_core::ReasoningLevel::Low,
         binding: binding(),
         system_prompt: SYSTEM_PROMPT.into(),

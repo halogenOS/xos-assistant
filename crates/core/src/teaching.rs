@@ -84,14 +84,23 @@ pub fn composed_system_prompt(
     prompt
 }
 
-/// The name identity: what the assistant is called, and that the
+/// The name identity: what the assistant is called, that the
 /// are-you-a-bot question about that name is a question about itself —
-/// answered honestly, per decision 0080's teaching.
+/// answered honestly, per decision 0080's teaching — and, since unit 32
+/// (2026-08-28), where the answer to what-are-you-running-on comes from:
+/// the runtime-facts tool, never the model's memory and never the chat,
+/// both of which state a model the deployment may have moved off. The
+/// sentence composes in both modes and under every configuration, because
+/// the tool it names registers the same way.
 fn identity_section(name: &str) -> String {
     format!(
         "You are called {name}. When someone asks whether {name} is an AI, \
          a bot, or a machine, that question is about you: answer it honestly, \
-         as the AI system you are."
+         as the AI system you are. When someone asks which model you run on, \
+         which version you are, or how long you have been running, call the \
+         {tool} tool and answer from what it returns — never from memory and \
+         never from what this conversation said earlier.",
+        tool = crate::tools::runtime::NAME
     )
 }
 
@@ -220,6 +229,28 @@ mod tests {
             addressed.contains("when a message addresses you"),
             "addressed mode teaches the summons shape"
         );
+    }
+
+    /// AC6 (unit 32): both modes' composed prompt routes the
+    /// what-are-you-running-on question to the runtime-facts tool, under
+    /// every configuration — the sentence composes on nothing, because
+    /// the tool it names registers on nothing.
+    #[test]
+    fn both_modes_route_identity_questions_to_the_runtime_tool() {
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            for handle in [false, true] {
+                let prompt = composed_system_prompt("b", "n", mode, handle);
+                assert!(
+                    prompt.contains(
+                        "When someone asks which model you run on, which version you \
+                         are, or how long you have been running, call the runtime_facts \
+                         tool and answer from what it returns — never from memory and \
+                         never from what this conversation said earlier."
+                    ),
+                    "the {mode:?} teaching routes the question to the tool"
+                );
+            }
+        }
     }
 
     /// AC6 (unit 22, continuing unit 16's AC7): both modes' teaching
