@@ -535,6 +535,7 @@ async fn assemble(
         Arc::new(providers),
         tools,
         assistant_core::AssemblyConfig {
+            started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: ModelBinding {
                 provider_instance: "scripted-1".into(),

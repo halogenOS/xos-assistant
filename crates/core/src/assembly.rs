@@ -15,6 +15,7 @@ use std::future::Future;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 
 use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{ModelOverride, ProviderInstance, StoreTx};
@@ -40,6 +41,7 @@ use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::streams::StreamObserver;
 use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
+use crate::tools::runtime::RuntimeFacts;
 use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
 use crate::window::{
     ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, ReplyWindow,
@@ -265,6 +267,11 @@ pub struct AssemblyConfig {
     /// One global handle: one deployment serves one community (decided
     /// 2026-08-23).
     pub moderation_handle: Option<String>,
+    /// The monotonic instant the process started, captured once by the
+    /// binary and carried here (unit 32, 2026-08-28). The runtime-facts
+    /// tool measures uptime from it, so what the assistant states is the
+    /// age of the process and not of this assembly call.
+    pub started_at: Instant,
 }
 
 /// The running core: the framework runtime spawned over the assistant's
@@ -404,6 +411,7 @@ impl Assistant {
             direct_chats,
             privacy_policy_address,
             moderation_handle,
+            started_at,
         } = config;
         // The two configured-value compositions, resolved once: the prompt
         // every new conversation records — the moderation teaching riding
@@ -461,6 +469,16 @@ impl Assistant {
                 Arc::clone(&privacy_replies),
                 Arc::clone(&erasure_fence),
             ),
+        );
+        // The runtime-facts tool joins unconditionally too (unit 32): it
+        // has no configuration to be absent, and the question it answers
+        // — which model, which version, how long up — is asked wherever
+        // the assistant runs. The two process facts it cannot reach for
+        // itself are injected here: the configured model id the binding
+        // above carries, and the binary's start instant.
+        tools.admit(
+            crate::tools::runtime::REQUIRED_AUTHORITY,
+            RuntimeFacts::new(binding.model.clone(), started_at),
         );
         // One source for what tools exist: the registry the runtime resolves
         // calls against and the palette every new conversation records are

@@ -630,9 +630,10 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
         names,
         vec![
             commit::NAME.to_owned(),
-            assistant_core::tools::rights::NAME.to_owned()
+            assistant_core::tools::rights::NAME.to_owned(),
+            assistant_core::tools::runtime::NAME.to_owned()
         ],
-        "the appended palette names the registered set, the privacy tool included"
+        "the appended palette names the registered set, the unconfigured tools included"
     );
     assert_eq!(field(&blocks[4], "content"), forge_compact_result());
     assert_eq!(
@@ -647,8 +648,8 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
 }
 
 /// A created conversation's palette names exactly the registered set — the
-/// three lookups plus the always-registered privacy tool — and a direct and
-/// a group conversation get the identical palette.
+/// three lookups plus the two always-registered tools, privacy and runtime
+/// facts — and a direct and a group conversation get the identical palette.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_created_conversation_names_exactly_the_registered_set_direct_and_group_alike() {
     let fixture = support::start_assistant(None).await;
@@ -696,9 +697,10 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
                 commit::NAME.to_owned(),
                 release::NAME.to_owned(),
                 assistant_core::tools::wiki::NAME.to_owned(),
-                assistant_core::tools::rights::NAME.to_owned()
+                assistant_core::tools::rights::NAME.to_owned(),
+                assistant_core::tools::runtime::NAME.to_owned()
             ],
-            "the palette names the three lookups and the always-registered privacy tool"
+            "the palette names the three lookups and the two always-registered tools"
         );
         palettes.push(names);
     }

@@ -31,7 +31,9 @@
 //! command), sourcing (the lookup-backed answer discipline: the literal
 //! addressed fact beside the summons, the silent empty turn and the
 //! model's own spoken don't-know), threading (which message an answer is
-//! delivered as a reply to, and when it goes out plain), and — behind the
+//! delivered as a reply to, and when it goes out plain), `runtime_facts`
+//! (the self-introspection tool an ordinary member reaches, stating the
+//! configured model id), and — behind the
 //! `chat_completions`
 //! feature — the framework's real `OpenRouter` module, the shared
 //! chat-completions wire, against a loopback server.
@@ -57,6 +59,7 @@ mod projection;
 mod protection;
 mod reasoning;
 mod report;
+mod runtime_facts;
 mod sourcing;
 mod speaker;
 mod storage;
