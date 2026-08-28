@@ -170,7 +170,7 @@ async fn an_addressed_dont_know_is_delivered_as_ordinary_text() {
          introduced for the new person and nothing else"
     );
 
-    let blocks = support::await_ledger(
+    let blocks = support::viewed_ledger(
         &fixture.store,
         receipt.conversation_id,
         "the stored answer",

@@ -19,6 +19,7 @@ use std::future::Future;
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
 
+use agent_ledger::agency::DateMarker;
 use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{
     Agency, AgencyCtx, Awaiting, Block, BlockKind, Column, ColumnType, ContentDescriptor,
@@ -824,6 +825,27 @@ pub(crate) async fn erase_reply_targets_naming(
     .await
 }
 
+/// The framework record that is never an answerable block (2026-08-28): the
+/// date marker, the ledger's own calendar entry, which the framework writes
+/// inside the same transaction as the user-voiced append that tripped it and
+/// orders immediately before it. It carries no voice, no ask and no answer,
+/// so it can answer for nothing that reads the ledger back: a reader that
+/// stops on one has read a record of the day in place of the message the day
+/// was recorded for — a member's standing question swallowed by the calendar.
+/// The fact belongs to the kind, holds for every reader there will ever be,
+/// and is independent of any caller's kind list.
+///
+/// This is the whole of that decision, recorded once and read by exactly two
+/// sites, so the two can never drift apart: [`newest_block_id_past_erased`]
+/// below, which excludes these rows in SQL for every caller, and the tail
+/// condition in `Assistant::owing_tail_debt`, which treats such a tail as
+/// transparent and reads behind it. It is deliberately NOT folded into
+/// [`crate::assembly::DEBT_READ_THROUGH`] — that list is the consumer's own
+/// policy about its own kinds, chosen per caller, while this holds whoever
+/// asks. The kind is named through the framework leaf's own `KINDS`
+/// declaration, never a literal here.
+pub(crate) const NEVER_ANSWERABLE: &[&str] = DateMarker::KINDS;
+
 /// The newest block of one conversation that can settle the owing-tail
 /// walk: outside the caller's read-through kinds, and past every erased
 /// chat row (2026-08-23, the deletion mirror; decision 0086). Erasure
@@ -837,7 +859,15 @@ pub(crate) async fn erase_reply_targets_naming(
 /// framework-table names it joins carry the deliberate coupling decision
 /// 0032 records, and the placeholder list is built from the slice, so a
 /// widened kind set is a data change at the caller. An empty slice reads
-/// past erased rows alone.
+/// past erased rows and date markers.
+///
+/// The caller's list is not the whole exclusion: every read also skips the
+/// framework's date records, per [`NEVER_ANSWERABLE`] above — the one
+/// recording of that rule, whose second reader is the walk's own tail
+/// condition. It is not a caller's choice because a calendar entry
+/// interposed above an owing message would make the walk judge the day
+/// instead of the question, whoever asked for the read. The exclusion set
+/// therefore always holds at least that kind, whatever the caller passed.
 ///
 /// # Errors
 ///
@@ -848,16 +878,17 @@ pub(crate) async fn newest_block_id_past_erased(
     read_through: &'static [&'static str],
 ) -> Result<Option<i64>, StoreError> {
     domain_run(tx, crate::schema::DOMAIN, move |conn| {
-        let exclusion = if read_through.is_empty() {
-            String::new()
-        } else {
-            let placeholders: Vec<String> = (0..read_through.len())
-                .map(|index| format!("?{}", index + 2))
-                .collect();
-            format!("AND b.block_type NOT IN ({}) ", placeholders.join(", "))
-        };
+        let excluded: Vec<&'static str> = read_through
+            .iter()
+            .chain(NEVER_ANSWERABLE)
+            .copied()
+            .collect();
+        let placeholders: Vec<String> = (0..excluded.len())
+            .map(|index| format!("?{}", index + 2))
+            .collect();
+        let exclusion = format!("AND b.block_type NOT IN ({}) ", placeholders.join(", "));
         let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![&conversation_id];
-        parameters.extend(read_through.iter().map(|kind| kind as &dyn rusqlite::ToSql));
+        parameters.extend(excluded.iter().map(|kind| kind as &dyn rusqlite::ToSql));
         Ok(conn
             .query_row(
                 &format!(
@@ -1450,8 +1481,8 @@ mod tests {
 
     /// A tail that is a run of read-through kinds and erased chat rows
     /// answers the block behind the whole run in one query; an empty kind
-    /// list still reads past erased rows alone, and an empty conversation
-    /// answers nothing.
+    /// list still reads past erased rows and date markers, and an empty
+    /// conversation answers nothing.
     #[tokio::test]
     async fn the_read_answers_past_kind_runs_and_erased_rows_alike() {
         let store =
@@ -1530,7 +1561,7 @@ mod tests {
             .expect("the conversation has an answerable block");
         assert!(
             newest > behind,
-            "an empty kind list reads past erased rows alone: the note answers"
+            "an empty kind list reads past erased rows and date markers: the note answers"
         );
     }
 }

@@ -1755,7 +1755,7 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
         inbound(&key, ChannelKind::Direct, "42", "the second ask"),
     )
     .await;
-    let blocks = support::await_ledger(
+    let blocks = support::viewed_ledger(
         &fixture.store,
         receipt.conversation_id,
         "the recorded limited message",
@@ -1769,11 +1769,13 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
 
     // A grace period so a wrongly summoned turn would surface.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let after = fixture
-        .store
-        .list_blocks(receipt.conversation_id)
-        .await
-        .expect("the ledger reads");
+    let after = support::consumer_view(
+        &fixture
+            .store
+            .list_blocks(receipt.conversation_id)
+            .await
+            .expect("the ledger reads"),
+    );
     assert_eq!(
         after.len(),
         settled.len() + 1,

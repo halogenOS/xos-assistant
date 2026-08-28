@@ -13,6 +13,9 @@
 //! protection (the budgets, the limited stamp, the debt authority),
 //! reasoning (the configured effort level on every created conversation
 //! and on the provider's requests),
+//! `date_marker` (the framework's calendar row: written once per recorded
+//! date, ahead of the message that tripped it, reaching the model as its
+//! own system line — the fact every other module's consumer view filters),
 //! `direct_chats` (the configuration switch refusing direct channels
 //! before any write), disclosure (the first-interaction line and the
 //! deterministic replies' exemption),
@@ -39,6 +42,7 @@ mod assembly;
 mod audience;
 #[cfg(feature = "chat_completions")]
 mod chat_completions;
+mod date_marker;
 mod direct_chats;
 mod disclosure;
 mod end_to_end;

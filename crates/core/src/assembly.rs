@@ -28,7 +28,9 @@ use crate::acknowledgment;
 use crate::composing;
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
-use crate::kind::{self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage};
+use crate::kind::{
+    self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage, NEVER_ANSWERABLE,
+};
 use crate::message::{
     Authority, ChannelKey, ChannelKind, ComposingUpdate, DeliveryItem, InboundMessage,
     IngestOutcome, IngestReceipt, Observation, ObserveOutcome, ObservedFact, OutboundReply,
@@ -1523,9 +1525,16 @@ impl Assistant {
     /// them still owes and must propagate through to the next message's
     /// stamp. Erased chat rows are transparent the same way (2026-08-23,
     /// the deletion mirror): they share the live rows' kind, so the kind's
-    /// own query skips them by shape instead. The framework's other
-    /// transparent kinds, the turn-closure markers above all, stay a
-    /// settled tail here: the framework's own walk governs turn liveness,
+    /// own query skips them by shape instead. A framework date record is
+    /// transparent under a rule of its own, [`kind::NEVER_ANSWERABLE`]: it
+    /// is the calendar, not a voice, and it can stand anywhere the walk looks
+    /// — interposed above the owing message it rides in front of, or, on
+    /// the framework's own fork and empty-append paths, as the tail itself.
+    /// Both places are read through here, from that one recording: the tail
+    /// condition below admits it, and the query behind excludes it for
+    /// every caller. The framework's other transparent kinds, the
+    /// turn-closure markers above all, stay a settled tail here: the
+    /// framework's own walk governs turn liveness,
     /// and reading debt through a closed turn's marker would widen
     /// propagation past failed turns. Every read is bounded — the tail row,
     /// then at most one query past the whole transparent run, never a
@@ -1541,6 +1550,7 @@ impl Assistant {
             return Ok(None);
         };
         let transparent = DEBT_READ_THROUGH.contains(&tail.block_type.as_str())
+            || NEVER_ANSWERABLE.contains(&tail.block_type.as_str())
             || matches!(
                 AssistantKind::from_block(&tail),
                 AssistantKind::ChatMessage(message) if message.erased()

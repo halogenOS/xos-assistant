@@ -225,10 +225,12 @@ async fn a_file_backed_store_reopens_and_loads_the_stored_kind() {
     }
 
     let reopened = Store::open_with(db.path(), store_config()).expect("the store reopens");
-    let blocks = reopened
-        .list_blocks(conversation)
-        .await
-        .expect("the reopened ledger reads");
+    let blocks = support::consumer_view(
+        &reopened
+            .list_blocks(conversation)
+            .await
+            .expect("the reopened ledger reads"),
+    );
     assert_eq!(blocks.len(), 1);
     assert_eq!(blocks[0].id, appended);
     assert_eq!(blocks[0].block_type, CHAT_MESSAGE_KIND);
@@ -411,10 +413,12 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         14,
         "the appended step advanced the domain's version"
     );
-    let blocks = reopened
-        .list_blocks(conversation)
-        .await
-        .expect("the upgraded ledger reads");
+    let blocks = support::consumer_view(
+        &reopened
+            .list_blocks(conversation)
+            .await
+            .expect("the upgraded ledger reads"),
+    );
     match AssistantKind::from_block(&blocks[0]) {
         AssistantKind::ChatMessage(message) => {
             assert_eq!(

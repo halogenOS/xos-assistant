@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use agent_ledger::agency::{DateMarker, LeafKind};
 use agent_ledger::providers::{
     BoxFuture, ContentPart as WirePart, Message, MessageContent, ModelInfo, ProviderRx, ProviderTx,
 };
@@ -784,6 +785,50 @@ pub fn reply_to_bot_update(update_id: i64, chat_id: i64, user_id: i64, text: &st
         "text": "an earlier answer",
     });
     update
+}
+
+/// The ledger as the consumer's own content: every block the assistant or a
+/// member put there, and none of the framework's date records.
+///
+/// The framework writes a `date_marker` on the first user-voiced append of
+/// a day — its own calendar entry, ordered before the block that tripped
+/// it, carrying no consumer content. A suite that spells out what the
+/// adapter's traffic recorded is asserting about consumer content, so it
+/// judges this view in one place instead of each test carrying its own
+/// arithmetic about the framework's records. The kind is named through the
+/// framework leaf's own `KINDS`, never a literal here.
+#[must_use]
+pub fn consumer_view(blocks: &[Block]) -> Vec<Block> {
+    blocks
+        .iter()
+        .filter(|block| !DateMarker::KINDS.contains(&block.block_type.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Await one conversation's settled turn by its exact block-type shape —
+/// every stored type in the consumer view ([`consumer_view`]) matches
+/// `shape` in order — and return that view.
+pub async fn await_shape(store: &Store, conversation: i64, shape: &[&str]) -> Vec<Block> {
+    let expected: Vec<String> = shape.iter().map(|s| (*s).to_owned()).collect();
+    let deadline = std::time::Instant::now() + DEADLINE;
+    loop {
+        let blocks = consumer_view(
+            &store
+                .list_blocks(conversation)
+                .await
+                .expect("the ledger reads"),
+        );
+        let types: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
+        if types == expected.iter().map(String::as_str).collect::<Vec<_>>() {
+            return blocks;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting the ledger shape {expected:?}; have {types:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Await the recorded chat-message blocks of one conversation reaching the

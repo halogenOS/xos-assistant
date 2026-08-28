@@ -100,8 +100,8 @@ joins), `erasure.rs:160-186` (per-block `ChatMessage` matches),
 ## Decisions taken with this unit
 
 - **Marker transparency is one recorded fact with two readers, 2026-08-28.** The
-  consumer records once — one named constant or predicate beside `DEBT_READ_THROUGH`,
-  with the doc comment carrying the decision — that a framework date record can never
+  consumer records once — one named constant beside the read in `kind.rs`, with the
+  doc comment carrying the decision — that a framework date record can never
   settle a debt walk and is never an answerable block. Both blind sites consume that
   one recording: the past-erased read excludes marker rows in its SQL for every caller,
   and the tail condition treats a marker tail as transparent. `DEBT_READ_THROUGH`
@@ -212,8 +212,9 @@ beyond restoring the debt the marker was swallowing.
 - Branches from `main` (worktree `~/projects/halogenos-assistant-markers`, branch
   `unit/date-marker-fallout`). Sites: `core/src/kind.rs` (the read, its doc comment's
   empty-slice sentence updated, the lib test left as written),
-  `core/src/assembly.rs:59` and `:1521-1573` (the transparency recording beside
-  `DEBT_READ_THROUGH`, the tail condition, the walk's contract comment),
+  `core/src/kind.rs` (the transparency recording beside the read) and
+  `core/src/assembly.rs:1521-1573` (the tail condition, the walk's contract
+  comment),
   `core/tests/spine/support.rs` and the failing spine modules (the walk's existing
   spine pins are in `spine/addressing.rs:269-460`),
   `adapters/telegram/tests/adapter/` (its support module gains the view;

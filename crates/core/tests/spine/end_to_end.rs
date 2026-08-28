@@ -97,7 +97,7 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
 
     // The ledger, block by block: the recorded prompt, the palette, the
     // recorded message, then the answer.
-    let blocks = await_ledger(&fixture.store, conv, "the answered turn", |blocks| {
+    let blocks = support::viewed_ledger(&fixture.store, conv, "the answered turn", |blocks| {
         blocks.len() == 4
             && blocks
                 .last()
@@ -154,8 +154,14 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
 /// turn is done, and title derivation — switched off in the assembly —
 /// dispatched NOTHING. The window a derivation would fire in is held open,
 /// then every surface is read: no title request reached the provider, the
-/// conversation's title stays as creation left it, the ledger holds only
-/// the turn's own blocks, and nothing leaked onto the outbound edge.
+/// conversation's title stays as creation left it, the ledger holds the
+/// turn's own blocks and nothing besides them, and nothing leaked onto the
+/// outbound edge.
+///
+/// The ledger half reads the consumer view: the framework's date record is
+/// an expected row of the real ledger, written by the day's first append
+/// and filtered out here, so the count that follows is about what the
+/// assistant's own paths wrote.
 async fn assert_no_title_derivation(
     fixture: &support::Fixture,
     conv: i64,
@@ -182,12 +188,22 @@ async fn assert_no_title_derivation(
         1,
         "the answered turn stays the only request of any kind"
     );
-    let blocks = fixture
-        .store
-        .list_blocks(conv)
-        .await
-        .expect("the ledger reads");
-    assert_eq!(blocks.len(), 4, "no derivation artifact joins the ledger");
+    let blocks = support::consumer_view(
+        &fixture
+            .store
+            .list_blocks(conv)
+            .await
+            .expect("the ledger reads"),
+    );
+    assert_eq!(
+        blocks.len(),
+        4,
+        "the turn's own four blocks, and no derivation artifact beside them: {:?}",
+        blocks
+            .iter()
+            .map(|b| b.block_type.as_str())
+            .collect::<Vec<_>>()
+    );
     assert!(
         matches!(
             replies.try_recv(),
@@ -503,11 +519,13 @@ fn a_restarted_process_answers_a_known_channel() {
             .await
             .expect("the conversation list reads");
         assert_eq!(conversations.len(), 1, "the mapping survived the restart");
-        let blocks = fixture
-            .store
-            .list_blocks(conversations[0].id)
-            .await
-            .expect("the ledger reads");
+        let blocks = support::consumer_view(
+            &fixture
+                .store
+                .list_blocks(conversations[0].id)
+                .await
+                .expect("the ledger reads"),
+        );
         let shape: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
         assert_eq!(
             shape,
