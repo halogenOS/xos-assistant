@@ -4,15 +4,25 @@
 //! Asked which model she runs on, a model answers from its training data
 //! and from whatever the chat said earlier — both wrong the moment the
 //! deployment's configured model changes. The four facts here come from
-//! the process instead: the model id the assembly was configured with, the
-//! version compiled into the binary, the revision the build passed in, and
-//! the time elapsed since the anchor the binary captured at startup.
+//! the running system instead: the model this conversation's turns are
+//! dispatched on, the version compiled into the binary, the revision the
+//! build passed in, and the time elapsed since the anchor the binary
+//! captured at startup.
+//!
+//! The model is read from the answering conversation's own record, which
+//! is the value the framework dispatches its turns on. Configuration is
+//! not that value: a conversation's model is written once, when the
+//! conversation is created, a fork inherits it, and a later configuration
+//! change moves no conversation already open. Stating the configured id
+//! would name a model the wire does not carry — the exact claim this tool
+//! exists to end — so the read happens per call, at the conversation in
+//! hand, and nothing about it is remembered here.
 //!
 //! No parameters, and no input is read: there is nothing to select among
-//! four lines, so extra arguments change nothing. The execute path reads
-//! process-held values only — no network call, no subprocess, no ledger
-//! read — which is why the result cannot be stale in the way a remembered
-//! answer is.
+//! four lines, so extra arguments change nothing. Beyond that one read of
+//! the conversation's own record, the execute path reads process-held
+//! values only — no network call, no subprocess — which is why the result
+//! cannot be stale in the way a remembered answer is.
 //!
 //! The revision arrives as a compile-time environment value the build
 //! passes in (`ASSISTANT_BUILD_REVISION`), because the deployment builds
@@ -45,6 +55,14 @@ pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 /// What the revision reads when the build passed none. A stated `unknown`
 /// beats a value invented from anything else.
 pub const UNKNOWN_REVISION: &str = "unknown";
+
+/// The decline when the conversation's own record cannot be read, so the
+/// model the turn runs on is unknown. The facts are withheld whole: a
+/// partial list missing its first line would be read as an answer, and
+/// substituting any other model id is the invention this tool exists to
+/// end.
+pub const UNREADABLE_RESULT: &str = "The runtime facts could not be read just now. Say \
+     so plainly, and state nothing about which model, version or uptime is running.";
 
 /// The version compiled into this binary. Every crate in the workspace
 /// carries the workspace version, so the core's own is the binary's.
@@ -88,12 +106,11 @@ pub fn coarse_uptime(uptime: Duration) -> String {
 }
 
 /// The runtime-facts tool. Constructed by the assembly, which holds the
-/// configured model id and the start instant the binary captured — the
-/// tool reaches for neither itself.
+/// start instant the binary captured — the one fact the tool could not
+/// reach for itself. The model is not held here: it belongs to the
+/// conversation being answered, not to the process, and a copy kept here
+/// would be the stale answer again in another place.
 pub(crate) struct RuntimeFacts {
-    /// The provider's model identifier every conversation is created
-    /// under, as configured.
-    model: String,
     /// The monotonic anchor uptime is measured from, captured once at
     /// startup: every call reads the same anchor, so the answer measures
     /// the process and not the call.
@@ -101,13 +118,14 @@ pub(crate) struct RuntimeFacts {
 }
 
 impl RuntimeFacts {
-    pub(crate) fn new(model: String, started_at: Instant) -> Self {
-        Self { model, started_at }
+    pub(crate) fn new(started_at: Instant) -> Self {
+        Self { started_at }
     }
 
-    /// The four facts as of now.
-    fn facts(&self) -> String {
-        fact_lines(&self.model, VERSION, REVISION, self.started_at.elapsed())
+    /// The four facts as of now, over the model the calling conversation
+    /// runs on.
+    fn facts(&self, model: &str) -> String {
+        fact_lines(model, VERSION, REVISION, self.started_at.elapsed())
     }
 }
 
@@ -115,8 +133,8 @@ impl ToolHandler<CoreEvent> for RuntimeFacts {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: NAME.into(),
-            description: "State what this assistant is running right now: the model it is \
-                 configured with, its software version and build revision, and how long \
+            description: "State what this assistant is running right now: the model this \
+                 conversation runs on, its software version and build revision, and how long \
                  the process has been up. Call it whenever someone asks what you run on, \
                  which model or version you are, or how long you have been running — the \
                  answer comes from the running process, never from what you remember or \
@@ -133,9 +151,34 @@ impl ToolHandler<CoreEvent> for RuntimeFacts {
     fn execute<'a>(
         &'a self,
         _input: &'a str,
-        _ctx: ToolContext<'a, CoreEvent>,
+        ctx: ToolContext<'a, CoreEvent>,
     ) -> BoxFuture<'a, ToolOutcome> {
-        Box::pin(async move { ToolOutcome::Done(self.facts()) })
+        Box::pin(async move {
+            // The conversation record carries the model its turns are
+            // dispatched on. Read at the call, over the conversation the
+            // call belongs to: the answer must be the binding this turn
+            // ran under, and no other conversation's.
+            let conversation_id = ctx.agency.conversation_id;
+            let running = match ctx.agency.store.find_conversation(conversation_id).await {
+                Ok(Some(conversation)) => conversation.model.external_id,
+                Ok(None) => {
+                    tracing::warn!(
+                        conversation_id,
+                        "the runtime-facts tool found no conversation to read the model from"
+                    );
+                    return ToolOutcome::Error(UNREADABLE_RESULT.to_owned());
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        conversation_id,
+                        %error,
+                        "the runtime-facts tool's conversation read failed"
+                    );
+                    return ToolOutcome::Error(UNREADABLE_RESULT.to_owned());
+                }
+            };
+            ToolOutcome::Done(self.facts(&running))
+        })
     }
 }
 
@@ -205,48 +248,87 @@ mod tests {
         let started_at = Instant::now()
             .checked_sub(Duration::from_mins(26 * 60 + 5))
             .expect("the monotonic clock takes the back-dated anchor");
-        let tool = RuntimeFacts::new("vendor/model-9".into(), started_at);
+        let tool = RuntimeFacts::new(started_at);
         assert!(
-            tool.facts().ends_with("uptime: 1d 2h 5m"),
+            tool.facts("vendor/model-9").ends_with("uptime: 1d 2h 5m"),
             "the stored anchor is what uptime measures: {}",
-            tool.facts()
+            tool.facts("vendor/model-9")
         );
-        assert_eq!(tool.facts(), tool.facts(), "two calls, one anchor");
+        assert_eq!(
+            tool.facts("vendor/model-9"),
+            tool.facts("vendor/model-9"),
+            "two calls, one anchor"
+        );
     }
 
-    /// The execute path reads process-held values only: over a store
-    /// holding nothing and a block id naming nothing, every input — an
-    /// empty one, an object with strange fields, unparsable text — answers
-    /// the same four facts. Nothing is selected and nothing is read.
+    /// One call of the tool over a given conversation id, with a block id
+    /// naming nothing: the conversation record is the only thing the
+    /// execute path reads.
+    async fn call(tool: &RuntimeFacts, agency: &AgencyCtx<CoreEvent>, input: &str) -> ToolOutcome {
+        tool.execute(
+            input,
+            ToolContext {
+                agency,
+                tool_call_id: "call-0",
+                block_id: 12345,
+            },
+        )
+        .await
+    }
+
+    /// Every input — an empty one, an object with strange fields,
+    /// unparsable text — answers the same four facts, over the model the
+    /// calling conversation was created on. Nothing is selected, and the
+    /// ledger's blocks are never read.
     #[tokio::test]
-    async fn every_input_answers_the_same_facts_without_reading_the_ledger() {
+    async fn every_input_answers_the_calling_conversations_model() {
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let conversation_id = store
+            .create_conversation(
+                "provider-1".into(),
+                "vendor/model-9".into(),
+                "Model Nine".into(),
+                "vendor".into(),
+            )
+            .await
+            .expect("a conversation row");
+        let agency: AgencyCtx<CoreEvent> = AgencyCtx {
+            conversation_id,
+            store,
+            bus: Arc::new(EventBus::new()),
+        };
+        let tool = RuntimeFacts::new(Instant::now());
+        for input in ["", "{}", r#"{"fact":"model"}"#, "not json"] {
+            match call(&tool, &agency, input).await {
+                ToolOutcome::Done(facts) => assert!(
+                    facts.starts_with("model: vendor/model-9\n"),
+                    "the input {input:?} answers the conversation's own facts: {facts}"
+                ),
+                ToolOutcome::Error(_) | ToolOutcome::Pending => {
+                    panic!("the input {input:?} answers the facts")
+                }
+            }
+        }
+    }
+
+    /// A call over a conversation the store does not hold answers the
+    /// decline, whole: no fact list missing its model line, and no other
+    /// model id put in its place.
+    #[tokio::test]
+    async fn an_unreadable_conversation_answers_the_decline() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let agency: AgencyCtx<CoreEvent> = AgencyCtx {
             conversation_id: 404,
             store,
             bus: Arc::new(EventBus::new()),
         };
-        let tool = RuntimeFacts::new("vendor/model-9".into(), Instant::now());
-        for input in ["", "{}", r#"{"fact":"model"}"#, "not json"] {
-            let outcome = tool
-                .execute(
-                    input,
-                    ToolContext {
-                        agency: &agency,
-                        tool_call_id: "call-0",
-                        block_id: 12345,
-                    },
-                )
-                .await;
-            match outcome {
-                ToolOutcome::Done(facts) => assert!(
-                    facts.starts_with("model: vendor/model-9\n"),
-                    "the input {input:?} answers the configured model's facts: {facts}"
-                ),
-                ToolOutcome::Error(_) | ToolOutcome::Pending => {
-                    panic!("the input {input:?} answers the facts")
-                }
+        let tool = RuntimeFacts::new(Instant::now());
+        match call(&tool, &agency, "{}").await {
+            ToolOutcome::Error(decline) => assert_eq!(decline, UNREADABLE_RESULT),
+            ToolOutcome::Done(facts) => {
+                panic!("a conversation nobody holds states no facts: {facts}")
             }
+            ToolOutcome::Pending => panic!("the tool resolves its own call"),
         }
     }
 }

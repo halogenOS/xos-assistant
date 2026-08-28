@@ -1,15 +1,16 @@
 //! The runtime-facts unit at the core's edges (unit 32, AC3 and AC5): an
 //! ordinary member's question makes the scripted model call the tool, the
 //! recorded result carries the four fact lines exactly as the rendering
-//! writes them, and the model id in them is the one the assembly was
-//! configured with — never the fixture's default, never anything the
-//! model remembers.
+//! writes them, and the model id in them is the one the answering
+//! conversation runs on — never the fixture's default, never anything the
+//! model remembers, and never a configured id the conversation was not
+//! created under.
 //!
 //! The byte-exact rendering, the coarse uptime, the anchor read once and
 //! the ignored input are pinned beside the rendering itself, in the tool's
 //! own module; what only the assembled core can prove is here: the
-//! registration, the palette entry, and the configured value reaching the
-//! result.
+//! registration, the palette entry, and the conversation's own model
+//! reaching the result across a configuration change.
 //!
 //! The blocks are found by kind, never by position: this unit claims
 //! nothing about where a block sits in the ledger, and the framework may
@@ -31,8 +32,8 @@ use crate::support::{self, ToolScript, field, inbound, tool_scripted_provider};
 const CONFIGURED_MODEL: &str = "vendor/model-under-test-9";
 
 /// The model a channel's conversation was created under before the
-/// operator swapped the configuration — what the framework still
-/// dispatches that conversation's turns on.
+/// configuration changed — what the framework still dispatches that
+/// conversation's turns on.
 const MODEL_BEFORE_THE_SWAP: &str = "vendor/model-before-the-swap";
 
 /// The stored palette names of the conversation's newest palette block.
@@ -56,9 +57,11 @@ fn only(blocks: &[Block], kind: &str) -> Block {
 /// An ordinary member asks what the assistant runs on: the scripted model
 /// calls the tool, admission through the recorded palette admits the call
 /// at member authority, and the recorded result is the four fact lines
-/// over the configured model id.
+/// over the model this conversation was created on — which, for a
+/// conversation opened under the running configuration, is that
+/// configured id.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_member_reaches_the_tool_and_reads_the_configured_model() {
+async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
     let (provider, script) = tool_scripted_provider(
         ToolScript {
             tool: runtime::NAME.into(),
@@ -92,7 +95,7 @@ async fn a_member_reaches_the_tool_and_reads_the_configured_model() {
         ),
     )
     .await;
-    let blocks = support::await_ledger(
+    let blocks = support::viewed_ledger(
         &fixture.store,
         receipt.conversation_id,
         "the runtime-facts turn",
@@ -111,8 +114,8 @@ async fn a_member_reaches_the_tool_and_reads_the_configured_model() {
     );
     assert_eq!(field(&only(&blocks, "tool_call"), "name"), runtime::NAME);
     // A process seconds old renders a zero uptime, which makes the whole
-    // result byte-exact end to end — the model id from the assembly's
-    // configuration, the version and revision compiled in.
+    // result byte-exact end to end — the model id from the conversation's
+    // own record, the version and revision compiled in.
     let result = field(&only(&blocks, "tool_result"), "content");
     assert_eq!(
         result,
@@ -122,7 +125,7 @@ async fn a_member_reaches_the_tool_and_reads_the_configured_model() {
             runtime::REVISION,
             Duration::ZERO
         ),
-        "the result states the configured model, not the fixture default"
+        "the result states the model this conversation runs on, not the fixture default"
     );
     assert!(
         !result.contains("script-model"),
@@ -130,27 +133,20 @@ async fn a_member_reaches_the_tool_and_reads_the_configured_model() {
     );
 }
 
-/// BLOCKED, 2026-08-28, and left here as the record of it: the configured
-/// model id the tool states is not the id the turn runs on.
+/// The defect this unit's fix pass closed, pinned: the model the tool
+/// states is the model the answering conversation runs on, not the
+/// configured one.
 ///
 /// A conversation's model row is written once, at creation, from the id
-/// configured then (`assembly.rs`, `map_new_channel`), a fork inherits it,
-/// and nothing in this core or in the framework ever updates it — while
-/// the dispatch reads exactly that stored row. So the incident this unit
-/// was written to end survives it: the operator swaps the configured
-/// model, the process restarts, every channel already served keeps
-/// answering on the old one, and the tool announces the new one with the
-/// authority of a process fact.
-///
-/// The honest source is the conversation the turn belongs to, which the
-/// tool's context already carries — but taking it contradicts unit 32's
-/// spec in three places at once: the grounding that calls the model id
-/// configuration, the fact list's stated source, and AC7's "no I/O beyond
-/// process-held values", which a store read is. Amending a spec is not
-/// this pass's to do, so the disagreement is pinned rather than fixed, and
-/// this test goes green the day the source changes.
+/// configured then, a fork inherits it, and nothing in this core or in the
+/// framework ever updates it — while the dispatch reads exactly that
+/// stored row. So a configuration change moves no conversation already
+/// open: the channel served before it keeps its model, and a tool stating
+/// the configured id would name a model the wire does not carry, with the
+/// authority of a process fact. That is the incident the whole unit was
+/// written to end, so the fact is read per call from the conversation the
+/// call belongs to.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "blocked on unit 32's spec: the fact's source is configuration, and AC7 forbids the store read the honest answer needs"]
 async fn the_stated_model_is_the_one_the_conversation_runs_on() {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     // Before the swap: the channel's conversation is created under the id
@@ -166,7 +162,7 @@ async fn the_stated_model_is_the_one_the_conversation_runs_on() {
         inbound(&room, ChannelKind::Group, "A", "hello"),
     )
     .await;
-    support::await_ledger(
+    support::viewed_ledger(
         &first.store,
         opened.conversation_id,
         "the turn before the swap",
@@ -208,7 +204,7 @@ async fn the_stated_model_is_the_one_the_conversation_runs_on() {
         receipt.conversation_id, opened.conversation_id,
         "the restart keeps the channel's conversation, which is the premise"
     );
-    let blocks = support::await_ledger(
+    let blocks = support::viewed_ledger(
         &restarted.store,
         receipt.conversation_id,
         "the runtime-facts turn",
@@ -255,11 +251,13 @@ async fn the_recorded_prompt_teaches_the_tool_the_palette_carries() {
         inbound(&room, ChannelKind::Group, "A", "hello"),
     )
     .await;
-    let blocks = fixture
-        .store
-        .list_blocks(receipt.conversation_id)
-        .await
-        .expect("the ledger reads");
+    let blocks = support::consumer_view(
+        &fixture
+            .store
+            .list_blocks(receipt.conversation_id)
+            .await
+            .expect("the ledger reads"),
+    );
     assert!(
         field(&only(&blocks, "system_prompt"), "content")
             .contains(&format!("call the {} tool", runtime::NAME)),

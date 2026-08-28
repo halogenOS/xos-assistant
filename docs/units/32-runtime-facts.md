@@ -5,15 +5,27 @@ and from stale chat history — the live group watched her claim to be the model
 swapped away from an hour earlier. The operator's instruction of this date: a
 self-introspection tool returning the runtime facts the process actually knows.
 
-One tool, no parameters, member authority, rendering a short fact list from values the
-process holds: the configured model id, the binary's version and build revision, and the
-process uptime. Truth from the process, never from the model's memory.
+One tool, no parameters, member authority, rendering a short fact list from what the
+running system knows: the model the answering conversation is dispatched on, the binary's
+version and build revision, and the process uptime. Truth from the running system, never
+from the model's memory.
 
 ## Grounding
 
-**The model id is configuration.** `crates/assistant/src/config.rs:33-36` — the provider's
-identifier every conversation is created under, already resolved at startup. The tool
-states this value; it does not ask the provider anything.
+**The model id belongs to the conversation, not to the configuration.** The configured
+identifier is the value a conversation is CREATED with; the conversation's own record then
+carries it, a fork inherits it, and nothing updates it afterwards — while the framework
+dispatches every turn on exactly that record. A configuration change therefore moves no
+conversation already open, and the tool states the record's value, read at the call over
+the conversation the call belongs to. It asks the provider nothing.
+
+> Amended 2026-08-29, after the verification and the operator both found the defect: this
+> paragraph read "the model id is configuration", and the built tool stated the configured
+> id. In a deployment that changed its model, that is the false claim the whole unit exists
+> to end — the assistant naming a model the wire does not carry. *Rejected:* keeping the
+> configured value as a second-best (it is wrong exactly when someone asks); *rejected:*
+> updating every open conversation's model on a configuration change (a migration of stored
+> dispatch state, and a different unit's decision).
 
 **No build information exists in the binary today.** No `env!`/`option_env!`/build-script
 capture anywhere in the workspace (checked). The deployment builds from a Nix flake store
@@ -41,7 +53,9 @@ framework exposes turn timing.
 
 - **Facts, verbatim, 2026-08-28.** The tool returns exactly these lines, each from the
   named source:
-  - `model: {configured model id}` — from configuration.
+  - `model: {the answering conversation's model id}` — read from that conversation's own
+    record at the call, which is the binding its turns are dispatched on (amended
+    2026-08-29; it read "from configuration" and named the wrong model after a change).
   - `version: {crate version}` — `env!("CARGO_PKG_VERSION")`.
   - `revision: {build revision}` — `option_env!("ASSISTANT_BUILD_REVISION")`, or the
     literal `unknown` when the build passed none. Never a guess, never a git call at run
@@ -49,9 +63,15 @@ framework exposes turn timing.
   - `uptime: {duration}` — since the start instant, rendered coarsely (days, hours,
     minutes); seconds precision suggests a freshness the fact list does not otherwise
     have.
-  *Rejected:* latency rows in v1 (no honest source — see grounding); *rejected:* asking
-  the provider for its model name (a network call to restate configuration, and a
-  different answer than the one the wire actually uses).
+  *Rejected:* latency rows in v1 (no honest source — see the sources above); *rejected:*
+  asking the provider for its model name (a network call for a fact the store already
+  holds); *rejected:* holding the model id in the tool (a copy of a per-conversation fact
+  in process state is the stale answer again, in another place).
+- **The unreadable conversation withholds the whole list, 2026-08-29.** If the
+  conversation's record cannot be read, the tool returns a decline naming that, and the
+  model is told to say so. *Rejected:* the three remaining facts without the model line
+  (the model would read a fact list as an answer and fill the missing line itself);
+  *rejected:* any substituted id.
 - **No parameters, and extra arguments change nothing, 2026-08-28.** There is nothing to
   select. *Rejected:* a per-fact query parameter (a vocabulary to maintain for four
   lines of output).
@@ -65,15 +85,18 @@ framework exposes turn timing.
   be absent. *Rejected:* leaving the routing to chance, which is the failure the live
   group already produced.
 - **No privacy-document change, 2026-08-28.** The facts describe the process, not any
-  person; nothing new is stored or sent to any recipient. Deliberate claim, checked in
-  review against the published documents rather than assumed.
+  person; nothing new is stored or sent to any recipient. The conversation record the model
+  id is read from holds the conversation's model binding and no personal data, and no
+  message content is read (clause added 2026-08-29 with the corrected source). Deliberate
+  claim, checked in review against the published documents rather than assumed.
 
 ## The unit's contract
 
 The model can call one parameterless tool at member authority and receives the four fact
-lines — model id from configuration, crate version, build revision or the literal
-`unknown`, and coarse uptime — rendered exactly as specified, from process-held values,
-with no network call and no git invocation. The teaching tells her to answer
+lines — the answering conversation's model id, crate version, build revision or the literal
+`unknown`, and coarse uptime — rendered exactly as specified, with no network call and no
+git invocation: three values the process holds, and one read of the calling conversation's
+own record. The teaching tells her to answer
 what-are-you-running-on questions from the tool. Extra arguments are ignored. Nothing new
 is stored, no recipient receives anything new, and no privacy document changes.
 
@@ -83,17 +106,20 @@ is stored, no recipient receives anything new, and no privacy document changes.
   warnings; vocabulary and secret scans clean; no new dependency.
 - **AC2** The rendering is byte-exact for a known tuple of inputs — pinned character for
   character, including the `revision: unknown` form.
-- **AC3** The model id in the result is the configured one — pinned by constructing the
-  assembly with a distinct id and reading it back through the tool.
+- **AC3** (amended 2026-08-29) The model id in the result is the answering conversation's
+  own — pinned twice: a conversation created under the running configuration reads that id
+  back through the tool, and a conversation created under one model, with the configuration
+  since changed, still reads the model it was created under.
 - **AC4** Uptime is coarse and monotonic-sourced — pinned that the rendering carries no
   seconds field and that the anchor is captured once, not per call.
 - **AC5** The tool is reachable by an ordinary member through the palette — pinned via
   admission, not by calling the handler directly.
 - **AC6** The teaching sentence is in the composed prompt in both answering modes —
   pinned.
-- **AC7** No network and no subprocess: the tool's execute path performs no I/O beyond
-  reading process-held values — checked as a property of the code, and the no-git claim
-  pinned by building without any git available.
+- **AC7** (amended 2026-08-29) No network and no subprocess: the tool's execute path
+  reads process-held values and one record of the calling conversation, and nothing else —
+  no blocks, no chat content, no provider call — checked as a property of the code, and the
+  no-git claim pinned by building without any git available.
 
 ## Notes for launch
 

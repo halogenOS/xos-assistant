@@ -33,7 +33,7 @@
 //! model's own spoken don't-know), threading (which message an answer is
 //! delivered as a reply to, and when it goes out plain), `runtime_facts`
 //! (the self-introspection tool an ordinary member reaches, stating the
-//! configured model id), and — behind the
+//! model its own conversation runs on), and — behind the
 //! `chat_completions`
 //! feature — the framework's real `OpenRouter` module, the shared
 //! chat-completions wire, against a loopback server.

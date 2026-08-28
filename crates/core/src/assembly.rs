@@ -473,12 +473,14 @@ impl Assistant {
         // The runtime-facts tool joins unconditionally too (unit 32): it
         // has no configuration to be absent, and the question it answers
         // — which model, which version, how long up — is asked wherever
-        // the assistant runs. The two process facts it cannot reach for
-        // itself are injected here: the configured model id the binding
-        // above carries, and the binary's start instant.
+        // the assistant runs. The one fact it cannot reach for itself is
+        // injected here, the binary's start instant. The model is not:
+        // that one belongs to the conversation being answered, which the
+        // tool has in hand at the call, and the binding decides it only
+        // for the conversations this assembly goes on to create.
         tools.admit(
             crate::tools::runtime::REQUIRED_AUTHORITY,
-            RuntimeFacts::new(binding.model.clone(), started_at),
+            RuntimeFacts::new(started_at),
         );
         // One source for what tools exist: the registry the runtime resolves
         // calls against and the palette every new conversation records are
