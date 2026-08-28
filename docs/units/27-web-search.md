@@ -1,8 +1,11 @@
 # Unit 27 — the assistant can search the web
 
 Date: 2026-08-25. Revision 2, 2026-08-27, rebuilt against a cold probe that verified the
-vendor live and ran the spec's claims against the tree. The largest corrections, named up
-front so they are not re-made:
+vendor live and ran the spec's claims against the tree. Revision 3, 2026-08-29, settled
+against a second cold round: the privacy-site count corrected to the five that exist, the
+guard's token grammar and the budget's person key defined operationally, the fixture
+provenance stated honestly, and the free parameters (budget window and cap, cache key)
+pinned. The largest corrections, named up front so they are not re-made:
 
 - The guard's display-name half had no data to match: display names are deliberately not
   stored (decision 0077, `identity.rs:8-10`) and the adapter never even translates them
@@ -12,8 +15,9 @@ front so they are not re-made:
   were promises a stub would fake and production would break. Both are gone.
 - Revision 1 decided the unconfigured-key case twice, in opposite ways. One decision
   remains.
-- The privacy claim this unit touches lives in six documents, including the published
-  policy's closed recipient table; revision 1 named two.
+- The privacy claim this unit touches lives in five sites — the four privacy documents
+  and decision 0045's amendment — including the published policy's closed recipient
+  table; revision 1 named two, and revision 2 miscounted them as six.
 
 ## What this unit is
 
@@ -26,9 +30,9 @@ unit small enough to be safe.
 ## Grounding
 
 **The tool seam exists whole.** `ToolHandler<CoreEvent>` with `definition()`/`execute()`
-(`core/src/tools/wiki.rs:312`), admitted at a required authority (`core/src/tools/mod.rs:91`,
-`ToolSet::admit` at `:114`), palette recorded per conversation with reconciliation on first
-activity per process (`assembly.rs:1463`, both directions correct — verified). Conditional
+(`core/src/tools/wiki.rs:312`), admitted at a required authority through `ToolSet::admit`
+(`core/src/tools/mod.rs:116`), palette recorded per conversation with reconciliation on
+first activity per process (`assembly.rs:1465`, both directions correct — verified). Conditional
 admission has a precedent: the report tool is admitted only when its handle is configured,
 and the SAME predicate gates its teaching, "so the prompt never teaches a tool the palette
 does not carry" (`assembly.rs:436-449`). Optional secrets have a precedent:
@@ -39,8 +43,11 @@ JSON body. `page` is a real request parameter (echoed in `searchParameters` in e
 published sample). Auth failure is **403** — for a missing and for a bad key alike, with
 the distinction only in the JSON `message` body. There is **no total-results field** in any
 response, and no public API documentation without an account: the citation for response
-shapes is a live probe at integration time, and the tests pin against a stub built from
-recorded real responses. Sample pages run short (8 organic rows for a 10-row request);
+shapes is a live probe at integration time. No recorded vendor payloads exist anywhere in
+the tree, so the test fixtures are AUTHORED to the shapes this grounding records — the
+short page, the missing snippet, the field variety, the 403 message body — and served
+through the suite's existing loopback pattern (`core/tests/spine/lookup_wire.rs`), then
+refreshed against the live probe when the operator's key exists. Sample pages run short (8 organic rows for a 10-row request);
 rows can lack `snippet` and can carry `position`, `date`, `sitelinks`, `attributes`.
 Requests default to `autocorrect: true` and `gl: "us"`, `hl: "en"`. Serper's terms are
 UK-law (adequacy-covered), and its privacy policy states that where personal data is
@@ -74,17 +81,31 @@ quietly widen a decision whose stated ground it removes.
 - **The vendor sits behind a trait, 2026-08-25.** `SearchProvider`, one implementation.
   The tool owns the envelope, the guard and the teaching surface; the implementation owns
   the endpoint, the key and the response shape. *Rejected:* one concrete client.
-- **Member authority, and a per-person search budget, 2026-08-27.** Admitted at
-  `Authority::Member` — the tool exists to answer members' questions. Because each call is
-  a paid request to a metered vendor and the model chooses when to call, the tool takes a
-  per-person windowed budget in the shape of the reply bound the command family already
-  uses (`window.rs`): a spent budget declines with a fixed result naming when to try
-  again, and nothing is sent. *Rejected:* no budget (a single member can drive unbounded
-  spend); *rejected:* a global budget alone (one member exhausts it for the group).
-- **A small same-query cache, 2026-08-27.** Same normalised query and page within the
-  cache window answers from memory, mirroring the wiki lookup's cache precedent
-  (`wiki.rs:24-31`) — here the reason is spend, not rate limits. *Rejected:* no cache
-  (identical retries within a turn or a conversation each bill).
+- **Member authority, and a per-person search budget, 2026-08-27; keyed and sized
+  2026-08-29.** Admitted at `Authority::Member` — the tool exists to answer members'
+  questions. Because each call is a paid request to a metered vendor and the model
+  chooses when to call, the tool takes a per-person windowed budget in the shape of the
+  reply bound the command family already uses (`window.rs`), with its own named
+  constants: five searches per person per ten-minute window. The person is the principal
+  over the turn's debt-origin set, resolved exactly as the rights commands resolve it
+  (`rights.rs` via `co_summoners`); a set holding zero or several distinct principals
+  declines the spend with a taught result, the rights precedent's shape — the per-person
+  guarantee never folds several people into one bucket. A spent budget declines with a
+  fixed result naming when to try again, and nothing is sent; a cache hit costs no
+  vendor spend and is served even on a spent budget, because the budget's stated ground
+  is metered spend and nothing else. *Rejected:* no budget (a single member can drive
+  unbounded spend); *rejected:* a global budget alone (one member exhausts it for the
+  group); *rejected:* keying on the tool-call context when the origin set is plural
+  (several people's spend in one bucket under one name).
+- **A small same-query cache, 2026-08-27; its key defined 2026-08-29.** Same cache key
+  within the cache window answers from memory, mirroring the wiki lookup's cache
+  precedent (`wiki.rs:24-31`) — here the reason is spend, not rate limits. The key is
+  the query as written, case-folded and whitespace-collapsed, plus the page number —
+  deliberately NOT the guard's token normalisation, which exists to find one token and
+  never applies to the whole query. *Rejected:* no cache (identical retries within a
+  turn or a conversation each bill); *rejected:* reusing the guard's normalisation as
+  the cache key (two jobs on one mechanism, and a stripped key would merge queries the
+  member wrote differently).
 - **The envelope promises only what the vendor can keep, 2026-08-27.** A page of results,
   each with title, link, snippet where present, and a host-derived source hint; the
   envelope states the query as sent, the page number and the count returned. There is no
@@ -92,8 +113,10 @@ quietly widen a decision whose stated ground it removes.
   the pins while lying in production. An empty page one renders "no results"; an empty
   later page renders that the results ended at the previous page — the two are
   distinguishable by the page number the model itself supplied, closing the
-  empty-versus-exhausted ambiguity honestly. The tool's description says a next page may
-  be requested and may turn out empty. *Rejected:* `has_more` computed as "the page came
+  empty-versus-exhausted ambiguity honestly; a later page whose rows are identical to
+  the previous page's reads as exhausted too, because a vendor past its real limit may
+  repeat the last page instead of sending an empty one. The tool's description says a
+  next page may be requested and may turn out empty. *Rejected:* `has_more` computed as "the page came
   back full" (a guess wearing a field name); *rejected:* revision 1's `total`.
 - **The rendered form is prose, like every shipped tool, 2026-08-27.** `ToolOutcome::Done`
   carries a human-readable result (the repo's convention: `commit.rs:157`); the envelope's
@@ -112,8 +135,12 @@ quietly widen a decision whose stated ground it removes.
   results are a deployment choice rather than a vendor default nobody chose. *Rejected:*
   the vendor defaults (US-English answers for a non-US community, and corrected queries
   presented as uncorrected).
-- **The source hint is computed from the host and nothing else, 2026-08-25.** Exactly the
-  operator's table; generic by instruction. *Rejected:* a curated authority list.
+- **The source hint is computed from the host and nothing else, 2026-08-25; the table
+  inlined 2026-08-29** (it previously lived only in an untracked machine-local note, a
+  site no reviewer or future session could reach): a wikipedia host reads
+  `encyclopedia`; a gov or edu host reads `official`; a known blog host reads `blog`;
+  any other host reads `website`; a row without a host reads `unknown`. Generic by
+  instruction. *Rejected:* a curated authority list.
 - **The lookup layer grows a POST seam rather than being bypassed, 2026-08-27.** The
   shared timeout, redirect and body-cap discipline is the reason `lookup.rs` exists; the
   search provider posts through it. The search tool maps the vendor's failures to taught
@@ -137,7 +164,11 @@ quietly widen a decision whose stated ground it removes.
   neutral by construction — it covers a bare platform handle and a federated one alike,
   and no platform vocabulary enters the core. Exceptions, each pinned: an at sign preceded
   by a word character (an email address), an at-name followed by a slash (a scoped package),
-  and an at sign followed by digits in a version context. Matching runs on a normalised
+  and an at sign directly followed by a digit (a version pin such as `package@1.2.3`).
+  The grammar, operationally: a name character is a letter, a digit or an underscore; a
+  candidate token is an at sign followed by name characters of which the FIRST is a
+  letter — so the digit exception is the grammar itself made precise, not a special
+  case. Matching runs on a normalised
   view — zero-width and formatting characters removed, case folded, and single separators
   between the letters of a candidate token collapsed, so `@ h a n d l e`, `@h.a.n.d.l.e`
   and `@handle` are one token — while what is sent to the vendor is always the query as
@@ -179,7 +210,8 @@ quietly widen a decision whose stated ground it removes.
   gains a dated amendment stating the widened surface and the two mitigations that answer
   it: the guard (no deliberate member identifier leaves or is recorded) and the
   no-echo refusal.
-- **The privacy documents move with this unit — all six sites, 2026-08-27.** A
+- **The privacy documents move with this unit — all five sites, 2026-08-27, counted
+  right 2026-08-29.** A
   member-derived query to a new third party touches: the **published policy** (the closed
   recipient table gains the search vendor, the "data leaves the EU/EEA in three places"
   sentence becomes four with the UK adequacy basis, and the sourcing sentence is
@@ -214,8 +246,9 @@ made; an empty first page and an exhausted later page read differently. Vendor f
 reach the model as taught results — refused key, rate limit, unreachable host, each
 distinguishable — and never the chat, and no bare status number ever surfaces. Project
 facts still come only from the project lookups. Nothing is stored beyond the ordinary
-tool record, decision 0045 carries its amendment, and all six privacy documents carry the
-new recipient with dated notes before this ships.
+tool record, decision 0045 carries its amendment, and all five sites — the four privacy
+documents and the amendment — carry the new recipient with dated notes before this
+ships.
 
 ## Acceptance criteria
 
@@ -225,8 +258,9 @@ new recipient with dated notes before this ships.
   the manifest names it.
 - **AC2** The envelope renders what arrived: a full page, a short page (fewer rows than
   requested), and a row without a snippet each render their stated lines — pinned against
-  a stub built from recorded real vendor responses, including the short-page sample.
-- **AC3** The source hint matches the operator's table per row, including the no-host
+  a stub serving fixtures authored to the grounding's recorded shapes, including the
+  short-page sample, through the suite's loopback pattern.
+- **AC3** The source hint matches the inlined table per row, including the no-host
   case — pinned per row.
 - **AC4** Failures teach and are distinguishable: refused key (403 with the vendor's
   message read), rate limit, unreachable host, and the two empty-page readings — five
@@ -234,19 +268,23 @@ new recipient with dated notes before this ships.
 - **AC5** Unconfigured means absent: with no key, the tool is not in the palette AND the
   teaching is not in the composed prompt — both pinned on one predicate, and nothing
   fails at startup.
-- **AC6** The key never appears: rendered configuration, logs, error paths — the existing
-  secret scan plus a direct assertion on the failure path.
+- **AC6** The key never appears: rendered configuration, logs, error paths — pinned by
+  assertions this unit authors (no existing scan covers a search key): the failure-path
+  text and the rendered configuration carry no fragment of the key.
 - **AC7** The bounds hold: a 401-character query is refused naming the limit with nothing
-  sent (stub asserts no request); page 6 is refused; the budget declines when spent and
-  recovers with the window — each pinned.
+  sent (stub asserts no request); page 6 is refused; the budget declines on the sixth
+  search inside the window and recovers past it, a plural-principal turn declines the
+  spend, and a cache hit answers on a spent budget — each pinned.
 - **AC7b** The guard refuses the handle form: a bare handle token, one spaced out, one
   dotted, one carrying zero-width characters, one in mixed case — each refused, stub
   asserting no request arrived, and the refusal text pinned to contain no fragment of the
   matched token.
 - **AC7d** The guard passes ordinary searches, with equal weight to AC7b: a single common
   word that happens to be a member's handle (member present in the conversation), an
-  email address, a scoped package name, a version string — each sent untouched, pinned.
-- **AC8** The documents move, all six sites: policy, record of processing (including §3,
+  email address whose local part carries dots (`a.duffy@example.com` — the separator
+  collapse must not turn its tail into a handle token), a scoped package name, a version
+  string — each sent untouched, pinned.
+- **AC8** The documents move, all five sites: policy, record of processing (including §3,
   §7, §9, §10, §11), impact assessment (including the risk row and addendum),
   legitimate-interests re-weigh, decision 0045's amendment — each with a dated note,
   checked per file and pinned by the documentation suite.
@@ -271,9 +309,9 @@ new recipient with dated notes before this ships.
   `~/.local/state/halogenos-assistant/search-design-reference.md`; the envelope and
   refusal discipline in this revision deliberately diverge from it where the live vendor
   cannot honour it (`total`, structured unconfigured-key errors) — this spec wins.
-- The vendor publishes no open API docs; the response-shape citation is recorded real
-  responses (fixtures checked in beside the stub), refreshed at integration time when the
-  operator's key exists.
+- The vendor publishes no open API docs; the response-shape citation is this spec's
+  grounding, written from the live probe of 2026-08-27 — the fixtures are authored to
+  it and refreshed at integration time when the operator's key exists.
 - The prompt change means the prompt-refresh mechanism forks live conversations on the
   next deploy start — existing behaviour, nothing to build, stated so nobody rediscovers
   it as a surprise.
