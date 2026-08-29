@@ -33,7 +33,11 @@ origins; the wire client returning the delivered ids instead of discarding them;
 one `Delivered` block per platform message that actually reached the chat, holding the
 origin and the delivery key, per chunk, across BOTH send paths; a new
 `core/src/delivery.rs` owning the kinds and the bounded conversation-scoped queries;
-two appended schema migrations. T4 also scheduled the vocabulary amendment this unit
+one appended migration step creating its tables and indexes. THIS unit's one
+appended step creates the delivery table and its indexes ONLY — no retraction
+table, no retraction kind: a table with no producer is dead schema, and T4's build
+appends its own step when it lands (its spec re-anchors then, as every build's
+does). T4 also scheduled the vocabulary amendment this unit
 performs: `ReplyTarget::AssistantMessage` gains `{ origin: Option<String> }` and its
 doc loses the no-origin sentence, while `COLUMN_REPLY_TARGET`'s storage documentation
 stays true and unedited — the variant's origin is never stored on the chat message.
@@ -75,6 +79,15 @@ translation only. No new wire field.
   cascade with a deleted conversation and need no cleanup pass;
   *rejected:* building T4 whole here — the deletion mirror's consumption is its own
   unit and waits.
+- **The Delivered kind is bookkeeping and no reader ever meets it, 2026-08-30.**
+  It projects nothing to the model, is agency-inert (no awaiting, no turn), is
+  transparent on the dispatch frontier, and joins `DEBT_READ_THROUGH`
+  (`core/src/assembly.rs:68`) — the consumer's own list for the consumer's own
+  kinds, exactly where T4 already places it. This is load-bearing on day one: a
+  failed turn's failure notice gets a Delivered row AT THE TAIL, and an opaque tail
+  there would answer the debt walk None and silently bury the standing question
+  behind it. Pinned in this unit, not deferred to T4's. *Rejected:* the silent-but-
+  opaque group beside Report — that arm is what buries debt.
 - **The origin rides the reply-target variant and is never stored on the chat
   message, 2026-08-30 — T4's scheduled amendment, performed here on the operator's
   order.** `ReplyTarget::AssistantMessage` gains `{ origin: Option<String> }`;
@@ -84,14 +97,31 @@ translation only. No new wire field.
   family (message.rs, kind.rs, translate.rs, mirror.rs, decision 0059) is amended in
   its RIDES half only; mirror.rs's `AssistantMessage => None` arm stays for T4 to
   hook. *Rejected:* storing her origin in the reply-target column — erasure's naming
-  pass and the reports read that column as member-message references.
+  pass reads that column as member-message references.
+- **The observe return gains the conversation handle, so the acknowledgment's
+  delivery can be reported, 2026-08-30.** The rules acknowledgment rides
+  `ObserveOutcome::Observed`'s `deliver` item (`assembly.rs:1184-1189`, sent at
+  `driver.rs:713`), which today carries no conversation id — T4's launch note
+  points at the ingest receipt, stale against this tree. `Observed` gains the
+  conversation id beside its deliver item, mirroring `IngestReceipt`'s shape, and
+  the driver reports that send like any other. *Rejected:* skipping the
+  acknowledgment's row — it breaks the every-message contract and T4's recorded
+  total coverage; *rejected:* threading the handle through `DeliveryItem` — the
+  outcome is the receipt's natural carrier, the item is the payload's.
 - **Her resolution is one lookup beside the member one, 2026-08-30.** A new
   conversation-scoped query in `delivery.rs`: origin string to the NEWEST delivered
-  answer block id, junction-joined like every origin reader (platform ids are unique
-  only per channel). `land_reply_quote` gains the `AssistantMessage { origin: Some }`
+  answer block — its id AND her stored text, because the one consumer
+  (`land_reply_quote`) runs the span decision and excerpt search against the text;
+  the text reads from the framework's `block_text` beside the delivery row, a
+  consumer query naming that table with recorded precedent (decision 0032;
+  `disclosure.rs:239`). Junction-joined like every origin reader (platform ids are
+  unique only per channel). `land_reply_quote` gains the `AssistantMessage { origin: Some }`
   arm calling it; `origin: None` (a reply to her from before this unit records ids,
   or a delivery that was never recorded) lands quoteless exactly as today — nothing
-  invented. Multi-chunk answers: each chunk's `Delivered` row carries the same answer
+  invented. The same holds for the race the report loses: a member's reply can land
+  before the send's report appends the row, and that reply's quoteless landing is
+  permanent — the quote resolves against what the ledger holds at ITS landing, and
+  nothing heals backwards. Accepted and stated. Multi-chunk answers: each chunk's `Delivered` row carries the same answer
   block id, so a reply to ANY chunk quotes the whole stored answer — the stored block
   is the one truth of what she said. *Rejected:* per-chunk span narrowing — the
   chunks are a transport artifact; her message is the block.
@@ -145,11 +175,15 @@ no configuration, no privacy-document change.
   and she still wakes on every reply to her.
 - **AC7** The quote of her block neither answers nor asks: it settles no debt and
   draws no turn — pinned by the crash shape with her block as the target.
-- **AC8** The variant widening changes no storage: her reply-target column stays
+- **AC8** The Delivered kind is invisible everywhere it must be: it projects
+  nothing to the model, and a Delivered row landing at the tail (the failure
+  notice's receipt shape) neither buries the debt behind it nor draws a turn —
+  pinned by driving the debt walk across a Delivered tail.
+- **AC9** The variant widening changes no storage: her reply-target column stays
   NULL, erasure's naming pass and the report resolution see exactly what they saw —
   pinned by the existing suites passing untouched plus one explicit NULL assertion.
-- **AC9** The decision records land numbered after unit 37's, each dated, each with
-  rejected alternatives; T4's spec is NOT edited (its build refreshes it).
+- **AC10** The decision records land numbered after unit 37's, each dated, each
+  with rejected alternatives; T4's spec is NOT edited (its build refreshes it).
 
 ## Notes for launch
 
@@ -162,8 +196,10 @@ no configuration, no privacy-document change.
   `core/src/outbound.rs` + `message.rs` (`OutboundReply` block id;
   `ReplyTarget::AssistantMessage { origin }`), `core/src/quoting.rs` (the new arm),
   `core/src/kind.rs` (delivered kind registration in the assistant kind tree —
-  agency-inert, frontier-transparent, the join-notice precedent), spine and adapter
-  tests, `docs/decisions`.
+  agency-inert, frontier-transparent, the join-notice precedent),
+  `core/src/assembly.rs` (`DEBT_READ_THROUGH` gains the kind; `ObserveOutcome`'s
+  widened return at the observe entry point), one appended migration step in
+  `core/src/schema.rs`, spine and adapter tests, `docs/decisions`.
 - T4 (`docs/units/telegram/04-deleting-messages.md`) is the seam's recorded design:
   the implementer reads it alongside this spec; where the two state the same
   mechanism, T4's wording of the Delivered shape governs, and this unit's additions
