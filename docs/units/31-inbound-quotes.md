@@ -106,21 +106,29 @@ as that promise.
   as today, quoteless. The stored reply-target fact is unchanged either way. *Rejected:* a
   placeholder quote ("replied to an unavailable message") — content the member never
   wrote, in the member's voice.
-- **The quote is transparent in the debt walk, like the date marker, 2026-08-29.**
-  The tail-debt walk treats a settled framework block as an answer, and a quote at
-  the tail — the exact state a crash between the two appends leaves, and what the
-  tail-skip then preserves on retry — would silently settle a debt it merely sits on:
-  an unaddressed reply that would have been answered lands answer_due false. A quote
-  is context a member attached, not an answer; the walk's own recorded invariant is
-  that a message can never cancel a debt it merely propagates. So the consumer's
-  debt walk reads THROUGH a quote block, exactly as it reads through a date marker,
-  and the crash-retry case is pinned: debt owed before the crash survives the retry.
-  No turn is served for a bare quote either — turns are driven by the ingest's
-  stamping of chat messages, and an orphaned quote (its message refused on retry)
-  simply waits transparent until the next real message decides as if it were not
-  there. *Rejected:* leaving the quote settled in the walk with the divergence
-  pinned — it makes the redelivery decision quietly break AC7's promise that the
-  reply's turn happens exactly as it would have.
+- **The quote never answers and never asks, in this consumer, 2026-08-29.** Two
+  mechanisms, one principle: a quote is context a member attached, not a voice of
+  its own here. FIRST, the debt walk: a quote at the tail — the exact state a crash
+  between the two appends leaves, and what the tail-skip then preserves on retry —
+  must not settle a debt it merely sits on. The quote kind therefore joins
+  `NEVER_ANSWERABLE` (`core/src/kind.rs:855`, today the date-marker kinds), the list
+  whose recorded meaning is that the fact holds for every reader — NOT
+  `DEBT_READ_THROUGH`, which is recorded as the consumer's policy about its OWN
+  kinds and would be contradicted by a framework kind in it. Joining that list also
+  reaches the other newest-past-erased walks (erasure and report anchoring), and
+  that reach is meant: a report or an erasure anchor should find the newest real
+  message, never a quote. SECOND, the turn: the framework serves a model turn for
+  any user-voiced frontier, so an orphaned quote (its message refused on retry)
+  would be answered bare. In this consumer the turn duty lives on the chat message's
+  answer_due stamp alone, so the assistant's kind tree takes the quote into its own
+  arm — delegating storage, rendering and resolution to the framework kind
+  untouched — and overrides its agency to inert, the join-notice precedent. A lone
+  quote asks for nothing; its message, when it lands, owes exactly what it owes
+  today. *Rejected:* leaving the quote on the delegate arm — the framework would
+  dispatch a turn on a bare quote, changing when the assistant answers;
+  *rejected:* a framework change — Awaiting::Model on user quotes is the right
+  general default for consumers that have no stamp of their own;
+  *rejected:* `DEBT_READ_THROUGH` — see its recorded meaning above.
 - **The quoter's erasure leaves the quote, because the quote holds nothing of the
   quoter, 2026-08-29.** A framework user block carries no principal — the store's
   append takes only the conversation and the blocks — and the quote block stores a
@@ -142,7 +150,7 @@ as that promise.
   derived from the other at its read site.
 - **A reply to the assistant lands quoteless in this unit, 2026-08-29.** The adapter
   discards the platform id of her messages by recorded decision (2026-08-23, "no
-  origin rides here"), nothing stores which platform message any of her blocks became,
+  origin rides it"), nothing stores which platform message any of her blocks became,
   and so no stored fact identifies WHICH of her `text` blocks a reply answers.
   Inventing a selection rule (newest assistant block, nearest answer) reproduces the
   exact misattribution this unit exists to kill, and carrying her platform ids is a
@@ -154,9 +162,11 @@ as that promise.
 - **Ordering within the ingest, and the crash window, named, 2026-08-28.** The quote
   lands through the framework's public user-block append, then the chat message through
   the consumer append, both INSIDE the ingest's stamp-locked stretch — one feeder runs
-  per process and the lock already promises that no concurrent ingestion slides a
-  block in between, so the pair is contiguous by the machinery that exists, and the
-  quote append must be placed inside that stretch, not before it. Delivery is
+  per process and the lock serializes ingestions, so no other INGESTION slides a
+  block in between; the quote append must be placed inside that stretch, not before
+  it. A framework turn-close finishing inside that narrow window can still write
+  between the two — harmless: the quote still precedes its own message, which is
+  the invariant the resolution and the projection need. Delivery is
   at-least-once — a halted step is redelivered, and no origin dedupe exists in the
   ingest — so a crash between the two appends means the retried update would land its
   quote AGAIN before its message: the append therefore skips the quote when the
@@ -208,7 +218,8 @@ hold lands exactly as today. An erased target resolves to nothing and renders no
 chat-message descriptor declares its quotable text column. A reply to the assistant
 lands quoteless — no stored fact identifies which of her blocks was answered, and
 nothing is guessed. The reply-target column, waking, reports and erasure
-are unchanged. No new stored fact beyond the quote blocks themselves, no new dependency,
+are unchanged. A quote settles no debt and draws no turn of its own: the debt walk
+reads through it, and only the chat message's stamp asks the model to speak. No new stored fact beyond the quote blocks themselves, no new dependency,
 no privacy-document change, and no change to when the assistant answers or stays silent.
 
 ## Acceptance criteria
@@ -246,7 +257,12 @@ no privacy-document change, and no change to when the assistant answers or stays
   erasure their message is nulled as today, the quote block survives, still resolves
   the target's text, and stores no fact tying it to the erased person — pinned by
   running the real principal erasure.
-- **AC11** Erasure parity across the refresh fork: after a conversation holding a
+- **AC11** The crash state keeps its debt: with a quote appended, its message
+  withheld (the crash shape), and an unanswered member message behind the quote,
+  the retried message's landing still opens the debt the tail owed — one pin
+  driving the debt walk's read-through and the tail-skip together — and a lone
+  quote at the tail draws no model turn.
+- **AC12** Erasure parity across the refresh fork: after a conversation holding a
   quote of a member's message forks through the startup refresh walk, erasing that
   member leaves BOTH the source's and the fork's projections without the quoted text —
   pinned by running the real fork and the real erasure against the shared row.
@@ -262,7 +278,8 @@ no privacy-document change, and no change to when the assistant answers or stays
   resolution (no existing lookup maps an origin to a block id; the erasure passes
   around `core/src/kind.rs:691-827` only NULL by origin), the manual-quote thread
   through `adapters/telegram/src/client.rs`, `translate.rs`, `driver.rs` and
-  `core/src/message.rs`, the chat-message
+  `core/src/message.rs`, the debt walk and agency surfaces (`NEVER_ANSWERABLE` in
+  `core/src/kind.rs` and the assistant kind tree's new quote arm), the chat-message
   descriptor declaring the quotable column, and the spine and adapter tests.
 - The quality bar from the operator, verbatim scope for the reviewers: "The code must
   always be better and cleaner afterwards than it was before. If you had to add a
