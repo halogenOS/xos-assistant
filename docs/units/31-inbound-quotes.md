@@ -183,8 +183,10 @@ as that promise.
   reason, the origin-to-block resolution picks the NEWEST matching chat-message block
   — the latest stored version of that origin is what the member replied to.
   *Rejected:* claiming an idempotency model bounds the window — none exists in either
-  tree, and the earlier revision cited one; the skip rule above is what actually
-  closes the doubling. Accepted and stated; making the two atomic would
+  tree, and the earlier revision cited one; the skip rule closes the narrow crash
+  signature (quote still at the tail), and a retry whose tail has moved on — another
+  block landed in between — re-lands its pair whole, which is the accepted
+  message-doubling with the quote riding it. Accepted and stated; making the two atomic would
   need a mixed framework-and-consumer append the store deliberately does not have.
 - **The date-marker interaction is known and harmless, 2026-08-28; restated
   2026-08-29 for the day boundary.** Each append runs the date-marker seam
@@ -238,9 +240,10 @@ no privacy-document change, and no change to when the assistant answers or stays
 - **AC3** A manual quote narrows: a reply whose quoted text is a substring of the target
   projects exactly that substring; one whose quoted text no longer matches projects the
   whole message — both pinned, the first across a multibyte character boundary.
-- **AC4** No target, no quote: replies to a pre-join origin, to a skipped no-text message
-  and to an origin in another conversation each land quoteless and identical to today —
-  pinned per case.
+- **AC4** No target, no quote: replies to a pre-join origin, to a skipped no-text
+  message, to an origin in another conversation, and to a join notice (the widened
+  reply-target column can name a join event, which matches no chat-message block)
+  each land quoteless and identical to today — pinned per case.
 - **AC5** Erasure empties the quote: after the target message is erased, the same
   conversation's projection renders no quoted text and no marker of it — pinned by
   running a real erasure, and proving the quote block still exists while contributing
@@ -289,7 +292,8 @@ no privacy-document change, and no change to when the assistant answers or stays
   around `core/src/kind.rs:692-828` only NULL by origin), the manual-quote thread
   through `adapters/telegram/src/client.rs`, `translate.rs`, `driver.rs` and
   `core/src/message.rs`, the debt walk and agency surfaces (`NEVER_ANSWERABLE` in
-  `core/src/kind.rs` and the assistant kind tree's new quote arm), the chat-message
+  `core/src/kind.rs:855` and the awaiting override in `FrameworkKind`'s Agency
+  delegation at `kind.rs:1099` — AssistantKind gains NO arm), the chat-message
   descriptor declaring the quotable column, and the spine and adapter tests.
 - The quality bar from the operator, verbatim scope for the reviewers: "The code must
   always be better and cleaner afterwards than it was before. If you had to add a
