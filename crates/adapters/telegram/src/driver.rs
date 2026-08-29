@@ -1,23 +1,22 @@
-//! The adapter's loop: take the outbound and composing edges, then
-//! long-poll, translate, ingest and observe, persist the offset, send
-//! replies, and render the composing signal as the platform's typing
-//! action — all mechanics, no decisions of its own.
+//! The adapter's run: take the outbound and composing edges, then feed
+//! updates through one shared per-update step — translate, ingest and
+//! observe — send replies, and render the composing signal as the platform's
+//! typing action; all mechanics, no decisions of its own.
 //!
-//! The batch discipline is the spec's: on the first transiently failed
-//! ingest the batch stops, the offset is persisted up to the last success,
-//! the loop backs off and re-polls, and the failed update with its
-//! successors redelivers — at-least-once, the same outcome the offset
-//! decision accepts. A deterministic refusal from the core is terminal for
-//! that update instead: logged and acknowledged past, because retrying it
-//! forever would wedge every later message in the chat behind it.
+//! [`Intake`] IS that shared step, and it has two feeders (2026-08-29): the
+//! poll loop below, and the webhook listener in [`crate::webhook`]. Which one
+//! runs is one predicate — the presence of the webhook configuration — read
+//! once in [`start_feeder`], and nothing downstream of it knows which source
+//! an update arrived from. Both feeders own their step exclusively, so the
+//! serial discipline the memories are written against holds either way.
 //!
 //! Authority resolution is deferred to the core's need (refined
-//! 2026-08-23): a failed administrator fetch no longer halts the batch
+//! 2026-08-23): a failed administrator fetch no longer refuses the update
 //! here — the message is delivered with its authority unresolved, the core
 //! refuses an unadmitted group before ever reading authority, and an
 //! admitted message with no authority draws the core's typed transient
-//! refusal, which halts the batch below exactly as before. Nothing is ever
-//! recorded with a defaulted authority.
+//! refusal, which leaves the update unacknowledged exactly as before.
+//! Nothing is ever recorded with a defaulted authority.
 //!
 //! The deterministic items the core returns are carried out here as
 //! translation: a returned item's text becomes the platform's send, the
@@ -39,7 +38,7 @@
 //! the chat's next contact after a rest — the once-per-process memory is
 //! not set on failure, but the failure rests for a bounded window so a
 //! chat whose lookup keeps failing pays one platform call per window
-//! instead of one per message — and never stops the batch: group facts are
+//! instead of one per message — and never refuses the update: group facts are
 //! enrichment, not authority. A lookup that answered sets the memory
 //! whether the core observed or withdrew: an unadmitted group already
 //! draws its rested leave, and re-running its lookup on every message
@@ -49,9 +48,23 @@
 //! and the fresh lookup behind it puts the group's facts on the ledger
 //! even when an earlier refused contact had already spent the chat's
 //! lookup.
+//!
+//! Everything above is the shared step's, whichever feeder took it. What
+//! differs is only how an outcome is acknowledged. The batch discipline is
+//! the poll feeder's: on the first transiently failed ingest the batch
+//! stops, the offset is persisted up to the last success, the loop backs off
+//! and re-polls, and the failed update with its successors redelivers —
+//! at-least-once, the same outcome the offset decision accepts. The webhook
+//! feeder keeps that promise with the platform's own retry instead, and
+//! touches no offset at all. A deterministic refusal from the core is
+//! terminal for that update under either feeder: logged and acknowledged
+//! past, because retrying it forever would wedge every later message in the
+//! chat behind it.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -64,7 +77,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use crate::authority::AdminCache;
 use crate::client::{BotClient, BotIdentity, SendThread, Update};
 use crate::translate::{self, LookupScope, Translation};
-use crate::{ADAPTER_NAME, AdapterError, Config, Sleep, state};
+use crate::{ADAPTER_NAME, AdapterError, Config, Sleep, state, webhook};
 
 /// How long the loop pauses after a failed poll or a halted batch before
 /// re-polling; the loop never busy-spins.
@@ -194,8 +207,11 @@ impl LookupMemory {
     }
 }
 
-/// The poll loop's per-process memories, threaded through one carrier so
+/// The shared step's per-process memories, threaded through one carrier so
 /// the update-processing signatures stay readable as the memories grow.
+/// Exactly one feeder owns them at a time, and the step is taken serially
+/// through them — the discipline every rest and every cap below is written
+/// against.
 struct Memories {
     admins: AdminCache,
     lookups: LookupMemory,
@@ -212,12 +228,17 @@ impl Memories {
     }
 }
 
-/// What one update's processing came to.
-enum Step {
+/// What one update's processing came to. The feeders read it as their own
+/// contract states: the poll loop advances its offset past an acknowledged
+/// update and stops its batch on a halted one, and the webhook listener
+/// answers the platform 200 on the first and 500 on the second — in both
+/// cases the update redelivers, which is the one at-least-once promise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
     /// Recorded, skipped, observed, or refused deterministically:
     /// acknowledged past.
     Acknowledged,
-    /// A transient failure: the batch stops here and the update redelivers.
+    /// A transient failure: the update is not acknowledged and redelivers.
     Halted,
 }
 
@@ -228,7 +249,8 @@ enum Handled {
     /// The core withdrew from the channel; nothing further of this update
     /// concerns it.
     Withdrew,
-    /// A transient core failure: the caller halts the batch.
+    /// A transient core failure: the caller leaves the update
+    /// unacknowledged.
     Halted,
 }
 
@@ -246,9 +268,10 @@ impl Handled {
 }
 
 /// The run entry's body: the outbound edge first — answers stored before the
-/// subscription are history, so taking it before the first poll is part of
-/// the contract — then the poll loop, the reply consumer and the composing
-/// consumer, concurrently in this one future. The typing registry is shared
+/// subscription are history, so taking it before the first update is part of
+/// the contract — then the started feeder, the reply consumer and the
+/// composing consumer, concurrently in this one future. The typing registry
+/// is shared
 /// by the last two: the composing consumer starts and stops the refreshers,
 /// and a delivered answer stops its chat's refresher too, so a stop signal
 /// lost on the core's lossy cue can never outlive the answer it was about.
@@ -257,6 +280,7 @@ impl Handled {
 pub(crate) async fn run(
     config: Config,
     sleep: Sleep,
+    announce_bound: Option<crate::BoundListener>,
     assistant: Arc<Assistant>,
 ) -> Result<(), AdapterError> {
     let replies = assistant.replies(ADAPTER_NAME).await?;
@@ -280,21 +304,82 @@ pub(crate) async fn run(
         trigger
     });
     let typing = TypingRefreshers::default();
+    // The one predicate: whichever feeder the configuration names is started
+    // here, past its own refusals, and everything below it is the same.
+    let feeder = start_feeder(
+        &config,
+        &client,
+        &sleep,
+        &assistant,
+        wake.as_deref(),
+        announce_bound.as_ref(),
+    )
+    .await?;
     tokio::select! {
-        () = poll_loop(&client, &config.state_file, wake.as_deref(), &sleep, &assistant) => {}
+        () = feeder => {}
         () = consume_replies(replies, &client, &typing) => {}
         () = consume_composing(composing, &client, &typing) => {}
     }
     Ok(())
 }
 
+/// A started feeder: one future that feeds the shared step until it ends.
+/// Two of them exist — the poll loop and the webhook listener with its
+/// consumer — and the run entry above cannot tell them apart.
+pub(crate) type Feeder<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// Start the feeder the configuration names: the webhook listener where a
+/// webhook configuration is present, the poll loop where it is absent. One
+/// predicate, no third state.
+///
+/// The two starts refuse differently on purpose: a webhook deployment that
+/// cannot fetch its identity, keep its secret, bind its port or register its
+/// address refuses the start loudly, because a webhook deployment that
+/// silently cannot register sits deaf; a polling deployment retries its
+/// identity fetch forever and starts even when the webhook deletion it makes
+/// first fails, because a local deployment must not be refused its start by
+/// a transient answer.
+async fn start_feeder<'a>(
+    config: &'a Config,
+    client: &'a BotClient,
+    sleep: &'a Sleep,
+    assistant: &'a Assistant,
+    wake: Option<&'a str>,
+    announce_bound: Option<&crate::BoundListener>,
+) -> Result<Feeder<'a>, AdapterError> {
+    match &config.webhook {
+        Some(webhook) => {
+            webhook::start(
+                webhook,
+                &config.state_file,
+                client,
+                sleep,
+                assistant,
+                wake,
+                announce_bound,
+            )
+            .await
+        }
+        None => Ok(Box::pin(poll_loop(
+            client,
+            &config.state_file,
+            wake,
+            sleep,
+            assistant,
+        ))),
+    }
+}
+
 /// Long-poll and ingest until the future is dropped. Never returns on its
 /// own: a network error backs off and re-polls, a halted batch backs off
 /// and redelivers.
 ///
-/// The bot's own identity comes first, with the poll's own backoff: mention
-/// and reply-to-self resolution compare against it, so no message is
-/// translated before it is known.
+/// Any registered webhook is deleted first, unconditionally: the platform
+/// refuses to poll while one is set, so a deployment that moved back to
+/// polling would otherwise meet a refusal on every poll. The bot's own
+/// identity comes next, with the poll's own backoff: mention and
+/// reply-to-self resolution compare against it, so no message is translated
+/// before it is known.
 async fn poll_loop(
     client: &BotClient,
     state_file: &Path,
@@ -302,9 +387,10 @@ async fn poll_loop(
     sleep: &Sleep,
     assistant: &Assistant,
 ) {
+    delete_registered_webhook(client).await;
     let me = fetch_identity(client, sleep).await;
     let mut next_offset = state::read(state_file);
-    let mut memories = Memories::new();
+    let mut intake = Intake::new(me, wake, client, assistant);
     loop {
         let updates = match client.get_updates(next_offset).await {
             Ok(updates) => updates,
@@ -317,7 +403,7 @@ async fn poll_loop(
         let mut halted = false;
         let offset_before = next_offset;
         for update in &updates {
-            match process(update, &me, wake, client, &mut memories, assistant).await {
+            match intake.take(update).await {
                 Step::Acknowledged => next_offset = Some(update.id + 1),
                 Step::Halted => {
                     halted = true;
@@ -339,6 +425,28 @@ async fn poll_loop(
     }
 }
 
+/// Delete whatever webhook is registered, asked once and unconditionally —
+/// the poll and the webhook are mutually exclusive on the platform's side.
+///
+/// The call is idempotent there: deleting nothing succeeds. Asking first
+/// what is registered would only spend a second call to learn what the
+/// delete already handles, and would add a failure mode of its own — a check
+/// that answers wrongly, or fails, deciding whether the delete happens at
+/// all.
+///
+/// A failed delete starts the poll anyway: a local deployment must not be
+/// refused its start by a transient answer, and a webhook that genuinely
+/// survived surfaces within seconds as the poll's own refusal, through the
+/// backoff the loop already has.
+async fn delete_registered_webhook(client: &BotClient) {
+    match client.delete_webhook().await {
+        Ok(()) => tracing::info!("any registered webhook is deleted; this run polls"),
+        Err(error) => {
+            tracing::warn!(%error, "the webhook deletion failed; polling starts anyway");
+        }
+    }
+}
+
 /// The bot's identity from `getMe`, retried on the poll backoff until it
 /// answers: without it addressing cannot be resolved, and translating
 /// blind would record wrong facts into a durable ledger.
@@ -354,246 +462,257 @@ async fn fetch_identity(client: &BotClient, sleep: &Sleep) -> BotIdentity {
     }
 }
 
-/// One update: translate, then — per its shape — report observations,
-/// resolve authority where a group owes it, and ingest.
-async fn process(
-    update: &Update,
-    me: &BotIdentity,
-    wake: Option<&str>,
-    client: &BotClient,
-    memories: &mut Memories,
-    assistant: &Assistant,
-) -> Step {
-    let pending = match translate::translate(update, me, wake) {
-        Translation::Skip(reason) => {
-            tracing::debug!(update_id = update.id, %reason, "update skipped");
-            return Step::Acknowledged;
-        }
-        Translation::Observe(observation) => {
-            return observed(observation, update.id, client, memories, assistant).await;
-        }
-        Translation::Record(pending) => pending,
-    };
-    if pending.channel_kind == ChannelKind::Group {
-        match first_contact(
+/// The shared per-update step, with everything one update's processing
+/// needs: the bot's identity every translation compares against, the wake
+/// trigger, the platform client, the core, and the per-process memories.
+///
+/// Both feeders own one of these — the poll loop and the webhook consumer —
+/// and neither reaches past [`Intake::take`]. The memories are exclusively
+/// this value's, so the serial discipline they are written against is a
+/// property of ownership, not a rule a feeder must remember.
+pub(crate) struct Intake<'a> {
+    me: BotIdentity,
+    wake: Option<&'a str>,
+    client: &'a BotClient,
+    assistant: &'a Assistant,
+    memories: Memories,
+}
+
+impl<'a> Intake<'a> {
+    /// A step with fresh memories, for a feeder that has resolved the bot's
+    /// identity its own way.
+    pub(crate) fn new(
+        me: BotIdentity,
+        wake: Option<&'a str>,
+        client: &'a BotClient,
+        assistant: &'a Assistant,
+    ) -> Self {
+        Self {
+            me,
+            wake,
             client,
-            pending.chat_id,
-            LookupScope::Whole,
-            memories,
             assistant,
-        )
-        .await
-        {
-            Handled::Proceed => {}
-            // The core withdrew from the chat during the lookup's reports;
-            // the message belongs to a channel the assistant just left.
-            Handled::Withdrew => return Step::Acknowledged,
-            Handled::Halted => return Step::Halted,
+            memories: Memories::new(),
         }
     }
-    let authority = match pending.authority {
-        Some(authority) => Some(authority),
-        // A resting withdrawal names a chat the core just refused: its
-        // messages are refused before authority is ever read, so no
-        // administrator fetch is spent on them — under a rate-limited
-        // list, a refused chat's flood would otherwise park the
-        // sequential batch one bounded wait per message. Delivered with
-        // authority unresolved, exactly like the failed fetch below; an
-        // admission inside the rest forgets it, so an admitted chat
-        // never waits out a stale rest.
-        None if memories.withdrawals.resting(pending.chat_id) => None,
-        None => match memories
-            .admins
-            .authority_for(client, pending.chat_id, pending.sender_id)
-            .await
-        {
-            Ok(authority) => Some(authority),
-            Err(error) => {
-                // Delivered unresolved, per the module doc: the core
-                // refuses an unadmitted group before reading authority,
-                // and its typed transient refusal for an admitted one
-                // halts the batch below — never a defaulted record, never
-                // a stranger group wedging the batch.
-                tracing::warn!(
-                    %error,
-                    "the administrator list did not resolve; delivered with authority unresolved"
+
+    /// One update: translate, then — per its shape — report observations,
+    /// resolve authority where a group owes it, and ingest.
+    pub(crate) async fn take(&mut self, update: &Update) -> Step {
+        let pending = match translate::translate(update, &self.me, self.wake) {
+            Translation::Skip(reason) => {
+                tracing::debug!(update_id = update.id, %reason, "update skipped");
+                return Step::Acknowledged;
+            }
+            Translation::Observe(observation) => {
+                return self.observed(observation, update.id).await;
+            }
+            Translation::Record(pending) => pending,
+        };
+        if pending.channel_kind == ChannelKind::Group {
+            match self
+                .first_contact(pending.chat_id, LookupScope::Whole)
+                .await
+            {
+                Handled::Proceed => {}
+                // The core withdrew from the chat during the lookup's reports;
+                // the message belongs to a channel the assistant just left.
+                Handled::Withdrew => return Step::Acknowledged,
+                Handled::Halted => return Step::Halted,
+            }
+        }
+        let authority = match pending.authority {
+            Some(authority) => Some(authority),
+            // A resting withdrawal names a chat the core just refused: its
+            // messages are refused before authority is ever read, so no
+            // administrator fetch is spent on them — under a rate-limited
+            // list, a refused chat's flood would otherwise park the
+            // serial step one bounded wait per message. Delivered with
+            // authority unresolved, exactly like the failed fetch below; an
+            // admission inside the rest forgets it, so an admitted chat
+            // never waits out a stale rest.
+            None if self.memories.withdrawals.resting(pending.chat_id) => None,
+            None => match self
+                .memories
+                .admins
+                .authority_for(self.client, pending.chat_id, pending.sender_id)
+                .await
+            {
+                Ok(authority) => Some(authority),
+                Err(error) => {
+                    // Delivered unresolved, per the module doc: the core
+                    // refuses an unadmitted group before reading authority,
+                    // and its typed transient refusal for an admitted one
+                    // leaves the update unacknowledged below — never a
+                    // defaulted record, never a stranger group wedging the
+                    // intake.
+                    tracing::warn!(
+                        %error,
+                        "the administrator list did not resolve; delivered with authority unresolved"
+                    );
+                    None
+                }
+            },
+        };
+        let message = InboundMessage {
+            channel: translate::channel_key(pending.chat_id),
+            channel_kind: pending.channel_kind,
+            sender: pending.sender,
+            authority,
+            addressed: pending.addressed,
+            reply_target: pending.reply_target,
+            command: pending.command,
+            text: pending.text,
+            origin: Some(pending.origin),
+            timestamp: pending.sent_at,
+        };
+        match self.assistant.ingest(message).await {
+            Ok(IngestOutcome::Recorded { deliver, .. }) => {
+                if let Some(item) = deliver {
+                    send_item(self.client, pending.chat_id, item.text()).await;
+                }
+                Step::Acknowledged
+            }
+            Ok(IngestOutcome::Withdraw) => {
+                leave(self.client, pending.chat_id, &mut self.memories.withdrawals).await;
+                Step::Acknowledged
+            }
+            // The core's disregard is complete in itself: nothing to send,
+            // nothing to leave — the update is acknowledged so the feeder
+            // moves past it.
+            Ok(IngestOutcome::Disregarded) => {
+                tracing::debug!(
+                    update_id = update.id,
+                    "disregarded by the core; acknowledged"
                 );
-                None
+                Step::Acknowledged
             }
-        },
-    };
-    let message = InboundMessage {
-        channel: translate::channel_key(pending.chat_id),
-        channel_kind: pending.channel_kind,
-        sender: pending.sender,
-        authority,
-        addressed: pending.addressed,
-        reply_target: pending.reply_target,
-        command: pending.command,
-        text: pending.text,
-        origin: Some(pending.origin),
-        timestamp: pending.sent_at,
-    };
-    match assistant.ingest(message).await {
-        Ok(IngestOutcome::Recorded { deliver, .. }) => {
-            if let Some(item) = deliver {
-                send_item(client, pending.chat_id, item.text()).await;
+            // The step reads the core's own terminal-or-transient statement,
+            // never its variant names: the vocabulary of what can go wrong is
+            // the core's to grow.
+            Err(refusal) if refusal.failure_kind() == FailureKind::Terminal => {
+                // Deterministic: retrying forever would wedge every later
+                // message in the chat behind this one, so it is acknowledged
+                // past — the spec's stated data-loss rule.
+                tracing::error!(update_id = update.id, %refusal, "refused and acknowledged");
+                Step::Acknowledged
             }
-            Step::Acknowledged
-        }
-        Ok(IngestOutcome::Withdraw) => {
-            leave(client, pending.chat_id, &mut memories.withdrawals).await;
-            Step::Acknowledged
-        }
-        // The core's disregard is complete in itself: nothing to send,
-        // nothing to leave — the update is acknowledged so the offset
-        // advances past it.
-        Ok(IngestOutcome::Disregarded) => {
-            tracing::debug!(
-                update_id = update.id,
-                "disregarded by the core; acknowledged"
-            );
-            Step::Acknowledged
-        }
-        // The batch discipline reads the core's own terminal-or-transient
-        // statement, never its variant names: the vocabulary of what can go
-        // wrong is the core's to grow.
-        Err(refusal) if refusal.failure_kind() == FailureKind::Terminal => {
-            // Deterministic: retrying forever would wedge every later
-            // message in the chat behind this one, so it is acknowledged
-            // past — the spec's stated data-loss rule.
-            tracing::error!(update_id = update.id, %refusal, "refused and acknowledged");
-            Step::Acknowledged
-        }
-        Err(error) => {
-            tracing::warn!(update_id = update.id, %error, "ingest failed; batch halted");
-            Step::Halted
+            Err(error) => {
+                tracing::warn!(
+                    update_id = update.id,
+                    %error,
+                    "ingest failed; the update is not acknowledged"
+                );
+                Step::Halted
+            }
         }
     }
-}
 
-/// One observation update. A membership entry is judged before any lookup,
-/// so authorization comes first; every other observed fact — the pin event
-/// — is preceded by the chat's lazy lookup, reporting the title only: the
-/// event carries the authoritative pinned text.
-async fn observed(
-    observation: Observation,
-    update_id: i64,
-    client: &BotClient,
-    memories: &mut Memories,
-    assistant: &Assistant,
-) -> Step {
-    let Some(chat_id) = translate::chat_id_of(&observation.channel) else {
-        tracing::error!(update_id, "an observation names no chat");
-        return Step::Acknowledged;
-    };
-    if !matches!(observation.fact, ObservedFact::Added { .. }) {
-        // A pin event: the chat's lazy lookup enriches first — title only,
-        // because this event outranks the lookup's by-sending-date pin —
-        // and the event's own fact follows in arrival order.
-        match first_contact(client, chat_id, LookupScope::TitleOnly, memories, assistant).await {
+    /// One observation update. A membership entry is judged before any
+    /// lookup, so authorization comes first; every other observed fact — the
+    /// pin event — is preceded by the chat's lazy lookup, reporting the title
+    /// only: the event carries the authoritative pinned text.
+    async fn observed(&mut self, observation: Observation, update_id: i64) -> Step {
+        let Some(chat_id) = translate::chat_id_of(&observation.channel) else {
+            tracing::error!(update_id, "an observation names no chat");
+            return Step::Acknowledged;
+        };
+        if !matches!(observation.fact, ObservedFact::Added { .. }) {
+            // A pin event: the chat's lazy lookup enriches first — title only,
+            // because this event outranks the lookup's by-sending-date pin —
+            // and the event's own fact follows in arrival order.
+            match self.first_contact(chat_id, LookupScope::TitleOnly).await {
+                Handled::Proceed => {}
+                Handled::Withdrew => return Step::Acknowledged,
+                Handled::Halted => return Step::Halted,
+            }
+            return self.report(observation, chat_id).await.step();
+        }
+        // A membership entry is judged before the lookup's reports, so
+        // authorization comes first; the admitted entry is then this chat's
+        // first contact, and the lookup puts its title and rules on the
+        // ledger before anyone speaks.
+        match self.report(observation, chat_id).await {
             Handled::Proceed => {}
             Handled::Withdrew => return Step::Acknowledged,
             Handled::Halted => return Step::Halted,
         }
-        return report(observation, chat_id, client, memories, assistant)
-            .await
-            .step();
+        // The admission voids any lookup memory an earlier refused contact
+        // left behind — the group's facts were withdrawn then, and the
+        // admitted group must not start with them stranded — and forgets the
+        // withdrawal rest with it, so the admitted chat's next message
+        // resolves authority instead of waiting out a stale rest.
+        self.memories.lookups.void(chat_id);
+        self.memories.withdrawals.forget(chat_id);
+        self.first_contact(chat_id, LookupScope::Whole).await.step()
     }
-    // A membership entry is judged before the lookup's reports, so
-    // authorization comes first; the admitted entry is then this chat's
-    // first contact, and the lookup puts its title and rules on the
-    // ledger before anyone speaks.
-    match report(observation, chat_id, client, memories, assistant).await {
-        Handled::Proceed => {}
-        Handled::Withdrew => return Step::Acknowledged,
-        Handled::Halted => return Step::Halted,
-    }
-    // The admission voids any lookup memory an earlier refused contact
-    // left behind — the group's facts were withdrawn then, and the
-    // admitted group must not start with them stranded — and forgets the
-    // withdrawal rest with it, so the admitted chat's next message
-    // resolves authority instead of waiting out a stale rest.
-    memories.lookups.void(chat_id);
-    memories.withdrawals.forget(chat_id);
-    first_contact(client, chat_id, LookupScope::Whole, memories, assistant)
-        .await
-        .step()
-}
 
-/// The lazy first-contact lookup: once per group chat per process, fetch
-/// the chat's facts within the given scope and report them. The memory
-/// records the lookup as answered — its reports observed, or the core
-/// withdrew — so an unadmitted group spends exactly one lookup instead of
-/// one per message; a failed platform lookup records a resting failure
-/// instead, retries on the chat's next contact past the rest, and never
-/// stops the batch. A halted batch records nothing: the update redelivers
-/// whole.
-async fn first_contact(
-    client: &BotClient,
-    chat_id: i64,
-    scope: LookupScope,
-    memories: &mut Memories,
-    assistant: &Assistant,
-) -> Handled {
-    if memories.lookups.skips(chat_id) {
-        return Handled::Proceed;
-    }
-    let info = match client.get_chat(chat_id).await {
-        Ok(info) => info,
-        Err(error) => {
-            memories.lookups.record_failure(chat_id);
-            tracing::warn!(chat_id, %error, "the channel lookup failed; retried after the rest");
+    /// The lazy first-contact lookup: once per group chat per process, fetch
+    /// the chat's facts within the given scope and report them. The memory
+    /// records the lookup as answered — its reports observed, or the core
+    /// withdrew — so an unadmitted group spends exactly one lookup instead of
+    /// one per message; a failed platform lookup records a resting failure
+    /// instead, retries on the chat's next contact past the rest, and never
+    /// stops the step. A halted step records nothing: the update redelivers
+    /// whole.
+    async fn first_contact(&mut self, chat_id: i64, scope: LookupScope) -> Handled {
+        if self.memories.lookups.skips(chat_id) {
             return Handled::Proceed;
         }
-    };
-    for observation in translate::lookup_observations(chat_id, &info, scope) {
-        match report(observation, chat_id, client, memories, assistant).await {
-            Handled::Proceed => {}
-            Handled::Withdrew => {
-                // The lookup answered and the core refused the chat: the
-                // memory is set so the refused group's later messages draw
-                // only the authorization check's own rested leave, never a
-                // fresh lookup — a later admission clears it and re-looks.
-                memories.lookups.record_answered(chat_id);
-                return Handled::Withdrew;
+        let info = match self.client.get_chat(chat_id).await {
+            Ok(info) => info,
+            Err(error) => {
+                self.memories.lookups.record_failure(chat_id);
+                tracing::warn!(chat_id, %error, "the channel lookup failed; retried after the rest");
+                return Handled::Proceed;
             }
-            Handled::Halted => return Handled::Halted,
+        };
+        for observation in translate::lookup_observations(chat_id, &info, scope) {
+            match self.report(observation, chat_id).await {
+                Handled::Proceed => {}
+                Handled::Withdrew => {
+                    // The lookup answered and the core refused the chat: the
+                    // memory is set so the refused group's later messages draw
+                    // only the authorization check's own rested leave, never a
+                    // fresh lookup — a later admission clears it and re-looks.
+                    self.memories.lookups.record_answered(chat_id);
+                    return Handled::Withdrew;
+                }
+                Handled::Halted => return Handled::Halted,
+            }
         }
+        self.memories.lookups.record_answered(chat_id);
+        Handled::Proceed
     }
-    memories.lookups.record_answered(chat_id);
-    Handled::Proceed
-}
 
-/// Report one observation and carry out what the core returned: an item's
-/// text is sent to the chat, the withdraw directive becomes the rested
-/// leave call. A terminal refusal is acknowledged like ingestion's; a
-/// transient failure halts the batch so the update redelivers.
-async fn report(
-    observation: Observation,
-    chat_id: i64,
-    client: &BotClient,
-    memories: &mut Memories,
-    assistant: &Assistant,
-) -> Handled {
-    match assistant.observe(observation).await {
-        Ok(ObserveOutcome::Observed { deliver }) => {
-            if let Some(item) = deliver {
-                send_item(client, chat_id, item.text()).await;
+    /// Report one observation and carry out what the core returned: an item's
+    /// text is sent to the chat, the withdraw directive becomes the rested
+    /// leave call. A terminal refusal is acknowledged like ingestion's; a
+    /// transient failure leaves the update unacknowledged so it redelivers.
+    async fn report(&mut self, observation: Observation, chat_id: i64) -> Handled {
+        match self.assistant.observe(observation).await {
+            Ok(ObserveOutcome::Observed { deliver }) => {
+                if let Some(item) = deliver {
+                    send_item(self.client, chat_id, item.text()).await;
+                }
+                Handled::Proceed
             }
-            Handled::Proceed
-        }
-        Ok(ObserveOutcome::Withdraw) => {
-            leave(client, chat_id, &mut memories.withdrawals).await;
-            Handled::Withdrew
-        }
-        Err(refusal) if refusal.failure_kind() == FailureKind::Terminal => {
-            tracing::error!(chat_id, %refusal, "observation refused and acknowledged");
-            Handled::Proceed
-        }
-        Err(error) => {
-            tracing::warn!(chat_id, %error, "observation failed; batch halted");
-            Handled::Halted
+            Ok(ObserveOutcome::Withdraw) => {
+                leave(self.client, chat_id, &mut self.memories.withdrawals).await;
+                Handled::Withdrew
+            }
+            Err(refusal) if refusal.failure_kind() == FailureKind::Terminal => {
+                tracing::error!(chat_id, %refusal, "observation refused and acknowledged");
+                Handled::Proceed
+            }
+            Err(error) => {
+                tracing::warn!(
+                    chat_id,
+                    %error,
+                    "observation failed; the update is not acknowledged"
+                );
+                Handled::Halted
+            }
         }
     }
 }

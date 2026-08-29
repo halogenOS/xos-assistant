@@ -109,10 +109,13 @@ impl TempStateFile {
 
 impl Drop for TempStateFile {
     fn drop(&mut self) {
-        for suffix in ["", ".next"] {
+        for suffix in ["", ".next", ".secret", ".secret.next"] {
             let mut path = self.0.clone().into_os_string();
             path.push(suffix);
-            let _ = std::fs::remove_file(path);
+            // A directory is one of the shapes a test puts in the way of a
+            // write, so both removals are tried and neither is required.
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_dir(&path);
         }
     }
 }
@@ -699,6 +702,171 @@ pub fn spawn_adapter_named(
             .await
             .expect("the adapter takes its edge and runs");
     }))
+}
+
+/// The public address the webhook pins configure — nothing resolves it and
+/// nothing calls it: the scripted platform only records what it was told,
+/// and the door under test is reached over loopback.
+pub const WEBHOOK_PUBLIC_URL: &str = "https://assistant.example.org/telegram/webhook";
+
+/// The path that address carries, which is the only path the door answers.
+pub const WEBHOOK_PATH: &str = "/telegram/webhook";
+
+/// The webhook wiring the pins hand the adapter: the address above and an
+/// ephemeral loopback port. Two deployment decisions and nothing else — the
+/// bound address the suite needs is announced through the adapter's own
+/// seam, not through this configuration.
+pub fn webhook_config(listen_port: u16) -> assistant_adapter_telegram::WebhookConfig {
+    assistant_adapter_telegram::WebhookConfig {
+        address: assistant_adapter_telegram::WebhookAddress::parse(WEBHOOK_PUBLIC_URL)
+            .expect("the suite's public address parses"),
+        listen_port,
+    }
+}
+
+/// The adapter's configuration against the scripted server, in webhook mode.
+pub fn webhook_adapter_config(
+    server: &BotApiServer,
+    state_file: &Path,
+    listen_port: u16,
+) -> Config {
+    let mut config = Config::new(TOKEN, state_file);
+    config.api_root = server.root();
+    config.name = Some(NAME.to_owned());
+    config.webhook = Some(webhook_config(listen_port));
+    config
+}
+
+/// Start the adapter in webhook mode on an ephemeral loopback port, and
+/// answer the address its listener bound. An extra observer of the bind runs
+/// first, which is how the startup-order pin reads the platform's record at
+/// the exact moment the port is bound and before anything is registered.
+pub async fn spawn_webhook_adapter(
+    server: &BotApiServer,
+    state_file: &Path,
+    assistant: Arc<Assistant>,
+    sleep: Sleep,
+    observer: Option<assistant_adapter_telegram::BoundListener>,
+) -> (AdapterGuard, std::net::SocketAddr) {
+    let (reported, mut bound) = mpsc::unbounded_channel();
+    let announce: assistant_adapter_telegram::BoundListener = Arc::new(move |address| {
+        if let Some(observer) = &observer {
+            observer(address);
+        }
+        let _ = reported.send(address);
+    });
+    let config = webhook_adapter_config(server, state_file, 0);
+    let adapter = TelegramAdapter::with_sleep(config, sleep).announcing_bound(announce);
+    let guard = AdapterGuard(tokio::spawn(async move {
+        adapter
+            .run(assistant)
+            .await
+            .expect("the adapter takes its edge and serves");
+    }));
+    let address = tokio::time::timeout(DEADLINE, bound.recv())
+        .await
+        .expect("the listener binds within the deadline")
+        .expect("the bound address is announced");
+    (guard, address)
+}
+
+/// The secret the adapter generated and kept beside its state file, read
+/// from the adapter's own derivation of that path.
+pub fn kept_secret(state_file: &Path) -> String {
+    std::fs::read_to_string(assistant_adapter_telegram::webhook_secret_path(state_file))
+        .expect("the webhook secret file reads")
+        .trim()
+        .to_owned()
+}
+
+/// Post one update to the door with the right secret; answers the status.
+pub async fn deliver(address: std::net::SocketAddr, secret: &str, update: &Value) -> u16 {
+    knock(
+        address,
+        reqwest::Method::POST,
+        WEBHOOK_PATH,
+        Some(secret),
+        update.to_string().into_bytes(),
+    )
+    .await
+}
+
+/// One raw request at the door, over real local HTTP: whichever method, path,
+/// secret and body the pin wants to see refused or served.
+pub async fn knock(
+    address: std::net::SocketAddr,
+    method: reqwest::Method,
+    path: &str,
+    secret: Option<&str>,
+    body: Vec<u8>,
+) -> u16 {
+    try_knock(address, method, path, secret, body)
+        .await
+        .expect("the door answers the request")
+}
+
+/// The same knock for the pins that expect some requests never to be
+/// answered — the queue-full one, whose held requests outlive the adapter
+/// they were sent to — where a transport failure is an outcome, not a
+/// panic.
+pub async fn try_knock(
+    address: std::net::SocketAddr,
+    method: reqwest::Method,
+    path: &str,
+    secret: Option<&str>,
+    body: Vec<u8>,
+) -> Option<u16> {
+    let mut request = reqwest::Client::new()
+        .request(method, format!("http://{address}{path}"))
+        .body(body);
+    if let Some(secret) = secret {
+        request = request.header("X-Telegram-Bot-Api-Secret-Token", secret);
+    }
+    request
+        .send()
+        .await
+        .ok()
+        .map(|response| response.status().as_u16())
+}
+
+/// A sleep that records every requested duration and never finishes — what
+/// the webhook pins hand the door, so its answer deadline provably never
+/// fires and every status they read is the consumer's own outcome.
+pub fn pending_sleep() -> (Sleep, Arc<Mutex<Vec<Duration>>>) {
+    let waits = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&waits);
+    let sleep: Sleep = Arc::new(move |wait| {
+        recorded.lock().expect("the wait log locks").push(wait);
+        Box::pin(std::future::pending())
+    });
+    (sleep, waits)
+}
+
+/// A sleep whose first `answered` waits finish at once and whose later ones
+/// never finish, recording every requested duration either way. The pin that
+/// needs the door to give up on the first deliveries and then genuinely wait
+/// on a later one uses it: the count is spent when a wait is REQUESTED, so
+/// which delivery gets which behavior follows arrival order and nothing
+/// else.
+pub fn sleep_answering_first(answered: usize) -> (Sleep, Arc<Mutex<Vec<Duration>>>) {
+    let waits = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&waits);
+    let remaining = Arc::new(AtomicUsize::new(answered));
+    let sleep: Sleep = Arc::new(move |wait| {
+        recorded.lock().expect("the wait log locks").push(wait);
+        if remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            Box::pin(tokio::task::yield_now())
+                as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        } else {
+            Box::pin(std::future::pending())
+        }
+    });
+    (sleep, waits)
 }
 
 /// A sleep that never waits: it records every requested duration and yields

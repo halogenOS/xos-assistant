@@ -88,6 +88,11 @@ pub struct Configuration {
     /// The web search's locale; omitted entries keep the stated defaults.
     #[serde(default)]
     pub search: Search,
+    /// The webhook intake's wiring. Absent — the section omitted entirely —
+    /// the assistant long-polls, which is what a deployment without a public
+    /// address does. Present, both of the section's fields are required;
+    /// resolved through [`Configuration::resolve_webhook`].
+    pub webhook: Option<WebhookSection>,
     /// The moderation bot's handle the report tool files toward; absent
     /// leaves the report tool unregistered, and so does the `addressed`
     /// answering mode even with the handle set — the autonomous assessment
@@ -97,6 +102,25 @@ pub struct Configuration {
     pub moderation_handle: Option<String>,
     /// Where the two secrets are found — never the secrets themselves.
     pub secrets: Secrets,
+}
+
+/// The webhook section: the address the platform is told to deliver to, and
+/// the loopback port the listener binds behind the deployment's reverse
+/// proxy. Both fields are optional in the SHAPE and required in the
+/// RESOLUTION, so a half-filled section refuses the start naming the field it
+/// is missing instead of decoding into a default nobody chose. Unknown keys
+/// are refused like everywhere else in the file, and no secret appears here:
+/// the adapter generates its own and keeps it beside its state file.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebhookSection {
+    /// The full HTTPS address the platform calls. Its path is what the
+    /// listener answers, so the address and the served path are one value.
+    pub public_url: Option<String>,
+    /// The loopback port the listener binds — a contract with the reverse
+    /// proxy in front of it, so zero is refused here even though the adapter
+    /// itself would take it.
+    pub listen_port: Option<u16>,
 }
 
 /// The operators table: adapter name to the operator's adapter-scoped
@@ -525,6 +549,55 @@ impl Configuration {
             },
             None => Ok(None),
         }
+    }
+
+    /// The webhook wiring the adapter takes, or `None` when the section is
+    /// absent — under which updates are long-polled, exactly as a deployment
+    /// without a public address needs.
+    ///
+    /// The section is the one predicate: present, both of its fields are
+    /// required, and every value is validated here, at the load, instead of
+    /// at the first delivery.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::WebhookFieldMissing`] naming the field when the section
+    /// carries only one of the two, or carries a blank address — half a
+    /// webhook is not a mode; [`StartError::WebhookAddressInvalid`] when the
+    /// address is not one the platform can call, carrying the reason and
+    /// never inventing one; [`StartError::WebhookPortZero`] when the port is
+    /// zero, because a deployment's port is a contract with its reverse
+    /// proxy and an ephemeral one would break it silently.
+    pub fn resolve_webhook(
+        &self,
+    ) -> Result<Option<assistant_adapter_telegram::WebhookConfig>, StartError> {
+        let Some(section) = &self.webhook else {
+            return Ok(None);
+        };
+        let public_url = section
+            .public_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|address| !address.is_empty())
+            .ok_or(StartError::WebhookFieldMissing {
+                field: "public_url",
+            })?;
+        let listen_port = section.listen_port.ok_or(StartError::WebhookFieldMissing {
+            field: "listen_port",
+        })?;
+        if listen_port == 0 {
+            return Err(StartError::WebhookPortZero);
+        }
+        let address =
+            assistant_adapter_telegram::WebhookAddress::parse(public_url).map_err(|error| {
+                StartError::WebhookAddressInvalid {
+                    reason: error.to_string(),
+                }
+            })?;
+        Ok(Some(assistant_adapter_telegram::WebhookConfig {
+            address,
+            listen_port,
+        }))
     }
 
     /// The web search's whole wiring, or `None` when no key is configured —
@@ -1543,6 +1616,129 @@ mod tests {
                 "the refusal names the empty line; got {refused}"
             );
         }
+    }
+
+    // ─── The webhook section (unit 35) ───────────────────────────────────
+
+    /// The section is the one predicate: absent, the deployment polls;
+    /// present and whole, it resolves the address the platform is told to
+    /// call and the port the listener binds — and the address carries the
+    /// path the listener answers, so the two cannot diverge.
+    #[test]
+    fn the_webhook_section_is_the_whole_predicate_and_resolves_both_fields() {
+        assert!(
+            loaded("log = \"stderr\"", "")
+                .resolve_webhook()
+                .expect("an absent section resolves")
+                .is_none(),
+            "no section, no webhook — the deployment polls"
+        );
+        let resolved = loaded(
+            "log = \"stderr\"",
+            "[webhook]\n\
+             public_url = \" https://xenia.example.org/telegram/webhook \"\n\
+             listen_port = 8085\n",
+        )
+        .resolve_webhook()
+        .expect("the whole section resolves")
+        .expect("a present section configures the webhook");
+        assert_eq!(
+            resolved.address.url(),
+            "https://xenia.example.org/telegram/webhook",
+            "the pad is file formatting, never the address"
+        );
+        assert_eq!(
+            resolved.address.path(),
+            "/telegram/webhook",
+            "the path the listener answers comes from the address itself"
+        );
+        assert_eq!(resolved.listen_port, 8085);
+    }
+
+    /// Half a webhook is not an answering mode: the missing field is named,
+    /// and a blank address is the same refusal — omitting the section is how
+    /// polling is chosen.
+    #[test]
+    fn a_half_filled_webhook_section_is_refused_naming_the_missing_field() {
+        for (missing, section) in [
+            (
+                "listen_port",
+                "[webhook]\npublic_url = \"https://x.example.org/hook\"\n",
+            ),
+            ("public_url", "[webhook]\nlisten_port = 8085\n"),
+            ("public_url", "[webhook]\n"),
+            (
+                "public_url",
+                "[webhook]\npublic_url = \"   \"\nlisten_port = 8085\n",
+            ),
+        ] {
+            let refused = loaded("log = \"stderr\"", section)
+                .resolve_webhook()
+                .expect_err("a half-filled section must be refused");
+            assert!(
+                matches!(refused, StartError::WebhookFieldMissing { field } if field == missing),
+                "the refusal names {missing}; got {refused}"
+            );
+        }
+    }
+
+    /// An address the platform could not call, or one the listener could not
+    /// match a delivery against, refuses the start where it is configured —
+    /// with the reason stated and no guess at it.
+    #[test]
+    fn a_webhook_address_the_platform_cannot_call_is_refused() {
+        for address in [
+            "http://xenia.example.org/hook",
+            "https://xenia.example.org",
+            "https://xenia.example.org/hook?token=1",
+        ] {
+            let refused = loaded(
+                "log = \"stderr\"",
+                &format!("[webhook]\npublic_url = \"{address}\"\nlisten_port = 8085\n"),
+            )
+            .resolve_webhook()
+            .expect_err("an unusable address must be refused");
+            assert!(
+                matches!(refused, StartError::WebhookAddressInvalid { .. }),
+                "the refusal names the address; got {refused}"
+            );
+        }
+    }
+
+    /// A deployment's port is a contract with its reverse proxy, so zero —
+    /// which would bind an ephemeral port nothing forwards to — is refused.
+    #[test]
+    fn a_zero_webhook_port_is_refused() {
+        let refused = loaded(
+            "log = \"stderr\"",
+            "[webhook]\npublic_url = \"https://x.example.org/hook\"\nlisten_port = 0\n",
+        )
+        .resolve_webhook()
+        .expect_err("a zero port must be refused");
+        assert!(
+            matches!(refused, StartError::WebhookPortZero),
+            "the refusal names the port; got {refused}"
+        );
+    }
+
+    /// Unknown keys inside the section are refused at the load, like
+    /// everywhere else in the file — a misspelled key must not sit inert
+    /// beside a half-configured webhook. A secret key above all: the adapter
+    /// generates its own, and a file naming one would be a credential nobody
+    /// should be handling.
+    #[test]
+    fn an_unknown_webhook_key_is_refused_at_the_load() {
+        assert!(
+            load(&full(
+                "log = \"stderr\"",
+                "[webhook]\n\
+                 public_url = \"https://x.example.org/hook\"\n\
+                 listen_port = 8085\n\
+                 secret_token = \"nobody-carries-this\"\n"
+            ))
+            .is_err(),
+            "an unknown key in the webhook section is refused"
+        );
     }
 
     // ─── The retired title-model key ─────────────────────────────────────

@@ -128,3 +128,46 @@ that instead of an addition:
 
 Nothing in this unit's manifests changed, so there was no version to look up and no
 registry history to check — which is itself the answer this rule asks for.
+
+## 2026-08-29 — the webhook intake's HTTP surface
+
+The webhook intake needs a SERVER on the loopback interface, which the adapter's
+manifest had no crate for: `reqwest` is a client. The three crates named below are the
+server half of the very stack the client already runs on — they are in this
+workspace's lock file today as `reqwest`'s own transitive dependencies, and naming
+them adds no new code to the build, only new features of code already compiled. A web
+framework was rejected outright for one route, and no other server crate was
+considered once this stack proved able to serve. Current versions from the crates.io
+API, advisories from the OSV API, both queried on the day of this entry — before the
+manifest named the crates.
+
+| Crate | Version | Latest at check | Advisories | Why it is here |
+|---|---|---|---|---|
+| hyper | 1.11.1 | 1.11.1 | none | The HTTP/1.1 connection the listener serves each delivery on. Two features only: `server` and `http1`. The lock had resolved 1.11.0 for the client's own stack; the check found 1.11.1 current, so the lock was moved to it instead of staying a release behind what was checked. The OSV query answered no advisory for either version. |
+| hyper-util | 0.1.20 | 0.1.20 | none | The adapter between tokio's socket and hyper's own IO traits (`TokioIo`), and the runtime timer hyper measures the head-read bound on (`TokioTimer`), both under its `tokio` feature. Written by hand the IO adapter would need `unsafe`, which this workspace forbids at the workspace lint level — so this crate is what makes the server buildable at all under the repository's own rules. |
+| http-body-util | 0.1.5 | 0.1.5 | none | The bounded body read (`Limited`, whose length refusal is what answers 413) and the empty response body. Without it the listener would poll body frames by hand and re-implement the byte bound. |
+
+All three are the hyperium project's own crates, at their current releases, with no
+yanked release in their recent history and no advisory against any version this
+workspace resolves.
+
+One crate arrives transitively with them, so it is checked here too — a crate no
+manifest names still runs in this process:
+
+| Crate | Version | Latest at check | Advisories | Why it is here |
+|---|---|---|---|---|
+| httpdate | 1.0.3 | 1.0.3 | none | `hyper`'s `server` feature formats the response `Date` header with it. Current release since 2023, no yanked release in its history, no advisory. |
+
+**The features, not the crates, are the change.** Cargo unifies features across the
+graph, so `hyper`'s `server` and `http1` and `hyper-util`'s `tokio` are what actually
+arrive; the crates themselves were already being compiled for the client. The
+adapter's tokio entry names `net` and `rt` in the library section for the same reason
+the development section named them for the scripted server: the listener binds a
+socket and each connection is a task, and a feature the library genuinely uses belongs
+in the library's own list instead of arriving by accident from a dependent.
+
+**No dependency for the secret.** The webhook secret is 64 characters drawn from the
+platform's permitted alphabet, read from the operating system's randomness through
+`/dev/urandom` with the standard library alone. A random-number crate was considered
+and not added: the alphabet is 64 characters, so a byte's low six bits index it
+without bias, and there is nothing else to get right.

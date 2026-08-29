@@ -1,7 +1,9 @@
-//! AC6: the token appears in no log line and no error string. The failure
-//! paths that format errors are forced — a transport failure whose raw error
-//! carries the token-bearing URL, a send dropped past the rate-limit bound,
-//! and a malformed state file — and every captured line is scanned.
+//! AC6: neither the bot token nor the webhook secret appears in any log line
+//! or error string. The failure paths that format errors are forced — a
+//! transport failure whose raw error carries the token-bearing URL, a send
+//! dropped past the rate-limit bound, a malformed state file, and the
+//! webhook door's own refusals with the registration refusal beside them —
+//! and every captured line is scanned for both secrets.
 //!
 //! This test owns its own binary on purpose: the capture subscriber is
 //! installed as the process-wide default, so every task on every thread logs
@@ -33,7 +35,9 @@ use tracing::span;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    DEADLINE, TOKEN, TempStateFile, private_update, recording_sleep, spawn_adapter, start_assistant,
+    DEADLINE, TOKEN, TempStateFile, WEBHOOK_PATH, deliver, kept_secret, knock, pending_sleep,
+    private_update, recording_sleep, spawn_adapter, spawn_webhook_adapter, start_assistant,
+    webhook_adapter_config,
 };
 
 /// A capture subscriber: every event's fields, formatted into one line.
@@ -82,6 +86,7 @@ async fn the_token_reaches_no_log_line_and_no_error_string() {
     force_a_transport_failure().await;
     force_a_dropped_send_and_a_malformed_state_read(&lines).await;
     force_a_cut_short_reply(&lines).await;
+    let secrets = force_the_webhook_refusals(&lines).await;
 
     let lines = lines.lock().expect("the line log locks");
     assert!(
@@ -102,8 +107,31 @@ async fn the_token_reaches_no_log_line_and_no_error_string() {
         lines.iter().any(|line| line.contains("cut short")),
         "the cut-short path logged"
     );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("refused for redelivery")),
+        "the webhook door's refusal path logged"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("secret token")),
+        "the webhook door's discard path logged"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("could not be registered")),
+        "the registration refusal's own text logged"
+    );
     let leaks: Vec<&String> = lines.iter().filter(|line| line.contains(TOKEN)).collect();
     assert!(leaks.is_empty(), "the token leaked into output: {leaks:?}");
+    for secret in &secrets {
+        let leaks: Vec<&String> = lines.iter().filter(|line| line.contains(secret)).collect();
+        assert!(
+            leaks.is_empty(),
+            "a webhook secret leaked into output: {leaks:?}"
+        );
+    }
 }
 
 /// Run against a root nothing listens on: the connection is refused on
@@ -165,6 +193,83 @@ async fn force_a_cut_short_reply(lines: &Arc<Mutex<Vec<String>>>) {
     server.await_recorded("sendMessage", 2).await;
 
     await_line(lines, "cut short").await;
+}
+
+/// The webhook intake's own logging paths, under the capture: a delivery
+/// discarded for its secret, one refused because its ingest failed, and the
+/// registration refusal a start returns — the real [`AdapterError`], built
+/// by the production path from a platform description that quotes the real
+/// secret back, so what is scanned here is the adapter's own scrubbing and
+/// not a line this test worded. Answers the secrets those runs generated, so
+/// the scan can assert none of them reached a line.
+async fn force_the_webhook_refusals(lines: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    let state = TempStateFile::new("token-scan-webhook");
+    let (sleep, _) = pending_sleep();
+    let (_adapter, address) = spawn_webhook_adapter(
+        &server,
+        state.path(),
+        Arc::clone(&fixture.assistant),
+        sleep,
+        None,
+    )
+    .await;
+    let secret = kept_secret(state.path());
+
+    // A stranger at the door, discarded.
+    let wrong: String = secret.chars().rev().collect();
+    knock(
+        address,
+        reqwest::Method::POST,
+        WEBHOOK_PATH,
+        Some(&wrong),
+        b"{}".to_vec(),
+    )
+    .await;
+    await_line(lines, "secret token").await;
+
+    // A delivery whose ingest fails, refused for redelivery.
+    fixture
+        .store
+        .run(|conn| {
+            conn.execute("ALTER TABLE principals RENAME TO principals_hidden", [])?;
+            Ok(())
+        })
+        .await
+        .expect("the identity table hides");
+    deliver(address, &secret, &private_update(80, 9, "refused delivery")).await;
+    await_line(lines, "refused for redelivery").await;
+
+    // The registration refusal: the scripted platform quotes the secret it
+    // was handed in its description, exactly as a real refusal quotes the
+    // parameter it refused, so the error the adapter builds is the one whose
+    // scrubbing this scan is about. It is logged the way a deployment logs a
+    // start that refused.
+    let refusing = BotApiServer::start().await;
+    refusing.fail_registration();
+    let refused_state = TempStateFile::new("token-scan-webhook-registration");
+    let (sleep, _) = pending_sleep();
+    let refusal = assistant_adapter_telegram::TelegramAdapter::with_sleep(
+        webhook_adapter_config(&refusing, refused_state.path(), 0),
+        sleep,
+    )
+    .run(Arc::clone(&fixture.assistant))
+    .await
+    .expect_err("the scripted registration refuses the start");
+    let refused_secret = kept_secret(refused_state.path());
+    assert!(
+        refusing.recorded("setWebhook")[0].body["secret_token"]
+            == serde_json::json!(refused_secret),
+        "the refusal being scanned answered the real registered secret"
+    );
+    assert!(
+        refusal.to_string().contains("[redacted]"),
+        "the platform's own quoting of the secret is scrubbed in the real error: {refusal}"
+    );
+    tracing::error!(%refusal, "the webhook start refused");
+
+    vec![secret, refused_secret]
 }
 
 /// Await a captured line carrying the needle, or name the stall.

@@ -49,10 +49,21 @@ enum SendScript {
     Delivered,
 }
 
+/// How often a hanging administrator request re-reads its script, so a
+/// test can release the wedge by scripting the chat again.
+const HANG_RECHECK: Duration = Duration::from_millis(10);
+
 /// What the administrator list answers for one chat.
+#[derive(Clone)]
 enum AdminScript {
     List(Vec<(i64, String)>),
     Failing,
+    /// The request does not answer while this script stands — the fixture
+    /// for a wedged consumer, which is what the webhook door's queue and
+    /// deadline pins need. Re-scripting the chat releases the request,
+    /// which then answers the new script: a step that was slow past the
+    /// door's deadline and then succeeded.
+    Hanging,
 }
 
 /// What the chat lookup answers for one chat: its title and, optionally,
@@ -89,6 +100,15 @@ struct ServerState {
     /// as a status and a description. Unset, a threaded send is served
     /// like any other.
     refused_threading: Mutex<Option<(u16, String)>>,
+    /// The address currently registered as the webhook, as the platform
+    /// keeps it: the empty string means none is registered. The registration
+    /// sets it, the deletion clears it, and the pins read it.
+    webhook_url: Mutex<String>,
+    /// Whether every `setWebhook` answers a scripted refusal.
+    failing_registration: Mutex<bool>,
+    /// Whether every `deleteWebhook` answers a scripted server failure —
+    /// the fixture for a polling start whose deletion fails.
+    failing_webhook_delete: Mutex<bool>,
 }
 
 /// The running scripted server. Dropping it stops accepting; the per-test
@@ -196,6 +216,60 @@ impl BotApiServer {
             .lock()
             .expect("the admin scripts lock")
             .insert(chat_id, AdminScript::Failing);
+    }
+
+    /// Script one chat's administrator list not to answer — the wedge
+    /// behind the queue-full and deadline pins: the shared step parks inside
+    /// this call, so whatever queues behind it provably waits. Scripting the
+    /// chat again with [`Self::set_admins`] releases the parked request,
+    /// which then answers the new script.
+    pub fn hang_admins(&self, chat_id: i64) {
+        self.state
+            .admins
+            .lock()
+            .expect("the admin scripts lock")
+            .insert(chat_id, AdminScript::Hanging);
+    }
+
+    /// Script the platform as already having a webhook registered at this
+    /// address — the state a polling start's deletion clears.
+    pub fn set_registered_webhook(&self, url: &str) {
+        url.clone_into(
+            &mut self
+                .state
+                .webhook_url
+                .lock()
+                .expect("the webhook state locks"),
+        );
+    }
+
+    /// The address the platform currently holds registered, empty when none
+    /// is — read after a delete to pin that the registration is gone.
+    pub fn registered_webhook(&self) -> String {
+        self.state
+            .webhook_url
+            .lock()
+            .expect("the webhook state locks")
+            .clone()
+    }
+
+    /// Script every `setWebhook` from here on to answer a refusal.
+    pub fn fail_registration(&self) {
+        *self
+            .state
+            .failing_registration
+            .lock()
+            .expect("the registration script locks") = true;
+    }
+
+    /// Script every `deleteWebhook` from here on to answer a server
+    /// failure — the fixture for a polling start whose deletion fails.
+    pub fn fail_webhook_delete(&self) {
+        *self
+            .state
+            .failing_webhook_delete
+            .lock()
+            .expect("the webhook delete script locks") = true;
     }
 
     /// Script the next `times` sends to answer the rate-limit reply with the
@@ -462,28 +536,99 @@ async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16
                 (200, json!({ "ok": true, "result": true }))
             }
         }
-        "getChatAdministrators" => {
-            let chat_id = body["chat_id"].as_i64().unwrap_or_default();
-            let admins = state.admins.lock().expect("the admin scripts lock");
-            match admins.get(&chat_id) {
-                Some(AdminScript::Failing) => (
-                    500,
-                    json!({ "ok": false, "description": "scripted failure" }),
-                ),
-                Some(AdminScript::List(list)) => {
-                    let members: Vec<Value> = list
-                        .iter()
-                        .map(|(id, status)| json!({ "user": { "id": id }, "status": status }))
-                        .collect();
-                    (200, json!({ "ok": true, "result": members }))
-                }
-                None => (200, json!({ "ok": true, "result": [] })),
-            }
-        }
+        "setWebhook" => registration_answer(state, &body),
+        "deleteWebhook" => deletion_answer(state),
+        "getChatAdministrators" => admin_answer(state, &body).await,
         // Every other method — the leave call above all — succeeds plainly;
         // the recorded request is what the assertions read.
         _ => (200, json!({ "ok": true, "result": true })),
     }
+}
+
+/// One chat's administrator list from the script. A hanging script parks
+/// the request by re-reading the script on an interval instead of by a
+/// permanent park, so a test can release the wedge — the shape a step that
+/// outran the webhook door's deadline and then succeeded needs.
+async fn admin_answer(state: &Arc<ServerState>, body: &Value) -> (u16, Value) {
+    let chat_id = body["chat_id"].as_i64().unwrap_or_default();
+    loop {
+        // Read and released before any await: a held lock would stall every
+        // other connection with this one.
+        let script = state
+            .admins
+            .lock()
+            .expect("the admin scripts lock")
+            .get(&chat_id)
+            .cloned();
+        match script.as_ref() {
+            Some(AdminScript::Hanging) => tokio::time::sleep(HANG_RECHECK).await,
+            Some(AdminScript::Failing) => {
+                return (
+                    500,
+                    json!({ "ok": false, "description": "scripted failure" }),
+                );
+            }
+            Some(AdminScript::List(list)) => {
+                let members: Vec<Value> = list
+                    .iter()
+                    .map(|(id, status)| json!({ "user": { "id": id }, "status": status }))
+                    .collect();
+                return (200, json!({ "ok": true, "result": members }));
+            }
+            None => return (200, json!({ "ok": true, "result": [] })),
+        }
+    }
+}
+
+/// The registration: it sets the one piece of webhook state the platform
+/// keeps, or answers the scripted refusal.
+///
+/// That refusal is the platform's described shape — a success status
+/// carrying `ok: false` — and its description echoes the secret it was
+/// handed, the way a real description quotes the parameter it refused. The
+/// combination is what makes the adapter's scrubbing of a refusal text a
+/// real path instead of one nothing ever exercises: a refusal whose
+/// description the client never reads would scrub nothing.
+fn registration_answer(state: &Arc<ServerState>, body: &Value) -> (u16, Value) {
+    if *state
+        .failing_registration
+        .lock()
+        .expect("the registration script locks")
+    {
+        let offered = body["secret_token"].as_str().unwrap_or_default();
+        return (
+            200,
+            json!({
+                "ok": false,
+                "description": format!("scripted registration failure for secret_token {offered}"),
+            }),
+        );
+    }
+    let url = body["url"].as_str().unwrap_or_default().to_owned();
+    *state.webhook_url.lock().expect("the webhook state locks") = url;
+    (200, json!({ "ok": true, "result": true }))
+}
+
+/// The deletion: it clears the registration whether or not anything was
+/// there — the platform's own idempotence, which is why the polling start
+/// asks nothing first — or answers the scripted failure.
+fn deletion_answer(state: &Arc<ServerState>) -> (u16, Value) {
+    if *state
+        .failing_webhook_delete
+        .lock()
+        .expect("the webhook delete script locks")
+    {
+        return (
+            500,
+            json!({ "ok": false, "description": "scripted webhook delete failure" }),
+        );
+    }
+    state
+        .webhook_url
+        .lock()
+        .expect("the webhook state locks")
+        .clear();
+    (200, json!({ "ok": true, "result": true }))
 }
 
 /// The chat lookup's answer from the script: the chat's facts, or the

@@ -43,8 +43,9 @@ or restructure it deliberately.
   webhook listener are two feeders of it. The configuration is a `[webhook]` section
   in the assistant's own configuration (`assistant/src/config.rs`), carried into the
   adapter's `Config` the way the endpoint override already travels: `public_url`,
-  the full HTTPS address Telegram will call (refused at start unless it parses as an
-  `https` URL), and `listen_port`, the loopback port the listener binds. No
+  the full HTTPS address Telegram will call (refused at start unless it parses as
+  an `https` URL with a named path — a door at a host's bare root is refused, and
+  user information, query and fragment are refused with it), and `listen_port`, the loopback port the listener binds. No
   defaults, no partial state: both fields or neither — a section with one field
   refuses the start naming the other. Section present means webhook mode; absent
   means polling, exactly as today — one predicate, no third state. John keeps
@@ -118,11 +119,12 @@ or restructure it deliberately.
   at start, which is the at-least-once promise working, never a discard.
   *Rejected:* register-then-bind (a crash between the two leaves Telegram
   delivering into a dead port until the supervisor cycles — the outage class this
-  unit ends). Polling mode checks `getWebhookInfo` and deletes the webhook if and only if
-  one is registered; if that check itself fails, polling starts anyway and the poll
-  loop's existing error reporting carries any 409 — a local deployment must not be
-  refused its start by a transient check, and a genuinely registered webhook
-  surfaces in the loop's own errors within seconds. Switching modes accepts what
+  unit ends). Polling mode makes one unconditional `deleteWebhook` call at start — the
+  platform answers it idempotently, so there is nothing to check first; a failed
+  delete logs and polling starts anyway, the loop's own error reporting carrying
+  any 409 — a local deployment must not be refused its start by a cleanup call
+  (settled at the fix pass, simpler than the check-then-delete first written
+  here). Switching modes accepts what
   the polling crash window always accepted in kind though not in size:
   returning to polling restarts from the stale pre-webhook offset, so up to a
   day of already-ingested updates re-serve and re-ingest — materially more than
@@ -213,8 +215,8 @@ platform vocabulary enters the core, and the outbound path is untouched.
   list and `drop_pending_updates` false — the order pinned against a scripted Bot
   API (a registration observed before the listener serves is a failure);
   identity-fetch, bind and registration failures each refuse the start with a
-  named error; polling start deletes a registered webhook if and only if one
-  exists, and starts anyway when the check itself fails.
+  named error; polling start makes exactly one unconditional delete — registered or not — and
+  starts anyway when the delete itself fails.
 - **AC4** The door authenticates and bounds, on the public_url's own path: right
   token ingests and answers 200;
   wrong or missing token answers 403 with nothing ingested; a malformed body

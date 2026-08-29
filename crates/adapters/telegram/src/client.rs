@@ -333,8 +333,10 @@ struct ResponseParameters {
     retry_after: Option<u64>,
 }
 
-/// The thin Bot API client: three methods over two endpoints and the
-/// administrator list, with every HTTP concern kept inside.
+/// The thin Bot API client: one method per call the two intakes and the
+/// outbound path make — the identity, the poll, the webhook registration and
+/// its deletion, the chat lookups, the sends and the leave — with every HTTP
+/// concern kept inside.
 pub(crate) struct BotClient {
     http: reqwest::Client,
     root: String,
@@ -390,6 +392,44 @@ impl BotClient {
         }
         let response = self.request("getUpdates", &body, None).await?;
         self.decode(response).await
+    }
+
+    /// Register the webhook: the public address the platform will call, the
+    /// secret token every delivery must carry back, and the same consumed
+    /// update types the poll request pins — one list, named on both intakes,
+    /// so neither inherits whatever an earlier setting left on the token.
+    /// Pending updates are explicitly not dropped: whatever queued through an
+    /// outage is delivered, which is the at-least-once promise working.
+    ///
+    /// The secret travels in the request body and comes back in nothing: the
+    /// answer is a bare acknowledgement, and a refusal carries the platform's
+    /// own description, which the caller scrubs before it reaches a log.
+    pub(crate) async fn set_webhook(
+        &self,
+        url: &str,
+        secret_token: &str,
+    ) -> Result<(), ClientError> {
+        let body = serde_json::json!({
+            "url": url,
+            "secret_token": secret_token,
+            "allowed_updates": CONSUMED_UPDATE_TYPES,
+            "drop_pending_updates": false,
+        });
+        let response = self.request("setWebhook", &body, None).await?;
+        let _registered: serde_json::Value = self.decode(response).await?;
+        Ok(())
+    }
+
+    /// Unregister the webhook, so the poll may run: the two intakes are
+    /// mutually exclusive on the platform's side. Idempotent there —
+    /// deleting nothing succeeds — which is why the polling start calls it
+    /// unconditionally instead of asking first. Pending updates are not
+    /// dropped: they are exactly what the poll is about to fetch.
+    pub(crate) async fn delete_webhook(&self) -> Result<(), ClientError> {
+        let body = serde_json::json!({ "drop_pending_updates": false });
+        let response = self.request("deleteWebhook", &body, None).await?;
+        let _deleted: serde_json::Value = self.decode(response).await?;
+        Ok(())
     }
 
     /// One chat's own facts — the first-contact lookup's wire call. The
