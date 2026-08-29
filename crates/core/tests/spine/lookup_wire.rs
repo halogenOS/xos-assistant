@@ -10,12 +10,15 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-/// One recorded lookup request: the path asked and the request headers,
-/// lowercased names — what the authorization pins read.
+/// One recorded lookup request: the method and path asked, the request
+/// headers with lowercased names — what the authorization pins read — and
+/// the request body, which a POST carries and a GET does not.
 #[derive(Debug, Clone)]
 pub struct RecordedLookup {
+    pub method: String,
     pub path: String,
     pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
 }
 
 impl RecordedLookup {
@@ -25,6 +28,11 @@ impl RecordedLookup {
             .iter()
             .find(|(header, _)| header == name)
             .map(|(_, value)| value.as_str())
+    }
+
+    /// The request body decoded as JSON — what a posted lookup sent.
+    pub fn json_body(&self) -> Value {
+        serde_json::from_slice(&self.body).expect("the recorded body is JSON")
     }
 }
 
@@ -92,8 +100,9 @@ impl LookupServer {
     }
 }
 
-/// Serve one connection: read the request head, record it, answer per the
-/// script. The lookups send GETs, so no body is read.
+/// Serve one connection: read the request head, read the declared body
+/// where one is announced — a posted lookup sends one, a GET does not —
+/// record both, and answer per the script.
 async fn serve(
     script: LookupAnswer,
     requests: Arc<Mutex<Vec<RecordedLookup>>>,
@@ -112,21 +121,41 @@ async fn serve(
     };
     let head = String::from_utf8_lossy(&buffered[..header_end]).into_owned();
     let mut lines = head.lines();
-    let path = lines
-        .next()
-        .and_then(|line| line.split(' ').nth(1))
-        .unwrap_or_default()
-        .to_owned();
-    let headers = lines
+    let request_line = lines.next().unwrap_or_default();
+    let mut parts = request_line.split(' ');
+    let method = parts.next().unwrap_or_default().to_owned();
+    let path = parts.next().unwrap_or_default().to_owned();
+    let headers: Vec<(String, String)> = lines
         .filter_map(|line| {
             let (name, value) = line.split_once(':')?;
             Some((name.trim().to_lowercase(), value.trim().to_owned()))
         })
         .collect();
+    // The declared body, read to its length: the header run ends with the
+    // blank line, so everything past it is body.
+    let declared: usize = headers
+        .iter()
+        .find(|(name, _)| name == "content-length")
+        .and_then(|(_, value)| value.parse().ok())
+        .unwrap_or(0);
+    let mut body = buffered.split_off((header_end + 4).min(buffered.len()));
+    while body.len() < declared {
+        let mut chunk = [0_u8; 4096];
+        match stream.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => body.extend_from_slice(&chunk[..read]),
+        }
+    }
+    body.truncate(declared);
     requests
         .lock()
         .expect("the request log locks")
-        .push(RecordedLookup { path, headers });
+        .push(RecordedLookup {
+            method,
+            path,
+            headers,
+            body,
+        });
 
     let (status, location, content_type, body) = match script {
         LookupAnswer::Json(status, body) => (status, None, "application/json", body.to_string()),

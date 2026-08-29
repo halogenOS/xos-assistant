@@ -194,6 +194,7 @@ async fn a_stream_that_never_settles_fails_the_erasure_loudly_deleting_nothing()
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -299,6 +300,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
                 direct_chats: assistant_core::DirectChats::default(),
                 privacy_policy_address: None,
                 moderation_handle: None,
+                web_search: None,
             },
         )
         .await
@@ -339,6 +341,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await

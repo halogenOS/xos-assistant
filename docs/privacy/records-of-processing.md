@@ -35,7 +35,7 @@ authority asks for them.
 
 | # | Purpose | Legal basis |
 |---|---|---|
-| P1 | Answering community questions about the project in its own chat groups | Article 6(1)(f), legitimate interest |
+| P1 | Answering community questions in the project's own chat groups. Widened 2026-08-29 with the web search: the earlier wording read "about the project", which described what the assistant could answer from and not what members ask. Questions that are not about the project are answered too, and answering one can send a search query to the search provider in R6. | Article 6(1)(f), legitimate interest |
 | P2 | Reading a conversation in context, including older discussion, so an answer follows the thread | Article 6(1)(f), legitimate interest |
 | P3 | Keeping the assistant available: counters bound how much it answers per person and per chat | Article 6(1)(f), legitimate interest |
 
@@ -84,6 +84,7 @@ the platform hides the real author (decision 0016).
 | R3 | Public project sources | Not a recipient of personal data | A commit lookup queries the halogenOS forge and a release lookup queries the builds repository's public interface. A query carries a repository name and a reference or tag. |
 | R4 | The chat platform | Independent controller of its own delivery and storage, not a processor of the controller | Its own handling of the same messages, under its own policy, unchanged by the assistant. |
 | R5 | The group's administrators, via the group's moderation bot (added 2026-08-23) | Recipients of the report event inside the group they already administer | When a member replies to a message and asks for a report, the assistant sends the fixed report command as a reply to that message; the moderation bot forwards the event to the group's administrators. The event carries the reported message's identifier — a message the administrators already see in their own group — and no data from the assistant's store. Changed 2026-08-24: the report is sent when the assistant's own assessment finds a message in clear violation of the pinned rules; the administrators decide, and the assistant takes no action itself. |
+| R6 | Serper, United Kingdom (added 2026-08-29, with the web search) | Processor under Article 28, on the controller's instruction only. Its own terms name the customer as controller and itself as processor where personal data is processed in the service | The search query the assistant writes for a question that is not about the project — words drawn from the conversation, and nothing else: no account identifier, no username and no other part of the conversation. A query written with a handle in it — an at sign followed by a name — is refused before anything is sent, so no query in that form reaches this recipient. The transfer basis is in section 7. |
 
 Nobody else receives the data. It is not sold, not shared with advertisers, not analysed
 for any secondary purpose, and not used to train any model.
@@ -100,6 +101,7 @@ for any secondary purpose, and not used to train any model.
 | Transfers, rewritten 2026-08-23 | The earlier entry stating that no transfer is intended was wrong. The store is held on a server run for the project in Germany, and data leaves the EEA in three places, each listed below. |
 | The processor itself | Requesty Ltd is a company in the United Kingdom, although it stores and serves in Frankfurt. Covered by the European Commission's adequacy decision for the United Kingdom under Article 45 GDPR, so no further safeguard is required. |
 | Model deployments outside the EEA | Where a deployment sits outside the EEA, the request reaches it there. Covered by the European Commission's standard contractual clauses in the processor agreement, under Article 46(2)(c) GDPR. Recorded 2026-08-23 as live for the conversation-naming step, which reached a lightweight model hardcoded in the framework outside the EEA; closed the same day by decision 0077 — title derivation is switched off entirely, so no naming request exists and the entry covers the answering model's routing alone. |
+| The search provider (added 2026-08-29) | Serper is a company in the United Kingdom and receives the search query there. Covered by the same adequacy decision for the United Kingdom under Article 45 GDPR, so no further safeguard is required. With this entry the count in the row above becomes FOUR places, not three. |
 | The chat platform | Sits outside the EU/EEA and receives every message and every answer as part of delivering them, as its own controller under its own policy, not on the controller's instruction. |
 | Documentation | The processor agreement and its clauses are on file with the controller. The countersigned copy is outstanding, listed as an open dependency in section 10. |
 
@@ -141,8 +143,8 @@ A general description under Article 30(1)(g), mapped to the mechanisms that ship
 | Area | Measure |
 |---|---|
 | Separation | Personal data in tables of its own, referenced by key, never inline in the ledger (decisions 0003, 0006, 0012). |
-| Data minimisation | Text only, no media, no files, no voice, no stickers, no edits (decision 0017). Anonymous stand-in senders skipped (decision 0016). No profiling, no scoring, no secondary use. |
-| Minimisation at the boundary | One identifier is transmitted to the processor, the public username, decided by the operator on 2026-08-23 so the assistant can address people by their handle. The numeric account identifier stays on the machine, the display name is not stored at all (decision 0077), and no other attribute of a person is attached to a request. |
+| Data minimisation | Text only, no media, no files, no voice, no stickers, no edits (decision 0017). Anonymous stand-in senders skipped (decision 0016). No profiling, no scoring, no secondary use. Extended 2026-08-29 with the web search: a query is bounded to 400 characters and refused whole instead of truncated past it, pages are bounded to five, and each person's searches are bounded to five per ten minutes — so the volume of member-derived text that can reach the search provider is bounded per person and per call (decisions 0112, 0117). |
+| Minimisation at the boundary | One identifier is transmitted to the processor, the public username, decided by the operator on 2026-08-23 so the assistant can address people by their handle. The numeric account identifier stays on the machine, the display name is not stored at all (decision 0077), and no other attribute of a person is attached to a request. Extended 2026-08-29 for the search provider (R6), whose boundary is narrower still: it receives the query alone — no identifier of any kind, no username, no conversation — and a query carrying a person reference in the handle form is refused whole before anything is sent, by a guard that does not echo what it matched (decision 0115). |
 | Processor control | Article 28 agreement with standard contractual clauses, European endpoint, storage in Frankfurt, the United Kingdom's adequacy decision for the processor relationship, zero data retention at the processor and no training there, and sub-processors engaged by the processor under its own agreements. Corrected 2026-08-23: the retention promise reaches the processor and stops, so the provider layer is governed by the terms of the chosen model, and the Approved-Models restriction that would bind it contractually is not configured. |
 | Secret handling | The provider key is held in memory and never written to storage (decision 0020). Secrets are referenced indirectly in configuration, by environment variable name or file path, and never appear in it. |
 | Access control | Group admission is a stored authorization written only by the operator's own invitation. Every other contact is refused without touching the ledger, and the assistant withdraws (decision 0052). |
@@ -174,11 +176,22 @@ claim a measure that is not yet in place:
    would bind the processor to a named set of models and therefore to their retention and
    training terms. Not configured today. Added 2026-08-23 with the correction that zero
    data retention binds the processor alone.
-4. **The non-EEA conversation-naming model**, the framework defect described in section 7,
+4. **No signed Article 28 instrument with the search provider**, Serper, is on file with
+   the controller. Added 2026-08-29 with the web search: its published terms name the
+   customer as controller and itself as processor where personal data is processed, and
+   the adequacy decision for the United Kingdom covers the transfer, but no signed
+   instrument is on file with the controller yet. Until one is, this record states the
+   reliance as what it is.
+5. **The non-EEA conversation-naming model**, the framework defect described in section 7,
    with its fix in flight. Closed 2026-08-23: title derivation is switched off entirely
    (decision 0077), so no naming request exists to cross anywhere.
 
 ## 11. Keeping this record current
+
+Trigger fired and answered 2026-08-29: "any new path that sends message content off
+the machine, including a new tool" — the web search is such a path. This record was
+revised for it (sections 3, 6, 7, 9 and 10), and the impact assessment's addendum of
+the same date carries the assessment.
 
 This record is updated whenever the activity changes, and in any case on the review
 triggers listed in the impact assessment: a new platform or a group beyond the project's

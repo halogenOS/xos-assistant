@@ -39,6 +39,7 @@ async fn a_binding_with_an_unregistered_vendor_is_refused_at_start() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -78,6 +79,7 @@ async fn a_store_opened_without_the_configuration_is_refused_at_start() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await

@@ -34,6 +34,7 @@ async fn start_assistant_reasoning(level: ReasoningLevel) -> support::Fixture {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await

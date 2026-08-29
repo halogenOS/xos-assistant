@@ -21,6 +21,23 @@
 
 use crate::assembly::AnsweringMode;
 
+/// What this deployment can actually do, as the composition needs to know
+/// it: one field per capability whose teaching is gated on its own
+/// mechanism existing (unit 27, 2026-08-29). Named fields instead of a row
+/// of positional booleans — two adjacent flags at a call site are one
+/// silent swap away from teaching a tool the palette does not carry, which
+/// is the exact defect this gating exists to prevent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Capabilities {
+    /// A moderation handle is configured — the report tool's half of its
+    /// predicate; the answering mode is the other half.
+    pub moderation_handle: bool,
+    /// A web-search key is configured, which is the search tool's whole
+    /// predicate: with no key the tool is not admitted and its teaching is
+    /// not composed.
+    pub web_search: bool,
+}
+
 /// Whether the moderation teaching composes — and, in the assembly, whether
 /// the report tool registers: a moderation handle is configured AND the
 /// answering mode is helpful, the two conditions autonomous assessment
@@ -60,26 +77,51 @@ pub const MODERATION_TEACHING: &str = "You also assess each group message agains
      and stay silent. The tool is the only way to report — never write the \
      report command into an answer yourself.";
 
+/// The web search teaching, verbatim (unit 27, 2026-08-29), composed
+/// exactly when the search tool is admitted — one predicate for both, so
+/// the prompt never teaches a tool the palette does not carry. Three
+/// things: a snippet is a hint and an answer built on one says where it
+/// came from; a snippet that does not contain the claim is a miss, exactly
+/// as the sourcing rule already says of a lookup; and the carve-out that
+/// makes registering a web tool safe at all — project facts still come only
+/// from the project lookups. Without that last sentence, the sourcing
+/// rule's "your lookup tools are the only source of substantive claims"
+/// would silently authorise a random web page to back a claim about the
+/// project.
+pub const SEARCH_TEACHING: &str = "You can also search the web with the search_web tool, for questions about \
+     the world and not about the project. A result's snippet is a hint, \
+     not a source: when you answer from one, say where it came from and name \
+     the page. A snippet that does not contain the claim is a miss, exactly \
+     as an unanswering lookup is — say you don't know instead of filling the \
+     gap from memory. Facts about the project itself still come only from the \
+     project lookups: a web result is never the source for a claim about \
+     halogenOS, its features, its procedures or its builds.";
+
 /// The whole system prompt the assembly records: the embedder's prompt,
 /// then the name identity, then the answering teaching for the configured
-/// mode, then — exactly when [`moderation_taught`] holds — the moderation
-/// teaching. Public because the suites pin recorded prompts against
-/// exactly this composition instead of restating it.
+/// mode, then — each exactly when its own capability is there — the
+/// moderation teaching and the web search teaching. Public because the
+/// suites pin recorded prompts against exactly this composition instead of
+/// restating it.
 #[must_use]
 pub fn composed_system_prompt(
     base: &str,
     name: &str,
     answering: AnsweringMode,
-    moderation_handle_configured: bool,
+    capabilities: Capabilities,
 ) -> String {
     let mut prompt = format!(
         "{base}\n\n{identity}\n\n{teaching}",
         identity = identity_section(name),
         teaching = answering_section(answering),
     );
-    if moderation_taught(moderation_handle_configured, answering) {
+    if moderation_taught(capabilities.moderation_handle, answering) {
         prompt.push_str("\n\n");
         prompt.push_str(MODERATION_TEACHING);
+    }
+    if capabilities.web_search {
+        prompt.push_str("\n\n");
+        prompt.push_str(SEARCH_TEACHING);
     }
     prompt
 }
@@ -199,13 +241,32 @@ fn audience_rules() -> &'static str {
 mod tests {
     use super::*;
 
+    /// The capabilities of a deployment with a moderation handle and no
+    /// search key.
+    fn moderating() -> Capabilities {
+        Capabilities {
+            moderation_handle: true,
+            web_search: false,
+        }
+    }
+
+    /// The capabilities of a deployment with a search key and no moderation
+    /// handle.
+    fn searching() -> Capabilities {
+        Capabilities {
+            moderation_handle: false,
+            web_search: true,
+        }
+    }
+
     /// The composition order and the three facts the sections must carry:
     /// the base leads, the name reaches the identity, and each mode's
     /// teaching states the end-empty silence mechanism.
     #[test]
     fn the_prompt_composes_base_identity_and_mode_teaching() {
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
-            let prompt = composed_system_prompt("The base prose.", "Probe", mode, false);
+            let prompt =
+                composed_system_prompt("The base prose.", "Probe", mode, Capabilities::default());
             assert!(
                 prompt.starts_with("The base prose.\n\n"),
                 "the embedder's prompt leads"
@@ -219,12 +280,14 @@ mod tests {
                 "the teaching states silence as the empty turn"
             );
         }
-        let helpful = composed_system_prompt("b", "n", AnsweringMode::Helpful, false);
+        let helpful =
+            composed_system_prompt("b", "n", AnsweringMode::Helpful, Capabilities::default());
         assert!(
             helpful.contains("including messages that do not address you"),
             "helpful mode teaches the undirected reach"
         );
-        let addressed = composed_system_prompt("b", "n", AnsweringMode::Addressed, false);
+        let addressed =
+            composed_system_prompt("b", "n", AnsweringMode::Addressed, Capabilities::default());
         assert!(
             addressed.contains("when a message addresses you"),
             "addressed mode teaches the summons shape"
@@ -238,8 +301,12 @@ mod tests {
     #[test]
     fn both_modes_route_identity_questions_to_the_runtime_tool() {
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
-            for handle in [false, true] {
-                let prompt = composed_system_prompt("b", "n", mode, handle);
+            for moderation_handle in [false, true] {
+                let capabilities = Capabilities {
+                    moderation_handle,
+                    ..Capabilities::default()
+                };
+                let prompt = composed_system_prompt("b", "n", mode, capabilities);
                 assert!(
                     prompt.contains(
                         "When someone asks which model you run on, which version you \
@@ -266,7 +333,7 @@ mod tests {
     #[test]
     fn both_modes_teach_the_sourcing_discipline() {
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
-            let prompt = composed_system_prompt("b", "n", mode, false);
+            let prompt = composed_system_prompt("b", "n", mode, Capabilities::default());
             for fact in [
                 "Your lookup tools are the only source of substantive claims",
                 "never from your trained knowledge, so look it up before you answer",
@@ -300,7 +367,7 @@ mod tests {
     #[test]
     fn both_modes_teach_the_audience_discipline() {
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
-            let prompt = composed_system_prompt("b", "n", mode, false);
+            let prompt = composed_system_prompt("b", "n", mode, Capabilities::default());
             for fact in [
                 "one way from an end user who wants to use a feature on \
                  their device and another from a developer who wants to \
@@ -326,7 +393,8 @@ mod tests {
                 );
             }
         }
-        let helpful = composed_system_prompt("b", "n", AnsweringMode::Helpful, false);
+        let helpful =
+            composed_system_prompt("b", "n", AnsweringMode::Helpful, Capabilities::default());
         assert!(
             helpful.contains(
                 "an answer that makes a substantive claim must be one you \
@@ -334,7 +402,8 @@ mod tests {
             ),
             "the reconciled helpful sentence binds the lookup to the claim"
         );
-        let addressed = composed_system_prompt("b", "n", AnsweringMode::Addressed, false);
+        let addressed =
+            composed_system_prompt("b", "n", AnsweringMode::Addressed, Capabilities::default());
         assert!(
             addressed.contains(
                 "When you ask a clarifying question, invite the member to \
@@ -351,7 +420,8 @@ mod tests {
     /// prompt.
     #[test]
     fn silence_is_the_default_and_no_sentinel_vocabulary_survives() {
-        let helpful = composed_system_prompt("b", "n", AnsweringMode::Helpful, false);
+        let helpful =
+            composed_system_prompt("b", "n", AnsweringMode::Helpful, Capabilities::default());
         assert!(
             helpful.contains("Silence is the default"),
             "helpful mode leads with silence"
@@ -364,7 +434,7 @@ mod tests {
             "the unit-16 lookup-backed sentence stands verbatim"
         );
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
-            let prompt = composed_system_prompt("b", "n", mode, false);
+            let prompt = composed_system_prompt("b", "n", mode, Capabilities::default());
             for token in ["[[", "]]", "abstain", "abstention", "sentinel"] {
                 assert!(
                     !prompt.to_lowercase().contains(token),
@@ -384,7 +454,7 @@ mod tests {
     /// for a tool that is not there.
     #[test]
     fn the_moderation_teaching_composes_only_with_a_handle_and_helpful_mode() {
-        let taught = composed_system_prompt("b", "n", AnsweringMode::Helpful, true);
+        let taught = composed_system_prompt("b", "n", AnsweringMode::Helpful, moderating());
         assert!(
             taught.ends_with(MODERATION_TEACHING),
             "handle plus helpful composes the moderation teaching last"
@@ -392,15 +462,15 @@ mod tests {
         for (name, prompt) in [
             (
                 "helpful without a handle",
-                composed_system_prompt("b", "n", AnsweringMode::Helpful, false),
+                composed_system_prompt("b", "n", AnsweringMode::Helpful, Capabilities::default()),
             ),
             (
                 "addressed with a handle",
-                composed_system_prompt("b", "n", AnsweringMode::Addressed, true),
+                composed_system_prompt("b", "n", AnsweringMode::Addressed, moderating()),
             ),
             (
                 "addressed without a handle",
-                composed_system_prompt("b", "n", AnsweringMode::Addressed, false),
+                composed_system_prompt("b", "n", AnsweringMode::Addressed, Capabilities::default()),
             ),
         ] {
             assert!(
@@ -411,6 +481,58 @@ mod tests {
         assert!(moderation_taught(true, AnsweringMode::Helpful));
         assert!(!moderation_taught(false, AnsweringMode::Helpful));
         assert!(!moderation_taught(true, AnsweringMode::Addressed));
+    }
+
+    /// AC5's prompt half and AC9's carve-out (unit 27): the search teaching
+    /// rides the prompt exactly when a search key is configured, in either
+    /// answering mode — and with no key, no sentence of it exists for a
+    /// tool that is not there.
+    #[test]
+    fn the_search_teaching_composes_only_with_a_configured_key() {
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            let taught = composed_system_prompt("b", "n", mode, searching());
+            assert!(
+                taught.ends_with(SEARCH_TEACHING),
+                "a configured key composes the search teaching last in {mode:?} mode"
+            );
+            let untaught = composed_system_prompt("b", "n", mode, Capabilities::default());
+            assert!(
+                !untaught.contains("search_web"),
+                "no key teaches no search in {mode:?} mode"
+            );
+        }
+        // Both capabilities at once compose both teachings, each whole.
+        let both = composed_system_prompt(
+            "b",
+            "n",
+            AnsweringMode::Helpful,
+            Capabilities {
+                moderation_handle: true,
+                web_search: true,
+            },
+        );
+        assert!(both.contains(MODERATION_TEACHING) && both.contains(SEARCH_TEACHING));
+    }
+
+    /// The search teaching's copy, pinned on the three things it must
+    /// carry — above all the carve-out, without which registering a web
+    /// tool would silently authorise a web page to back a project claim.
+    #[test]
+    fn the_search_teaching_carries_the_snippet_rules_and_the_project_carve_out() {
+        for fact in [
+            "the search_web tool",
+            "for questions about the world and not about the project",
+            "A result's snippet is a hint, not a source",
+            "say where it came from and name the page",
+            "A snippet that does not contain the claim is a miss",
+            "Facts about the project itself still come only from the project lookups",
+            "a web result is never the source for a claim about halogenOS",
+        ] {
+            assert!(
+                SEARCH_TEACHING.contains(fact),
+                "the search teaching carries: {fact}"
+            );
+        }
     }
 
     /// The moderation teaching's copy, pinned on the facts it must carry:

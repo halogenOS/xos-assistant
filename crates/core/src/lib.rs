@@ -39,10 +39,11 @@
 //!   programmatic confirm.
 //! - [`schema`] — the store configuration and the domain tables; identity
 //!   lives apart from the ledger so erasure never touches a block.
-//! - [`tools`] — the project lookups, the palette kind that gates their
-//!   admission, the provenance reading the anchor gate takes, and the
-//!   admission wrapper enforcing both; the assembly takes its
-//!   [`tools::ToolSet`] and registers every tool behind that wrapper.
+//! - [`tools`] — the project lookups, the web search behind its own
+//!   configured key, the palette kind that gates their admission, the
+//!   provenance reading the anchor gate takes, and the admission wrapper
+//!   enforcing both; the assembly takes its [`tools::ToolSet`] and
+//!   registers every tool behind that wrapper.
 //! - `provider` (behind the `chat_completions` feature) — the framework's
 //!   `OpenRouter` module, reused as the shared chat-completions wire against
 //!   any OpenAI-compatible endpoint, wrapped around an in-memory
@@ -91,5 +92,10 @@ pub use message::{
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
 };
-pub use teaching::{MODERATION_TEACHING, composed_system_prompt, moderation_taught};
-pub use window::{ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW};
+pub use teaching::{
+    Capabilities, MODERATION_TEACHING, SEARCH_TEACHING, composed_system_prompt, moderation_taught,
+};
+pub use window::{
+    ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, SEARCH_BUDGET_CAP,
+    SEARCH_BUDGET_WINDOW,
+};

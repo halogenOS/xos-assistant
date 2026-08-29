@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 
+use assistant_core::tools::search::{self, SearchConfig};
 use assistant_core::{
     AnsweringMode, Budget, DirectChats, OperatorConfig, ProtectionConfig, ReasoningLevel,
 };
@@ -84,6 +85,9 @@ pub struct Configuration {
     /// [`Configuration::resolve_privacy_policy`], which refuses an empty
     /// value.
     pub privacy_policy: Option<String>,
+    /// The web search's locale; omitted entries keep the stated defaults.
+    #[serde(default)]
+    pub search: Search,
     /// The moderation bot's handle the report tool files toward; absent
     /// leaves the report tool unregistered, and so does the `addressed`
     /// answering mode even with the handle set — the autonomous assessment
@@ -314,7 +318,31 @@ pub struct Endpoints {
     /// [`Configuration::resolve_wiki_index_endpoint`], which trims and
     /// refuses an empty value.
     pub wiki_index: Option<String>,
+    /// The web search vendor's base address — the search tool's host.
+    /// Resolved through [`Configuration::resolve_web_search`], which trims
+    /// and refuses an empty value; omitted keeps the real vendor.
+    pub search: Option<String>,
 }
+
+/// The web search's locale table: which country and language the vendor is
+/// asked to answer for. Both are omitted by default, and the defaults are
+/// stated here because they are what an unconfigured deployment gets: the
+/// LANGUAGE defaults to English, and the COUNTRY is sent only when it is
+/// configured — an international community's results are a deployment
+/// choice, never a vendor default nobody chose. Unknown keys are refused
+/// like everywhere else in the file.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Search {
+    /// The country code the vendor answers for. Absent sends none.
+    pub country: Option<String>,
+    /// The language code the vendor answers in. Absent sends
+    /// [`DEFAULT_SEARCH_LANGUAGE`].
+    pub language: Option<String>,
+}
+
+/// The language the search asks for when the configuration names none.
+pub const DEFAULT_SEARCH_LANGUAGE: &str = "en";
 
 /// The protection table: the answering budgets, four fields with per-field
 /// defaults, so a partial table overrides only what it names. A window of
@@ -498,6 +526,59 @@ impl Configuration {
             None => Ok(None),
         }
     }
+
+    /// The web search's whole wiring, or `None` when no key is configured —
+    /// under which the search tool is not admitted and its teaching is not
+    /// composed. The key is the one predicate, so this function is the one
+    /// place that answers "is the search configured": the address and the
+    /// locale are read only when a key exists, and an address or a locale
+    /// entry set without a key is inert configuration the load refuses to
+    /// pretend is a search.
+    ///
+    /// # Errors
+    ///
+    /// [`StartError::SecretUnread`] or [`StartError::SecretRef`] when a
+    /// configured key cannot be read — optional by policy, not by leniency,
+    /// exactly like the mirror token. [`StartError::SearchEndpointEmpty`]
+    /// when the address override is present but blank, and
+    /// [`StartError::SearchLocaleEmpty`] naming the field when a locale
+    /// entry is present but blank: a blank locale would be sent to the
+    /// vendor as an empty code instead of the default nobody chose.
+    pub fn resolve_web_search(&self) -> Result<Option<SearchConfig>, StartError> {
+        let Some(reference) = &self.secrets.search_api_key else {
+            return Ok(None);
+        };
+        let api_key = reference.resolve("search_api_key")?;
+        let base_url = match &self.endpoints.search {
+            Some(address) => match address.trim() {
+                "" => return Err(StartError::SearchEndpointEmpty),
+                trimmed => trimmed.to_owned(),
+            },
+            None => search::DEFAULT_BASE_URL.to_owned(),
+        };
+        Ok(Some(SearchConfig {
+            base_url,
+            api_key,
+            country: locale_code(self.search.country.as_deref(), "country")?,
+            language: locale_code(self.search.language.as_deref(), "language")?
+                .unwrap_or_else(|| DEFAULT_SEARCH_LANGUAGE.to_owned()),
+        }))
+    }
+}
+
+/// One configured locale code, trimmed; `None` for an absent key and a
+/// refusal for a blank one.
+fn locale_code(
+    configured: Option<&str>,
+    field: &'static str,
+) -> Result<Option<String>, StartError> {
+    match configured {
+        Some(code) => match code.trim() {
+            "" => Err(StartError::SearchLocaleEmpty { field }),
+            trimmed => Ok(Some(trimmed.to_owned())),
+        },
+        None => Ok(None),
+    }
 }
 
 /// The longest accepted window: one year. Far past this, the database's
@@ -543,17 +624,25 @@ pub struct Secrets {
     /// header. Optional: absent, the lookup runs unauthenticated at the
     /// mirror's lower rate limit and sends no header.
     pub mirror_token: Option<SecretRef>,
+    /// The web search vendor's API key. Optional, and it is the search
+    /// tool's whole predicate (unit 27): absent, the tool is not admitted
+    /// and the composed prompt teaches no search — there is no call path on
+    /// which an unconfigured search can answer.
+    pub search_api_key: Option<SecretRef>,
 }
 
 /// One secret's indirection: an environment variable name or a file path,
-/// exactly one of the two.
+/// exactly one of the two. Surrounding whitespace is trimmed off the value
+/// whichever source carried it — a secrets file ends in a newline and a
+/// shell export picks one up just as easily, and either would otherwise
+/// travel verbatim into an authorization header and come back as a refusal
+/// that reads like a broken key.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecretRef {
     /// The environment variable holding the value.
     pub env: Option<String>,
-    /// The file holding the value; surrounding whitespace is trimmed, so a
-    /// trailing newline in a secrets file is harmless.
+    /// The file holding the value.
     pub file: Option<PathBuf>,
 }
 
@@ -567,19 +656,34 @@ impl SecretRef {
     /// read. The errors carry the secret's configuration key and the named
     /// source, never a value.
     pub fn resolve(&self, key: &'static str) -> Result<String, StartError> {
-        match (&self.env, &self.file) {
-            (Some(name), None) => std::env::var(name).map_err(|_| StartError::SecretUnread {
+        self.resolve_from(key, |name| std::env::var(name).ok())
+    }
+
+    /// The same resolution over a given reader of process variables. The
+    /// seam exists because this workspace forbids `unsafe` and setting a
+    /// process variable is unsafe in this edition, so the environment
+    /// branch would otherwise be the one branch no test can reach.
+    fn resolve_from(
+        &self,
+        key: &'static str,
+        read_env: impl Fn(&str) -> Option<String>,
+    ) -> Result<String, StartError> {
+        let value = match (&self.env, &self.file) {
+            (Some(name), None) => read_env(name).ok_or_else(|| StartError::SecretUnread {
                 key,
                 source_name: format!("environment variable {name}"),
             }),
-            (None, Some(path)) => std::fs::read_to_string(path)
-                .map(|value| value.trim().to_owned())
-                .map_err(|_| StartError::SecretUnread {
+            (None, Some(path)) => {
+                std::fs::read_to_string(path).map_err(|_| StartError::SecretUnread {
                     key,
                     source_name: format!("file {}", path.display()),
-                }),
+                })
+            }
             _ => Err(StartError::SecretRef { key }),
-        }
+        }?;
+        // One trim, after every source has answered: the promise belongs to
+        // the reference, not to whichever branch read it.
+        Ok(value.trim().to_owned())
     }
 }
 
@@ -718,6 +822,13 @@ mod tests {
         configuration
             .resolve_privacy_policy()
             .expect("the example's privacy key resolves");
+        assert!(
+            configuration
+                .resolve_web_search()
+                .expect("the example's search wiring resolves")
+                .is_none(),
+            "the example leaves the search key commented out, so it configures no search"
+        );
     }
 
     // ─── The log destination ─────────────────────────────────────────────
@@ -1159,6 +1270,178 @@ mod tests {
         assert!(
             matches!(refused, StartError::WikiIndexEndpointEmpty),
             "the refusal names the empty address; got {refused}"
+        );
+    }
+
+    // ─── The web search's wiring (unit 27) ───────────────────────────────
+
+    /// The key is the whole predicate: with none configured the resolution
+    /// answers `None`, whatever else the file names, and the assembly
+    /// therefore admits no search tool and teaches no search.
+    #[test]
+    fn no_search_key_means_no_search_however_the_rest_is_configured() {
+        assert!(
+            loaded("log = \"stderr\"", "")
+                .resolve_web_search()
+                .expect("an unconfigured search resolves")
+                .is_none(),
+            "no key, no search"
+        );
+        assert!(
+            loaded(
+                "log = \"stderr\"",
+                "[endpoints]\nsearch = \"http://127.0.0.1:1\"\n\n[search]\ncountry = \"de\"\n",
+            )
+            .resolve_web_search()
+            .expect("an unconfigured search resolves")
+            .is_none(),
+            "an address and a locale without a key are inert, never a search"
+        );
+    }
+
+    /// The secrets file every search test points its key reference at —
+    /// a file, never an environment variable: this workspace forbids
+    /// `unsafe`, and setting a process variable is unsafe in this edition.
+    fn key_file() -> TempConfigFile {
+        TempConfigFile::new("FAKE-SEARCH-KEY\n")
+    }
+
+    /// The `[secrets.search_api_key]` table pointing at that file.
+    fn key_secret(file: &TempConfigFile) -> String {
+        format!(
+            "[secrets.search_api_key]\nfile = \"{}\"\n",
+            file.0.display()
+        )
+    }
+
+    /// A configured key resolves the whole wiring: the real vendor by
+    /// default, the stated language default, and no country until one is
+    /// configured. The key resolves trimmed, so a secrets file's trailing
+    /// newline never travels to the vendor.
+    #[test]
+    fn a_configured_key_resolves_the_defaults_the_documentation_states() {
+        let file = key_file();
+        let configured = loaded("log = \"stderr\"", &key_secret(&file))
+            .resolve_web_search()
+            .expect("the configured search resolves")
+            .expect("a key configures the search");
+        assert_eq!(configured.base_url, search::DEFAULT_BASE_URL);
+        assert_eq!(configured.api_key, "FAKE-SEARCH-KEY");
+        assert_eq!(
+            configured.language, DEFAULT_SEARCH_LANGUAGE,
+            "the language default is the one the documentation states"
+        );
+        assert_eq!(
+            configured.country, None,
+            "the country is sent only where a deployment chose one"
+        );
+    }
+
+    /// The trim belongs to the reference and not to one of its sources: a
+    /// key read from a process variable loses the trailing newline a shell
+    /// export picks up, exactly as a secrets file's key does. An untrimmed
+    /// environment value would reach the vendor inside the key header and
+    /// come back as a refusal that reads like a wrong key.
+    #[test]
+    fn a_secret_resolves_trimmed_from_either_source() {
+        let file = key_file();
+        let from_file = SecretRef {
+            env: None,
+            file: Some(file.0.clone()),
+        };
+        assert_eq!(
+            from_file
+                .resolve_from("search_api_key", |_| None)
+                .expect("the file source reads"),
+            "FAKE-SEARCH-KEY"
+        );
+        let from_env = SecretRef {
+            env: Some("ASSISTANT_SEARCH_API_KEY".to_owned()),
+            file: None,
+        };
+        assert_eq!(
+            from_env
+                .resolve_from("search_api_key", |name| {
+                    (name == "ASSISTANT_SEARCH_API_KEY").then(|| " FAKE-SEARCH-KEY \n".to_owned())
+                })
+                .expect("the environment source reads"),
+            "FAKE-SEARCH-KEY"
+        );
+        assert!(
+            matches!(
+                from_env.resolve_from("search_api_key", |_| None),
+                Err(StartError::SecretUnread { key, source_name })
+                    if key == "search_api_key"
+                        && source_name.contains("ASSISTANT_SEARCH_API_KEY")
+            ),
+            "an unset variable names itself and never a value"
+        );
+    }
+
+    /// The address override and the locale entries resolve trimmed, and a
+    /// blank one refuses the start instead of reaching the vendor as an
+    /// empty code.
+    #[test]
+    fn the_search_address_and_locale_resolve_trimmed_and_refuse_blanks() {
+        let file = key_file();
+        let secret = key_secret(&file);
+        let configured = loaded(
+            "log = \"stderr\"",
+            &format!(
+                "[endpoints]\nsearch = \" http://127.0.0.1:1 \"\n\n\
+                 [search]\ncountry = \" de \"\nlanguage = \" fr \"\n\n{secret}"
+            ),
+        )
+        .resolve_web_search()
+        .expect("the configured search resolves")
+        .expect("a key configures the search");
+        assert_eq!(configured.base_url, "http://127.0.0.1:1");
+        assert_eq!(configured.country.as_deref(), Some("de"));
+        assert_eq!(configured.language, "fr");
+
+        let refused = loaded(
+            "log = \"stderr\"",
+            &format!("[endpoints]\nsearch = \"  \"\n\n{secret}"),
+        )
+        .resolve_web_search()
+        .expect_err("an empty address must be refused");
+        assert!(
+            matches!(refused, StartError::SearchEndpointEmpty),
+            "the refusal names the empty address; got {refused}"
+        );
+
+        for (field, table) in [
+            ("country", "[search]\ncountry = \"  \"\n"),
+            ("language", "[search]\nlanguage = \"  \"\n"),
+        ] {
+            let refused = loaded("log = \"stderr\"", &format!("{table}\n{secret}"))
+                .resolve_web_search()
+                .expect_err("an empty locale code must be refused");
+            assert!(
+                matches!(refused, StartError::SearchLocaleEmpty { field: named } if named == field),
+                "the refusal names the blank {field}; got {refused}"
+            );
+        }
+    }
+
+    /// A configured key that cannot be read refuses the start — optional by
+    /// policy, not by leniency, exactly like the mirror token's — and the
+    /// refusal names the source, never a value.
+    #[test]
+    fn an_unreadable_search_key_refuses_the_start() {
+        let refused = loaded(
+            "log = \"stderr\"",
+            "[secrets.search_api_key]\nfile = \"/nonexistent/search.key\"\n",
+        )
+        .resolve_web_search()
+        .expect_err("an unreadable key must refuse the start");
+        assert!(
+            matches!(refused, StartError::SecretUnread { key, .. } if key == "search_api_key"),
+            "the refusal names the key's configuration entry; got {refused}"
+        );
+        assert!(
+            refused.to_string().contains("/nonexistent/search.key"),
+            "the refusal names the source it looked in: {refused}"
         );
     }
 

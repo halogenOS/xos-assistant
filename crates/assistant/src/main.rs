@@ -2,7 +2,7 @@
 //! chat-completions provider and the Telegram adapter.
 //!
 //! The binary takes exactly one argument, the configuration file's path. It
-//! reads the configuration, resolves the two secrets through their
+//! reads the configuration, resolves the secrets through their
 //! indirections, loads the system prompt from the prompt directory, opens the
 //! store with the assistant's schema, and runs the adapter until SIGTERM —
 //! the run future is selected against the signal and abandoned, so an
@@ -130,6 +130,17 @@ enum StartError {
     #[error("the endpoints.wiki_index key must carry an address; omit it for the real host")]
     WikiIndexEndpointEmpty,
 
+    /// The web search endpoint override is present but empty or
+    /// whitespace. Omitting the key is how the real vendor is chosen.
+    #[error("the endpoints.search key must carry an address; omit it for the real host")]
+    SearchEndpointEmpty,
+
+    /// A search locale entry is present but empty after trimming. A blank
+    /// code would reach the vendor as an empty locale instead of the
+    /// stated default, so the line refuses the start.
+    #[error("the search.{field} key must carry a code; omit it for the stated default")]
+    SearchLocaleEmpty { field: &'static str },
+
     /// A secret reference names both sources or neither.
     #[error("the secret `{key}` must name exactly one of `env` or `file`")]
     SecretRef { key: &'static str },
@@ -221,6 +232,11 @@ fn run() -> Result<(), StartError> {
         .as_ref()
         .map(|reference| reference.resolve("mirror_token"))
         .transpose()?;
+    // The web search's whole wiring, key included, or None when no key is
+    // configured — the one predicate the tool's admission and its teaching
+    // both take (unit 27). A configured key that cannot be read refuses the
+    // start here, like the mirror token's.
+    let web_search = configuration.resolve_web_search()?;
     let system_prompt = prompt::load(&configuration.prompt_dir)?;
     init_logging(&configuration.log)?;
     tokio::runtime::Builder::new_multi_thread()
@@ -240,6 +256,7 @@ fn run() -> Result<(), StartError> {
             bot_token,
             chat_completions_api_key,
             mirror_token,
+            web_search,
             system_prompt,
             started_at,
         }))
@@ -295,6 +312,7 @@ struct ServeInputs {
     bot_token: String,
     chat_completions_api_key: String,
     mirror_token: Option<String>,
+    web_search: Option<assistant_core::tools::search::SearchConfig>,
     system_prompt: String,
     /// The instant the start sequence began — the process's uptime anchor.
     started_at: Instant,
@@ -328,11 +346,13 @@ fn resolved_lookup_endpoints(
 }
 
 /// One startup line naming every resolved path and endpoint — never a
-/// secret.
+/// secret. The search endpoint is logged as the ADDRESS it will post to,
+/// or as unconfigured; its key is not logged, rendered or named anywhere.
 fn log_startup(
     configuration: &Configuration,
     wiki_endpoint: Option<&str>,
     wiki_index_endpoint: Option<&str>,
+    search_endpoint: Option<&str>,
 ) {
     tracing::info!(
         store = %configuration.store_path.display(),
@@ -361,38 +381,20 @@ fn log_startup(
             .unwrap_or("the real host"),
         wiki_endpoint = %wiki_endpoint.unwrap_or("the real host"),
         wiki_index_endpoint = %wiki_index_endpoint.unwrap_or("the real host"),
+        search_endpoint = %search_endpoint.unwrap_or("not configured"),
         "the assistant is up"
     );
 }
 
-/// Assemble and serve until SIGTERM or an adapter start refusal.
-async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
-    let ServeInputs {
-        configuration,
-        protection,
-        operators,
-        privacy_policy,
-        moderation_handle,
-        wiki_endpoint,
-        wiki_index_endpoint,
-        name,
-        disclosure,
-        bot_token,
-        chat_completions_api_key,
-        mirror_token,
-        system_prompt,
-        started_at,
-    } = inputs;
-    // The stop handler installs before anything reaches the network: the
-    // startup identity read below can precede the serve loop by a moment,
-    // and a SIGTERM arriving inside that window must still stop the process
-    // cleanly instead of falling to the default action.
-    let mut sigterm = signal(SignalKind::terminate()).map_err(StartError::Runtime)?;
-    // The adapter configuration comes first because the name's default is
-    // the platform's own display name, read once at startup: a configured
-    // name skips the read entirely, and a failed read refuses the start
-    // loudly — naming both remedies — instead of assembling a nameless
-    // assistant.
+/// The adapter with the assistant's resolved name, both built here because
+/// they decide each other: a configured name skips the platform read
+/// entirely, and a failed read refuses the start loudly — naming both
+/// remedies — instead of assembling a nameless assistant.
+async fn resolved_adapter(
+    configuration: &Configuration,
+    bot_token: String,
+    name: Option<String>,
+) -> Result<(TelegramAdapter, String), StartError> {
     let mut adapter_config = assistant_adapter_telegram::Config::new(
         bot_token,
         configuration.telegram_state_path.clone(),
@@ -410,7 +412,36 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
             })?,
     };
     adapter_config.name = Some(name.clone());
-    let adapter = TelegramAdapter::new(adapter_config);
+    Ok((TelegramAdapter::new(adapter_config), name))
+}
+
+/// Assemble and serve until SIGTERM or an adapter start refusal.
+async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
+    let ServeInputs {
+        configuration,
+        protection,
+        operators,
+        privacy_policy,
+        moderation_handle,
+        wiki_endpoint,
+        wiki_index_endpoint,
+        name,
+        disclosure,
+        bot_token,
+        chat_completions_api_key,
+        mirror_token,
+        web_search,
+        system_prompt,
+        started_at,
+    } = inputs;
+    // The stop handler installs before anything reaches the network: the
+    // startup identity read below can precede the serve loop by a moment,
+    // and a SIGTERM arriving inside that window must still stop the process
+    // cleanly instead of falling to the default action.
+    let mut sigterm = signal(SignalKind::terminate()).map_err(StartError::Runtime)?;
+    // The adapter comes first because the name's default is read from the
+    // platform, once, at startup.
+    let (adapter, name) = resolved_adapter(&configuration, bot_token, name).await?;
     let store = Store::open_with(&configuration.store_path, store_config())?;
     let provider = MemoryConfiguredProvider::new(
         &store,
@@ -428,6 +459,9 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     };
     let mut providers = ProviderRegistry::new();
     providers.register(Box::new(provider));
+    // Kept before the configuration moves into the assembly: the address
+    // the startup line names, never the key beside it.
+    let search_endpoint = web_search.as_ref().map(|search| search.base_url.clone());
     let tools = ToolSet::production_lookups(resolved_lookup_endpoints(
         &configuration,
         mirror_token,
@@ -451,6 +485,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
             direct_chats: configuration.direct_chats.resolve(),
             privacy_policy_address: privacy_policy,
             moderation_handle,
+            web_search,
             started_at,
         },
     )
@@ -473,6 +508,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         &configuration,
         wiki_endpoint.as_deref(),
         wiki_index_endpoint.as_deref(),
+        search_endpoint.as_deref(),
     );
 
     tokio::select! {

@@ -747,6 +747,7 @@ async fn debt_propagation_reads_through_a_note_at_the_stamp() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -977,6 +978,7 @@ async fn a_pending_tail_debt_is_preserved_past_the_privacy_command() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -1393,6 +1395,7 @@ async fn a_failed_turns_closure_marker_does_not_widen_debt_propagation() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -1474,6 +1477,7 @@ async fn a_note_over_a_failed_turns_marker_stays_a_settled_tail() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -1650,6 +1654,7 @@ async fn an_observation_racing_an_erasure_respects_the_fence() {
                 direct_chats: assistant_core::DirectChats::default(),
                 privacy_policy_address: None,
                 moderation_handle: None,
+                web_search: None,
             },
         )
         .await

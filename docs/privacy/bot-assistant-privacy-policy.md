@@ -19,7 +19,8 @@ Data protection enquiries: [privacy@halogenos.org](mailto:privacy@halogenos.org)
 
 We store the text of each message in a group the assistant belongs to, including the
 caption under a picture or a file, the group's pinned rules, which can name a person, and
-the assistant's lookups with their results. We do not store the media itself, edits, or
+the assistant's lookups with their results — which, since 29 August 2026, include the
+words it sends to a web search when a question is not about the project. We do not store the media itself, edits, or
 posts made anonymously for the group, except a pinned rules text. We do not serve direct
 chats: a direct message is rejected and not stored.
 
@@ -34,7 +35,8 @@ _Purpose:_ answering questions in the groups, reading the conversation for
 context, limiting how much the assistant answers per person and per chat, and reporting a
 message that breaks the group's pinned rules to the group's moderation bot (changed
 2026-08-24: the assistant makes that assessment itself; the earlier member-asked report
-is gone).
+is gone). Added 2026-08-29: answering a question that is not about the project can
+include a web search, described under Recipients below.
 _Legal basis:_ Article 6(1)(f) GDPR, our legitimate interest in running an assistant in our
 own community groups. You can object at any time, see below.
 
@@ -89,14 +91,19 @@ Answers are model-written and can be wrong.
 |-----------|------|-------|
 | Requesty Ltd, London, United Kingdom | Passes the conversation to a language model and returns the answer. Requests enter through its European endpoint, and what it stores it stores in Frankfurt. Zero data retention is configured: no message and no answer reaches storage or training. It keeps billing telemetry without content: token counts, the model identifier, a timestamp. | Processor, Article 28 GDPR |
 | Sub-processors engaged by Requesty | Two layers. Amazon Web Services in Frankfurt runs the infrastructure, with Requesty answerable to us for it. The model providers it routes to — a category, not a name: which provider serves a request follows the model chosen, and this policy does not track that choice — answer to Requesty, which is responsible for the choice and the written terms but not for a provider's own breach. Zero data retention binds Requesty and not a model provider: whether a provider keeps a request or trains on it follows the model's terms. | Sub-processors, Article 28(2) and (4) GDPR |
+| Serper, United Kingdom (added 2026-08-29) | Runs the web search. It receives the search query the assistant writes — words drawn from the conversation — and answers with results. It receives no account identifier, no username and no other part of the conversation. A query written with a handle in it — an at sign followed by a name — is refused before anything is sent, so no query in that form reaches the search provider. Serper's terms are governed by the law of the United Kingdom, and its privacy policy states that where personal data is processed in the service, the customer is controller and Serper is processor. | Processor, Article 28 GDPR |
 | Your chat platform | Delivers and stores the same messages as part of its own service, under its own privacy policy. It does not act for us. | Independent controller |
 | The other people in the group | See your messages as they always have | Your own act of posting |
 
-We store messages on a server in Germany. Data leaves the EU/EEA in three places:
+We store messages on a server in Germany. Data leaves the EU/EEA in four places
+(three until 29 August 2026, when the web search was added):
 
 - Our processor is a UK company, though it stores and serves in Frankfurt. The European
   Commission has decided the United Kingdom offers adequate protection, so no further
   safeguard is needed.
+- Our search provider is a UK company and receives the search query there. The same
+  adequacy decision for the United Kingdom covers it, so no further safeguard is
+  needed.
 - A model deployment outside the EEA would receive the request there, under the standard
   contractual clauses in the processor agreement (Article 46(2)(c) GDPR); the configured
   model is served in the EU. Write to the address above for a copy.
@@ -128,7 +135,8 @@ what you asked. On your message rows the store's internal number, the arrival ti
 administrator standing stay; once your identity data is gone that number names nobody,
 though it still ties those messages together. Our processor has nothing to delete, since it
 keeps no message, and a model provider behind it may keep a request under its own terms,
-beyond our reach. We do not reach lookup records, the pinned rules text, or the
+beyond our reach. We do not reach lookup records — including a web search's query — the pinned rules
+text, or the
 copy of your message's identifier on somebody else's reply where it matches nothing of
 yours, and a query or a rules text can quote your words or name you. If you opted out, we
 keep your account identifier with the opt-out mark on purpose, because forgetting it would
@@ -176,4 +184,4 @@ Promenade 18, 91522 Ansbach\
 We update this policy as the assistant changes. The current version is always at this
 address, and the assistant answers `/privacy` with it.
 
-Last updated: 23 August 2026
+Last updated: 29 August 2026

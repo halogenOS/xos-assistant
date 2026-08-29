@@ -21,25 +21,25 @@
 //! index that actually lists them.
 //!
 //! Neither host publishes a rate-limit contract, so the tool keeps a
-//! per-process response cache: keyed by the full request address — the
-//! index answer under its own address, beside the pages — a named TTL
-//! matching the raw host's own cache header (five minutes), pages and
-//! missing-page answers cached alike — negative caching bounds a model
-//! guessing page names — and a named entry cap cleared whole when hit, the
-//! established memory-cap shape. Transport failures are never cached: a
-//! passing condition must not silence five minutes of retries.
+//! per-process response cache — the lookup layer's shared cache shape — keyed by
+//! the full request address, the index answer under its own address beside
+//! the pages, with a named TTL matching the raw host's own cache header
+//! (five minutes), pages and missing-page answers cached alike — negative
+//! caching bounds a model guessing page names — and a named entry cap
+//! cleared whole when hit. Transport failures are never cached: a passing
+//! condition must not silence five minutes of retries.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
 use agent_ledger::{CoreEvent, ToolContext, ToolHandler, ToolOutcome};
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
-use tokio::time::Instant;
 
 use crate::message::Authority;
-use crate::tools::lookup::{ORGANIZATION, TextAnswer, bounded_get_text, lookup_client};
+use crate::tools::lookup::{
+    MemoryCache, ORGANIZATION, TextAnswer, bounded_get_text, lookup_client,
+};
 
 /// The registered name the model calls the tool by.
 pub const NAME: &str = "lookup_wiki";
@@ -107,42 +107,6 @@ pub fn valid_page_name(name: &str) -> bool {
 /// bounded page text, or the missing-page error.
 type CachedAnswer = Result<String, String>;
 
-/// The per-process response cache, keyed by the full request address: live
-/// entries serve for [`CACHE_TTL`], expired ones are swept on every read,
-/// and the whole map is cleared when an insert meets [`CACHE_CAP`]. Its
-/// own struct so the TTL and the cap are pinned under paused time without
-/// a wire — a paused runtime and real sockets do not mix.
-struct AnswerCache {
-    entries: Mutex<HashMap<String, (Instant, CachedAnswer)>>,
-}
-
-impl AnswerCache {
-    fn new() -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// The live cached answer for one address, expired entries swept.
-    async fn cached(&self, url: &str) -> Option<CachedAnswer> {
-        let mut entries = self.entries.lock().await;
-        let now = Instant::now();
-        entries.retain(|_, (at, _)| now.duration_since(*at) < CACHE_TTL);
-        entries.get(url).map(|(_, answer)| answer.clone())
-    }
-
-    /// Record one answer, clearing the whole map first when the cap is
-    /// hit.
-    async fn remember(&self, url: String, answer: CachedAnswer) {
-        let mut entries = self.entries.lock().await;
-        if entries.len() >= CACHE_CAP {
-            tracing::debug!("the wiki cache reached its cap and was cleared");
-            entries.clear();
-        }
-        entries.insert(url, (Instant::now(), answer));
-    }
-}
-
 /// The wiki lookup tool.
 pub struct WikiLookup {
     client: reqwest::Client,
@@ -151,8 +115,9 @@ pub struct WikiLookup {
     /// The forge host's base address — where the rendered index the page
     /// enumeration reads is served.
     index_base_url: String,
-    /// The per-process response cache, keyed by the full request address.
-    cache: AnswerCache,
+    /// The per-process response cache, keyed by the full request address,
+    /// over [`CACHE_TTL`] and [`CACHE_CAP`].
+    cache: MemoryCache<CachedAnswer>,
 }
 
 impl WikiLookup {
@@ -175,7 +140,7 @@ impl WikiLookup {
             client: lookup_client(timeout),
             base_url: base_url.into(),
             index_base_url: index_base_url.into(),
-            cache: AnswerCache::new(),
+            cache: MemoryCache::new(CACHE_TTL, CACHE_CAP),
         }
     }
 
@@ -448,15 +413,15 @@ mod tests {
 
     // ─── The cache's clock, under paused time (AC2) ──────────────────────
     //
-    // The TTL and the cap are pinned here, on the cache struct itself,
-    // because a paused runtime and real sockets do not mix: the paused
-    // clock auto-advances past every timeout while a task awaits the
-    // wire. The one-request-per-live-entry behavior over a real wire is
-    // pinned in the integration suite, where time runs.
+    // The TTL and the cap are pinned here, on the shared cache under this
+    // tool's own constants, because a paused runtime and real sockets do
+    // not mix: the paused clock auto-advances past every timeout while a
+    // task awaits the wire. The one-request-per-live-entry behavior over a
+    // real wire is pinned in the integration suite, where time runs.
 
     #[tokio::test(start_paused = true)]
     async fn a_cached_answer_serves_inside_the_ttl_and_expires_past_it() {
-        let cache = AnswerCache::new();
+        let cache: MemoryCache<CachedAnswer> = MemoryCache::new(CACHE_TTL, CACHE_CAP);
         cache.remember("u1".into(), Ok("the page".into())).await;
         assert_eq!(
             cache.cached("u1").await,
@@ -483,7 +448,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_missing_page_answer_is_cached_like_a_body() {
-        let cache = AnswerCache::new();
+        let cache: MemoryCache<CachedAnswer> = MemoryCache::new(CACHE_TTL, CACHE_CAP);
         cache
             .remember("u404".into(), Err(missing_page("Guessed")))
             .await;
@@ -496,7 +461,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_cache_clears_whole_at_its_cap() {
-        let cache = AnswerCache::new();
+        let cache: MemoryCache<CachedAnswer> = MemoryCache::new(CACHE_TTL, CACHE_CAP);
         for n in 0..CACHE_CAP {
             cache.remember(format!("u{n}"), Ok("a page".into())).await;
         }

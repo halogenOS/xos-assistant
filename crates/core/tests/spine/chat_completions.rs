@@ -171,6 +171,7 @@ async fn the_chat_completions_module_answers_over_the_loopback_wire_and_stores_n
                 direct_chats: assistant_core::DirectChats::default(),
                 privacy_policy_address: None,
                 moderation_handle: None,
+                web_search: None,
             },
         )
         .await
@@ -274,6 +275,7 @@ async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accept
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await

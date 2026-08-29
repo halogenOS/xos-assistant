@@ -105,3 +105,26 @@ version returned no advisory.
 listeners on the loopback interface written against tokio's own networking, which the
 core's and the binary's development sections already enable — no new crate and no new
 feature arrives for them.
+
+## 2026-08-29 — the web search
+
+The web search posts JSON to a search vendor and reads a JSON answer back. **No
+dependency was added for it**, and this entry records the check that established
+that instead of an addition:
+
+- The request goes through the core's shared lookup layer, which already runs on
+  `reqwest` with its `json` feature — reviewed in the tools entry above, at the same
+  major version the framework and the adapter run on. The layer grew a bounded POST
+  seam beside its bounded GET; a POST is the same client, the same timeout, the same
+  redirect refusal and the same body cap.
+- The query guard needs no unicode table. A confusables dependency (a UTS-39
+  implementation) was considered and REJECTED on its merits, recorded in decision
+  0115: the guard exists against a careless model, not an adversary, and the
+  normalisation it does need — dropping formatting characters, collapsing a single
+  separator inside a candidate token — is a dozen lines against `char` classes.
+- The suite's scripted vendor is the loopback listener the other lookups' fixtures
+  already use, written against tokio's own networking, which the core's development
+  section already enables.
+
+Nothing in this unit's manifests changed, so there was no version to look up and no
+registry history to check — which is itself the answer this rule asks for.

@@ -271,6 +271,19 @@ again:
    numeric account identifier stays on the machine, the display name is not stored at
    all (decision 0077), and nothing is
    added to a request without weighing this assessment again.
+
+   > Re-weighed 2026-08-29, with the web search. The obligation in the last clause
+   > fired: the search sends member-derived text to a place it did not go before.
+   > The weighing was performed and its outcome is recorded here instead of
+   > assumed. What crosses to the search provider is the QUERY and nothing else —
+   > no account identifier, no username, no other part of the conversation — so
+   > this safeguard's own subject, the identifiers in a request, is not weakened;
+   > the search boundary is narrower than the model provider's, not wider. A query
+   > carrying a person reference in the handle form is refused whole before
+   > anything is sent, by a guard that does not echo what it matched (decision
+   > 0115). The safeguard therefore stands as written, with the search boundary
+   > named beside it.
+
 3. The processing chain stays as assessed: a processor in the United Kingdom under an
    Article 28 agreement with standard contractual clauses, storing and serving in
    Frankfurt, with the United Kingdom's adequacy decision covering the processor
@@ -281,6 +294,21 @@ again:
    standard contractual clauses. The conversation-naming step reached such a deployment
    through a framework defect whose fix was in flight; closed 2026-08-23 by decision
    0077 — title derivation is off entirely, and no naming request exists.
+
+   > Re-weighed 2026-08-29, with the web search. The chain changed: a SECOND
+   > processor joined it, the search provider, receiving the query alone. It is a
+   > company in the United Kingdom, so the transfer rests on the same adequacy
+   > decision under Article 45 GDPR that already covers the model processor, with
+   > no further safeguard required; its terms name the customer controller and
+   > itself processor where personal data is processed. The weighing performed
+   > with this unit finds the balance unchanged: the addition is one bounded,
+   > adequacy-covered recipient of a query, weighed against members getting an
+   > answer to a question the project's own sources cannot answer. The signed
+   > Article 28 instrument with that provider is not yet on file and is carried as
+   > an open dependency in the record of processing, section 10 — stated, not
+   > assumed. The impact assessment's addendum of the same date carries the full
+   > assessment, and this safeguard continues to bind: a further change to the
+   > chain reopens this weighing again.
 4. Notice in the group before collection: the rules pin and the deterministic privacy
    command (decision 0053), plus the platform's own policy field.
 5. Objection and deletion answered within a month, free, with no more identity checking

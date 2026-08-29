@@ -106,6 +106,19 @@ file path per secret — and never appear in the file itself:
     #[secrets.mirror_token]
     #env = "ASSISTANT_MIRROR_TOKEN"
 
+    # Optional: the web search vendor's API key. It is the search tool's
+    # whole switch: absent, the tool is not registered and the assistant is
+    # never taught to search. A configured key that cannot be read refuses
+    # the start.
+    #[secrets.search_api_key]
+    #env = "ASSISTANT_SEARCH_API_KEY"
+
+    # Optional: which locale the web search asks the vendor for. The
+    # language defaults to "en"; the country is sent only when set.
+    #[search]
+    #country = "de"
+    #language = "de"
+
     # Optional; the values shown are the defaults.
     [protection]
     principal_answers = 6
@@ -119,12 +132,14 @@ file path per secret — and never appear in the file itself:
     [operators]
     telegram = "<the operator's numeric Telegram user id>"
 
-The `[endpoints]` table can override any of the five hosts the process talks to —
-`telegram`, `chat_completions` (the OpenAI-compatible model endpoint), `forge` (the commit
-lookup's canonical forge, default
+The `[endpoints]` table carries one key per host the process talks to, and can override
+each of them: `telegram`, `chat_completions` (the OpenAI-compatible model endpoint),
+`forge` (the commit lookup's canonical forge, default
 `https://git.halogenos.org`), `mirror` (the release lookup's API host, default
-`https://api.github.com`) and `wiki` (the wiki lookup's raw host, default
-`https://raw.githubusercontent.com`); omitted entries keep the real hosts, and the
+`https://api.github.com`), `wiki` (the wiki lookup's raw host, default
+`https://raw.githubusercontent.com`), `wiki_index` (the host the wiki lookup reads its
+rendered page index from, default `https://github.com`) and `search` (the web search
+vendor, default `https://google.serper.dev`); omitted entries keep the real hosts, and the
 overrides exist for the test suites' loopback servers.
 
 The three lookup tools answer community questions from the project's own sources: a
@@ -135,6 +150,18 @@ raw host's own cache header. Every conversation records a tool palette at creati
 naming exactly the registered tools, and appends a superseding palette when the
 registered set changes; a conversation without a palette admits none, and a call
 outside the palette is declined with a recorded error the model reads.
+
+The web search answers questions the project's own sources cannot: it returns a page
+of ranked results — each one's title, link, snippet where the result has one, and a
+hint about the kind of host it sits on — and opens nothing. It registers only when
+`secrets.search_api_key` is configured; without a key the tool is absent from every
+palette and the prompt teaches no search at all. The query is sent exactly as
+written, never corrected and never truncated: a query over 400 characters is refused
+whole with the limit named, pages run from 1 to 5, and a query carrying a person
+reference — an at sign followed by a name — is refused before anything is sent.
+Each person draws at most five searches per ten minutes, since every call is a paid
+request, and the same query within the window is answered from memory. Facts about
+halogenOS itself still come only from the project lookups.
 
 The report tool files a spam report with the group's moderation bot when a member
 replies to an offending message and asks: the fixed `/report@<handle>` line goes

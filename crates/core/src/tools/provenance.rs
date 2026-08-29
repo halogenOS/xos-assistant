@@ -152,6 +152,35 @@ pub(crate) fn co_summoners(ledger: &[Block], call_block_id: i64) -> Vec<ChatMess
     span.chain(chain).collect()
 }
 
+/// The one PERSON behind the turn, over the co-summoners of
+/// [`co_summoners`]: `Some` only where their stored principals resolve to
+/// exactly one distinct id, and `None` where there are none, where there
+/// are several, or where any one taker's stored principal is unreadable —
+/// an unreadable row makes the set unresolvable rather than a smaller set
+/// to act on.
+///
+/// One reading, one place: the privacy tool resolves the SUBJECT of a
+/// rights request this way (2026-08-23) and the web search books its
+/// spending BUCKET this way (2026-08-27), and the two would otherwise
+/// re-derive the same rule from the same walk. What the callers own is
+/// what they do with the absence — each names its own taught result — and
+/// what they do after the fold, which is genuinely theirs: the rights tool
+/// goes on to require the person to still exist in the identity tables, a
+/// question a spend bucket does not ask.
+pub(crate) fn sole_principal(ledger: &[Block], call_block_id: i64) -> Option<i64> {
+    let mut distinct: Vec<i64> = co_summoners(ledger, call_block_id)
+        .iter()
+        .map(|message| message.principal_id.ok_or(()))
+        .collect::<Result<Vec<i64>, ()>>()
+        .ok()?;
+    distinct.sort_unstable();
+    distinct.dedup();
+    match distinct.as_slice() {
+        &[principal_id] => Some(principal_id),
+        _ => None,
+    }
+}
+
 /// The anchor's contribution: the minimum sender authority over the debt
 /// origin set — the own-debt-takers in the chain of answer-due chat
 /// messages ending at the anchor, the block at `anchor_index` (0043,

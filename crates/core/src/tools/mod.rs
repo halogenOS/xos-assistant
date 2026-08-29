@@ -36,6 +36,7 @@ pub mod release;
 pub mod report;
 pub mod rights;
 pub mod runtime;
+pub mod search;
 pub mod wiki;
 
 use admission::AdmittedTool;

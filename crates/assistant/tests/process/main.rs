@@ -10,9 +10,9 @@ mod support;
 
 use serde_json::json;
 use support::{
-    ANSWER, BinaryRun, CompletionsServer, DEADLINE, KEY, LookupServer, MIRROR_TOKEN, STOP_BOUND,
-    Scratch, TOKEN, TelegramServer, UNROUTABLE, assert_absent, assert_absent_if_present,
-    private_update,
+    ANSWER, BinaryRun, CompletionsServer, DEADLINE, KEY, LookupServer, MIRROR_TOKEN, SEARCH_KEY,
+    STOP_BOUND, Scratch, TOKEN, TelegramServer, UNROUTABLE, assert_absent,
+    assert_absent_if_present, private_update,
 };
 
 /// The fixture prompt the loader reads; the run story's real prompt files
@@ -37,6 +37,10 @@ struct ConfigOptions {
     /// The direct-chat switch's spelled value; absent omits the key, which
     /// means on.
     direct_chats: Option<&'static str>,
+    /// The web search's endpoint. Present configures the whole search
+    /// wiring — the address here and the key secret behind a scratch file;
+    /// absent omits both, which is a deployment without a search.
+    search_root: Option<String>,
     /// Raw TOML appended after the named tables — the budget test's
     /// protection table.
     extra_tables: String,
@@ -50,6 +54,7 @@ impl Default for ConfigOptions {
             mirror_root: None,
             mirror_token: false,
             direct_chats: None,
+            search_root: None,
             extra_tables: String::new(),
         }
     }
@@ -73,6 +78,7 @@ fn configuration(
         mirror_root,
         mirror_token,
         direct_chats,
+        search_root,
         extra_tables,
     } = options;
     scratch.write("prompts/assistant.md", PROMPT);
@@ -89,6 +95,18 @@ fn configuration(
         "[secrets.mirror_token]\nenv = \"PROCESS_TEST_MIRROR_TOKEN\"\n\n"
     } else {
         ""
+    };
+    // The search's address and its key travel together: the key alone is
+    // what makes the tool exist, so a configuration naming one names both.
+    let (search_endpoint, search_secret) = match search_root {
+        Some(address) => {
+            let key_file = scratch.write("search-key", &format!("{SEARCH_KEY}\n"));
+            (
+                format!("search = {address:?}\n"),
+                format!("[secrets.search_api_key]\nfile = {key_file:?}\n\n"),
+            )
+        }
+        None => (String::new(), String::new()),
     };
     // A top-level key, so it must sit ahead of the file's first table.
     let direct_chats_key = direct_chats
@@ -107,12 +125,14 @@ fn configuration(
              telegram = {telegram_root:?}\n\
              chat_completions = {completions_base:?}\n\
              {forge_endpoint}\
-             {mirror_endpoint}\n\
+             {mirror_endpoint}\
+             {search_endpoint}\n\
              [secrets.bot_token]\n\
              env = \"PROCESS_TEST_BOT_TOKEN\"\n\n\
              [secrets.chat_completions_api_key]\n\
              file = {:?}\n\n\
              {mirror_secret}\
+             {search_secret}\
              {extra_tables}",
             scratch.path("store.db"),
             scratch.path("telegram.offset"),
@@ -286,6 +306,78 @@ async fn the_mirror_token_reaches_the_wire_and_no_artifact() {
             MIRROR_TOKEN,
             "the mirror token",
         );
+    }
+}
+
+/// AC6's logging half, driven through the binary: with the web search
+/// configured, the startup line names the ADDRESS the search will post to,
+/// and the key that travels in the request header appears in no artifact —
+/// not in the log file, not on stderr, not in the store. The address is
+/// asserted present so the scan cannot pass by the search simply not being
+/// wired.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_startup_line_names_the_search_address_and_never_its_key() {
+    let telegram = TelegramServer::start().await;
+    let completions = CompletionsServer::start().await;
+    let scratch = Scratch::new("search-key");
+    let log_file = scratch.path("assistant.log");
+    // The search vendor is pointed at the unroutable loopback address: this
+    // run configures the search and never calls it, so nothing leaves the
+    // machine while the wiring is proven.
+    let config = configuration(
+        &scratch,
+        &telegram.root(),
+        &completions.base(),
+        &ConfigOptions {
+            log_destination: format!(
+                "{{ file = {:?} }}",
+                log_file.to_str().expect("the scratch path is unicode")
+            ),
+            search_root: Some(UNROUTABLE.to_owned()),
+            ..ConfigOptions::default()
+        },
+    );
+
+    let mut run = BinaryRun::spawn(
+        &[&config],
+        &[("PROCESS_TEST_BOT_TOKEN", TOKEN)],
+        &scratch.path("stderr.txt"),
+    );
+
+    // The startup line is written once the assembly stands, so the run is
+    // awaited by the artifact this test reads.
+    let deadline = std::time::Instant::now() + DEADLINE;
+    let log = loop {
+        let log = std::fs::read_to_string(&log_file).unwrap_or_default();
+        if log.contains("the assistant is up") {
+            break log;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting the startup line; the log held {log:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    assert!(
+        log.contains(&format!("search_endpoint={UNROUTABLE}")),
+        "the startup line names the address the search posts to; the log held {log:?}"
+    );
+
+    run.terminate();
+    assert!(run.wait_exit(STOP_BOUND).await.success());
+
+    // The key, and every fragment of it a partial rendering could leak.
+    for fragment in [SEARCH_KEY, "sk-search", "FAKE-PROCESS-TEST-SEARCH-KEY"] {
+        for name in ["assistant.log", "stderr.txt", "store.db"] {
+            assert_absent(&scratch.path(name), fragment, "the web search key");
+        }
+        for suffix in ["-wal", "-shm"] {
+            assert_absent_if_present(
+                &scratch.path(&format!("store.db{suffix}")),
+                fragment,
+                "the web search key",
+            );
+        }
     }
 }
 

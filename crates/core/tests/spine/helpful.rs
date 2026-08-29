@@ -351,6 +351,7 @@ async fn an_absorbed_question_and_the_intervening_answer_reach_the_model() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await;
