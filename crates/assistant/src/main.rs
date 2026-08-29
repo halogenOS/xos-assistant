@@ -386,34 +386,6 @@ fn log_startup(
     );
 }
 
-/// Assemble and serve until SIGTERM or an adapter start refusal.
-async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
-    let ServeInputs {
-        configuration,
-        protection,
-        operators,
-        privacy_policy,
-        moderation_handle,
-        wiki_endpoint,
-        wiki_index_endpoint,
-        name,
-        disclosure,
-        bot_token,
-        chat_completions_api_key,
-        mirror_token,
-        system_prompt,
-        started_at,
-    } = inputs;
-    // The stop handler installs before anything reaches the network: the
-    // startup identity read below can precede the serve loop by a moment,
-    // and a SIGTERM arriving inside that window must still stop the process
-    // cleanly instead of falling to the default action.
-    let mut sigterm = signal(SignalKind::terminate()).map_err(StartError::Runtime)?;
-    // The adapter configuration comes first because the name's default is
-    // the platform's own display name, read once at startup: a configured
-    // name skips the read entirely, and a failed read refuses the start
-    // loudly — naming both remedies — instead of assembling a nameless
-    // assistant.
 /// The adapter with the assistant's resolved name, both built here because
 /// they decide each other: a configured name skips the platform read
 /// entirely, and a failed read refuses the start loudly — naming both
@@ -460,6 +432,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         mirror_token,
         web_search,
         system_prompt,
+        started_at,
     } = inputs;
     // The stop handler installs before anything reaches the network: the
     // startup identity read below can precede the serve loop by a moment,
@@ -512,8 +485,8 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
             direct_chats: configuration.direct_chats.resolve(),
             privacy_policy_address: privacy_policy,
             moderation_handle,
-            started_at,
             web_search,
+            started_at,
         },
     )
     .await?;

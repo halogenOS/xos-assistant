@@ -301,8 +301,12 @@ mod tests {
     #[test]
     fn both_modes_route_identity_questions_to_the_runtime_tool() {
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
-            for handle in [false, true] {
-                let prompt = composed_system_prompt("b", "n", mode, handle);
+            for moderation_handle in [false, true] {
+                let capabilities = Capabilities {
+                    moderation_handle,
+                    ..Capabilities::default()
+                };
+                let prompt = composed_system_prompt("b", "n", mode, capabilities);
                 assert!(
                     prompt.contains(
                         "When someone asks which model you run on, which version you \

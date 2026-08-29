@@ -767,7 +767,6 @@ async fn no_recorded_block_carries_a_fragment_of_the_key() {
 /// the ignore comes off. Until then it fails, which is the disagreement
 /// stated in the one place a reviewer cannot miss it.
 #[test]
-#[ignore = "blocked on the orchestrator's rebase onto main: the palette pins must name the runtime tool beside the search tool"]
 fn the_palette_pins_name_the_runtime_tool_once_the_rebase_lands() {
     for (file, pins) in [
         ("crates/core/tests/spine/tools.rs", include_str!("tools.rs")),
