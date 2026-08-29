@@ -292,6 +292,22 @@ again:
    > 0115). The safeguard therefore stands as written, with the search boundary
    > named beside it.
 
+   > Re-weighed 2026-08-29, with the standing lookup. The obligation in the last
+   > clause fired a second time: an attribute of a person that had never left the
+   > machine now reaches a request. The weighing was performed and its outcome is
+   > recorded here instead of assumed. What is added is not an identifier — the
+   > identifiers in a request are still the public username and nothing else — but
+   > one attribute, a person's administrator standing, sent as the fixed answer to a
+   > lookup the model made and never as a field beside a message. Three things keep
+   > the balance: the fact is one the group's own member list shows anybody who
+   > opens it, the lookup answers only for a handle the conversation already showed
+   > and only in a group, and it is what lets the assistant tell a member who claims
+   > authority from a member who holds it, which is a protection for the members
+   > whose group would otherwise be steered by a claim. A person whose data was
+   > erased is not found, because the match is on the handle erasure removes. The
+   > safeguard therefore stands as written, with the standing answer named beside
+   > it, and the obligation continues to bind whatever is added next.
+
 3. The processing chain stays as assessed: a processor in the United Kingdom under an
    Article 28 agreement with standard contractual clauses, storing and serving in
    Frankfurt, with the United Kingdom's adequacy decision covering the processor

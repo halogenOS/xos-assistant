@@ -35,7 +35,10 @@
 //! guard and person bound refusing before the wire, its taught failures,
 //! and the one predicate deciding whether the tool exists), sourcing (the lookup-backed answer discipline: the literal
 //! addressed fact beside the summons, the silent empty turn and the
-//! model's own spoken don't-know), threading (which message an answer is
+//! model's own spoken don't-know), standing (the member-standing lookup an
+//! ordinary member reaches in a group, stating what a person's last message
+//! recorded, and declining outside a group),
+//! threading (which message an answer is
 //! delivered as a reply to, and when it goes out plain), `runtime_facts`
 //! (the self-introspection tool an ordinary member reaches, stating the
 //! model its own conversation runs on), and — behind the
@@ -69,6 +72,7 @@ mod runtime_facts;
 mod search;
 mod sourcing;
 mod speaker;
+mod standing;
 mod storage;
 mod support;
 mod threading;

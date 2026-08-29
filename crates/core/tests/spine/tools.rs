@@ -630,6 +630,7 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
         names,
         vec![
             commit::NAME.to_owned(),
+            assistant_core::tools::standing::NAME.to_owned(),
             assistant_core::tools::rights::NAME.to_owned(),
             assistant_core::tools::runtime::NAME.to_owned()
         ],
@@ -697,10 +698,11 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
                 commit::NAME.to_owned(),
                 release::NAME.to_owned(),
                 assistant_core::tools::wiki::NAME.to_owned(),
+                assistant_core::tools::standing::NAME.to_owned(),
                 assistant_core::tools::rights::NAME.to_owned(),
                 assistant_core::tools::runtime::NAME.to_owned()
             ],
-            "the palette names the three lookups and the two always-registered tools"
+            "the palette names the three lookups and the three always-registered tools"
         );
         palettes.push(names);
     }
