@@ -283,6 +283,13 @@ fn the_unit_five_no_write_rule_carries_its_dated_amendment() {
 /// rejected alternatives, the policy's shrunken author and language-model
 /// sections, the DPIA's category note and defect closure, the records'
 /// narrowed rows, and the LIA's amended transfer line.
+///
+/// Re-pointed 2026-08-29 (unit 36): the ruling this test guards is
+/// unchanged — no display name is held as identity data or attached to a
+/// message — but the four sentences that stated it as "not stored at all"
+/// became false when the join notice began storing one shown name as an
+/// event's content, so each pin now reads the corrected sentence. The
+/// join unit's own inventory test guards the other half.
 #[test]
 fn the_minimization_decision_ships_its_record_and_dated_doc_updates() {
     let record = repo_file(
@@ -305,8 +312,8 @@ fn the_minimization_decision_ships_its_record_and_dated_doc_updates() {
     let policy = repo_file("docs/privacy/bot-assistant-privacy-policy.md");
     let policy_flat = flattened(&policy);
     assert!(
-        policy_flat.contains("We do not store your display name."),
-        "the policy's author section states the display name is not stored"
+        policy_flat.contains("your display name as identity data"),
+        "the policy's author section states the identity ruling"
     );
     assert!(
         !policy_flat.contains("smaller model") && !policy_flat.contains("smaller naming model"),
@@ -331,21 +338,21 @@ fn the_minimization_decision_ships_its_record_and_dated_doc_updates() {
         "the records' identity row is narrowed with its date"
     );
     assert!(
-        records_flat.contains("no display name exists to send"),
+        records_flat.contains("no display name is attached to a message (decision 0077)"),
         "the records' processor row reflects the removal"
     );
 
     let lia = repo_file("docs/privacy/lia.md");
     assert!(
-        flattened(&lia).contains("the display name is not even stored"),
+        flattened(&lia).contains("no display name is stored beside a message"),
         "the LIA's transfer prose carries its dated narrowing"
     );
     assert!(
-        flattened(&lia).contains(
-            "the display name is not\nstored (narrowed 2026-08-23"
-                .replace('\n', " ")
-                .as_str()
-        ) || flattened(&lia).contains("the display name is not stored (narrowed 2026-08-23"),
+        flattened(&lia).contains("narrowed 2026-08-23, decision 0077"),
+        "the narrowing carries its date and its decision"
+    );
+    assert!(
+        flattened(&lia).contains("not stored as identity data (narrowed 2026-08-23"),
         "the LIA's necessity paragraph carries the narrowing too"
     );
     assert!(
@@ -1287,4 +1294,157 @@ fn the_rules_acknowledgment_units_docs_teach_the_generated_line_with_its_fallbac
         fallback.contains("ALWAYS draws a visible acknowledgment"),
         "the fallback record states the delivery guarantee"
     );
+}
+
+/// The join-notice unit's AC7 pins, the full inventory: the record of
+/// processing gains its category and its erasure row and corrects the two
+/// boundary sentences that said no display name exists to send; the policy
+/// states where the one stored display name comes from, that a request
+/// carries the join announcements, and that deletion removes them; the two
+/// assessments carry their dated identity amendments; and no shipped
+/// document still claims a display name is never stored or never sent.
+#[test]
+fn the_join_notice_unit_ships_its_full_privacy_inventory() {
+    let record = flattened(&repo_file("docs/privacy/records-of-processing.md"));
+    for marker in [
+        "| D10 | Join notice (added 2026-08-29) |",
+        "the name the platform displayed",
+        "the report is the whole effect",
+        "whose suppression flag stands",
+        "a display name is still not identity data",
+        "no display name is attached to a message",
+        "erased with the person under D10",
+        "named by the same announcement keeps theirs",
+        "a report may name a join announcement",
+        "no reported person's identifier at all",
+    ] {
+        assert!(
+            record.contains(&flattened(marker)),
+            "the record of processing carries: {marker}"
+        );
+    }
+    assert!(
+        !record.contains("no display name exists to send"),
+        "the corrected boundary sentence is gone from the record"
+    );
+
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    for marker in [
+        "your display name as identity data",
+        "we store the name that announcement showed",
+        "the group's stored join announcements",
+        "the join announcement we recorded for you",
+        "before the account has posted anything",
+        "it removes nobody, replies to nobody",
+    ] {
+        assert!(
+            policy.contains(&flattened(marker)),
+            "the policy carries: {marker}"
+        );
+    }
+    assert!(
+        !policy.contains("We do not store your display name."),
+        "the policy no longer claims a display name is never stored"
+    );
+
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    for marker in [
+        "**Join notices (added 2026-08-29).**",
+        "the one place a display name is stored",
+        "Amended 2026-08-29: the join notice narrows that",
+        "only as the content of a recorded join announcement",
+    ] {
+        assert!(
+            dpia.contains(&flattened(marker)),
+            "the impact assessment carries: {marker}"
+        );
+    }
+    assert!(
+        !dpia.contains(&flattened(
+            "The numeric account identifier and the display name never cross"
+        )),
+        "the impact assessment's superseded never-crosses claim is corrected"
+    );
+
+    let lia = flattened(&repo_file("docs/privacy/lia.md"));
+    for marker in [
+        "not stored as identity data (narrowed 2026-08-23",
+        "Amended 2026-08-29: where a group announces that someone joined",
+        "amended 2026-08-29: the name a recorded join announcement showed does travel",
+    ] {
+        assert!(
+            lia.contains(&flattened(marker)),
+            "the legitimate-interest assessment carries: {marker}"
+        );
+    }
+    assert!(
+        !lia.contains("the display name is not even stored"),
+        "the assessment's superseded not-even-stored claim is corrected"
+    );
+}
+
+/// The join-notice unit's four dated decision annotations: 0017 records
+/// that a join is not a message and is recorded anyway, 0077 records that
+/// its identity decision stands and what the join notice stores instead,
+/// 0070 records that the effect surface did not move, and 0115 qualifies
+/// the stored-nowhere sentence its own reasoning rests on.
+#[test]
+fn the_join_notice_unit_annotates_the_four_decisions_it_touches() {
+    let text = flattened(&repo_file(
+        "docs/decisions/0017-text-is-what-this-unit-records.md",
+    ));
+    assert!(
+        text.contains(&flattened(
+            "## Amended 2026-08-29 — a join is not a message, and it is recorded"
+        )),
+        "decision 0017 carries its dated amendment"
+    );
+    assert!(
+        text.contains(&flattened(
+            "**Letting a join in through the message kind (2026-08-29).**"
+        )),
+        "the amendment carries its rejected alternative"
+    );
+
+    let name = flattened(&repo_file(
+        "docs/decisions/0077-the-display-name-is-not-stored-and-titles-are-not-derived.md",
+    ));
+    for marker in [
+        "## Amended 2026-08-29 — the join notice, and what this decision still holds",
+        "What 0077 removed was a display name held as IDENTITY data",
+        "**Reopening the identity column for the join notice (2026-08-29).**",
+    ] {
+        assert!(
+            name.contains(&flattened(marker)),
+            "decision 0077 carries: {marker}"
+        );
+    }
+
+    let human = flattened(&repo_file(
+        "docs/decisions/0070-the-assistant-assesses-a-human-decides.md",
+    ));
+    for marker in [
+        "## Amended 2026-08-29 — the join notice changes nothing here",
+        "The report is the WHOLE effect",
+        "the assessment surface widens, the effect surface does not move",
+    ] {
+        assert!(
+            human.contains(&flattened(marker)),
+            "decision 0070 carries: {marker}"
+        );
+    }
+
+    let query = flattened(&repo_file(
+        "docs/decisions/0115-the-query-guard-refuses-the-handle-form-and-echoes-nothing.md",
+    ));
+    for marker in [
+        "## Amended 2026-08-29 — one display name is stored now",
+        "As of unit 36 that sentence needs its qualification",
+        "The match set stays handle-shaped.",
+    ] {
+        assert!(
+            query.contains(&flattened(marker)),
+            "decision 0115 carries: {marker}"
+        );
+    }
 }

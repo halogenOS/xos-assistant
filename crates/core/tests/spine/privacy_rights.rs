@@ -1324,7 +1324,8 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
             // non-vacuity check proves the drop was real.
             conn.execute_batch(
                 "ALTER TABLE principals DROP COLUMN opted_out;
-                 ALTER TABLE block_chat_message DROP COLUMN literal_addressed;",
+                 ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
+                 DROP TABLE block_join_notice;",
             )?;
             let refused = conn.execute("UPDATE principals SET opted_out = 1", []);
             assert!(
@@ -1344,7 +1345,7 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
         .expect("the version-twelve store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        14,
+        16,
         "the appended steps advanced the domain's version"
     );
     assert_eq!(

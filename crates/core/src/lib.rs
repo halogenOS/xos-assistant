@@ -27,6 +27,9 @@
 //! The public modules stay addressable by path, because their items read by
 //! their module's name:
 //!
+//! - [`join`] — the join-notice kind: one person's recorded entry into a
+//!   group, stored through the observation surface and erased with the
+//!   person.
 //! - [`kind`] — the assistant's block kind, composed with the framework's
 //!   kinds through the derive.
 //! - [`mirror`] — the deletion mirror: the moderation bot's reply deletion
@@ -57,6 +60,7 @@ mod disclosure;
 mod erasure;
 mod error;
 mod identity;
+pub mod join;
 pub mod kind;
 mod mapping;
 mod message;
@@ -86,8 +90,9 @@ pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
 pub use message::{
     Authority, ChannelKey, ChannelKind, ComposingState, ComposingUpdate, DeliveryItem,
-    InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand, Observation, ObserveOutcome,
-    ObservedFact, OutboundReply, ReplyKind, ReplyTarget, ReplyThread, SenderIdentity,
+    InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand, JoinedMember, Observation,
+    ObserveOutcome, ObservedFact, OutboundReply, ReplyKind, ReplyTarget, ReplyThread,
+    SenderIdentity,
 };
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,

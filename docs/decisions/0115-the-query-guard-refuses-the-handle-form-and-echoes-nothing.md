@@ -41,6 +41,24 @@ A refused query answers with the rule and the fix and does NOT echo the matched
 token: a guard that writes the identifier it refused into permanent storage protects
 nothing.
 
+## Amended 2026-08-29 — one display name is stored now, and the match set is unchanged
+
+The context above says display names are not stored at all and the adapter never
+translates them. As of unit 36 that sentence needs its qualification: a group's
+join announcement is recorded with the name it showed, as that event's own
+content in the join-notice table, and the adapter decodes name fields on the
+joiner type it added. What decision 0077 removed stays removed — no name on the
+identity row, none decoded on a message — and 0077's own dated amendment states
+the distinction between an identity attribute and an event's content.
+
+What the guard matches on does not move. A display-name half needs a standing
+name PER PERSON to compare a query against; what exists is one name per join
+EVENT, erasable with the person and recorded so the assistant can assess the
+announcement. Matching queries against those names means reading members'
+recorded names in order to protect them, which is the second reason the
+alternative below is refused, and it holds unchanged. The match set stays
+handle-shaped.
+
 ## Rejected alternatives
 
 - **A display-name half.** There is no data for it. Collecting display names in

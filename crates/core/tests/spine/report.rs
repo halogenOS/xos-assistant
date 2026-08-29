@@ -1073,7 +1073,11 @@ async fn debt_propagation_reads_through_a_filed_report_at_the_stamp() {
             receipt.conversation_id,
             None,
             report::REPORT_KIND,
-            report::Report::stored_fields("origin-spam-1", receipt.principal_id, &fixture_line()),
+            report::Report::stored_fields(
+                "origin-spam-1",
+                Some(receipt.principal_id),
+                &fixture_line(),
+            ),
             None,
         )
         .await

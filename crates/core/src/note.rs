@@ -150,7 +150,9 @@ pub fn read_rules(pinned: &str) -> RulesReading {
 /// pinned announcement is a note only when [`read_rules`] reads it as rules
 /// — the contract's refusals are logged here, beside the contract that
 /// refuses them, and yield nothing. A membership fact is authorization, not
-/// a note.
+/// a note, and a join is a block of its own, never a note: a note's text is
+/// group governance, beyond every erasure pass (decision 0055), while a
+/// join carries a person.
 pub(crate) fn note_of(fact: &ObservedFact) -> Option<(NoteTopic, String)> {
     match fact {
         ObservedFact::Title(title) => {
@@ -185,7 +187,7 @@ pub(crate) fn note_of(fact: &ObservedFact) -> Option<(NoteTopic, String)> {
                 None
             }
         },
-        ObservedFact::Added { .. } => None,
+        ObservedFact::Added { .. } | ObservedFact::MembersJoined { .. } => None,
     }
 }
 
@@ -486,6 +488,15 @@ mod tests {
             note_of(&ObservedFact::Added { by: None }),
             None,
             "a membership fact is authorization, not a note"
+        );
+        assert_eq!(
+            note_of(&ObservedFact::MembersJoined {
+                joiners: Vec::new(),
+                origin: "origin-join".into(),
+                timestamp: chrono::Utc::now(),
+            }),
+            None,
+            "a join is a block of its own, never a note"
         );
     }
 

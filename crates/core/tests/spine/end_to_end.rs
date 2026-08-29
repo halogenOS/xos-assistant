@@ -129,6 +129,7 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
         AssistantKind::Core(_)
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
+        | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_) => {
             panic!("the stored row resolved through the delegate")
         }

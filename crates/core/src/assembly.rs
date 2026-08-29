@@ -29,12 +29,14 @@ use crate::acknowledgment;
 use crate::composing;
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
+use crate::join::JoinNotice;
 use crate::kind::{
     self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage, NEVER_ANSWERABLE,
 };
 use crate::message::{
     Authority, ChannelKey, ChannelKind, ComposingUpdate, DeliveryItem, InboundMessage,
-    IngestOutcome, IngestReceipt, Observation, ObserveOutcome, ObservedFact, OutboundReply,
+    IngestOutcome, IngestReceipt, JoinedMember, Observation, ObserveOutcome, ObservedFact,
+    OutboundReply,
 };
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
@@ -47,7 +49,7 @@ use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPa
 use crate::window::{
     ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, ReplyWindow,
 };
-use crate::{authorization, identity, mapping, mirror, outbound, privacy, streams};
+use crate::{authorization, identity, join, mapping, mirror, outbound, privacy, streams};
 
 /// The erasure fence, as the shared handle the report tool receives at its
 /// construction: ingestions and the tool's filing hold it shared, an
@@ -65,6 +67,11 @@ pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
     note::CONTEXT_NOTE_KIND,
     TOOL_PALETTE_KIND,
     report::REPORT_KIND,
+    // The join notice (unit 36, 2026-08-29): the observation path appends
+    // it whenever someone walks in, which is exactly the arbitrary moment
+    // this list exists for — a member's unanswered question behind a run
+    // of joins still owes its turn.
+    join::JOIN_NOTICE_KIND,
 ];
 
 /// The most conversations the palette-reconciliation memory holds. Past
@@ -1035,6 +1042,24 @@ impl Assistant {
                 authorization::authorize(&tx, &observation.channel).await?;
                 Ok(ObserveOutcome::Observed { deliver: None })
             }
+            ObservedFact::MembersJoined {
+                joiners,
+                origin,
+                timestamp,
+            } => {
+                if !authorization::is_authorized(&tx, &observation.channel).await? {
+                    return Ok(ObserveOutcome::Withdraw);
+                }
+                self.record_join_event(
+                    &tx,
+                    &observation.channel,
+                    &joiners,
+                    &origin,
+                    &timestamp.to_rfc3339(),
+                )
+                .await?;
+                Ok(ObserveOutcome::Observed { deliver: None })
+            }
             ObservedFact::Title(_) | ObservedFact::PinnedAnnouncement(_) => {
                 if !authorization::is_authorized(&tx, &observation.channel).await? {
                     return Ok(ObserveOutcome::Withdraw);
@@ -1107,6 +1132,119 @@ impl Assistant {
                 Ok(ObserveOutcome::Observed { deliver })
             }
         }
+    }
+
+    /// Record one join event, past the authorization gate (unit 36,
+    /// 2026-08-29): one block per joiner, all under the event's own shared
+    /// origin, in the group's conversation.
+    ///
+    /// The mapping resolution sits under the stamp lock for the reason the
+    /// note path states: the loser of a creation race must write into the
+    /// winner's conversation, not into its own empty one. The appends stay
+    /// inside the lock, so one event's joiners land as one contiguous run
+    /// instead of interleaving with another writer's blocks — and the
+    /// event's own redelivery check is read inside it, so of two deliveries
+    /// of one service message the second reads the first's stored rows
+    /// instead of racing them.
+    ///
+    /// A join is a first activity like any other, so the conversation it
+    /// may have just created carries the current palette the same way an
+    /// ingested message's and a pin's do: the palette supersession runs
+    /// here, past the mapping and ahead of the appends, exactly as the
+    /// note path runs it.
+    ///
+    /// Both transports promise at-least-once delivery, so one service
+    /// message arrives twice whenever an acknowledgment is lost. The event
+    /// origin is the platform's own id for it, shared by every joiner, so
+    /// a stored notice under that origin means the event is recorded and
+    /// the redelivery stores nothing at all — never a second block, never a
+    /// second principal refresh. Nothing else is skipped: the palette above
+    /// already ran, and a redelivery is not a new fact.
+    async fn record_join_event(
+        &self,
+        tx: &StoreTx,
+        channel: &ChannelKey,
+        joiners: &[JoinedMember],
+        origin: &str,
+        joined_at: &str,
+    ) -> Result<(), CoreError> {
+        let _one_stamp_at_a_time = self.stamp_lock.lock().await;
+        let conversation_id = match mapping::find(tx, channel).await? {
+            Some((existing, _)) => existing,
+            None => self.map_new_channel(channel, ChannelKind::Group).await?,
+        };
+        self.reconcile_palette(conversation_id).await?;
+        if join::event_recorded(tx, conversation_id, origin).await? {
+            tracing::debug!("the join event is already recorded; the redelivery stores nothing");
+            return Ok(());
+        }
+        for joiner in joiners {
+            self.record_join(
+                tx,
+                conversation_id,
+                &channel.adapter,
+                joiner,
+                origin,
+                joined_at,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Record ONE joiner of one join event — or record nothing at all
+    /// (unit 36, 2026-08-29).
+    ///
+    /// The suppression flag is consulted first, through the READ-ONLY
+    /// identity lookup, before anything is resolved or refreshed: the
+    /// processing record promises that collection stops with the flag, and
+    /// this unit does not bend that promise to gain a feature. A flagged
+    /// joiner's notice is skipped whole — no block, no name, no principal
+    /// refresh — and skipped is all it is: no departure, no reaction, no
+    /// reply. The group still sees the platform's own join line; the
+    /// assistant simply keeps no record. In a mixed event the skip is per
+    /// joiner, so the co-joiners' blocks and the shared event stand.
+    ///
+    /// Past the flag the joiner's principal resolves through the same path
+    /// a sender's does — a joiner is a member — and one block lands under
+    /// the event's shared origin.
+    async fn record_join(
+        &self,
+        tx: &StoreTx,
+        conversation_id: i64,
+        adapter: &str,
+        joiner: &JoinedMember,
+        origin: &str,
+        joined_at: &str,
+    ) -> Result<(), CoreError> {
+        let standing =
+            identity::find_standing(tx, adapter.to_owned(), joiner.identity.external_id.clone())
+                .await?;
+        if standing.is_some_and(|standing| standing.opted_out) {
+            tracing::debug!("a joiner's suppression flag stands; the join is not recorded");
+            return Ok(());
+        }
+        let principal_id =
+            identity::resolve_principal(tx, adapter.to_owned(), joiner.identity.clone()).await?;
+        self.ctx
+            .store()
+            .append_consumer_block(
+                conversation_id,
+                None,
+                join::JOIN_NOTICE_KIND,
+                JoinNotice::stored_fields(
+                    join::RecordedJoiner {
+                        principal_id,
+                        name: &joiner.name,
+                        handle: joiner.identity.username.as_deref(),
+                    },
+                    origin,
+                    joined_at,
+                ),
+                None,
+            )
+            .await?;
+        Ok(())
     }
 
     /// The outbound edge for one adapter: a subscription yielding the
@@ -1287,24 +1425,47 @@ impl Assistant {
     }
 
     /// The mirror's erasure, run for a triggering deletion command
-    /// (2026-08-23): the named row's personal columns and the reply
-    /// references pointing at it are nulled through the kind's mirror pass
-    /// (decision 0085), and both counts are traced at info — a destructive
+    /// (2026-08-23): the named record's personal columns and the reply
+    /// references pointing at it are nulled through the kinds' own passes
+    /// (decision 0085), and every count is traced at info — a destructive
     /// act on stored personal data leaves a record in the default log, and
     /// zero counts name the silent no-ops' shape: a target the store never
     /// held or holds no longer. The caller's ordering reasoning sits at
     /// the call site.
+    ///
+    /// Two records can carry the named origin, so the mirror asks both
+    /// (unit 36, 2026-08-29): the ONE message row under that id, and the
+    /// WHOLE join event under it — deleting a join service message removes
+    /// the event, not one joiner's part of it. The passes over the held
+    /// copies of that id follow exactly when either was present — a target
+    /// the store never held leaves the command a full no-op — and they
+    /// reach every holder: a replier's stored reply target, and a filed
+    /// report's stored target, which threads onto the very record that just
+    /// went away and would otherwise keep the deleted id in a row no later
+    /// erasure joins on. The composition decides the order and the
+    /// condition; each kind owns only its own table's write.
     async fn mirror_named_deletion(
         &self,
         tx: &StoreTx,
         conversation_id: i64,
         target: &str,
     ) -> Result<(), CoreError> {
-        let nulled = kind::erase_message_named(tx, conversation_id, target).await?;
+        let message_rows = kind::erase_message_named(tx, conversation_id, target).await?;
+        let join_rows = join::erase_event_named(tx, conversation_id, target).await?;
+        let (reply_references, report_targets) = if message_rows > 0 || join_rows > 0 {
+            (
+                kind::erase_reply_references_naming(tx, conversation_id, target).await?,
+                report::erase_report_references_naming(tx, conversation_id, target).await?,
+            )
+        } else {
+            (0, 0)
+        };
         tracing::info!(
             conversation_id,
-            target_rows = nulled.target_rows,
-            reply_references = nulled.reply_references,
+            target_rows = message_rows,
+            join_rows,
+            reply_references,
+            report_targets,
             "the deletion mirror ran over an administrator's reply command"
         );
         Ok(())
@@ -1651,6 +1812,7 @@ impl Assistant {
                 | AssistantKind::Core(_)
                 | AssistantKind::ToolPalette(_)
                 | AssistantKind::ContextNote(_)
+                | AssistantKind::JoinNotice(_)
                 | AssistantKind::Report(_),
             )
             | None => None,

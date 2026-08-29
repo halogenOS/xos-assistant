@@ -11,6 +11,7 @@
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde::de::IgnoredAny;
 
 use crate::Sleep;
 
@@ -208,6 +209,44 @@ pub(crate) struct Incoming {
     /// The pinned message a pin service note points at, reduced to what the
     /// pin observation reads. Present exactly on the pin service message.
     pub pinned_message: Option<PinnedContent>,
+    /// The people a join service message announces — present exactly on
+    /// that service message, one entry per person the event names, the bot
+    /// itself included when it was added among them.
+    pub new_chat_members: Option<Vec<Joiner>>,
+    /// The person a departure service message announces — the platform's
+    /// one form for a member leaving and for a member removed. Presence is
+    /// the whole reading: the adapter names the shape and records nothing,
+    /// so it decodes as the presence marker.
+    pub left_chat_member: Option<IgnoredAny>,
+    /// A group's creation service message.
+    #[serde(default)]
+    pub group_chat_created: bool,
+    /// A supergroup's creation service message.
+    #[serde(default)]
+    pub supergroup_chat_created: bool,
+    /// A broadcast channel's creation service message.
+    #[serde(default)]
+    pub channel_chat_created: bool,
+}
+
+/// One person a join service message names (unit 36, 2026-08-29): the id
+/// and handle every identity crosses the boundary with, plus the platform's
+/// name fields.
+///
+/// A type of its own precisely so [`User`] stays exactly as decision 0077
+/// left it — a message still decodes no display name, because a message's
+/// content is what was said. A join notice's content IS the shown name, so
+/// it is decoded here, on the one event that carried it.
+#[derive(Debug, Deserialize)]
+pub(crate) struct Joiner {
+    pub id: i64,
+    pub username: Option<String>,
+    /// The joiner's first name. The platform requires one, but the decoder
+    /// keeps it optional so a malformed entry degrades to a nameless
+    /// joiner instead of refusing the whole update batch.
+    pub first_name: Option<String>,
+    /// The joiner's last name, where they set one.
+    pub last_name: Option<String>,
 }
 
 /// A pinned message, reduced to its date discriminator and its text. The

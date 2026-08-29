@@ -610,18 +610,36 @@ impl<'a> Intake<'a> {
 
     /// One observation update. A membership entry is judged before any
     /// lookup, so authorization comes first; every other observed fact — the
-    /// pin event — is preceded by the chat's lazy lookup, reporting the title
-    /// only: the event carries the authoritative pinned text.
+    /// pin event, the title, a join — is preceded by the chat's lazy lookup,
+    /// in the scope that fact leaves for it.
     async fn observed(&mut self, observation: Observation, update_id: i64) -> Step {
         let Some(chat_id) = translate::chat_id_of(&observation.channel) else {
             tracing::error!(update_id, "an observation names no chat");
             return Step::Acknowledged;
         };
-        if !matches!(observation.fact, ObservedFact::Added { .. }) {
-            // A pin event: the chat's lazy lookup enriches first — title only,
-            // because this event outranks the lookup's by-sending-date pin —
-            // and the event's own fact follows in arrival order.
-            match self.first_contact(chat_id, LookupScope::TitleOnly).await {
+        // What this observation leaves for the chat's first-contact lookup,
+        // and whether the lookup runs ahead of the fact at all — one reading
+        // of the fact, here, where the two answers are one decision. A pin
+        // event carries the authoritative pinned text and outranks the
+        // lookup's own by-sending-date pin, so its lookup reports the title
+        // only; every other event carries no pinned text at all, so its
+        // lookup is the whole enrichment — a group whose first contact is
+        // someone walking in must not go the process without its rules
+        // (unit 36, 2026-08-29). A membership entry alone is judged BEFORE
+        // any lookup, so it leaves the lookup nothing to do until it is
+        // admitted.
+        let ahead_of_the_fact = match &observation.fact {
+            ObservedFact::Added { .. } => None,
+            ObservedFact::PinnedAnnouncement(_) => Some(LookupScope::TitleOnly),
+            ObservedFact::Title(_) | ObservedFact::MembersJoined { .. } => {
+                Some(LookupScope::Whole)
+            }
+        };
+        if let Some(scope) = ahead_of_the_fact {
+            // A pin or a join event: the chat's lazy lookup enriches first,
+            // in the scope this event leaves for it, and the event's own
+            // fact follows in arrival order.
+            match self.first_contact(chat_id, scope).await {
                 Handled::Proceed => {}
                 Handled::Withdrew => return Step::Acknowledged,
                 Handled::Halted => return Step::Halted,

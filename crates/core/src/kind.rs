@@ -707,50 +707,40 @@ pub(crate) async fn erase_principal_content(
     .await
 }
 
-/// The deletion mirror's nulls, counted for the trace: the named target
-/// row, and the reply references in the conversation that pointed at it.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct MirrorNulls {
-    /// Target rows whose five personal columns were nulled — zero for a
-    /// target the store never held, or holds no longer.
-    pub target_rows: usize,
-    /// Rows whose reply reference named the target and was nulled with it.
-    pub reply_references: usize,
-}
-
-/// Null what a deletion mirror names (2026-08-23, the deletion mirror):
-/// first the ONE target row — text, origin, send time, reply reference and
-/// speaker, the five nulls [`erase_principal_content`] applies to a
-/// person's own rows, scoped to the row whose stored origin matches within
-/// the conversation — and then, exactly when that row was present, the
-/// reply reference of every other row in the conversation that named the
-/// target (decision 0085). Without the second pass each replier would keep
-/// a verbatim copy of the deleted message's identifier that no later
-/// erasure could reach, because [`erase_reply_targets_naming`] joins on
-/// the very origin the first pass nulls. Both passes key on the origin the
-/// caller hands in, not the target row's column, so their order carries no
-/// join hazard; the target runs first only so its row count can withhold
-/// the reply pass from a target the store never held — the unknown-target
-/// command stays a full no-op. The command row requesting the deletion
-/// appends after this runs and keeps its own reply reference, the
+/// Null the ONE message row a deletion mirror names (2026-08-23, the
+/// deletion mirror): text, origin, send time, reply reference and speaker
+/// — the five nulls [`erase_principal_content`] applies to a person's own
+/// rows, scoped to the row whose stored origin matches within the
+/// conversation. Returns how many rows were nulled, which is what tells
+/// the composition whether the named target was ever here: the
+/// unknown-target command stays a full no-op.
+///
+/// The references pointing AT the target are nulled beside this, at the
+/// composition site — the reply references by
+/// [`erase_reply_references_naming`], the filed report targets by the
+/// report kind's own pass — because the named origin can belong to another
+/// kind's record too, and the composition is where the whole mirror is
+/// decided. Every one of those passes keys on the origin the caller hands
+/// in, not on the target row's column, so their order carries no join
+/// hazard. The command row requesting the deletion
+/// appends after the mirror runs and keeps its own reply reference, the
 /// request's lawful record (decision 0085).
 ///
-/// Platform message ids are opaque and unique only per channel, so every
+/// Platform message ids are opaque and unique only per channel, so the
 /// match runs through the conversation junction and never reaches a
 /// stranger conversation's row; the framework-table name it joins carries
 /// the deliberate coupling decision 0032 records. The block header keeps
 /// its place, the placeholder projects the erased marker, and nothing else
-/// moves. Idempotent twice over: nulling already-null columns is a no-op,
-/// and an already-erased row's origin is NULL and matches nothing, which
-/// also skips the reply pass its first run already applied.
+/// moves. Idempotent: nulling already-null columns is a no-op, and an
+/// already-erased row's origin is NULL and matches nothing.
 pub(crate) async fn erase_message_named(
     tx: &StoreTx,
     conversation_id: i64,
     origin: &str,
-) -> Result<MirrorNulls, StoreError> {
+) -> Result<usize, StoreError> {
     let origin = origin.to_owned();
     domain_run(tx, crate::schema::DOMAIN, move |conn| {
-        let target_rows = conn.execute(
+        Ok(conn.execute(
             &format!(
                 "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_TEXT} = NULL, \
                  {COLUMN_ORIGIN} = NULL, {COLUMN_SENT_AT} = NULL, \
@@ -762,67 +752,84 @@ pub(crate) async fn erase_message_named(
                  )"
             ),
             (&origin, conversation_id),
-        )?;
-        let reply_references = if target_rows > 0 {
-            conn.execute(
-                &format!(
-                    "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_REPLY_TARGET} = NULL \
-                     WHERE {COLUMN_REPLY_TARGET} = ?1 AND EXISTS (\
-                       SELECT 1 FROM conversation_blocks cb \
-                       WHERE cb.block_id = {CHAT_MESSAGE_TABLE}.block_id \
-                       AND cb.conversation_id = ?2\
-                     )"
-                ),
-                (&origin, conversation_id),
-            )?
-        } else {
-            0
-        };
-        Ok(MirrorNulls {
-            target_rows,
-            reply_references,
-        })
+        )?)
     })
     .await
 }
 
+/// Null the reply reference of every row in one conversation that named
+/// the deleted origin (decision 0085). Without it each replier would keep
+/// a verbatim copy of the deleted record's identifier that no later
+/// erasure could reach, because [`erase_reply_targets_naming`] joins on
+/// the very origins the erasing passes null. The reference is this kind's
+/// own column, whoever wrote the deleted record — a message or a join
+/// event — which is why the composition decides WHEN this runs and the
+/// kind decides only how.
+///
+/// Returns how many references were nulled. Idempotent: nulling
+/// already-null columns is a no-op, and a second run finds nothing left
+/// naming the origin.
+///
+/// # Errors
+///
+/// [`StoreError`] if the update fails or the store's actor has stopped.
+pub(crate) async fn erase_reply_references_naming(
+    tx: &StoreTx,
+    conversation_id: i64,
+    origin: &str,
+) -> Result<usize, StoreError> {
+    crate::erasure::null_references_to(tx, REPLY_TARGET_SITE, conversation_id, origin).await
+}
+
+/// Where this kind holds a copy of ANOTHER record's platform id: the reply
+/// target, stored whoever wrote the record it names — a message or a join
+/// event. The column is the kind's own; which records name a person is a
+/// fact about the whole consumer, so both passes over this site are driven
+/// by the erasure composition.
+pub(crate) const REPLY_TARGET_SITE: crate::erasure::ReferenceSite = crate::erasure::ReferenceSite {
+    table: CHAT_MESSAGE_TABLE,
+    column: COLUMN_REPLY_TARGET,
+};
+
+/// This kind's own recorded platform ids, for the target-keyed reply pass:
+/// a reply stores the replied-to MESSAGE's origin, and this names where
+/// that origin is recorded against its author.
+pub(crate) const ORIGIN_SOURCE: crate::erasure::OriginSource = crate::erasure::OriginSource {
+    table: CHAT_MESSAGE_TABLE,
+    origin_column: COLUMN_ORIGIN,
+    principal_column: COLUMN_PRINCIPAL_ID,
+};
+
 /// Null the reply-target reference of every message that replies to one of
-/// this principal's messages — the target-keyed half of the reply-target
-/// erasure (2026-08-23): the stored
-/// value is the replied-to person's own message identifier, so the
+/// this principal's own records — the target-keyed half of the reply-target
+/// erasure (2026-08-23; widened to the join notice's events by unit 36,
+/// 2026-08-29): the stored
+/// value is the replied-to person's own identifier, so the
 /// author-keyed pass alone would null it on the person's rows while
 /// leaving a verbatim copy on every row that replied to them. The match
-/// runs through the origin column within the same conversation — platform
-/// message ids are opaque and unique only per channel, so a bare id match
-/// across conversations would null a stranger's reference — which is why
-/// erasure runs this pass BEFORE [`erase_principal_content`] nulls the
-/// origins it joins on. Nulling already-null columns is a no-op, so the
+/// runs through each source's origin column within the same conversation —
+/// platform message ids are opaque and unique only per channel, so a bare
+/// id match across conversations would null a stranger's reference — which
+/// is why erasure runs this pass BEFORE the passes that null the origins it
+/// joins on. Nulling already-null columns is a no-op, so the
 /// step is idempotent; the framework-table names it joins carry the
 /// deliberate coupling decision 0032 records.
+///
+/// The sources arrive from the caller, which is the erasure composition:
+/// the reference column belongs to this kind, and WHICH records name a
+/// person is a fact about the whole consumer, so a new recording kind
+/// joins the reach by entering that list. The join itself is the
+/// composition's own, spelled once for every kind that holds such a copy.
+///
+/// # Errors
+///
+/// [`StoreError`] if the update fails or the store's actor has stopped.
 pub(crate) async fn erase_reply_targets_naming(
     tx: &StoreTx,
     principal_id: i64,
+    sources: &'static [crate::erasure::OriginSource],
 ) -> Result<(), StoreError> {
-    domain_run(tx, crate::schema::DOMAIN, move |conn| {
-        conn.execute(
-            &format!(
-                "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_REPLY_TARGET} = NULL \
-                 WHERE {COLUMN_REPLY_TARGET} IS NOT NULL \
-                 AND EXISTS (\
-                   SELECT 1 FROM {CHAT_MESSAGE_TABLE} author \
-                   JOIN conversation_blocks acb ON acb.block_id = author.block_id \
-                   JOIN conversation_blocks rcb \
-                     ON rcb.block_id = {CHAT_MESSAGE_TABLE}.block_id \
-                   WHERE author.{COLUMN_PRINCIPAL_ID} = ?1 \
-                   AND author.{COLUMN_ORIGIN} = {CHAT_MESSAGE_TABLE}.{COLUMN_REPLY_TARGET} \
-                   AND acb.conversation_id = rcb.conversation_id\
-                 )"
-            ),
-            [principal_id],
-        )?;
-        Ok(())
-    })
-    .await
+    crate::erasure::null_references_naming(tx, REPLY_TARGET_SITE, principal_id, sources).await
 }
 
 /// The framework record that is never an answerable block (2026-08-28): the
@@ -1161,6 +1168,9 @@ pub enum AssistantKind {
     /// owns the kind; it composes here so one parse path reads every
     /// block).
     ContextNote(crate::note::ContextNote),
+    /// One person's recorded entry into a group (the join module owns the
+    /// kind; it composes here so one parse path reads every block).
+    JoinNotice(crate::join::JoinNotice),
     /// A filed report awaiting delivery (the report module owns the kind;
     /// it composes here so one parse path reads every block).
     Report(crate::tools::report::Report),
@@ -1533,10 +1543,10 @@ mod tests {
             )
             .await
             .expect("the chat row appends");
-        let nulls = erase_message_named(&tx, conversation, "gone-1")
+        let target_rows = erase_message_named(&tx, conversation, "gone-1")
             .await
             .expect("the mirror pass runs");
-        assert_eq!(nulls.target_rows, 1, "the named row is erased");
+        assert_eq!(target_rows, 1, "the named row is erased");
         store
             .append_consumer_block(
                 conversation,

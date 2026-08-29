@@ -148,9 +148,24 @@ controller, and anything the project does outside the assistant.
   > migration step, and the category is the account identifier and the username. Every
   > sentence in this document saying the display name "stays on the machine" or "does
   > not cross" now holds trivially: there is no stored display name to stay anywhere.
+
+  > Amended 2026-08-29: the join notice narrows that "trivially". A display name is
+  > still not identity data and is still attached to no message; the identity table
+  > still has no column for one. What changed is that a group's join announcement is
+  > now recorded, and the name that announcement showed is stored as the announcement's
+  > own content and rides the projected join line into a request — so exactly one
+  > display name per recorded join does cross, as event content, erasable with the
+  > person. Every sentence below saying the display name "does not cross" is to be
+  > read as: no display name crosses attached to a person's message or identity.
 - **Circumstance.** Arrival time, the platform send time, the reply reference, whether the
   message was addressed to the assistant, and the authority the person held in that chat
   at that moment (member or administrator).
+- **Join notices (added 2026-08-29).** One record per person a group's join announcement
+  named: the name the platform displayed for them, their handle, their internal
+  identifier, and the announcement's own identifier and send time. It is the one place a
+  display name is stored, as the announcement's content rather than as identity data, and
+  the person-keyed erasure empties it like message text. Not written for a person whose
+  suppression flag stands.
 - **Group facts.** The channel title and the pinned rules text, stored as context notes
   (decision 0047).
 - **Derived state.** Conversation membership, the answering counters, the tool palette,
@@ -293,8 +308,12 @@ first is named in the public policy; the answer-block gap joins R6.
   deletion coexist (decisions 0003, 0012).
 - Identity minimised at the provider boundary: one identifier is transmitted, the public
   username, decided by the operator on 2026-08-23 so the assistant can address people by
-  the handle the group already uses. The display name and the numeric account identifier
-  stay on the machine, and no other attribute of a person is attached to a request.
+  the handle the group already uses. The numeric account identifier stays on the machine,
+  no display name is stored beside a message or attached to a request as identity data, and
+  no other attribute of a person is attached to a request. Amended 2026-08-29: the one
+  display name that reaches a request is the name a group's join announcement showed,
+  carried as that announcement's own content in the projected join line, never as an
+  attribute of a message's sender.
 - The provider key is held in memory and never written to storage (decision 0020).
 - Answering counters per person and per chat, limiting answers and never storage; an
   over-limit message draws no reply and no notice, because a refusal notice would hand a
@@ -352,7 +371,8 @@ conclusion would have to be taken again.
 Identity is one opaque account identifier plus the display fields the platform already
 shows to everyone in the group. The provider receives the conversation's text and one of
 those fields, the public username, which the group sees on every message anyway; the
-identifier and the display name do not cross. Lookups carry repository references. Nothing is collected for a purpose beyond
+identifier does not cross, and a display name crosses only as the content of a recorded
+join announcement (amended 2026-08-29). Lookups carry repository references. Nothing is collected for a purpose beyond
 the three named.
 
 **Is the legal basis right?** Legitimate interest under Article 6(1)(f), assessed
@@ -449,8 +469,9 @@ attributable to that account for as long as the request exists. What limits the 
 that the request does not persist at the processor. Zero data retention means the
 attributable record is gone there once the answer is returned, and no profile is
 accumulated on that layer, while a model provider's own retention follows the terms of the
-chosen model. The numeric account identifier and the display name never cross, and the data itself is what the person
-already published to a group. The capability bought with it, an assistant that can answer
+chosen model. The numeric account identifier never crosses, and a display name crosses
+only as the content of a recorded join announcement (amended 2026-08-29). The data itself
+is what the person already published to a group. The capability bought with it, an assistant that can answer
 "@handle, that setting moved", is the reason the operator accepted the exchange, and the
 public policy states the transmission plainly instead of implying anonymity.
 
@@ -735,7 +756,8 @@ message's platform identifier — an opaque per-message reference, travelling be
 public handle already transmitted (the transmitted-identifier line above), carried only
 inside the request, retained by the processor under the zero-retention terms, and nulled
 by erasure together with the message it marks. It is not an identity identifier — the
-numeric account identifier and the display name still stay on the machine — so the
+numeric account identifier still stays on the machine, and no display name is attached to
+a message — so the
 identity-minimisation posture at the provider boundary is unchanged; beyond that one
 projection element and the unchanged report record, the assessment discloses nothing new.
 The public policy states the assessment in plain words.

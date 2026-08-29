@@ -22,6 +22,15 @@ A unit that cannot satisfy this structurally does not ship its capability.
 The impact assessment's review trigger for standing-touching capabilities
 binds alongside; the two fire together.
 
+## Amended 2026-08-29 — the join notice changes nothing here
+
+Unit 36 lets the assistant see joins and report one whose shown name is
+itself promotional bait. The report is the WHOLE effect, exactly as for a
+violating message: no ban, no kick, no reply to the joiner, no new
+capability anywhere. The group's human administrators still decide, and a
+suppressed person's join is simply not recorded — the assessment surface
+widens, the effect surface does not move.
+
 ## Rejected
 
 - **Enforcement by prompt alone.** The prompt already teaches restraint, but a

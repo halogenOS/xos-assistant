@@ -78,7 +78,12 @@ inside a conversation, to apply the per-person answering counter, and, most impo
 to make deletion possible at all: a request to delete one person's messages can only be
 served if the messages can be linked to that person. The username is kept so a request can
 be matched to an account and so the operator can act on abuse; the display name is not
-stored (narrowed 2026-08-23, decision 0077). Both live in tables of their own.
+stored as identity data (narrowed 2026-08-23, decision 0077). Both live in tables of their
+own. Amended 2026-08-29: where a group announces that someone joined, the name that
+announcement showed is stored once as the announcement's own content, in the join-notice
+table — necessary because a joining account whose displayed name is itself an
+advertisement is the offense, and the assistant cannot report what it did not record. It
+is erased with the person like message text.
 
 **Sending text and one handle to a model.** Answering is the purpose and a language model
 is the mechanism. Since the operator's decision of 2026-08-23 the request carries the
@@ -87,8 +92,10 @@ group has to be able to say which person it is answering, and the handle is how 
 addresses its members. The necessity is judged on that capability: without the handle the
 model can write an answer, but not one that points at the person who asked, and in a busy
 group that produces answers nobody can attach to their question. Everything else stays
-back. The numeric account identifier does not cross, the display name is not even stored
-(narrowed 2026-08-23, decision 0077), and no history
+back. The numeric account identifier does not cross, no display name is stored beside a
+message or sent as an attribute of one (narrowed 2026-08-23, decision 0077; amended
+2026-08-29: the name a recorded join announcement showed does travel, as that
+announcement's content in the projected join line), and no history
 beyond the conversation being answered is uploaded. The processor keeps nothing, and a
 model provider behind it keeps what the terms of the chosen model allow, which is why the
 choice of model belongs in this assessment and not only in the impact assessment. The
@@ -268,9 +275,10 @@ again:
    the send time and the reply reference, removes direct conversations whole and deletes
    the identity rows (decisions 0003, 0006, 0011, 0012, 0027, 0028).
 2. Exactly one identifier in provider requests, the public username, and no more: the
-   numeric account identifier stays on the machine, the display name is not stored at
-   all (decision 0077), and nothing is
-   added to a request without weighing this assessment again.
+   numeric account identifier stays on the machine, no display name is stored beside a
+   message or attached to a request as identity data (decision 0077; amended 2026-08-29:
+   a recorded join announcement's shown name travels as that event's content), and
+   nothing is added to a request without weighing this assessment again.
 
    > Re-weighed 2026-08-29, with the web search. The obligation in the last clause
    > fired: the search sends member-derived text to a place it did not go before.

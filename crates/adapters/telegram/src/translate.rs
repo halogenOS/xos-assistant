@@ -15,13 +15,13 @@
 use chrono::{DateTime, Utc};
 
 use assistant_core::{
-    Authority, ChannelKey, ChannelKind, InvokedCommand, Observation, ObservedFact, ReplyTarget,
-    ReplyThread, SenderIdentity,
+    Authority, ChannelKey, ChannelKind, InvokedCommand, JoinedMember, Observation, ObservedFact,
+    ReplyTarget, ReplyThread, SenderIdentity,
 };
 
 use crate::ADAPTER_NAME;
 use crate::client::{
-    BotIdentity, ChatInfo, Incoming, MemberState, MemberUpdate, SendThread, Update,
+    BotIdentity, ChatInfo, Incoming, Joiner, MemberState, MemberUpdate, SendThread, Update,
 };
 
 /// What one update translates to.
@@ -32,7 +32,8 @@ pub(crate) enum Translation {
     /// A message to record, pending authority resolution for groups.
     Record(Pending),
     /// A platform fact for the core's observation surface: a pin event's
-    /// announcement text, or the assistant's own entry into a group.
+    /// announcement text, the assistant's own entry into a group, or the
+    /// people a join service note announces.
     Observe(Observation),
 }
 
@@ -75,6 +76,17 @@ pub(crate) enum Skip {
     /// A membership change that is not the assistant entering the group —
     /// judged by membership, never by a literal status pair.
     MembershipNotAnEntry,
+    /// A join service note outside a group; group facts belong to groups.
+    JoinOutsideGroup,
+    /// A join service note naming the assistant itself and nobody else:
+    /// its own membership is the membership observation's territory, so
+    /// the event holds nothing left to record.
+    OwnEntryOnly,
+    /// A membership service note that is not a join — a departure, the
+    /// platform's one form for a member leaving and for a member removed,
+    /// or a chat's creation. Named instead of dying at the generic no-text
+    /// skip: they are not joins, and decision 0017 still governs them.
+    MembershipServiceNote,
 }
 
 /// One message ready for the core, minus the authority a group still owes.
@@ -158,6 +170,21 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity, wake: Option<&str>) -
             fact: ObservedFact::PinnedAnnouncement(text.to_owned()),
         });
     }
+    // The join service note translates ahead of the on-behalf-of-chat and
+    // no-sender skips, for the pin's reason: a join is the group's own
+    // event, not a person's message, and it carries no sending person at
+    // all. Every other membership service shape is named and skipped
+    // beside it — they are not joins, and decision 0017 still governs them.
+    if let Some(joined) = &message.new_chat_members {
+        return translate_join(message, joined, channel_kind, me);
+    }
+    if message.left_chat_member.is_some()
+        || message.group_chat_created
+        || message.supergroup_chat_created
+        || message.channel_chat_created
+    {
+        return Translation::Skip(Skip::MembershipServiceNote);
+    }
     if message.sender_chat.is_some() {
         return Translation::Skip(Skip::OnBehalfOfChat);
     }
@@ -222,6 +249,68 @@ fn translate_membership(member: &MemberUpdate) -> Translation {
             }),
         },
     })
+}
+
+/// Translate one join service note (unit 36, 2026-08-29): the people it
+/// named become the core's join fact, under the note's own message id as
+/// the shared event origin and the note's send time.
+///
+/// The assistant's own entry drops here and nowhere else — its membership
+/// is the membership observation's territory — and when one note names it
+/// AND other people, only its own entry goes: the co-joiners translate and
+/// the event stands. A join outside a group is a named skip, like the
+/// pin's: group facts belong to groups.
+fn translate_join(
+    message: &Incoming,
+    joined: &[Joiner],
+    channel_kind: ChannelKind,
+    me: &BotIdentity,
+) -> Translation {
+    if channel_kind != ChannelKind::Group {
+        return Translation::Skip(Skip::JoinOutsideGroup);
+    }
+    let Some(sent_at) = DateTime::from_timestamp(message.date, 0) else {
+        return Translation::Skip(Skip::BadTimestamp);
+    };
+    let joiners: Vec<JoinedMember> = joined
+        .iter()
+        .filter(|joiner| joiner.id != me.id)
+        .map(joined_member)
+        .collect();
+    if joiners.is_empty() {
+        return Translation::Skip(Skip::OwnEntryOnly);
+    }
+    Translation::Observe(Observation {
+        channel: channel_key(message.chat.id),
+        channel_kind: ChannelKind::Group,
+        fact: ObservedFact::MembersJoined {
+            joiners,
+            origin: message.message_id.to_string(),
+            timestamp: sent_at,
+        },
+    })
+}
+
+/// One joiner in the core's vocabulary: the identity every sender crosses
+/// the boundary with, plus the name the platform displayed — the first
+/// name, and the last name when one exists, space-joined, which is the
+/// platform's own composition of what members saw beside the join. A
+/// joiner the platform gave no first name for translates to the empty
+/// name: nothing is invented, and the core's projection falls back to the
+/// handle.
+fn joined_member(joiner: &Joiner) -> JoinedMember {
+    let name = match (joiner.first_name.as_deref(), joiner.last_name.as_deref()) {
+        (Some(first), Some(last)) => format!("{first} {last}"),
+        (Some(first), None) => first.to_owned(),
+        (None, _) => String::new(),
+    };
+    JoinedMember {
+        identity: SenderIdentity {
+            external_id: joiner.id.to_string(),
+            username: joiner.username.clone(),
+        },
+        name,
+    }
 }
 
 /// Whether one member state is inside the chat — membership, never a
@@ -510,6 +599,9 @@ impl std::fmt::Display for Skip {
             Self::MembershipNotAnEntry => {
                 "a membership change that is not the assistant entering the group"
             }
+            Self::JoinOutsideGroup => "a join service note outside a group",
+            Self::OwnEntryOnly => "a join service note naming the assistant alone",
+            Self::MembershipServiceNote => "a membership service note that is not a join",
         };
         f.write_str(reason)
     }
@@ -529,6 +621,31 @@ mod tests {
         }
     }
 
+    /// One incoming message with every field at its absent value — the
+    /// base the fixtures below override, so a wire field added for a new
+    /// service shape lands in one place instead of in every fixture.
+    fn bare_incoming() -> Incoming {
+        Incoming {
+            message_id: 0,
+            date: 1_700_000_000,
+            chat: Chat {
+                id: 0,
+                kind: "supergroup".into(),
+            },
+            from: None,
+            sender_chat: None,
+            text: None,
+            caption: None,
+            reply_to_message: None,
+            pinned_message: None,
+            new_chat_members: None,
+            left_chat_member: None,
+            group_chat_created: false,
+            supergroup_chat_created: false,
+            channel_chat_created: false,
+        }
+    }
+
     /// One recordable private-chat update carrying the given sender.
     fn update_with_sender(user: User) -> Update {
         Update {
@@ -541,11 +658,8 @@ mod tests {
                     kind: "private".into(),
                 },
                 from: Some(user),
-                sender_chat: None,
                 text: Some("a message".into()),
-                caption: None,
-                reply_to_message: None,
-                pinned_message: None,
+                ..bare_incoming()
             }),
             edited_message: None,
             my_chat_member: None,
@@ -580,14 +694,12 @@ mod tests {
                     id: 7,
                     username: None,
                 }),
-                sender_chat: None,
                 text: Some(text.into()),
-                caption: None,
                 reply_to_message: replied_author.map(|id| RepliedTo {
                     from: Some(User { id, username: None }),
                     message_id: Some(19),
                 }),
-                pinned_message: None,
+                ..bare_incoming()
             }),
             edited_message: None,
             my_chat_member: None,
@@ -902,15 +1014,12 @@ mod tests {
                     id: -300,
                     kind: chat_kind.into(),
                 },
-                from: None,
                 sender_chat: anonymous.then(|| Chat {
                     id: -300,
                     kind: chat_kind.into(),
                 }),
-                text: None,
-                caption: None,
-                reply_to_message: None,
                 pinned_message: Some(pinned),
+                ..bare_incoming()
             }),
             edited_message: None,
             my_chat_member: None,
@@ -1093,5 +1202,198 @@ mod tests {
         );
         assert_eq!(title_only.len(), 1);
         assert!(matches!(&title_only[0].fact, ObservedFact::Title(_)));
+    }
+    // ─── Join translation ────────────────────────────────────────────────
+
+    /// One join service note in the given chat kind, naming the given
+    /// joiners.
+    fn join(chat_kind: &str, joiners: Vec<Joiner>) -> Update {
+        Update {
+            id: 5,
+            message: Some(Incoming {
+                message_id: 50,
+                chat: Chat {
+                    id: -400,
+                    kind: chat_kind.into(),
+                },
+                new_chat_members: Some(joiners),
+                ..bare_incoming()
+            }),
+            edited_message: None,
+            my_chat_member: None,
+        }
+    }
+
+    fn wire_joiner(
+        id: i64,
+        username: Option<&str>,
+        first: Option<&str>,
+        last: Option<&str>,
+    ) -> Joiner {
+        Joiner {
+            id,
+            username: username.map(Into::into),
+            first_name: first.map(Into::into),
+            last_name: last.map(Into::into),
+        }
+    }
+
+    /// The joiners and the event a join note translates to: the name is the
+    /// platform's own composition — first name, then last name where one
+    /// exists — the identity is the id and the handle, and every joiner of
+    /// the note carries the service message's own id as the shared origin.
+    #[test]
+    fn a_group_join_translates_to_the_joiners_the_platform_showed() {
+        let fact = observed_fact(&join(
+            "supergroup",
+            vec![
+                wire_joiner(11, Some("ada"), Some("Ada"), Some("Lovelace")),
+                wire_joiner(12, None, Some("Grace"), None),
+                wire_joiner(13, Some("bo"), None, None),
+            ],
+        ));
+        let ObservedFact::MembersJoined {
+            joiners,
+            origin,
+            timestamp,
+        } = fact
+        else {
+            panic!("a join translates to the joined fact");
+        };
+        assert_eq!(origin, "50", "the service message's own id is the event");
+        assert_eq!(timestamp.timestamp(), 1_700_000_000);
+        assert_eq!(
+            joiners,
+            vec![
+                JoinedMember {
+                    identity: SenderIdentity {
+                        external_id: "11".into(),
+                        username: Some("ada".into()),
+                    },
+                    name: "Ada Lovelace".into(),
+                },
+                JoinedMember {
+                    identity: SenderIdentity {
+                        external_id: "12".into(),
+                        username: None,
+                    },
+                    name: "Grace".into(),
+                },
+                JoinedMember {
+                    identity: SenderIdentity {
+                        external_id: "13".into(),
+                        username: Some("bo".into()),
+                    },
+                    name: String::new(),
+                },
+            ],
+            "a joiner without a first name carries the empty name, never an invented one"
+        );
+    }
+
+    /// The assistant's own entry drops at translation and nowhere else: an
+    /// event naming it alone is the named skip, and an event naming it
+    /// beside other people keeps the co-joiners and the shared event.
+    #[test]
+    fn the_assistants_own_entry_drops_and_the_co_joiners_stand() {
+        assert!(
+            matches!(
+                translate(
+                    &join(
+                        "supergroup",
+                        vec![wire_joiner(4242, Some("helper_bot"), Some("Fixture"), None)]
+                    ),
+                    &bot(),
+                    None,
+                ),
+                Translation::Skip(Skip::OwnEntryOnly)
+            ),
+            "her own entry alone is the membership observation's territory"
+        );
+
+        let fact = observed_fact(&join(
+            "group",
+            vec![
+                wire_joiner(4242, Some("helper_bot"), Some("Fixture"), None),
+                wire_joiner(14, Some("ada"), Some("Ada"), None),
+            ],
+        ));
+        let ObservedFact::MembersJoined {
+            joiners, origin, ..
+        } = fact
+        else {
+            panic!("a mixed event translates to the joined fact");
+        };
+        assert_eq!(origin, "50", "the shared event stands");
+        assert_eq!(
+            joiners
+                .iter()
+                .map(|joiner| joiner.identity.external_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["14"],
+            "only her own entry is dropped"
+        );
+    }
+
+    /// A join outside a group observes nothing: group facts belong to
+    /// groups.
+    #[test]
+    fn a_join_outside_a_group_is_a_named_skip() {
+        assert!(matches!(
+            translate(
+                &join("private", vec![wire_joiner(15, None, Some("Ada"), None)]),
+                &bot(),
+                None,
+            ),
+            Translation::Skip(Skip::JoinOutsideGroup)
+        ));
+    }
+
+    /// Every other membership service shape is one named skip — a
+    /// departure (the platform's one form for a leave and a removal) and a
+    /// chat's creation — instead of dying at the generic no-text arm: they
+    /// are not joins, and decision 0017 still governs them.
+    #[test]
+    fn the_other_membership_service_shapes_are_one_named_skip() {
+        let departure = Update {
+            id: 6,
+            message: Some(Incoming {
+                message_id: 60,
+                left_chat_member: Some(serde::de::IgnoredAny),
+                ..bare_incoming()
+            }),
+            edited_message: None,
+            my_chat_member: None,
+        };
+        assert!(matches!(
+            translate(&departure, &bot(), None),
+            Translation::Skip(Skip::MembershipServiceNote)
+        ));
+
+        for created in [
+            Incoming {
+                group_chat_created: true,
+                ..bare_incoming()
+            },
+            Incoming {
+                supergroup_chat_created: true,
+                ..bare_incoming()
+            },
+            Incoming {
+                channel_chat_created: true,
+                ..bare_incoming()
+            },
+        ] {
+            let update = Update {
+                id: 7,
+                message: Some(created),
+                edited_message: None,
+                my_chat_member: None,
+            };
+            assert!(matches!(
+                translate(&update, &bot(), None),
+                Translation::Skip(Skip::MembershipServiceNote)
+            ));
+        }
     }
 }
