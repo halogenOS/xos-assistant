@@ -631,6 +631,10 @@ async fn with_several_messages_absorbed_the_model_names_the_one_violator() {
             "tool_palette",
             "chat_message",
             "chat_message",
+            // The bystander's reply points at a message this conversation
+            // holds, so unit 31 lands its quote ahead of it — context the
+            // model reads, and no input to what the tool may name.
+            "quote",
             "chat_message",
             "text",
             "tool_call",
@@ -643,10 +647,10 @@ async fn with_several_messages_absorbed_the_model_names_the_one_violator() {
     // The premise: the newest co-summoner carries a stored reply fact —
     // the shape the removed resolution would have read — and the filed
     // target is the NAMED violator regardless.
-    assert_eq!(field(&blocks[4], "reply_target"), "origin-a");
-    assert_eq!(field(&blocks[7], "target_origin"), "origin-b");
+    assert_eq!(field(&blocks[5], "reply_target"), "origin-a");
+    assert_eq!(field(&blocks[8], "target_origin"), "origin-b");
     assert_eq!(
-        blocks[7].fields["reported_principal_id"],
+        blocks[8].fields["reported_principal_id"],
         json!(violator.principal_id),
         "the report names the violator's sender, not the replier's target"
     );

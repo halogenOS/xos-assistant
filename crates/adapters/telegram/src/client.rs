@@ -206,6 +206,9 @@ pub(crate) struct Incoming {
     /// The message this one replies to, reduced to the author the
     /// reply-to-self addressing check reads.
     pub reply_to_message: Option<RepliedTo>,
+    /// The part of the replied-to message this reply quotes, where the
+    /// sender selected one (unit 31, 2026-08-28).
+    pub quote: Option<QuotedPart>,
     /// The pinned message a pin service note points at, reduced to what the
     /// pin observation reads. Present exactly on the pin service message.
     pub pinned_message: Option<PinnedContent>,
@@ -295,6 +298,29 @@ pub(crate) struct MemberState {
 pub(crate) struct ChatInfo {
     pub title: Option<String>,
     pub pinned_message: Option<PinnedContent>,
+}
+
+/// The quoted part of a replied-to message, reduced to the two fields the
+/// core is told about: the quoted text, and whether the sender selected it
+/// by hand (unit 31, 2026-08-28).
+///
+/// The platform carries a third field here — the excerpt's offset into the
+/// replied-to text, counted in UTF-16 code units — and it is deliberately
+/// NOT decoded. Converting that count onto our UTF-8 text is exactly the
+/// arithmetic this project's history warns about, and the core needs none
+/// of it: it finds the excerpt by searching the text it stored. A field
+/// nothing reads is a field nothing can get wrong.
+///
+/// Both members decode leniently, so a payload shaped unexpectedly
+/// degrades to a plain reply instead of refusing the whole update batch.
+#[derive(Debug, Deserialize)]
+pub(crate) struct QuotedPart {
+    /// The quoted text as the platform delivers it.
+    pub text: Option<String>,
+    /// Whether the sender chose the excerpt themselves. The platform sends
+    /// the flag only when it is true, so its absence reads as false.
+    #[serde(default)]
+    pub is_manual: bool,
 }
 
 /// The replied-to message, reduced to what the adapter reads: its author —
@@ -802,4 +828,98 @@ fn chunks_within_cap(text: &str) -> Vec<&str> {
         chunks.push(&text[start..]);
     }
     chunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The decoder's own convention, stated once here and followed by every
+    /// pin below (unit 31, 2026-08-28): **this module's model is proven
+    /// against RAW PLATFORM JSON, decoded through serde.**
+    ///
+    /// Everywhere else in this adapter an update is a struct the test
+    /// builds — which proves what translation does with a field, and
+    /// nothing at all about whether that field ever arrives. A renamed
+    /// key, a wrong shape or a missing `serde` attribute is invisible to a
+    /// struct-built fixture and silently degrades a live message to its
+    /// absent value. So the wire's own shape is pinned where the wire is
+    /// owned.
+    ///
+    /// The quoted part decodes its two fields, and only those: the
+    /// excerpt's UTF-16 offset rides in the same payload and is
+    /// deliberately not represented at all, so no conversion of it can
+    /// ever be attempted.
+    #[test]
+    fn the_quoted_part_decodes_from_the_platforms_own_payload() {
+        let update: Update = serde_json::from_value(serde_json::json!({
+            "update_id": 41,
+            "message": {
+                "message_id": 1041,
+                "date": 1_700_000_000,
+                "chat": { "id": -100, "type": "supergroup" },
+                "from": { "id": 7, "first_name": "Person 7" },
+                "text": "that one is the problem",
+                "reply_to_message": {
+                    "message_id": 1040,
+                    "date": 1_699_999_999,
+                    "chat": { "id": -100, "type": "supergroup" },
+                    "from": { "id": 9, "first_name": "Person 9" },
+                    "text": "the text font is tiring my eyes"
+                },
+                "quote": {
+                    "text": "the text font",
+                    "position": 0,
+                    "is_manual": true
+                }
+            }
+        }))
+        .expect("the platform's reply-with-quote payload decodes");
+
+        let message = update.message.expect("the update carries a message");
+        let quote = message.quote.expect("the quoted part decodes");
+        assert_eq!(quote.text.as_deref(), Some("the text font"));
+        assert!(quote.is_manual, "the hand-selected flag decodes");
+    }
+
+    /// The absent and the degraded shapes, decoded: a reply with no quoted
+    /// part carries none, an unflagged quoted part reads as not
+    /// hand-selected, and a quoted part without text decodes to a part with
+    /// no text instead of refusing the whole update batch.
+    #[test]
+    fn a_missing_or_partial_quoted_part_degrades_instead_of_refusing() {
+        let decode = |quote: serde_json::Value| -> Incoming {
+            serde_json::from_value(serde_json::json!({
+                "message_id": 1042,
+                "date": 1_700_000_000,
+                "chat": { "id": -100, "type": "supergroup" },
+                "from": { "id": 7, "first_name": "Person 7" },
+                "text": "a reply",
+                "quote": quote,
+            }))
+            .expect("the message decodes")
+        };
+
+        let plain: Incoming = serde_json::from_value(serde_json::json!({
+            "message_id": 1043,
+            "date": 1_700_000_000,
+            "chat": { "id": -100, "type": "supergroup" },
+            "from": { "id": 7, "first_name": "Person 7" },
+            "text": "a plain reply",
+        }))
+        .expect("a message without a quoted part decodes");
+        assert!(plain.quote.is_none(), "no quoted part, nothing carried");
+
+        let unflagged = decode(serde_json::json!({ "text": "an excerpt", "position": 4 }));
+        let unflagged = unflagged.quote.expect("the quoted part decodes");
+        assert_eq!(unflagged.text.as_deref(), Some("an excerpt"));
+        assert!(
+            !unflagged.is_manual,
+            "the platform states the flag only when it holds; absent reads false"
+        );
+
+        let textless = decode(serde_json::json!({ "position": 4, "is_manual": true }));
+        let textless = textless.quote.expect("the quoted part still decodes");
+        assert_eq!(textless.text, None, "no text, and no refused batch");
+    }
 }

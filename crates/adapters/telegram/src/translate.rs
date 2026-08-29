@@ -16,7 +16,7 @@ use chrono::{DateTime, Utc};
 
 use assistant_core::{
     Authority, ChannelKey, ChannelKind, InvokedCommand, JoinedMember, Observation, ObservedFact,
-    ReplyTarget, ReplyThread, SenderIdentity,
+    QuotedExcerpt, ReplyTarget, ReplyThread, SenderIdentity,
 };
 
 use crate::ADAPTER_NAME;
@@ -114,6 +114,12 @@ pub(crate) struct Pending {
     /// non-reply, and a reply the platform carries no usable id for,
     /// translates to no target.
     pub reply_target: Option<ReplyTarget>,
+    /// The part of the replied-to message this reply quotes, where the
+    /// platform reports one (unit 31, 2026-08-28): the excerpt's text and
+    /// whether the sender selected it by hand. The excerpt's platform
+    /// offset is not carried — the core searches its stored text for the
+    /// excerpt instead of converting an offset between text encodings.
+    pub quoted: Option<QuotedExcerpt>,
     /// The command the message invokes, reported beside the text: the
     /// leading command token, a self-directed handle suffix normalized
     /// away. The text itself is never rewritten.
@@ -211,6 +217,7 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity, wake: Option<&str>) -
         authority,
         addressed,
         reply_target: reply_target_of(message, me),
+        quoted: quoted_excerpt_of(message),
         command: invoked_command(text, me),
         sender: SenderIdentity {
             external_id: from.id.to_string(),
@@ -571,6 +578,25 @@ fn reply_target_of(message: &Incoming, me: &BotIdentity) -> Option<ReplyTarget> 
     })
 }
 
+/// The quoted excerpt the message carries, in the core's vocabulary (unit
+/// 31, 2026-08-28): the quoted text and the hand-selected flag, and
+/// nothing else — the platform's UTF-16 offset beside them is not decoded
+/// at all, because the core locates the excerpt by searching the text it
+/// stored. A quoted part the platform delivered without text carries
+/// nothing to search for, so it translates to no excerpt and the reply
+/// quotes its target whole.
+///
+/// Translated for every reply, the assistant's own messages included: what
+/// an excerpt is worth against a given target is the core's decision, and
+/// the adapter's job is to report the platform's fact once.
+fn quoted_excerpt_of(message: &Incoming) -> Option<QuotedExcerpt> {
+    let quote = message.quote.as_ref()?;
+    Some(QuotedExcerpt {
+        text: quote.text.clone()?,
+        manual: quote.is_manual,
+    })
+}
+
 /// The message's text, or its caption when the message is media with a
 /// caption (decision 0017).
 fn text_of(message: &Incoming) -> Option<&str> {
@@ -610,7 +636,7 @@ impl std::fmt::Display for Skip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::{Chat, Incoming, PinnedContent, RepliedTo, Update, User};
+    use crate::client::{Chat, Incoming, PinnedContent, QuotedPart, RepliedTo, Update, User};
 
     /// The bot identity the tests resolve addressing against.
     fn bot() -> BotIdentity {
@@ -637,6 +663,7 @@ mod tests {
             text: None,
             caption: None,
             reply_to_message: None,
+            quote: None,
             pinned_message: None,
             new_chat_members: None,
             left_chat_member: None,
@@ -848,6 +875,58 @@ mod tests {
             None,
             "a reply without a usable id stores no target"
         );
+    }
+
+    /// The quoted excerpt's translation (unit 31, 2026-08-28): the quoted
+    /// text and the hand-selected flag cross the boundary, the platform's
+    /// offset does not exist to cross, a quoted part without text carries
+    /// nothing to search for, and a message quoting nothing carries no
+    /// excerpt at all. Translated whatever the reply points at — what an
+    /// excerpt is worth against a given target is the core's decision.
+    #[test]
+    fn the_quoted_excerpt_translates_with_its_text_and_its_flag() {
+        let quoting = |quote: Option<QuotedPart>| {
+            let mut update = group_update("which one?", Some(9));
+            update
+                .message
+                .as_mut()
+                .expect("the fixture carries a message")
+                .quote = quote;
+            recorded(&update).quoted
+        };
+
+        assert_eq!(
+            quoting(Some(QuotedPart {
+                text: Some("the text font".into()),
+                is_manual: true,
+            })),
+            Some(QuotedExcerpt {
+                text: "the text font".into(),
+                manual: true,
+            }),
+            "a hand-selected excerpt crosses with its words and its flag"
+        );
+        assert_eq!(
+            quoting(Some(QuotedPart {
+                text: Some("the text font".into()),
+                is_manual: false,
+            })),
+            Some(QuotedExcerpt {
+                text: "the text font".into(),
+                manual: false,
+            }),
+            "a part the platform composed crosses as itself; the core \
+             decides that it narrows nothing"
+        );
+        assert_eq!(
+            quoting(Some(QuotedPart {
+                text: None,
+                is_manual: true,
+            })),
+            None,
+            "a quoted part without text names no words to look for"
+        );
+        assert_eq!(quoting(None), None, "a plain reply quotes no part");
     }
 
     /// The identity crossing the boundary is the external id and the

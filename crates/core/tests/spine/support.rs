@@ -1357,6 +1357,7 @@ pub fn inbound_as(
         authority: Some(authority),
         addressed: true,
         reply_target: None,
+        quoted: None,
         command: None,
         text: text.into(),
         origin: Some(format!(

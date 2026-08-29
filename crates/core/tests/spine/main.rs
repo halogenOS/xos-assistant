@@ -24,7 +24,11 @@
 //! joins (the join notice: its marked blocks through the observation seam,
 //! its transparency on both walks, its reach into the report path and its
 //! erasure by person and by event),
-//! projection (role alternation under erasure), speaker (the username
+//! projection (role alternation under erasure),
+//! quotes (a reply landing as a quote of the message it replies to: what
+//! reaches the model, what quotes nothing, the erasure on either side,
+//! the crash shape's debt and the refresh fork's parity),
+//! speaker (the username
 //! projection), erasure with its stream
 //! ordering, the end-to-end turn, tools (the lookups against the scripted
 //! forge and mirror in `lookup_wire`, the palette, the anchor gate over
@@ -66,6 +70,7 @@ mod mirror;
 mod privacy_rights;
 mod projection;
 mod protection;
+mod quotes;
 mod reasoning;
 mod report;
 mod runtime_facts;

@@ -92,6 +92,7 @@ mod tests {
             reply_target: Some(ReplyTarget::Message {
                 origin: "origin-7".into(),
             }),
+            quoted: None,
             command: Some(InvokedCommand::new(DELETION_COMMAND)),
             text: DELETION_COMMAND.into(),
             origin: Some("del-1".into()),

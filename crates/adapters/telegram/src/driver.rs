@@ -561,6 +561,7 @@ impl<'a> Intake<'a> {
             authority,
             addressed: pending.addressed,
             reply_target: pending.reply_target,
+            quoted: pending.quoted,
             command: pending.command,
             text: pending.text,
             origin: Some(pending.origin),
