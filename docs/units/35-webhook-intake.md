@@ -14,7 +14,7 @@ is one loop: `client.get_updates(offset)` (`:309`), then per update the
 translate-authority-ingest step (`:358`), `Step::Acknowledged` advancing the offset
 (`:321`), the offset persisted after each batch (`:328-334`). Delivery is
 at-least-once: a failed ingest halts the batch, the offset stays, redelivery follows
-— the module doc states it (`driver.rs:2-9`). The per-update step is already a
+— the module doc states it (`driver.rs:6-11`). The per-update step is already a
 separable function; the loop is only its feeder.
 
 **What Telegram's documentation binds** (read 2026-08-29, core.telegram.org): long
@@ -58,9 +58,15 @@ or restructure it deliberately.
   2026-08-29.** One consumer task owns the shared per-update step and the mutable
   memories the poll loop owns today — the serial discipline is kept, not worked
   around. The listener authenticates, bounds and parses a delivery, then hands the
-  update with a one-shot answer channel over a BOUNDED queue to the consumer and
+  update with a one-shot answer channel over a BOUNDED queue — sixty-four deep,
+  because the local queue only smooths bursts between consumer steps (an ingest is
+  local and quick) while Telegram's own 24-hour queue with its retries is the real
+  buffer, and a deeper queue would only hide a wedged consumer longer — to the
+  consumer and
   answers the HTTP request with the outcome the consumer reports, waiting at most
-  twenty-five seconds — past that it answers 500 and moves on, so a wedged
+  twenty-five seconds, taken through the adapter's existing sleep seam so the
+  suite drives the deadline without real time — past that it answers 500 and
+  moves on, so a wedged
   platform call inside the shared step cannot pin HTTP connections open until
   Telegram's delivery pool (forty connections by default) fills and the deployment
   goes deaf while looking busy. An expiry may answer 500 for an ingest that later
@@ -98,7 +104,7 @@ or restructure it deliberately.
   — acknowledging what was not ingested — loses updates silently on every crash.
 - **Webhook startup is identity, then bind, then register — refusal anywhere,
   2026-08-29.** The bot identity (`getMe`) is fetched first, because the shared
-  step cannot translate without it (`driver.rs:305`'s comment stands: translating
+  step cannot translate without it (`driver.rs:343-344`'s comment stands: translating
   blind records wrong facts into a durable ledger); in webhook mode a failed
   identity fetch refuses the start instead of poll mode's endless retry, the same
   loud-refusal rule as everything else in this list. The listener binds second, and
@@ -117,15 +123,24 @@ or restructure it deliberately.
   loop's existing error reporting carries any 409 — a local deployment must not be
   refused its start by a transient check, and a genuinely registered webhook
   surfaces in the loop's own errors within seconds. Switching modes accepts what
-  the polling crash window always accepted: redelivered duplicates, and the
-  24-hour server-side expiry for a box that slept across the switch. *Rejected:*
+  the polling crash window always accepted in kind though not in size:
+  returning to polling restarts from the stale pre-webhook offset, so up to a
+  day of already-ingested updates re-serve and re-ingest — materially more than
+  a crash window, accepted because a mode switch is a rare, deliberate operator
+  action, and stated so nobody discovers it as a surprise. The 24-hour
+  server-side expiry likewise drops what a box that slept across the switch
+  never fetched. *Rejected:*
   leaving mode transitions to the operator's hands; *rejected:* refusing a polling
   start on a failed check (brittle exactly where the local deployment lives).
 - **The secret token is the adapter's own, generated and kept, 2026-08-29.** At
   first webhook start the adapter generates the token — 64 characters from
   Telegram's own permitted alphabet (letters, digits, underscore, hyphen), read
   from the operating system's randomness with no new dependency — persists it
-  beside its state file with owner-only permissions, and reuses it thereafter. Every delivery
+  beside its state file with owner-only permissions, and reuses it thereafter. A
+  persisted token that cannot be used — unreadable, empty, or outside the
+  permitted alphabet — is regenerated with a structural warning, and wrong
+  permissions are corrected on read; regeneration always converges, because every
+  webhook start registers the CURRENT token with Telegram. Every delivery
   must carry it back in `X-Telegram-Bot-Api-Secret-Token`; a mismatch or absence is
   answered 403 with nothing read and nothing logged beyond a counter-grade line —
   the door discards strangers without describing itself. No human carries this
@@ -142,16 +157,23 @@ or restructure it deliberately.
   redelivery — the exact loss the polling design refuses).
 - **The listener is loopback-only plain HTTP, smallest possible, 2026-08-29.** It
   binds the configured loopback port — a failed bind refuses the start naming the
-  port — accepts exactly POST on one path, bounds the body it reads at one
+  port — and serves exactly one path: the PATH COMPONENT of the configured
+  `public_url`, matched exactly with no query string, so the address Telegram
+  calls and the path the listener answers are one recorded value that cannot
+  diverge — the deploy repository's proxy forwards the path unchanged, which its
+  own module already does. It accepts exactly POST on that path, bounds the body
+  it reads at one
   megabyte (an update is kilobytes; oversized answers 413), answers 400 to a body
   that does not parse, 404 to any other path and 405 to any other method (both
   without reading a body — the door describes nothing), and parses the update with
   the same types the poll path parses. The assistant's configuration refuses port
   zero (a deployment's port is a contract with its reverse proxy); the adapter's
   own `Config` accepts any port and exposes the bound address, which is how the
-  suite drives an ephemeral listener. The listener future joins the run entry's existing select; a listener
-  that dies mid-run ends the run the way a dropped outbound edge does, and the
-  service supervisor restarts the process — a deaf webhook deployment must never
+  suite drives an ephemeral listener. The listener future and the consumer task
+  both join the run entry's existing select; either one dying mid-run ends the
+  run the way a dropped outbound edge does, and the service supervisor restarts
+  the process — a consumer that died with a live listener would answer every
+  delivery 500 at the deadline forever, and a deaf webhook deployment must never
   keep running quietly.
   TLS, hostname, and the public path are the reverse proxy's job (the deploy
   repository's half, not this unit's). The HTTP surface is built on what the
@@ -193,7 +215,8 @@ platform vocabulary enters the core, and the outbound path is untouched.
   identity-fetch, bind and registration failures each refuse the start with a
   named error; polling start deletes a registered webhook if and only if one
   exists, and starts anyway when the check itself fails.
-- **AC4** The door authenticates and bounds: right token ingests and answers 200;
+- **AC4** The door authenticates and bounds, on the public_url's own path: right
+  token ingests and answers 200;
   wrong or missing token answers 403 with nothing ingested; a malformed body
   answers 400, an oversized one 413, a full queue 503 — each with nothing
   ingested, each pinned through a real local HTTP round trip, none panicking.
