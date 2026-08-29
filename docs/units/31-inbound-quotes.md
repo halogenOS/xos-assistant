@@ -114,20 +114,26 @@ as that promise.
   `NEVER_ANSWERABLE` (`core/src/kind.rs:855`, today the date-marker kinds), the list
   whose recorded meaning is that the fact holds for every reader — NOT
   `DEBT_READ_THROUGH`, which is recorded as the consumer's policy about its OWN
-  kinds and would be contradicted by a framework kind in it. Joining that list also
-  reaches the other newest-past-erased walks (erasure and report anchoring), and
-  that reach is meant: a report or an erasure anchor should find the newest real
-  message, never a quote. SECOND, the turn: the framework serves a model turn for
-  any user-voiced frontier, so an orphaned quote (its message refused on retry)
-  would be answered bare. In this consumer the turn duty lives on the chat message's
-  answer_due stamp alone, so the assistant's kind tree takes the quote into its own
-  arm — delegating storage, rendering and resolution to the framework kind
-  untouched — and overrides its agency to inert, the join-notice precedent. A lone
+  kinds and would be contradicted by a framework kind in it. The list is read by
+  exactly the owing-tail walk's two sites, and that is the whole reach; nothing
+  else anchors on a newest message. SECOND, the turn: the framework serves a model
+  turn for any user-voiced frontier, so an orphaned quote (its message refused on
+  retry, or sitting bare at restart before the redelivery lands) would be answered
+  on its own. In this consumer the turn duty lives on the chat message's answer_due
+  stamp alone, so the override goes where the consumer already speaks for framework
+  kinds: `FrameworkKind`'s hand-written `Agency` delegation (`core/src/kind.rs:1099`)
+  answers no awaiting for a quote and delegates everything else untouched — one
+  match, at the one boundary that is already the consumer's recorded policy seam
+  over the framework's kinds. Storage, rendering and resolution never move. A lone
   quote asks for nothing; its message, when it lands, owes exactly what it owes
-  today. *Rejected:* leaving the quote on the delegate arm — the framework would
-  dispatch a turn on a bare quote, changing when the assistant answers;
-  *rejected:* a framework change — Awaiting::Model on user quotes is the right
-  general default for consumers that have no stamp of their own;
+  today. *Rejected:* a new leaf arm claiming the quote string — the framework's
+  derive refuses a leaf whose claim overlaps the delegate's (its coherence
+  assertion fails compilation), and that refusal is correct;
+  *rejected:* narrowing `FrameworkKind::CLAIMED_KINDS` by a const filter plus a
+  delegating newtype leaf — buildable, but a filtered claims list and a whole leaf
+  to express one line of policy;
+  *rejected:* a framework derive attribute for delegate interception — a new derive
+  surface for a need one consumer line serves; revisit if a second consumer needs it;
   *rejected:* `DEBT_READ_THROUGH` — see its recorded meaning above.
 - **The quoter's erasure leaves the quote, because the quote holds nothing of the
   quoter, 2026-08-29.** A framework user block carries no principal — the store's
@@ -273,10 +279,14 @@ no privacy-document change, and no change to when the assistant answers or stays
   workspace path-depends on that master. The branch sits on the consumer `main`
   tip of its launch day (unit 29's merge included); the build's first step rebases
   again regardless.
+- The two crash-and-fork pins drive public surfaces: AC11's crash shape is built
+  with `Store::insert_user_blocks` on the spine fixture's store handle (the date
+  marker commits in the same transaction, as decided above), and AC12's fork runs
+  `Assistant::retire_stale_channels` (`core/src/assembly.rs:949`, public).
 - Worktree `~/projects/halogenos-assistant-quotes`, branch `unit/inbound-quotes`. Sites: the ingest edge in `core/src/assembly.rs` (the append
   sequence, around the existing chat-message landing), the new origin-to-block
   resolution (no existing lookup maps an origin to a block id; the erasure passes
-  around `core/src/kind.rs:691-827` only NULL by origin), the manual-quote thread
+  around `core/src/kind.rs:692-828` only NULL by origin), the manual-quote thread
   through `adapters/telegram/src/client.rs`, `translate.rs`, `driver.rs` and
   `core/src/message.rs`, the debt walk and agency surfaces (`NEVER_ANSWERABLE` in
   `core/src/kind.rs` and the assistant kind tree's new quote arm), the chat-message
