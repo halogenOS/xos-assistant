@@ -25,30 +25,79 @@ it back in the `X-Telegram-Bot-Api-Secret-Token` header; a failed delivery is re
 webhook endpoints must be HTTPS on port 443/80/88/8443 — which the deployment's
 reverse proxy owns, so the adapter's listener itself speaks plain HTTP on loopback.
 
-**What already carries over.** Translate, authority resolution, ingest, the observe
-path and the outbound consumer are delivery-agnostic; nothing in them reads the
-offset. At-least-once redelivery after a failed ingest is the polling contract
-already, so webhook retries land on semantics the core was built for.
+**What already carries over, and what does not.** Translate, authority resolution,
+ingest, the observe path and the outbound consumer are delivery-agnostic; nothing in
+them reads the offset (verified by the cold round). What does NOT carry over is
+unbounded redelivery: polling's offset holds a failed update forever, while Telegram
+retries a refused webhook delivery only so many times and drops undelivered updates
+after 24 hours. Webhook mode therefore trades unbounded redelivery for bounded,
+logged redelivery — an accepted trade, stated below, not a hidden one. The polling
+loop also processes strictly serially through one mutable memories carrier
+(`driver.rs:206-216`); whatever feeds the shared step must preserve that discipline
+or restructure it deliberately.
 
 ## Decisions taken with this unit
 
 - **One intake seam, two sources, chosen by configuration, 2026-08-29.** The
   per-update step becomes the shared path it already almost is; the poll loop and the
-  webhook listener are two feeders of it. A webhook configuration present (public
-  address for registration plus a loopback listen port) means webhook mode; absent
-  means polling, exactly as today — one predicate, no third state. John keeps polling
-  locally with no public endpoint. *Rejected:* webhook-only (kills the local
-  deployment); *rejected:* both at once (Telegram forbids it).
+  webhook listener are two feeders of it. The configuration is a `[webhook]` section
+  in the assistant's own configuration (`assistant/src/config.rs`), carried into the
+  adapter's `Config` the way the endpoint override already travels: `public_url`,
+  the full HTTPS address Telegram will call (refused at start unless it parses as an
+  `https` URL), and `listen_port`, the loopback port the listener binds. No
+  defaults, no partial state: both fields or neither — a section with one field
+  refuses the start naming the other. Section present means webhook mode; absent
+  means polling, exactly as today — one predicate, no third state. John keeps
+  polling locally with no public endpoint. The deployed values are
+  `https://xenia.halogenos.org/telegram/webhook` and port 8085, the contract the
+  deploy repository's reverse proxy already records. *Rejected:* webhook-only
+  (kills the local deployment); *rejected:* both at once (Telegram forbids it);
+  *rejected:* adapter-file configuration apart from the assistant's (two files
+  deciding one mode).
+- **Deliveries are processed serially by one consumer; the listener only queues,
+  2026-08-29.** One consumer task owns the shared per-update step and the mutable
+  memories the poll loop owns today — the serial discipline is kept, not worked
+  around. The listener authenticates, bounds and parses a delivery, then hands the
+  update with a one-shot answer channel over a BOUNDED queue to the consumer and
+  answers the HTTP request with the outcome the consumer reports. A full queue
+  answers 503 with nothing read into the pipeline — honest backpressure Telegram's
+  retry absorbs. *Rejected:* concurrent handling sharing the memories (a restructure
+  nothing asked for); *rejected:* an unbounded queue (memory as backpressure).
+- **Duplicates are answered from a bounded memory of acknowledged ids, 2026-08-29.**
+  The consumer keeps a bounded in-memory set of recently acknowledged update ids. A
+  delivery whose id is in the set — a retry that raced its original, or one arriving
+  after — answers 200 without re-ingesting; because processing is serial, a racing
+  retry simply queues behind its original and meets the set. The set does not
+  survive a restart, so a crash between ingest and answer can re-ingest one update —
+  the exact at-least-once window polling's offset file already has, not a new one.
+  *Rejected:* a persisted dedup ledger (a second offset file by another name, for a
+  window polling already accepts).
+- **The bounded-loss trade is stated and logged, never silent, 2026-08-29.** Every
+  refused delivery (500, 503) logs one structural warning naming the update id and
+  the reason — never content — so an update Telegram eventually gives up on leaves
+  its trail of refusals in the log. When the store is so broken that ingest fails
+  past Telegram's patience and the 24-hour expiry, the update is lost; in that state
+  polling would sit equally broken, holding updates it cannot ingest against the
+  same 24-hour server-side expiry. Accepted with eyes open, because the alternative
+  — acknowledging what was not ingested — loses updates silently on every crash.
 - **The mode announces itself to Telegram at startup, 2026-08-29.** Webhook mode
   calls `setWebhook` with the configured public address and the secret token;
-  polling mode checks for a registered webhook and deletes it if and only if one is
-  set, because `getUpdates` answers 409 forever otherwise. Registration failure
-  refuses the start loudly — a webhook deployment that silently cannot register
-  would sit deaf, which is the outage this unit exists to end. *Rejected:* leaving
-  mode transitions to the operator's hands.
+  registration failure refuses the start loudly — a webhook deployment that
+  silently cannot register would sit deaf, which is the outage this unit exists to
+  end. Polling mode checks `getWebhookInfo` and deletes the webhook if and only if
+  one is registered; if that check itself fails, polling starts anyway and the poll
+  loop's existing error reporting carries any 409 — a local deployment must not be
+  refused its start by a transient check, and a genuinely registered webhook
+  surfaces in the loop's own errors within seconds. Switching modes accepts what
+  the polling crash window always accepted: redelivered duplicates, and the
+  24-hour server-side expiry for a box that slept across the switch. *Rejected:*
+  leaving mode transitions to the operator's hands; *rejected:* refusing a polling
+  start on a failed check (brittle exactly where the local deployment lives).
 - **The secret token is the adapter's own, generated and kept, 2026-08-29.** At
-  first webhook start the adapter generates a random token, persists it beside its
-  state file with owner-only permissions, and reuses it thereafter. Every delivery
+  first webhook start the adapter generates the token — 64 characters from
+  Telegram's own permitted alphabet (letters, digits, underscore, hyphen), read
+  from the operating system's randomness with no new dependency — persists it
+  beside its state file with owner-only permissions, and reuses it thereafter. Every delivery
   must carry it back in `X-Telegram-Bot-Api-Secret-Token`; a mismatch or absence is
   answered 403 with nothing read and nothing logged beyond a counter-grade line —
   the door discards strangers without describing itself. No human carries this
@@ -64,8 +113,14 @@ already, so webhook retries land on semantics the core was built for.
   *Rejected:* 200-then-process (a crash between the two loses the update with no
   redelivery — the exact loss the polling design refuses).
 - **The listener is loopback-only plain HTTP, smallest possible, 2026-08-29.** It
-  binds the configured loopback port, accepts exactly POST on one path, bounds the
-  body it reads, and parses the update with the same types the poll path parses.
+  binds the configured loopback port — a failed bind refuses the start naming the
+  port — accepts exactly POST on one path, bounds the body it reads at one
+  megabyte (an update is kilobytes; oversized answers 413), answers 400 to a body
+  that does not parse, and parses the update with the same types the poll path
+  parses. The listener future joins the run entry's existing select; a listener
+  that dies mid-run ends the run the way a dropped outbound edge does, and the
+  service supervisor restarts the process — a deaf webhook deployment must never
+  keep running quietly.
   TLS, hostname, and the public path are the reverse proxy's job (the deploy
   repository's half, not this unit's). The HTTP surface is built on what the
   dependency tree already carries — reqwest's own hyper stack — and only if that is
@@ -95,18 +150,22 @@ platform vocabulary enters the core, and the outbound path is untouched.
 - **AC1** Workspace green in both answering modes; clippy, fmt, doc under denied
   warnings; vocabulary and secret scans clean; any new dependency web-checked and
   recorded in `docs/dependency-review.md` before the manifest names it.
-- **AC2** Mode by one predicate: with the webhook configuration the listener serves
+- **AC2** Mode by one predicate: with the `[webhook]` section the listener serves
   and no poll happens (pinned: no getUpdates request reaches the wire); without it
-  the poll loop runs exactly as today (existing pins stay green untouched).
+  the poll loop runs exactly as today (existing pins stay green untouched); a
+  half-filled section refuses the start naming the missing field — pinned.
 - **AC3** Startup announces the mode: webhook start registers address plus token
   (pinned against a scripted Bot API); registration failure refuses the start with a
   named error; polling start deletes a registered webhook if and only if one exists.
-- **AC4** The door authenticates: a delivery with the right token ingests and
-  answers 200; a wrong or missing token answers 403 with nothing ingested; a
-  malformed body and an oversized body are each rejected without a panic — each
-  pinned through a real local HTTP round trip.
-- **AC5** Acknowledgement is honest: an update whose ingest fails answers 500, and
-  the same update redelivered afterwards ingests once — pinned end to end.
+- **AC4** The door authenticates and bounds: right token ingests and answers 200;
+  wrong or missing token answers 403 with nothing ingested; a malformed body
+  answers 400, an oversized one 413, a full queue 503 — each with nothing
+  ingested, each pinned through a real local HTTP round trip, none panicking.
+- **AC5** Acknowledgement is honest and duplicates are met: an update whose ingest
+  fails answers 500 with a structural warning naming the update id, and the same
+  update redelivered afterwards ingests once; a duplicate of an ACKNOWLEDGED update
+  answers 200 without a second ingest — both pinned end to end through the queue
+  and the consumer, not around them.
 - **AC6** The secret stays dark: generated with owner-only permissions, absent from
   rendered configuration, logs and error text — pinned by assertions this unit
   authors; the persisted file's mode is asserted.
