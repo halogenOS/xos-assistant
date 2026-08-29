@@ -237,6 +237,7 @@ impl LeafKind for ContextNote {
             Column::new(COLUMN_TEXT, ColumnType::Text),
         ],
         reference_columns: &[],
+        quoted_text_column: None,
         ephemeral: false,
     }];
 

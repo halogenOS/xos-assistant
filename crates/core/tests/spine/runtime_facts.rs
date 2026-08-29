@@ -191,6 +191,11 @@ async fn the_stated_model_is_the_one_the_conversation_runs_on() {
     )
     .await;
 
+    // The first process stops before the second starts — two live
+    // assemblies on one store would race for the same owed turn, and the
+    // suite's other restart pins drop the first for the same reason.
+    drop(first);
+
     // The swap: another model configured, the process restarted on the same
     // store. The prompt is untouched, so the channel keeps its conversation
     // — and with it the model the wire carries.

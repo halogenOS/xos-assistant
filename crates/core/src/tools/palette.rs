@@ -76,6 +76,7 @@ impl LeafKind for ToolPalette {
         kinds: &[TOOL_PALETTE_KIND],
         columns: &[Column::new(COLUMN_TOOLS, ColumnType::Text)],
         reference_columns: &[],
+        quoted_text_column: None,
         ephemeral: false,
     }];
 

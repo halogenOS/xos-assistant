@@ -174,6 +174,7 @@ impl LeafKind for JoinNotice {
             Column::new(COLUMN_JOINED_AT, ColumnType::Text),
         ],
         reference_columns: &[],
+        quoted_text_column: None,
         ephemeral: false,
     }];
 

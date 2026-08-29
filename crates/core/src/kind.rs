@@ -596,6 +596,7 @@ impl LeafKind for ChatMessage {
             Column::new(COLUMN_REPLY_TO_ASSISTANT, ColumnType::Boolean),
         ],
         reference_columns: &[],
+        quoted_text_column: None,
         ephemeral: false,
     }];
 

@@ -138,6 +138,7 @@ impl LeafKind for Report {
             Column::new(COLUMN_LINE, ColumnType::Text),
         ],
         reference_columns: &[],
+        quoted_text_column: None,
         ephemeral: false,
     }];
 
