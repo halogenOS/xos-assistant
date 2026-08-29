@@ -16,7 +16,7 @@ decodes it into `let _sent` and returns `Ok(())`. Both send paths discard it —
 reply consumer (`driver.rs:868-896` through `send_message`/`send_chunk_threaded`/
 `send_chunk`) and the deterministic items (`send_item`, `driver.rs:739-743`). One
 answer may become several platform messages (`chunks_within_cap`, `client.rs:814-831`;
-only the first chunk threads, decision 0019).
+only the first chunk threads — decision 0059's rule; 0019 records the chunking).
 
 **No one knows her block's id at write time; the outbound edge knows it at delivery
 time.** The framework finalizes her answer blocks at four sites, each discarding the
@@ -70,7 +70,14 @@ translation only. No new wire field.
   point beside ingest and observe; the core appends one `Delivered` block per
   delivered platform message — origin, delivery key, and the answer's block id where
   the delivery was an answer, NULL for deterministic items and notices — per chunk,
-  both send paths, only for chunks that actually reached the chat. `OutboundReply`
+  both send paths, only for chunks that actually reached the chat. One send reports
+  at most once BY CONSTRUCTION, and that argument is recorded here rather than
+  indexed: an `OutboundReply` is consumed once (the cursor advances on send and
+  reseeds at the latest block on restart, so nothing re-sends), a redelivered
+  update's observe dedupe yields no second deliver, and a crash between send and
+  report loses the row — the accepted quoteless case. The planned indexes stay
+  non-unique, and the newest-row resolution tolerates a duplicate if one ever
+  appears. `OutboundReply`
   gains the answer's block id from its one construction site, NULL at the notice
   site. The kinds and the bounded conversation-scoped lookups live in a new
   `core/src/delivery.rs` per T4. *Rejected:* an answers-only subset seam — T4's
@@ -104,7 +111,11 @@ translation only. No new wire field.
   `driver.rs:713`), which today carries no conversation id — T4's launch note
   points at the ingest receipt, stale against this tree. `Observed` gains the
   conversation id beside its deliver item, mirroring `IngestReceipt`'s shape, and
-  the driver reports that send like any other. *Rejected:* skipping the
+  the driver reports that send like any other. `send_item` serves TWO call sites
+  and each has its handle carrier: the ingest deliver (`driver.rs:571-573`) takes
+  it from the ingest receipt the driver today discards through `..` — T4's
+  receipt-as-carrier note holds THERE — and the observe deliver (`driver.rs:713`)
+  takes it from the widened `Observed`. *Rejected:* skipping the
   acknowledgment's row — it breaks the every-message contract and T4's recorded
   total coverage; *rejected:* threading the handle through `DeliveryItem` — the
   outcome is the receipt's natural carrier, the item is the payload's.
@@ -160,8 +171,11 @@ no configuration, no privacy-document change.
   denied warnings; vocabulary and secret scans clean; no new dependency.
 - **AC2** The receipt records: a delivered answer yields one `Delivered` block per
   platform message with origin, delivery key and the answer block id; a
-  deterministic item's rows carry no answer id; a failed chunk yields no row — pinned
-  through the adapter's scripted Bot API server and the core's entry point.
+  deterministic item's rows carry no answer id. Failure splits in two, both pinned:
+  a first-chunk failure appends nothing, and a cut-short multi-chunk send appends
+  exactly the reached chunks' rows — driven through the adapter's scripted Bot API
+  server, whose stub must first learn to answer distinct per-send message ids
+  (today it answers a constant 1).
 - **AC3** A reply to her quotes her words end to end: ingest a member reply carrying
   her recorded origin and the model-bound projection shows her stored answer
   `> `-prefixed above the member's message — pinned through the real projection fold,
@@ -178,10 +192,14 @@ no configuration, no privacy-document change.
 - **AC8** The Delivered kind is invisible everywhere it must be: it projects
   nothing to the model, and a Delivered row landing at the tail (the failure
   notice's receipt shape) neither buries the debt behind it nor draws a turn —
-  pinned by driving the debt walk across a Delivered tail.
+  pinned by driving the debt walk across a Delivered tail AND by the dispatch
+  frontier reading through it, the joins-suite shape (the join notice's frontier
+  pin is the precedent to mirror).
 - **AC9** The variant widening changes no storage: her reply-target column stays
-  NULL, erasure's naming pass and the report resolution see exactly what they saw —
-  pinned by the existing suites passing untouched plus one explicit NULL assertion.
+  NULL, and erasure's naming pass and the report resolution see exactly what they
+  saw — pinned by those surfaces' own assertions plus one explicit NULL assertion.
+  (Pattern matches over the widened types across the suites move mechanically; the
+  criterion binds the storage-facing behavior, not the pattern syntax.)
 - **AC10** The decision records land numbered after unit 37's, each dated, each
   with rejected alternatives; T4's spec is NOT edited (its build refreshes it).
 
@@ -199,7 +217,9 @@ no configuration, no privacy-document change.
   agency-inert, frontier-transparent, the join-notice precedent),
   `core/src/assembly.rs` (`DEBT_READ_THROUGH` gains the kind; `ObserveOutcome`'s
   widened return at the observe entry point), one appended migration step in
-  `core/src/schema.rs`, spine and adapter tests, `docs/decisions`.
+  `core/src/schema.rs`, spine and adapter tests including the scripted Bot API stub
+  (`crates/adapters/telegram/tests/adapter/server.rs` — its sendMessage answer gains
+  distinct per-send ids), `docs/decisions`.
 - T4 (`docs/units/telegram/04-deleting-messages.md`) is the seam's recorded design:
   the implementer reads it alongside this spec; where the two state the same
   mechanism, T4's wording of the Delivered shape governs, and this unit's additions
