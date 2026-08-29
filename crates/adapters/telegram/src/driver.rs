@@ -631,9 +631,7 @@ impl<'a> Intake<'a> {
         let ahead_of_the_fact = match &observation.fact {
             ObservedFact::Added { .. } => None,
             ObservedFact::PinnedAnnouncement(_) => Some(LookupScope::TitleOnly),
-            ObservedFact::Title(_) | ObservedFact::MembersJoined { .. } => {
-                Some(LookupScope::Whole)
-            }
+            ObservedFact::Title(_) | ObservedFact::MembersJoined { .. } => Some(LookupScope::Whole),
         };
         if let Some(scope) = ahead_of_the_fact {
             // A pin or a join event: the chat's lazy lookup enriches first,
