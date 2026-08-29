@@ -75,7 +75,12 @@ suppression machinery today, and this unit must not store a flagged person's joi
   identity path a sender's is (`identity.rs`; a joiner is a member), the shared
   origin, the timestamp — in its own table with the chat-message columns' erasure
   discipline. The person-keyed pass nulls one joiner's block, registered at the
-  erasure composition site (`erasure.rs:141-148`) beside the message kind's; the
+  erasure composition site (`erasure.rs:141-148`) beside the message kind's, AND
+  drives the target-keyed reference null the message kind drives
+  (`erase_reply_targets_naming`, `kind.rs:802`): members reply to join notices —
+  welcome replies are ordinary — and a replier's row holds the event's origin,
+  so the erased joiner's event origins join that pass's collection or the
+  residual decisions 0063 and 0085 closed comes back through the join table; the
   origin-keyed pass rides the deletion mirror (`mirror.rs:53-64`,
   `erase_message_named`'s shape extended to the join table), because deleting the
   service message removes the event; the new table enters through an appended
@@ -87,9 +92,13 @@ suppression machinery today, and this unit must not store a flagged person's joi
   block (person-keyed erasure cannot null one person out of a shared row);
   *rejected:* a context note (0055); *rejected:* widening chat_message (every
   message invariant would need carve-outs).
-- **Joins project as a stated platform fact, and never wake by themselves,
-  2026-08-29.** The projection renders one line per joiner in the platform-fact
-  voice, so the model reads the name exactly as members saw it. A join owes no
+- **Joins project as a stated platform fact WITH the event's id, and never wake
+  by themselves, 2026-08-29.** The projection renders one line per joiner: the
+  event's bracketed origin mark ahead — the same mark a live message carries,
+  because the report tool's parameter IS that bracketed id and an unmarked join
+  would be visible but unnameable — then the platform-fact statement of the name
+  (and the handle when one exists), as a System-role contribution. The model
+  reads the name exactly as members saw it and can name the event. A join owes no
   answer and summons no turn — falling out of the existing summons machinery,
   because a join_notice simply never carries a summons, never as a special case in
   dispatch. A join is seen when a turn composes over a window containing it; the
@@ -97,14 +106,30 @@ suppression machinery today, and this unit must not store a flagged person's joi
   pins that a join inside the window reaches the request. *Rejected:* every join
   summoning a turn (the model spent on greetings, and the silent per-event
   assessment turn is the shape 0070's context already rejected).
+- **A report against a join files the EVENT, once, 2026-08-29.** All joiners of
+  one service message share the event's origin, so the filing resolves the
+  EVENT: the report names the origin, the filed text (the model's own words)
+  names WHICH joiner offends, and when the event carries several joiners the
+  report attaches no single joiner's principal — a first-joiner guess would
+  record the wrong person, and the human acting on the report reads the text and
+  the event either way. Decision 0092's per-origin dedup stands and means one
+  filing per event, stated plainly: a second offender in the SAME event is named
+  in the same filing, never in a second one. *Rejected:* a per-joiner
+  discriminator in the tool's parameter (a new addressing scheme for one case);
+  *rejected:* resolving the first joiner's principal for a plural event (a
+  record naming the wrong person).
 - **The report's own source unions the windowed joins; co_summoners is untouched,
   2026-08-29** (the first round steered toward one shared spring; the second
   proved the shared spring poisons the other three drinkers — this is the
   corrected shape, and the two rounds together are why it is right). A new
   provenance question — the turn's assessed joins — reads the join notices the
   turn's window carried, and `resolve_reportable` resolves over co_summoners
-  UNION that set; a join contributes its origin and the joiner's principal to the
-  report's resolution only. `co_summoners` itself does not change, so
+  UNION that set; a join contributes its origin (and, for a single-joiner event,
+  the joiner's principal) to the report's resolution only. The assessed-joins
+  window is the SAME span co_summoners walks — the anchor's span with its
+  behind-anchor chain — so the two halves of the assessment set cover one turn's
+  sight; the whole loaded ledger was rejected (months-old joins are not what
+  this turn assessed). `co_summoners` itself does not change, so
   `sole_principal`, the answer threading and the disclosure fold are unchanged BY
   CONSTRUCTION — their source is byte-identical — and AC4 pins exactly that.
   *Rejected:* widening co_summoners (a windowed joiner would count as a person
@@ -124,12 +149,18 @@ suppression machinery today, and this unit must not store a flagged person's joi
   read-only identity lookup; a flag-bearing joiner's notice is withdrawn whole —
   no block, no name, no principal refresh — because the processing record
   promises collection stops with the flag, and this unit does not bend a promise
-  to gain a feature. The group still sees the platform's own join line; the
+  to gain a feature. Skipped means skipped — the word "withdraw" is deliberately
+  avoided here, because the observe path's Withdraw outcome makes the assistant
+  LEAVE the chat, and a suppressed person joining must cause no departure and no
+  reaction at all. The group still sees the platform's own join line; the
   assistant simply keeps no record. *Rejected:* storing with a suppressed name
   (a contradiction of the published record); *rejected:* a stub block (a record
   of the fact of joining is still a record about the person).
 - **A spam-form join wakes the report path through teaching, not code,
-  2026-08-29.** In helpful mode the teaching gains the join rule: a join whose
+  2026-08-29.** Behind the report teaching's OWN predicate — a moderation handle
+  configured AND helpful mode, `moderation_taught`'s two conditions (decision
+  0093), never the mode alone, so no deployment is taught a tool its palette
+  does not carry — the teaching gains the join rule: a join whose
   name is itself promotional bait — the no-spam rule's own definition, taught by
   shape, never a hardcoded list — is reported on sight with the join's origin,
   exactly as a violating message is. The report is the whole action; no ban, no
@@ -175,31 +206,38 @@ moderation changes.
   warnings; vocabulary and secret scans clean; no new dependency.
 - **AC2** A join lands end to end through the observation seam: a translated
   `new_chat_members` service message becomes one block per joiner with name,
-  handle, principal, shared origin and timestamp, projecting its platform-fact
-  lines — pinned against the scripted platform, including the several-joiners
-  case; an unadmitted group stores nothing, pinned.
+  handle, principal, shared origin and timestamp, projecting its marked
+  platform-fact lines — the bracketed origin mark ahead of each — pinned against
+  the scripted platform, including the several-joiners case and the
+  absent-first-name fallback; an unadmitted group stores nothing, pinned.
 - **AC3** A join wakes nothing and buries nothing: arriving alone it summons no
   turn and owes no answer; appended AFTER an unanswered addressed message, that
   message still draws its turn (the frontier reads through the join) — both
   pinned in both answering modes; and the assistant's own entry produces no
   join_notice, pinned.
 - **AC4** The report path reaches it and nobody else feels it: a turn whose
-  window carried a join files the existing report against the join's origin and
-  passes the gate; a join outside the window declines; and `co_summoners` is
+  span carried a join files the existing report against the join's origin and
+  passes the gate — for a plural event the filing attaches no single principal
+  and the dedup admits exactly one filing per event, both pinned; a join outside
+  the turn's span declines; and `co_summoners` is
   byte-identical (the diff shows no change to it), so the disclosure fold, the
   answer threading, `sole_principal`, the search budget's key and the rights
   commands are unchanged by construction — pinned by the diff plus one
   behavioral spot-pin: a turn with a windowed join still discloses and threads
   exactly as without it.
 - **AC5** Erasure reaches it: the person-keyed pass nulls one joiner's block
-  leaving a co-joiner's intact; the deletion mirror's origin-keyed pass nulls
-  the whole event; an erased join projects nothing; and a SUPPRESSED person's
-  join stores nothing at all — each pinned by running the real passes.
-- **AC6** The teaching carries the join rule in helpful mode with
-  report-as-the-whole-action — pinned in the composed prompt; no ban, kick, or
-  new effect exists anywhere in the diff.
+  leaving a co-joiner's intact AND nulls a replier's stored reference to the
+  erased joiner's event; the deletion mirror's origin-keyed pass nulls the whole
+  event; an erased join projects nothing; and a SUPPRESSED person's join stores
+  nothing at all, with no departure and no reaction — each pinned by running the
+  real passes, the reference column included.
+- **AC6** The teaching carries the join rule behind `moderation_taught`'s two
+  conditions with report-as-the-whole-action — pinned in the composed prompt for
+  the taught shape and pinned ABSENT for helpful-without-handle; no ban, kick,
+  or new effect exists anywhere in the diff.
 - **AC7** The records move, the full inventory: the processing record's new row
-  AND its corrected R1/minimisation sentences, the policy's display-name and
+  AND its corrected R1/minimisation sentences AND its erasure-section D2 row
+  ("the display name is not stored at all"), the policy's display-name and
   erasure wording, the impact assessment's and legitimate-interests assessment's
   identity claims, the three dated decision annotations — pinned by the
   documentation suite per file, and no published sentence claims display names
@@ -208,9 +246,17 @@ moderation changes.
 ## Notes for launch
 
 - Branches from `main` (worktree `~/projects/halogenos-assistant-joins`, branch
-  `unit/join-notices`). Sites: `adapters/telegram/src/translate.rs` (the
-  `new_chat_members` arm beside the pin's, with the own-entry and non-group
-  skips), `core/src/message.rs` (the new fact), the observe path in
+  `unit/join-notices`). Sites: `adapters/telegram/src/client.rs` (the wire
+  decoder: `Incoming` gains `new_chat_members`, decoded through a JOINER wire
+  type of its own that carries first and last name — the `User` type stays
+  exactly as decision 0077 left it, so messages still decode no display name; a
+  joiner whose first name decodes absent stores an empty name and the projected
+  line falls back to the handle, and a joiner with neither name nor handle
+  stores the event with an unnamed entry rather than inventing one),
+  `adapters/telegram/src/translate.rs` (the `new_chat_members` arm beside the
+  pin's, with the own-entry and non-group skips, and ONE named skip for the
+  other membership shapes — left, kicked, chat-created — which today die at the
+  generic no-text arm; they are not joins and the skip says so), `core/src/message.rs` (the new fact), the observe path in
   `core/src/assembly.rs` (storage behind the existing gate), the new kind beside
   `core/src/kind.rs`'s chat message with its erasure hooks,
   `core/src/tools/provenance.rs` (the new assessed-joins question beside
