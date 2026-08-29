@@ -60,10 +60,15 @@ suppression machinery today, and this unit must not store a flagged person's joi
   `ObservedFact::MembersJoined` — the joiners as the platform shows them, the
   service message's origin, the platform timestamp — and the observe path, behind
   its EXISTING authorization gate, stores the join blocks: an unadmitted group
-  withdraws and stores nothing, which is the privacy answer for free. `note_of`
+  withdraws and stores nothing — and the withdrawal is the gate's existing full
+  answer, including the platform leave the driver already performs for any
+  activity in an unadmitted chat; a join merely becomes one more trigger of the
+  standing behavior, stated so nobody discovers the departure as this unit's
+  surprise. `note_of`
   answers None for it; a join is a block, never a note. The assistant's OWN entry
   is excluded at translation — her membership is `ObservedFact::Added`'s territory
-  already — and a join in anything but a group, and every other membership service
+  already, and when one service message names her AND other people, only her
+  entry is dropped: the co-joiners' blocks store, the shared event stands — and a join in anything but a group, and every other membership service
   shape (`left_chat_member`, kicked, chat-created), keeps today's named skip: they
   are not joins, and decision 0017 still governs them. *Rejected:* the ingest seam
   (its contract is member speech — sender, authority, addressed, text, debt — and
@@ -112,9 +117,17 @@ suppression machinery today, and this unit must not store a flagged person's joi
   names WHICH joiner offends, and when the event carries several joiners the
   report attaches no single joiner's principal — a first-joiner guess would
   record the wrong person, and the human acting on the report reads the text and
-  the event either way. Decision 0092's per-origin dedup stands and means one
-  filing per event, stated plainly: a second offender in the SAME event is named
-  in the same filing, never in a second one. *Rejected:* a per-joiner
+  the event either way. Concretely, three mechanics settle it: the report
+  table's `reported` column becomes nullable through an APPENDED migration step
+  (decision 0026's discipline — the NOT NULL stood because every reportable was
+  one person; a plural event is the first that is not); the resolution's element
+  becomes one small target shape — origin, an optional principal, an optional
+  role — produced from a chat message or from a join event, so
+  `resolve_reportable` resolves both through one type; and the self-report
+  guard reads the optional role, which a join never carries, so a join can
+  never read as the assistant's own voice. Decision 0092's per-origin dedup
+  stands and means one filing per event, stated plainly: a second offender in
+  the SAME event is named in the same filing, never in a second one. *Rejected:* a per-joiner
   discriminator in the tool's parameter (a new addressing scheme for one case);
   *rejected:* resolving the first joiner's principal for a plural event (a
   record naming the wrong person).
@@ -137,19 +150,26 @@ suppression machinery today, and this unit must not store a flagged person's joi
   decline); *rejected:* a second resolution path INSIDE the report tool (the
   provenance module owns the turn-membership questions; the report keeps asking,
   provenance keeps answering).
-- **The join kind is agency-inert and frontier-transparent, 2026-08-29.** The
-  context note's twin properties, for the context note's reason: a join appended
-  over an unanswered message must bury nothing — the frontier reads through it
-  and the addressed message behind it still gets its turn. Never a summons, never
-  an anchor, never a debt. *Rejected:* the framework's opaque default (an
-  unanswered question behind a join would silently die — the burial the ratchet
-  exists to prevent).
+- **The join kind is transparent on BOTH walk surfaces, 2026-08-29.** The
+  context note's twin properties — agency-inert and frontier-transparent — for
+  the dispatch surface, AND membership in `DEBT_READ_THROUGH`
+  (`assembly.rs:64`) for the ingestion surface's owing-tail walk: that list
+  exists for exactly this kind of block ("appended by an independent path at an
+  arbitrary moment, so a debt behind a run of them still owes"), and unit 33
+  already taught the walk's read to take the list for every caller. A join
+  appended over an unanswered message buries nothing on either path. Never a
+  summons, never an anchor, never a debt. *Rejected:* the framework's opaque
+  default on either surface (an unanswered question behind a join would
+  silently die or silently settle — the burials the ratchet and the walk exist
+  to prevent).
 - **A suppressed person's join stores nothing, 2026-08-29.** Before resolving or
   refreshing anything, the observe path consults the suppression flag through the
   read-only identity lookup; a flag-bearing joiner's notice is withdrawn whole —
   no block, no name, no principal refresh — because the processing record
   promises collection stops with the flag, and this unit does not bend a promise
-  to gain a feature. Skipped means skipped — the word "withdraw" is deliberately
+  to gain a feature. In a mixed event the suppression is per joiner: the
+  suppressed joiner's block never exists, the co-joiners' blocks and the shared
+  event stand. Skipped means skipped — the word "withdraw" is deliberately
   avoided here, because the observe path's Withdraw outcome makes the assistant
   LEAVE the chat, and a suppressed person joining must cause no departure and no
   reaction at all. The group still sees the platform's own join line; the
@@ -208,13 +228,15 @@ moderation changes.
   `new_chat_members` service message becomes one block per joiner with name,
   handle, principal, shared origin and timestamp, projecting its marked
   platform-fact lines — the bracketed origin mark ahead of each — pinned against
-  the scripted platform, including the several-joiners case and the
+  the scripted platform, including the several-joiners case, the mixed
+  suppressed-and-not case (only the unsuppressed joiner's block exists) and the
   absent-first-name fallback; an unadmitted group stores nothing, pinned.
-- **AC3** A join wakes nothing and buries nothing: arriving alone it summons no
-  turn and owes no answer; appended AFTER an unanswered addressed message, that
-  message still draws its turn (the frontier reads through the join) — both
-  pinned in both answering modes; and the assistant's own entry produces no
-  join_notice, pinned.
+- **AC3** A join wakes nothing and buries nothing on either surface: arriving
+  alone it summons no turn and owes no answer; appended AFTER an unanswered
+  addressed message, that message still draws its turn — pinned through BOTH
+  walks (the dispatch frontier and the ingestion owing-tail walk) in both
+  answering modes; and the assistant's own entry produces no join_notice, with
+  co-joiners in her own event still stored — pinned.
 - **AC4** The report path reaches it and nobody else feels it: a turn whose
   span carried a join files the existing report against the join's origin and
   passes the gate — for a plural event the filing attaches no single principal
@@ -260,7 +282,9 @@ moderation changes.
   `core/src/assembly.rs` (storage behind the existing gate), the new kind beside
   `core/src/kind.rs`'s chat message with its erasure hooks,
   `core/src/tools/provenance.rs` (the new assessed-joins question beside
-  co_summoners), `core/src/mirror.rs` and `core/src/erasure.rs:141-148` (the
+  co_summoners), `core/src/assembly.rs:64` (`DEBT_READ_THROUGH` gains the join
+  kind), `core/src/schema.rs` (the appended migration making the report's
+  `reported` column nullable, beside the join table's own step), `core/src/mirror.rs` and `core/src/erasure.rs:141-148` (the
   origin and person passes), `core/src/schema.rs` (the appended migration
   step),
   `core/src/teaching.rs` (the join rule), the spine suite, and
