@@ -67,6 +67,11 @@ We send the conversation to a language model through a processor, and each reque
 - the maintainers' instructions and the group's pinned rules
 - the group's stored join announcements, each with the name it showed (added 2026-08-29)
 - what the assistant looked up, and its own earlier answers in that conversation
+- whether someone is an administrator of the group, when the assistant looks that up
+  (added 2026-08-29): if a member claims administrator standing, the assistant checks the
+  handle against what this conversation recorded and the answer goes to the model, so that
+  a claim in a message cannot pass for the fact. It answers only about a handle the group
+  showed here, only in a group, and it says nothing else about the person
 
 We send the whole stored conversation every time, because an answer that cannot see the
 thread misreads it. We keep your account identifier here.

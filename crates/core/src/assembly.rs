@@ -45,6 +45,7 @@ use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
 use crate::tools::runtime::RuntimeFacts;
 use crate::tools::search::{SearchConfig, WebSearch};
+use crate::tools::standing::StandingLookup;
 use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
 use crate::window::{
     ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, ReplyWindow,
@@ -423,6 +424,11 @@ struct AssembledTools {
 ///   rights it reaches exist in every deployment. Its pending memory and
 ///   its reply bound are shared with the command family, injected here so
 ///   the tool and the commands act on one state.
+/// - The STANDING lookup joins unconditionally too (unit 29): the standing
+///   it reads is recorded in every deployment, and the question it answers
+///   — whether the person claiming authority holds it — is asked wherever
+///   the assistant runs. It reads person data, so it takes the erasure
+///   fence here, exactly as the report and privacy tools do.
 fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
     let AssembledTools {
         moderation_handle,
@@ -446,6 +452,10 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
             WebSearch::new(search, crate::tools::search::DEFAULT_TIMEOUT),
         );
     }
+    tools.admit(
+        crate::tools::standing::REQUIRED_AUTHORITY,
+        StandingLookup::new(Arc::clone(&erasure_fence)),
+    );
     tools.admit(
         crate::tools::rights::REQUIRED_AUTHORITY,
         PrivacyTool::new(pending_deletions, privacy_replies, erasure_fence),

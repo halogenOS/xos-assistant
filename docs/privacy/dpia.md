@@ -160,6 +160,15 @@ controller, and anything the project does outside the assistant.
 - **Circumstance.** Arrival time, the platform send time, the reply reference, whether the
   message was addressed to the assistant, and the authority the person held in that chat
   at that moment (member or administrator).
+
+  > Amended 2026-08-29: the stored authority leaves the machine now, on demand. Until
+  > this note it was read only by the assistant's own machinery and reached no request.
+  > The standing lookup of unit 29 states it to the model: asked about a handle the
+  > conversation showed, the tool answers a fixed sentence saying whether that person
+  > was an administrator when they last spoke, and that answer travels to the processor
+  > as the tool's result. The transfer is per lookup and never per message — no
+  > authority field rides a projected message — and the model needs it for one thing:
+  > to tell a member who claims authority from a member who holds it.
 - **Join notices (added 2026-08-29).** One record per person a group's join announcement
   named: the name the platform displayed for them, their handle, their internal
   identifier, and the announcement's own identifier and send time. It is the one place a
@@ -313,7 +322,12 @@ first is named in the public policy; the answer-block gap joins R6.
   no other attribute of a person is attached to a request. Amended 2026-08-29: the one
   display name that reaches a request is the name a group's join announcement showed,
   carried as that announcement's own content in the projected join line, never as an
-  attribute of a message's sender.
+  attribute of a message's sender. Amended 2026-08-29, with the standing lookup: one
+  attribute of a person now reaches a request without being attached to anything — their
+  administrator standing, stated by the standing tool when the model looks up a handle
+  the conversation showed. It is sent per lookup, never per message; the minimisation
+  this measure records is unchanged for the projection itself, and the answer says one
+  thing the group's own member list already says out loud.
 - The provider key is held in memory and never written to storage (decision 0020).
 - Answering counters per person and per chat, limiting answers and never storage; an
   over-limit message draws no reply and no notice, because a refusal notice would hand a
@@ -417,6 +431,7 @@ open beside it.
 | R10 | A direct chat, more personal than a group post, is stored the same way | Medium | Occasional |
 | R11 | The assistant's answering capacity is exhausted by one flooder, or used to amplify one | Low | Occasional |
 | R12 | A member's own words, rewritten by the model into a search query, reach a further third party and are stored in a record erasure does not reach (added 2026-08-29, with the web search) | Medium | Whenever a question is not about the project |
+| R13 | A member's administrator standing, until now read only by the assistant's own machinery, is stated to the model provider whenever the model looks a handle up (added 2026-08-29, with the standing lookup) | Low | Whenever someone claims authority or is asked about |
 
 ## 7. Mitigations, mapped to what ships
 
@@ -530,6 +545,21 @@ tables erasure does not reach, which is decision 0045's standing gap, amended th
 same day to say that its accepted ground — inputs that are "overwhelmingly
 technical" — no longer describes this input. That is stated, not closed.
 
+**R13, standing stated to the provider.** Added 2026-08-29 with the standing lookup.
+What crosses is one sentence per lookup, and what it says is what the group's own
+member list shows anyone who opens it: whether that person is an administrator. Four
+bounds ship with the capability and each is pinned by the suite. The lookup answers
+only for a handle the conversation already showed, as a message's speaker or as a
+recorded joiner, so the tool cannot be used to walk a group's member list or to ask
+about a bystander somebody merely typed. It answers in group conversations only. It
+matches on the handle, so a person whose data was erased is not found at all: erasure
+nulls the stored handle and keeps the standing, and the standing is unreachable
+without the handle. And the answer states a standing and nothing else — no account
+identifier, no display name, no other attribute. What is NOT mitigated is the record:
+the tool call and its result live on framework-owned tables erasure does not reach,
+which is decision 0045's standing gap. The content left behind is the handle and one
+standing, both of which the group publishes itself. That is stated, not closed.
+
 ## 8. Residual risk
 
 | # | Residual | Reasoning |
@@ -546,6 +576,7 @@ technical" — no longer describes this input. That is stated, not closed.
 | R10 | Low | Whole-conversation removal on deletion. |
 | R11 | Low | Counters bound answering; silence over refusal notices. |
 | R12 | Low to medium | Added 2026-08-29. What crosses is a query and nothing else, to a processor in an adequacy-covered country, under a per-person bound and a length bound, with deliberate person references refused before they are sent. The residual is what stays behind: the query is stored where erasure does not reach, and a query can carry a member's own words without naming anyone. It falls to low when decision 0045's framework seam closes. |
+| R13 | Low | Added 2026-08-29. One sentence per lookup, stating a fact the group's own member list states, about a handle the conversation already showed, in groups only, unreachable for an erased person. The residual is the same one R12 carries: the tool record sits where erasure does not reach, holding a handle and a standing the group publishes itself. It falls no lower while decision 0045's framework seam is open. |
 
 **Overall judgment.** With the mitigations above in place, the residual risk to the people
 concerned is not high within the meaning of Article 36(1), and prior consultation with the
