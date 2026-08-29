@@ -59,19 +59,35 @@ or restructure it deliberately.
   memories the poll loop owns today — the serial discipline is kept, not worked
   around. The listener authenticates, bounds and parses a delivery, then hands the
   update with a one-shot answer channel over a BOUNDED queue to the consumer and
-  answers the HTTP request with the outcome the consumer reports. A full queue
-  answers 503 with nothing read into the pipeline — honest backpressure Telegram's
-  retry absorbs. *Rejected:* concurrent handling sharing the memories (a restructure
-  nothing asked for); *rejected:* an unbounded queue (memory as backpressure).
+  answers the HTTP request with the outcome the consumer reports, waiting at most
+  twenty-five seconds — past that it answers 500 and moves on, so a wedged
+  platform call inside the shared step cannot pin HTTP connections open until
+  Telegram's delivery pool (forty connections by default) fills and the deployment
+  goes deaf while looking busy. An expiry may answer 500 for an ingest that later
+  completes; Telegram's redelivery then meets the acknowledged-id set and gets its
+  200 — the contract holds. A lost outcome channel (a consumer that dropped the
+  answer) reads as the same 500 for the same reason. A full queue answers 503 with
+  nothing read into the pipeline — honest backpressure Telegram's retry absorbs.
+  *Rejected:* concurrent handling sharing the memories (a restructure nothing asked
+  for); *rejected:* an unbounded queue (memory as backpressure); *rejected:* an
+  unbounded wait (the connection pool is a resource the spec refuses to leak).
 - **Duplicates are answered from a bounded memory of acknowledged ids, 2026-08-29.**
-  The consumer keeps a bounded in-memory set of recently acknowledged update ids. A
-  delivery whose id is in the set — a retry that raced its original, or one arriving
-  after — answers 200 without re-ingesting; because processing is serial, a racing
-  retry simply queues behind its original and meets the set. The set does not
-  survive a restart, so a crash between ingest and answer can re-ingest one update —
-  the exact at-least-once window polling's offset file already has, not a new one.
-  *Rejected:* a persisted dedup ledger (a second offset file by another name, for a
-  window polling already accepts).
+  The consumer keeps a bounded in-memory set of recently acknowledged update ids —
+  one thousand and twenty-four, evicting the OLDEST at the cap, because clearing
+  whole would re-open the duplicate window for exactly the ids most likely to
+  retry. A delivery whose id is in the set — a retry that raced its original, or
+  one arriving after — answers 200 without re-ingesting; because processing is
+  serial, a racing retry simply queues behind its original and meets the set. The
+  set does not survive a restart, so a crash between ingest and answer can
+  re-ingest one update — the exact at-least-once window polling's offset file
+  already has, not a new one. Deliveries are processed in ARRIVAL order, not
+  update-id order: a previously refused older update that redelivers after its
+  successors ingested appends late, the way a late-delivered message reads to a
+  human — accepted and stated; the ledger records arrival truth and nothing
+  re-sorts. *Rejected:* a persisted dedup ledger (a second offset file by another
+  name, for a window polling already accepts); *rejected:* holding successors back
+  for a refused predecessor (polling's batch-halt has that shape, but a webhook
+  cannot hold back what Telegram already delivered).
 - **The bounded-loss trade is stated and logged, never silent, 2026-08-29.** Every
   refused delivery (500, 503) logs one structural warning naming the update id and
   the reason — never content — so an update Telegram eventually gives up on leaves
@@ -80,11 +96,23 @@ or restructure it deliberately.
   polling would sit equally broken, holding updates it cannot ingest against the
   same 24-hour server-side expiry. Accepted with eyes open, because the alternative
   — acknowledging what was not ingested — loses updates silently on every crash.
-- **The mode announces itself to Telegram at startup, 2026-08-29.** Webhook mode
-  calls `setWebhook` with the configured public address and the secret token;
-  registration failure refuses the start loudly — a webhook deployment that
-  silently cannot register would sit deaf, which is the outage this unit exists to
-  end. Polling mode checks `getWebhookInfo` and deletes the webhook if and only if
+- **Webhook startup is identity, then bind, then register — refusal anywhere,
+  2026-08-29.** The bot identity (`getMe`) is fetched first, because the shared
+  step cannot translate without it (`driver.rs:305`'s comment stands: translating
+  blind records wrong facts into a durable ledger); in webhook mode a failed
+  identity fetch refuses the start instead of poll mode's endless retry, the same
+  loud-refusal rule as everything else in this list. The listener binds second, and
+  only then does `setWebhook` register the address — so Telegram is never pointed
+  at a port nothing serves; a registration left by a previous run is simply
+  overwritten. Registration failure refuses the start loudly — a webhook deployment
+  that silently cannot register would sit deaf, which is the outage this unit
+  exists to end. Registration pins `allowed_updates` to the same
+  `CONSUMED_UPDATE_TYPES` list the poll request already pins — one list, reused —
+  and sets `drop_pending_updates` false: updates queued through an outage flood in
+  at start, which is the at-least-once promise working, never a discard.
+  *Rejected:* register-then-bind (a crash between the two leaves Telegram
+  delivering into a dead port until the supervisor cycles — the outage class this
+  unit ends). Polling mode checks `getWebhookInfo` and deletes the webhook if and only if
   one is registered; if that check itself fails, polling starts anyway and the poll
   loop's existing error reporting carries any 409 — a local deployment must not be
   refused its start by a transient check, and a genuinely registered webhook
@@ -116,8 +144,12 @@ or restructure it deliberately.
   binds the configured loopback port — a failed bind refuses the start naming the
   port — accepts exactly POST on one path, bounds the body it reads at one
   megabyte (an update is kilobytes; oversized answers 413), answers 400 to a body
-  that does not parse, and parses the update with the same types the poll path
-  parses. The listener future joins the run entry's existing select; a listener
+  that does not parse, 404 to any other path and 405 to any other method (both
+  without reading a body — the door describes nothing), and parses the update with
+  the same types the poll path parses. The assistant's configuration refuses port
+  zero (a deployment's port is a contract with its reverse proxy); the adapter's
+  own `Config` accepts any port and exposes the bound address, which is how the
+  suite drives an ephemeral listener. The listener future joins the run entry's existing select; a listener
   that dies mid-run ends the run the way a dropped outbound edge does, and the
   service supervisor restarts the process — a deaf webhook deployment must never
   keep running quietly.
@@ -154,9 +186,13 @@ platform vocabulary enters the core, and the outbound path is untouched.
   and no poll happens (pinned: no getUpdates request reaches the wire); without it
   the poll loop runs exactly as today (existing pins stay green untouched); a
   half-filled section refuses the start naming the missing field — pinned.
-- **AC3** Startup announces the mode: webhook start registers address plus token
-  (pinned against a scripted Bot API); registration failure refuses the start with a
-  named error; polling start deletes a registered webhook if and only if one exists.
+- **AC3** Startup order and announcement: webhook start fetches identity, binds,
+  then registers address plus token with `allowed_updates` pinned to the shared
+  list and `drop_pending_updates` false — the order pinned against a scripted Bot
+  API (a registration observed before the listener serves is a failure);
+  identity-fetch, bind and registration failures each refuse the start with a
+  named error; polling start deletes a registered webhook if and only if one
+  exists, and starts anyway when the check itself fails.
 - **AC4** The door authenticates and bounds: right token ingests and answers 200;
   wrong or missing token answers 403 with nothing ingested; a malformed body
   answers 400, an oversized one 413, a full queue 503 — each with nothing
@@ -164,8 +200,9 @@ platform vocabulary enters the core, and the outbound path is untouched.
 - **AC5** Acknowledgement is honest and duplicates are met: an update whose ingest
   fails answers 500 with a structural warning naming the update id, and the same
   update redelivered afterwards ingests once; a duplicate of an ACKNOWLEDGED update
-  answers 200 without a second ingest — both pinned end to end through the queue
-  and the consumer, not around them.
+  answers 200 without a second ingest; a consumer that never answers has the
+  listener answering 500 at its deadline instead of holding the connection — each
+  pinned end to end through the queue and the consumer, not around them.
 - **AC6** The secret stays dark: generated with owner-only permissions, absent from
   rendered configuration, logs and error text — pinned by assertions this unit
   authors; the persisted file's mode is asserted.
