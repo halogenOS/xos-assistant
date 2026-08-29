@@ -16,8 +16,8 @@ workspace = true
 [features]
 chat_completions = ["agent-ledger/openrouter"]
 
-# The framework is a sibling checkout, not a registry crate: it has no public
-# home yet, so the path names the expected layout (see the README).
+# The framework is a sibling checkout, not a registry crate: the path names the
+# expected layout, and the repository it is published in is named in the README.
 [dependencies]
 agent-ledger = { path = "../../../agent-ledger/crates/agent-ledger" }
 chrono = "0.4"

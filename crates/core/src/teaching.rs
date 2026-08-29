@@ -149,17 +149,20 @@ pub fn composed_system_prompt(
 /// answered honestly, per decision 0080's teaching — and, since unit 32
 /// (2026-08-28), where the answer to what-are-you-running-on comes from:
 /// the runtime-facts tool, never the model's memory and never the chat,
-/// both of which state a model the deployment may have moved off. The
-/// sentence composes in both modes and under every configuration, because
-/// the tool it names registers the same way.
+/// both of which state a model the deployment may have moved off. Unit 37
+/// (2026-08-30) routes the same way the questions about the host the
+/// software runs on and the software it is built from, which memory
+/// answers just as badly. The sentence composes in both modes and under
+/// every configuration, because the tool it names registers the same way.
 fn identity_section(name: &str) -> String {
     format!(
         "You are called {name}. When someone asks whether {name} is an AI, \
          a bot, or a machine, that question is about you: answer it honestly, \
          as the AI system you are. When someone asks which model you run on, \
-         which version you are, or how long you have been running, call the \
-         {tool} tool and answer from what it returns — never from memory and \
-         never from what this conversation said earlier.",
+         which version you are, how long you have been running, which \
+         operating system or architecture you run on, or what you are built \
+         on, call the {tool} tool and answer from what it returns — never \
+         from memory and never from what this conversation said earlier.",
         tool = crate::tools::runtime::NAME
     )
 }
@@ -318,10 +321,12 @@ mod tests {
         );
     }
 
-    /// AC6 (unit 32): both modes' composed prompt routes the
-    /// what-are-you-running-on question to the runtime-facts tool, under
-    /// every configuration — the sentence composes on nothing, because
-    /// the tool it names registers on nothing.
+    /// AC6 (unit 32) and AC5 (unit 37): both modes' composed prompt routes
+    /// the what-are-you-running-on question to the runtime-facts tool —
+    /// the model, the version and the uptime, and the operating system,
+    /// the architecture and what the software is built on — under every
+    /// configuration, because the sentence composes on nothing and the
+    /// tool it names registers on nothing.
     #[test]
     fn both_modes_route_identity_questions_to_the_runtime_tool() {
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
@@ -334,9 +339,11 @@ mod tests {
                 assert!(
                     prompt.contains(
                         "When someone asks which model you run on, which version you \
-                         are, or how long you have been running, call the runtime_facts \
-                         tool and answer from what it returns — never from memory and \
-                         never from what this conversation said earlier."
+                         are, how long you have been running, which operating system \
+                         or architecture you run on, or what you are built on, call \
+                         the runtime_facts tool and answer from what it returns — \
+                         never from memory and never from what this conversation \
+                         said earlier."
                     ),
                     "the {mode:?} teaching routes the question to the tool"
                 );
