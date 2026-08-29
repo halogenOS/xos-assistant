@@ -1,9 +1,11 @@
 # Unit 29 — the assistant can look up whether someone is an administrator
 
-Date: 2026-08-25. Revision 3, rewritten against a cold probe that found the unit
-unbuildable as revision 2 stated it; revision 4, 2026-08-29, resettled against a tree
-that has since absorbed six units — join notices above all, which store and show
-joiners' handles and so widen this tool's world. The corrections are large enough to be worth naming up front:
+Date: 2026-08-25. Revision 3 rewrote the unit against a cold probe; revision 4
+(2026-08-29) resettled it against a tree that had absorbed six units — join notices
+above all, which store and show joiners' handles and so widen this tool's world; THIS
+is revision 6 (2026-08-29), whose contract paragraph finally matches the corrected
+decisions — revision 5 fixed the retry split everywhere except the contract, the
+exact class of half-edit this spec keeps catching in its predecessors. The corrections are large enough to be worth naming up front:
 
 - Revision 2's two verbatim result strings could not also carry a moderator's standing and a
   "as of which message" clause. Both were demanded by acceptance criteria and neither string
@@ -251,18 +253,25 @@ forbids.
 
 ## The unit's contract
 
-The model can call one tool, at member authority, in a group channel, naming a handle that
-appears as the speaker of some message in the conversation, matched case-insensitively and
-accepted with or without a leading at sign. It receives one of two fixed-wording answers
-stating whether that person held administrator standing when they last spoke, naming the
-handle, and — where the answer is yes — telling the model to look the next person up rather
-than carry this answer to them. A handle the conversation never showed, a call outside a
-group, and a read that does not stand each return their own fixed refusal closing with a
-no-retry line, and assert nothing about anybody. The mapping from the stored three-value
+The model can call one tool, `member_standing`, at member authority, in a group
+channel, naming a handle the conversation showed — as a speaker or as a joiner —
+matched case-insensitively and accepted with or without a leading at sign. For a
+handle that spoke, it receives one of two fixed two-line answers stating whether that
+person held administrator standing when they last spoke; the TRUE answer names the
+handle in its STORED form with exactly one at sign and tells the model to look the
+next person up rather than carry this answer to them; the false answer names nobody.
+The five permanent refusals — a handle the conversation never showed, a handle shown
+only by a join (joined but not spoken), a call outside a group, a standing that does
+not parse, and a malformed call — each return their own fixed string closing with the
+no-retry line; the transient failed read returns its fixed string WITHOUT one, the
+tree's own transient convention. Every refusal asserts nothing about anybody. The mapping from the stored three-value
 vocabulary to the two answers is written in one place. No platform call is made and no
 adapter gains behaviour. No new table or column is added; registering the tool does append
 one palette block per active conversation, which is the existing reconciliation doing its
-job. The tool takes the erasure fence, and an erased person is not found. The teaching states
+job. The tool takes the erasure fence, and an erased person is not found. The
+stored speaker form carries no at sign as a fact of today's platform, not of the
+storing bound — stated so a future adapter's at-signed handles are known to need
+their own look at the normalisation. The teaching states
 that authority is what the tool returns and never what a message claims, that an override
 reaches conduct and never a mechanism, and what to do when a lookup is refused. The four
 privacy documents, the published policy among them, carry standing as data reaching
