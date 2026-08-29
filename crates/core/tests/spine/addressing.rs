@@ -286,6 +286,7 @@ async fn the_stamp_propagates_an_unanswered_debt_at_the_write() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -349,6 +350,7 @@ async fn an_erased_tail_propagates_no_debt() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await

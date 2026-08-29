@@ -42,6 +42,7 @@ use crate::streams::StreamObserver;
 use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
 use crate::tools::runtime::RuntimeFacts;
+use crate::tools::search::{SearchConfig, WebSearch};
 use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
 use crate::window::{
     ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, ReplyWindow,
@@ -272,6 +273,15 @@ pub struct AssemblyConfig {
     /// tool measures uptime from it, so what the assistant states is the
     /// age of the process and not of this assembly call.
     pub started_at: Instant,
+    /// The web search's wiring: the vendor's address, the resolved key and
+    /// the locale (unit 27, 2026-08-27). Present, the assembly registers
+    /// the search tool and the composed prompt teaches it; absent, neither
+    /// exists — one predicate for both, the report tool's precedent, so
+    /// there is no call path on which an unconfigured search can answer.
+    /// The key is a resolved secret and never a value in a file: the
+    /// config type's own `Debug` redacts it, because this carrier derives
+    /// one.
+    pub web_search: Option<SearchConfig>,
 }
 
 /// The running core: the framework runtime spawned over the assistant's
@@ -376,6 +386,65 @@ pub struct Assistant {
     erasure_fence: ErasureFence,
 }
 
+/// What the assembly itself adds to the embedder's tool set: the shared
+/// state a tool is constructed over, and the configuration each conditional
+/// registration reads. One carrier, so a later capability joins the list
+/// instead of growing the start sequence.
+struct AssembledTools {
+    moderation_handle: Option<String>,
+    answering: AnsweringMode,
+    web_search: Option<SearchConfig>,
+    pending_deletions: Arc<PendingDeletions>,
+    privacy_replies: Arc<ReplyWindow>,
+    erasure_fence: ErasureFence,
+}
+
+/// Add the assembly's own tools to the embedder's set, in one place: each
+/// conditional registration takes exactly the predicate the prompt
+/// composition took, so the prompt can never teach a tool the palette does
+/// not carry, and the delta mechanism removes an unconfigured tool from
+/// conversations that had it.
+///
+/// - The REPORT tool needs a moderation handle AND helpful answering (unit
+///   15): the report line goes nowhere without a handle, and only helpful
+///   answering shows the model every message it would judge. The erasure
+///   fence is injected here, so the tool never reaches into the assembly.
+/// - The WEB SEARCH needs a configured key and nothing else (unit 27). It
+///   owns its own per-person budget and its own cache, so nothing but the
+///   configuration is handed to it.
+/// - The PRIVACY tool joins unconditionally (decided 2026-08-23): the
+///   rights it reaches exist in every deployment. Its pending memory and
+///   its reply bound are shared with the command family, injected here so
+///   the tool and the commands act on one state.
+fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
+    let AssembledTools {
+        moderation_handle,
+        answering,
+        web_search,
+        pending_deletions,
+        privacy_replies,
+        erasure_fence,
+    } = assembled;
+    if let Some(handle) = moderation_handle
+        && crate::teaching::moderation_taught(true, answering)
+    {
+        tools.admit(
+            report::REQUIRED_AUTHORITY,
+            ReportTool::new(handle, Arc::clone(&erasure_fence)),
+        );
+    }
+    if let Some(search) = web_search {
+        tools.admit(
+            crate::tools::search::REQUIRED_AUTHORITY,
+            WebSearch::new(search, crate::tools::search::DEFAULT_TIMEOUT),
+        );
+    }
+    tools.admit(
+        crate::tools::rights::REQUIRED_AUTHORITY,
+        PrivacyTool::new(pending_deletions, privacy_replies, erasure_fence),
+    );
+}
+
 impl Assistant {
     /// Assemble and start the core: check the wiring, record the binding's
     /// provider instance in the store, and spawn the runtime over the given
@@ -412,16 +481,20 @@ impl Assistant {
             privacy_policy_address,
             moderation_handle,
             started_at,
+            web_search,
         } = config;
         // The two configured-value compositions, resolved once: the prompt
-        // every new conversation records — the moderation teaching riding
-        // it exactly when the tool below registers — and the disclosure
-        // every outbound edge introduces with.
+        // every new conversation records — each capability's teaching
+        // riding it exactly when the tool below registers — and the
+        // disclosure every outbound edge introduces with.
         let system_prompt = crate::teaching::composed_system_prompt(
             &system_prompt,
             &name,
             answering,
-            moderation_handle.is_some(),
+            crate::teaching::Capabilities {
+                moderation_handle: moderation_handle.is_some(),
+                web_search: web_search.is_some(),
+            },
         );
         let disclosure = Arc::new(crate::disclosure::Disclosure::resolve(
             disclosure.as_deref(),
@@ -440,35 +513,17 @@ impl Assistant {
         let erasure_fence: ErasureFence = Arc::new(RwLock::new(()));
         let privacy_replies = Arc::new(ReplyWindow::new(PRIVACY_REPLY_WINDOW, PRIVACY_REPLY_CAP));
         let pending_deletions = Arc::new(PendingDeletions::new());
-        // The report tool joins the set here, where the tool set's assembly
-        // finishes: the erasure fence is injected at this registration, so
-        // the tool never reaches into the assembly. Registration takes the
-        // same predicate the prompt composition took above — a handle AND
-        // helpful answering (unit 15): without both, the tool is absent,
-        // the palette derived below names no report tool, and the delta
-        // mechanism removes it from conversations that had it — so the
-        // prompt never teaches a tool the palette does not carry.
         let mut tools = tools;
-        if let Some(handle) = moderation_handle
-            && crate::teaching::moderation_taught(true, answering)
-        {
-            tools.admit(
-                report::REQUIRED_AUTHORITY,
-                ReportTool::new(handle, Arc::clone(&erasure_fence)),
-            );
-        }
-        // The privacy tool joins unconditionally (decided 2026-08-23): the
-        // rights it reaches exist in every deployment, so no configuration
-        // switches it. The pending memory and the reply bound are shared
-        // with the command family's own handling, injected here so the tool
-        // and the commands act on one state.
-        tools.admit(
-            crate::tools::rights::REQUIRED_AUTHORITY,
-            PrivacyTool::new(
-                Arc::clone(&pending_deletions),
-                Arc::clone(&privacy_replies),
-                Arc::clone(&erasure_fence),
-            ),
+        admit_assembled_tools(
+            &mut tools,
+            AssembledTools {
+                moderation_handle,
+                answering,
+                web_search,
+                pending_deletions: Arc::clone(&pending_deletions),
+                privacy_replies: Arc::clone(&privacy_replies),
+                erasure_fence: Arc::clone(&erasure_fence),
+            },
         );
         // The runtime-facts tool joins unconditionally too (unit 32): it
         // has no configuration to be absent, and the question it answers

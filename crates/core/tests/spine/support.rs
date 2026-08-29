@@ -62,7 +62,12 @@ pub const FIXTURE_ANSWERING: assistant_core::AnsweringMode =
 /// composes it — the default fixtures configure no moderation handle.
 #[must_use]
 pub fn composed_prompt() -> String {
-    assistant_core::composed_system_prompt(SYSTEM_PROMPT, NAME, FIXTURE_ANSWERING, false)
+    assistant_core::composed_system_prompt(
+        SYSTEM_PROMPT,
+        NAME,
+        FIXTURE_ANSWERING,
+        assistant_core::Capabilities::default(),
+    )
 }
 
 /// The system prompt a reporting fixture records: helpful answering with
@@ -73,7 +78,10 @@ pub fn composed_moderating_prompt() -> String {
         SYSTEM_PROMPT,
         NAME,
         assistant_core::AnsweringMode::Helpful,
-        true,
+        assistant_core::Capabilities {
+            moderation_handle: true,
+            web_search: false,
+        },
     )
 }
 
@@ -898,6 +906,7 @@ pub async fn start_assistant_operators(
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -930,6 +939,7 @@ pub async fn start_assistant_answering(
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -990,9 +1000,58 @@ pub async fn start_assistant_reporting_as(
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: Some(MODERATION_HANDLE.into()),
+            web_search: None,
         },
     )
     .await
+}
+
+/// The search key every searching fixture configures. A fake, and the
+/// string AC6's pins look for everywhere the assembly renders anything.
+pub const SEARCH_KEY: &str = "FAKE-SEARCH-KEY-0123456789";
+
+/// Assemble a running assistant with the web search configured against the
+/// given vendor address — the tool the ASSEMBLY registers from that
+/// configuration, so the fixture proves the one predicate rather than
+/// admitting the tool by hand.
+pub async fn start_assistant_searching(
+    store: Store,
+    provider: Box<dyn ProviderModule>,
+    script: ScriptHandle,
+    tools: ToolSet,
+    search_base_url: String,
+) -> Fixture {
+    start_assistant_config(
+        store,
+        provider,
+        script,
+        tools,
+        assistant_core::AssemblyConfig {
+            web_search: Some(assistant_core::tools::search::SearchConfig {
+                base_url: search_base_url,
+                api_key: SEARCH_KEY.into(),
+                country: None,
+                language: Some("en".into()),
+            }),
+            ..assembly_config()
+        },
+    )
+    .await
+}
+
+/// The system prompt a searching fixture records: the suite's default
+/// composition with the search teaching riding it.
+#[must_use]
+pub fn composed_searching_prompt() -> String {
+    assistant_core::composed_system_prompt(
+        SYSTEM_PROMPT,
+        NAME,
+        FIXTURE_ANSWERING,
+        assistant_core::Capabilities {
+            moderation_handle: false,
+            web_search: true,
+        },
+    )
 }
 
 /// The suite's default assembly configuration whole — the fixture binding,
@@ -1012,6 +1071,7 @@ pub fn assembly_config() -> assistant_core::AssemblyConfig {
         direct_chats: assistant_core::DirectChats::default(),
         privacy_policy_address: None,
         moderation_handle: None,
+        web_search: None,
     }
 }
 

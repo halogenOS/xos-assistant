@@ -28,7 +28,9 @@
 //! the turn's provenance), `privacy_rights` (the suppression drop, the
 //! self-service commands, the spawned deletion and the privacy tool),
 //! `mirror` (the deletion mirror riding the moderation bot's reply
-//! command), sourcing (the lookup-backed answer discipline: the literal
+//! command), search (the web search's envelope over a scripted vendor, its
+//! guard and person bound refusing before the wire, its taught failures,
+//! and the one predicate deciding whether the tool exists), sourcing (the lookup-backed answer discipline: the literal
 //! addressed fact beside the summons, the silent empty turn and the
 //! model's own spoken don't-know), threading (which message an answer is
 //! delivered as a reply to, and when it goes out plain), `runtime_facts`
@@ -60,6 +62,7 @@ mod protection;
 mod reasoning;
 mod report;
 mod runtime_facts;
+mod search;
 mod sourcing;
 mod speaker;
 mod storage;

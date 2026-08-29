@@ -221,12 +221,21 @@ fails closed and withdraws (decision 0052).
 - **Public project sources.** The halogenOS forge for a commit lookup and the builds
   repository's public interface for a release lookup. Queries carry a repository name and
   a reference or tag.
+- **Serper, United Kingdom**, the search provider (added 2026-08-29, with the web
+  search). Unlike the project sources above it IS a recipient of member-derived text:
+  it receives the search query the assistant writes for a question that is not about
+  the project, in words drawn from the conversation. It receives nothing else — no
+  account identifier, no username, no other part of the conversation — and a query
+  carrying a person reference in the handle form is refused whole before anything is
+  sent. Its terms are governed by the law of the United Kingdom, and its privacy
+  policy names the customer controller and itself processor where personal data is
+  processed in the service. Section 14 assesses this addition.
 - **The platform.** An independent controller for its own delivery and storage, not a
   processor of ours.
 
 **Transfers outside the EU/EEA.** Rewritten 2026-08-23; the previous flat statement that
-no transfer is intended was wrong. Data leaves the EEA in three places, each with its own
-basis:
+no transfer is intended was wrong. Data leaves the EEA in FOUR places (three until
+2026-08-29, when the web search was added), each with its own basis:
 
 1. The processor is a company in the United Kingdom, although it stores and serves in
    Frankfurt. The transfer rests on the European Commission's adequacy decision for the
@@ -236,6 +245,10 @@ basis:
    under Article 46(2)(c) GDPR.
 3. The chat platform sits outside the EU/EEA and receives every message and every answer
    as part of delivering them, as its own controller under its own policy.
+4. Added 2026-08-29: the search provider is a company in the United Kingdom and
+   receives the search query there. The transfer rests on the same adequacy decision
+   for the United Kingdom under Article 45 GDPR, so no further safeguard is required
+   for it either.
 
 **Defect found 2026-08-23, being closed.** The conversation-naming step, which sends a
 short piece of a new conversation to a smaller model to get a few words naming it, ships
@@ -383,6 +396,7 @@ open beside it.
 | R9 | The assistant appears in a group whose members never expected it | Medium | Rare |
 | R10 | A direct chat, more personal than a group post, is stored the same way | Medium | Occasional |
 | R11 | The assistant's answering capacity is exhausted by one flooder, or used to amplify one | Low | Occasional |
+| R12 | A member's own words, rewritten by the model into a search query, reach a further third party and are stored in a record erasure does not reach (added 2026-08-29, with the web search) | Medium | Whenever a question is not about the project |
 
 ## 7. Mitigations, mapped to what ships
 
@@ -479,6 +493,22 @@ because a two-party chat that lost its human is metadata that still identifies t
 answering and never storage; an over-limit message draws silence, so the assistant's voice
 cannot be borrowed by a flooder (0030, 0034).
 
+**R12, member words in a search query.** Added 2026-08-29 with the web search. Four
+mitigations ship with the capability and each is pinned by the suite. The query
+guard refuses any query carrying a person reference in the handle form, whole,
+before anything is sent, and its refusal does not echo what it matched — so a
+deliberate identifier reaches neither the provider nor the tool record (decision
+0115). The query is bounded to 400 characters and refused rather than truncated past
+it, the pages to five, and each person's searches to five per ten minutes, which
+bounds the volume of member-derived text that can cross at all (decisions 0112,
+0117). What crosses is the query and nothing else: no account identifier, no
+username, no other part of the conversation, which makes this boundary narrower than
+the model provider's. And the recipient is a processor in an adequacy-covered
+country. What is NOT mitigated is the record: the query lives on framework-owned
+tables erasure does not reach, which is decision 0045's standing gap, amended the
+same day to say that its accepted ground — inputs that are "overwhelmingly
+technical" — no longer describes this input. That is stated rather than closed.
+
 ## 8. Residual risk
 
 | # | Residual | Reasoning |
@@ -494,6 +524,7 @@ cannot be borrowed by a flooder (0030, 0034).
 | R9 | Low | Fail-closed authorization, healed on every later contact. |
 | R10 | Low | Whole-conversation removal on deletion. |
 | R11 | Low | Counters bound answering; silence over refusal notices. |
+| R12 | Low to medium | Added 2026-08-29. What crosses is a query and nothing else, to a processor in an adequacy-covered country, under a per-person bound and a length bound, with deliberate person references refused before they are sent. The residual is what stays behind: the query is stored where erasure does not reach, and a query can carry a member's own words without naming anyone. It falls to low when decision 0045's framework seam closes. |
 
 **Overall judgment.** With the mitigations above in place, the residual risk to the people
 concerned is not high within the meaning of Article 36(1), and prior consultation with the
@@ -729,3 +760,64 @@ joins R7.
 erasable and public. The overall judgment of section 8 stands: the residual risk is
 not high in the meaning of Article 36(1). The warn and ban lines remain held out, and
 their shipping remains a review trigger.
+
+## 14. Addendum, 2026-08-29: the web search
+
+The review trigger "any new path that sends message content off the machine,
+including a new tool" fired with the web search, and this addendum is the
+assessment it demands. This document is a draft amended in place, per its own
+status line.
+
+**The search, described.** The assistant answers project questions from the
+project's own sources. Asked something else — a question about the world — it can
+now call one tool that sends a search query to a search provider and reads back a
+page of ranked results: each result's title, its link, its snippet where the result
+has one, and a hint about the kind of host it sits on. It opens no page, follows no
+link and reads no document; fetching is not part of this capability (decision 0110).
+The query is written by the model, in words drawn from the conversation, and it is
+sent exactly as written or not at all.
+
+**What is new for the people concerned.**
+
+- *A further recipient of member-derived text.* The provider receives the query.
+  This is the first recipient of members' words other than the model processor and
+  the platform itself, and it is stated as such. It receives nothing beside the
+  query: no account identifier, no username, no other part of the conversation. The
+  boundary is therefore NARROWER than the model provider's, which carries the whole
+  conversation and each speaker's public handle.
+- *A further transfer.* The provider is a company in the United Kingdom, covered by
+  the Commission's adequacy decision under Article 45 GDPR. Section 3.5's list is
+  four places now, not three, and the public policy says so in the same words.
+- *A wider stored surface behind an unclosed gap.* A tool call and its result live
+  on framework-owned tables the erasure path does not reach (decision 0045). That
+  gap was accepted on the ground that lookup inputs are "overwhelmingly technical".
+  A model-written query out of a conversation is not that, so decision 0045 carries
+  a dated amendment saying so, and the two mitigations that answer the widening —
+  the guard, and the refusal that echoes nothing — are recorded there.
+
+**What bounds it.** The query guard refuses any query carrying a person reference in
+the handle form — an at sign followed by a name, matched on a normalised view so
+spaced, dotted and zero-width spellings are one token — whole, before anything is
+sent, and its refusal names the rule without echoing what it matched (decision
+0115). The guard is a discipline device and is recorded as one: it stops the
+deliberate submission of an identifier, and no lexical rule can stop a model that
+describes a person instead. Beside it: a query is at most 400 characters and is
+refused rather than truncated past it, pages run to five, and each person draws at
+most five searches per ten minutes (decisions 0112, 0117). The assistant's answer
+still names where a claim came from, and a claim about the project may not come from
+the web at all — the project lookups remain its only source (decision 0116).
+
+**The false-answer question.** A snippet can be wrong, and an answer built on one
+can be wrong with it. This is R7's existing residual and not a new one: the answers
+were already model-written and already stated as fallible in the public policy. What
+changes is where a wrong claim can come from, and the teaching answers that
+narrowly — a snippet is a hint, an answer built on one says where it came from, and
+a snippet that does not contain the claim is a miss.
+
+**Judgment.** One further processor, in an adequacy-covered country, receiving a
+bounded query and nothing else, under a per-person spend bound, with deliberate
+person references refused before they are sent. The new risk R12 is registered with
+its mitigations and its residual re-rating in sections 6 to 8. The overall judgment
+of section 8 stands: the residual risk is not high in the meaning of Article 36(1).
+Fetching a page is not part of this capability and remains a review trigger of its
+own.

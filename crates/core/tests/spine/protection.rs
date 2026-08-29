@@ -82,6 +82,7 @@ async fn silent_assistant(
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -510,6 +511,7 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await
@@ -916,6 +918,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
                 direct_chats: assistant_core::DirectChats::default(),
                 privacy_policy_address: None,
                 moderation_handle: None,
+                web_search: None,
             },
         )
         .await
@@ -950,6 +953,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
                 direct_chats: assistant_core::DirectChats::default(),
                 privacy_policy_address: None,
                 moderation_handle: None,
+                web_search: None,
             },
         )
         .await

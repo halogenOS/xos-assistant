@@ -851,6 +851,7 @@ async fn the_direct_channel_admission_precedes_the_mirror() {
             direct_chats: DirectChats::Off,
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await;

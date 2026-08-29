@@ -56,6 +56,21 @@ pub const PRIVACY_REPLY_WINDOW: Duration = Duration::from_mins(5);
 /// with the reply, never applied silently.
 pub const PRIVACY_REPLY_CAP: u32 = 8;
 
+/// The web search's own per-person window (decided 2026-08-27, sized
+/// 2026-08-29): ten minutes, the same shape as the rights replies' bound
+/// and its own constant beside it, because the two bound different things —
+/// that one bounds courtesy lines, this one bounds MONEY. Each call is a
+/// paid request to a metered vendor and the model chooses when to make one,
+/// so the spend is bounded per person: one member's curiosity cannot empty
+/// the group's budget.
+pub const SEARCH_BUDGET_WINDOW: Duration = Duration::from_mins(10);
+
+/// How many web searches one person draws inside one
+/// [`SEARCH_BUDGET_WINDOW`]: five. Enough for a question, a rewording and a
+/// second page or two in the same conversation; past it the model is
+/// fishing, and the taught decline sends it back to the project lookups.
+pub const SEARCH_BUDGET_CAP: u32 = 5;
+
 /// The at-most-once-per-window bookkeeping of one fixed line, keyed by
 /// conversation, over the window length it is constructed with. The window
 /// opens at the grant that actually happened, so a run of silent triggers
@@ -247,6 +262,42 @@ mod tests {
         assert!(
             window.grants(1).await,
             "the expired window resets the count whole"
+        );
+    }
+
+    /// The web search's own bound under its own constants (unit 27, AC7):
+    /// five searches per person per ten minutes, the sixth declined, and
+    /// the window's expiry giving the person their searches back. The
+    /// expiry is pinned here rather than on the tool, because a paused
+    /// clock auto-advances through every await a tool makes.
+    #[tokio::test(start_paused = true)]
+    async fn the_search_budget_caps_five_per_person_and_recovers_past_the_window() {
+        let budget = ReplyWindow::new(SEARCH_BUDGET_WINDOW, SEARCH_BUDGET_CAP);
+        for _ in 0..SEARCH_BUDGET_CAP {
+            assert!(budget.grants(1).await, "a search inside the cap is granted");
+        }
+        assert!(
+            !budget.grants(1).await,
+            "the sixth search inside the window is declined"
+        );
+        assert!(
+            budget.grants(2).await,
+            "another person's searches are bounded independently"
+        );
+        tokio::time::advance(
+            SEARCH_BUDGET_WINDOW
+                .checked_sub(Duration::from_secs(1))
+                .expect("the window is longer than a second"),
+        )
+        .await;
+        assert!(
+            !budget.grants(1).await,
+            "still inside the window, still declined"
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(
+            budget.grants(1).await,
+            "past the window the person's searches are theirs again"
         );
     }
 }

@@ -63,6 +63,7 @@ async fn start_assistant_direct_off() -> support::Fixture {
             direct_chats: DirectChats::Off,
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await

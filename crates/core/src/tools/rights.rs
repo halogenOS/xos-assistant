@@ -44,7 +44,7 @@ use tokio::sync::RwLock;
 use crate::identity;
 use crate::message::Authority;
 use crate::privacy::{CONFIRM_INSTRUCTION, OPT_OUT_DONE, PendingDeletions};
-use crate::tools::provenance::co_summoners;
+use crate::tools::provenance::sole_principal;
 use crate::window::ReplyWindow;
 
 /// The registered name the model calls the tool by.
@@ -144,21 +144,11 @@ impl PrivacyTool {
                 return Err(TRANSIENT_RESULT.to_owned());
             }
         };
-        // The subject: exactly one distinct principal over the origin set's
-        // takers. A taker whose stored principal is unreadable makes the
-        // set unresolvable — never a smaller set to act on.
-        let takers: Vec<Option<i64>> = co_summoners(&ledger, ctx.block_id)
-            .iter()
-            .map(|message| message.principal_id)
-            .collect();
-        let mut distinct: Vec<i64> = takers
-            .iter()
-            .map(|id| id.ok_or(()))
-            .collect::<Result<Vec<i64>, ()>>()
-            .map_err(|()| AMBIGUOUS_RESULT.to_owned())?;
-        distinct.sort_unstable();
-        distinct.dedup();
-        let &[principal_id] = distinct.as_slice() else {
+        // The subject: the one person behind the turn, resolved once in the
+        // provenance reading. An unresolvable set — none, several, or a
+        // taker whose stored principal is unreadable — is this tool's
+        // ambiguity, never a smaller set to act on.
+        let Some(principal_id) = sole_principal(&ledger, ctx.block_id) else {
             return Err(AMBIGUOUS_RESULT.to_owned());
         };
         // The person must still resolve: an erased row's principal id names

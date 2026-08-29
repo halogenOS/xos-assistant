@@ -127,8 +127,21 @@ fn the_base_prose_carries_no_rules_list_and_no_stay_quiet_framing() {
 
     let base = repo_prompt();
     let composed = [
-        assistant_core::composed_system_prompt(&base, "Probe", AnsweringMode::Helpful, true),
-        assistant_core::composed_system_prompt(&base, "Probe", AnsweringMode::Addressed, false),
+        assistant_core::composed_system_prompt(
+            &base,
+            "Probe",
+            AnsweringMode::Helpful,
+            assistant_core::Capabilities {
+                moderation_handle: true,
+                web_search: true,
+            },
+        ),
+        assistant_core::composed_system_prompt(
+            &base,
+            "Probe",
+            AnsweringMode::Addressed,
+            assistant_core::Capabilities::default(),
+        ),
     ];
     for (name, prose) in std::iter::once(("the shipped base prose", &base)).chain(
         composed
@@ -991,6 +1004,202 @@ fn the_autonomous_moderation_units_decisions_are_recorded() {
              message in clear violation"
         ),
         "the report record's row carries its dated change"
+    );
+}
+
+// ─── The web search unit's pins (AC8 and AC9, 2026-08-29) ────────────────
+
+/// AC8, four of the five sites: the published policy, the impact
+/// assessment, the legitimate-interest re-weigh and decision 0045's
+/// amendment, each with a dated note — the record of processing is pinned
+/// by the test below it. The policy's own claims are checked as the public
+/// document they are: the closed recipient table gains the search
+/// provider, the transfer count becomes four, and the sourcing sentence
+/// names the search.
+#[test]
+fn the_web_search_ships_its_five_privacy_edits() {
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains("| Serper, United Kingdom (added 2026-08-29) |"),
+        "the closed recipient table gains the search provider with its date"
+    );
+    assert!(
+        policy.contains("Data leaves the EU/EEA in four places"),
+        "the transfer sentence counts the search transfer"
+    );
+    assert!(
+        policy.contains("Our search provider is a UK company and receives the search query there")
+            && policy.contains("adequacy decision"),
+        "the fourth transfer names its basis"
+    );
+    assert!(
+        policy.contains(
+            "include the words it sends to a web search when a question is not about \
+             the project"
+        ),
+        "the processing description names what the search sends"
+    );
+    assert!(
+        policy.contains("We do not reach lookup records — including a web search's query"),
+        "the deletion section names the query among what erasure does not reach"
+    );
+    assert!(
+        policy.contains("Last updated: 29 August 2026"),
+        "the policy carries the date of this change"
+    );
+
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    for marker in [
+        "**Serper, United Kingdom**, the search provider (added 2026-08-29, with the web search)",
+        "Data leaves the EEA in FOUR places",
+        "| R12 | A member's own words, rewritten by the model into a search query",
+        "**R12, member words in a search query.**",
+        "## 14. Addendum, 2026-08-29: the web search",
+    ] {
+        assert!(
+            dpia.contains(&flattened(marker)),
+            "the impact assessment carries: {marker}"
+        );
+    }
+    assert!(
+        dpia.contains("It falls to low when decision 0045's framework seam closes"),
+        "the residual re-rating states what would close it"
+    );
+
+    // Blockquote markers fold away so the re-weighs read contiguously:
+    // these sit inside a numbered item, so the marker carries an indent.
+    let lia = flattened(
+        &repo_file("docs/privacy/lia.md")
+            .lines()
+            .map(|line| line.trim_start().trim_start_matches("> "))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+    assert_eq!(
+        lia.matches("Re-weighed 2026-08-29, with the web search")
+            .count(),
+        2,
+        "both safeguards this unit trips carry the performed re-weigh"
+    );
+    assert!(
+        lia.contains("a SECOND processor joined it, the search provider"),
+        "the chain safeguard names what changed"
+    );
+    assert!(
+        lia.contains("What crosses to the search provider is the QUERY and nothing else"),
+        "the identifier safeguard names what does and does not cross"
+    );
+
+    let gap = flattened(&repo_file(
+        "docs/decisions/0045-erasure-does-not-reach-tool-blocks-yet.md",
+    ));
+    assert!(
+        gap.contains("Amended 2026-08-29, with unit 27 (the web search)"),
+        "decision 0045 carries its dated amendment"
+    );
+    assert!(
+        gap.contains("A web search query does not meet that description"),
+        "the amendment names the ground it removes"
+    );
+    assert!(
+        gap.contains("The refusal echoes nothing"),
+        "the amendment records the two mitigations that answer the widening"
+    );
+}
+
+/// AC8's fifth site, the record of processing: the search provider enters
+/// every section the query touches, and section 10 gains the agreement
+/// that is still missing. That entry is checked from both sides, because
+/// section 10 lists what is OUTSTANDING and its own preamble forbids
+/// claiming a measure that is not in place: the entry must name the
+/// missing instrument and must never head itself as an agreement already
+/// on file while its body states the opposite.
+#[test]
+fn the_web_search_records_the_missing_agreement_as_outstanding() {
+    let records = flattened(&repo_file("docs/privacy/records-of-processing.md"));
+    for marker in [
+        "Widened 2026-08-29 with the web search",
+        "| R6 | Serper, United Kingdom (added 2026-08-29, with the web search)",
+        "| The search provider (added 2026-08-29) |",
+        "Extended 2026-08-29 with the web search",
+        "Extended 2026-08-29 for the search provider",
+        "**The signed Article 28 instrument with the search provider**, Serper, on file \
+         with the controller.",
+        "no signed instrument is on file with the controller yet",
+        "Trigger fired and answered 2026-08-29",
+    ] {
+        assert!(
+            records.contains(&flattened(marker)),
+            "the record of processing carries: {marker}"
+        );
+    }
+    assert!(
+        !records.contains(&flattened(
+            "processor agreement** with Serper, accepted and on file"
+        )),
+        "the search provider's open dependency claims an agreement on file that the \
+         same entry says is not on file"
+    );
+}
+
+/// AC9: the unit's decisions are recorded, each dated and carrying its
+/// rejected alternatives, and the teaching carve-out is pinned in the
+/// composed prompt — a web result is never the source for a project claim.
+#[test]
+fn the_web_search_units_decisions_are_recorded_and_the_carve_out_is_taught() {
+    for record in [
+        "docs/decisions/0110-the-web-search-searches-and-opens-nothing.md",
+        "docs/decisions/0111-the-vendor-sits-behind-a-trait-and-posts-through-the-lookup-layer.md",
+        "docs/decisions/0112-the-search-is-bounded-per-person-and-cached-per-query.md",
+        "docs/decisions/0113-the-envelope-promises-only-what-the-vendor-can-keep.md",
+        "docs/decisions/0114-an-unconfigured-search-does-not-exist.md",
+        "docs/decisions/0115-the-query-guard-refuses-the-handle-form-and-echoes-nothing.md",
+        "docs/decisions/0116-project-facts-come-only-from-the-project-lookups.md",
+        "docs/decisions/0117-the-query-and-the-pages-are-bounded-and-a-refusal-is-whole.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-2"),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+        assert!(
+            content.contains("with unit 27"),
+            "{record} names the unit it was taken with"
+        );
+    }
+
+    let teaching = assistant_core::SEARCH_TEACHING;
+    assert!(
+        teaching
+            .contains("Facts about the project itself still come only from the project lookups"),
+        "the carve-out is in the teaching"
+    );
+    let composed = assistant_core::composed_system_prompt(
+        &repo_prompt(),
+        "Probe",
+        assistant_core::AnsweringMode::Helpful,
+        assistant_core::Capabilities {
+            moderation_handle: false,
+            web_search: true,
+        },
+    );
+    assert!(
+        composed.contains(teaching),
+        "the composed prompt carries the carve-out whole where the tool is configured"
+    );
+    assert!(
+        !assistant_core::composed_system_prompt(
+            &repo_prompt(),
+            "Probe",
+            assistant_core::AnsweringMode::Helpful,
+            assistant_core::Capabilities::default(),
+        )
+        .contains("search_web"),
+        "and teaches no search where the tool is not configured"
     );
 }
 

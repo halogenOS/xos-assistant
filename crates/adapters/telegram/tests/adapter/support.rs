@@ -553,6 +553,7 @@ async fn assemble(
             direct_chats,
             privacy_policy_address: None,
             moderation_handle,
+            web_search: None,
         },
     )
     .await

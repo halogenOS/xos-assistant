@@ -259,6 +259,7 @@ async fn a_lookup_that_does_not_answer_closes_with_the_plain_dont_know() {
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
             moderation_handle: None,
+            web_search: None,
         },
     )
     .await;
