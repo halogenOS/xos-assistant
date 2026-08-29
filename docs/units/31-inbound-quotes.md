@@ -13,28 +13,42 @@ itself, `> `-prefixed, above the member's words — the same thing a human sees.
 
 ## Grounding
 
-**The framework mechanism, verified.** A `quote` block stores a span reference —
-`start_block_id`, `start_pos`, `end_block_id`, `end_pos` (`agent-ledger
-store/conversations.rs:735-748`) — resolved to text at store-read time
-(`store/blocks.rs:510-530`), in **character** offsets (`chars().skip/take`,
-`:566-599`), projected as `> `-prefixed lines with an empty resolution rendering nothing
-(`agency/projection.rs:137-148`). A user-voiced quote owes a model turn
-(`agency/quote.rs`, `Awaiting::Model`). `Store::insert_user_blocks` is public and accepts
-`InputBlock::Quote`. The consumer's composing enum already delegates every framework kind,
-so the quote projects with no consumer projection code.
+**The framework mechanism, verified against the merged tree.** A `quote` block stores a
+span reference — `start_block_id`, `start_pos`, `end_block_id`, `end_pos` — resolved to
+text at store-read time in **character** offsets (`resolve_quote_text` in
+`agent-ledger store/blocks.rs`, `chars().skip/take` on both paths), projected as
+`> `-prefixed lines with an empty resolution rendering nothing. A user-voiced quote owes
+a model turn (`agency/quote.rs`, `Awaiting::Model`). `Store::insert_user_blocks` is
+public and accepts `InputBlock::Quote`. The consumer's composing enum already delegates
+every framework kind, so the quote projects with no consumer projection code.
 
-**The prerequisite is framework slice 14, and this unit is blocked until it lands.** The
-resolver reads `block_text` alone today, so a quote of a consumer chat message resolves
-empty. Slice 14 (`agent-ledger docs/slices/14-quote-reach.md`) lets a descriptor declare
-its quotable text column. This unit's half of that contract is one field: the chat-message
-descriptor declares its text column.
+**Slice 14 landed 2026-08-29 (framework merge `f2bf250`), so consumer text is reachable
+and this unit is unblocked.** Its final shape, which this unit builds against:
+`ContentDescriptor::quoted_text_column: Option<&'static str>` declares which column
+speaks, validated at open (`validate_quotable_column` in `store/descriptors.rs`): the
+column must be declared, must not be the role column, must be `ColumnType::Text` by
+VARIANT (a `Json` column is refused despite text affinity), and the kind must not be
+ephemeral. Span membership is one SQL decision (`span_members`): a `block_text` row or a
+declaring kind; the declared members' text fills through the domain gate
+(`fill_declared_text`), and absence stays empty — no declaration, an erased or NULL row,
+a dangling reference, a closed gate — the resolver swallows everything to `""`. A
+single-block quote (this unit's every case: `start == end`) takes the membership-free
+substring path resolution has always had, still gate-consulted for its text. The fork's
+deep copy collects quote targets through the same span walk, clones every declared
+column of a covered consumer row as a DETACHED clone, and consults the gate before
+writing anything. This unit's half of the contract is one field: the chat-message
+descriptor declares `COLUMN_TEXT`, which is `ColumnType::Text` (`core/src/kind.rs:584`)
+on a non-ephemeral kind, so the open-time validation passes as the tree stands.
 
 **What the consumer already stores.** The chat message records the replied-to message's
-ORIGIN string and a reply-to-assistant flag (`core/src/kind.rs:153,160,464-470`), used to
-wake the assistant and by erasure's target-keyed pass. An origin-keyed lookup precedent
-exists (`kind.rs:750`, the deletion path). Erasure nulls a message's text and origin
-(`kind.rs:746-757`), and a quote of an erased block resolves to the empty string by
-construction — no special case.
+ORIGIN string (`COLUMN_REPLY_TARGET`) and a reply-to-assistant flag
+(`COLUMN_REPLY_TO_ASSISTANT`), both in the descriptor (`core/src/kind.rs:595-596`), used
+to wake the assistant and by erasure's target-keyed pass. An origin-keyed lookup
+precedent exists in the deletion path (the doc at `kind.rs:795` names where a reply's
+origin is stored). Erasure runs three passes — `erase_principal_content`
+(`kind.rs:691`), `erase_message_named` (`kind.rs:736`), `erase_reply_targets_naming`
+(`kind.rs:827`) — nulling a message's text and origin, and a quote of an erased row
+resolves to the empty string by slice 14's construction — no special case.
 
 **What the platform supplies.** A reply carries the replied-to message; a manual quote
 additionally carries the quoted text and a UTF-16 position (`text_quote`, `is_manual`).
@@ -79,12 +93,14 @@ as that promise.
   resolution independently. Recorded because the duplication reviewer must be answered
   rather than dodged: the two records answer different questions and neither can be
   derived from the other at its read site.
-- **Replies to the assistant's own messages quote them too, 2026-08-28.** The
-  reply-to-assistant flag continues to wake her; the quote gives the model the exact words
-  of hers being answered, which is precisely the misattribution case the operator hit.
-  The assistant's messages are stored under her own kind: her descriptor declares its
-  quotable column as well, or replies to her resolve empty — the spec requires whichever
-  storage actually holds her text to be declared, settled against the tree at build time.
+- **Replies to the assistant's own messages quote them too, and need no declaration,
+  settled 2026-08-29.** The reply-to-assistant flag continues to wake her; the quote
+  gives the model the exact words of hers being answered, which is precisely the
+  misattribution case the operator hit. Her answers are framework `text` blocks
+  (`insert_final_text_block` with `Role::Assistant`) carrying `block_text`, so they are
+  quotable natively — the one declaration this unit makes is the chat-message
+  descriptor's. *Rejected:* a second declaration for her side — there is no consumer
+  table holding her words to declare.
 - **Ordering within the ingest, and the crash window, named, 2026-08-28.** The quote
   lands through the framework's public user-block append, then the chat message through
   the consumer append, sequentially under the ingest's existing serialization. A crash
@@ -96,6 +112,17 @@ as that promise.
   user-block append runs the date-marker seam (slice 13); the consumer append that
   follows runs it too; the same-day dedupe makes the pair insert at most one marker,
   ordered before the quote. Nothing to build; stated so the reviewer finds it decided.
+- **A fork's detached clones stay inside erasure's reach, 2026-08-29 — the pin slice
+  14 assigned to this consumer.** When a served channel forks (the startup walk that
+  moves channels onto an edited prompt or a swapped model), quote targets deep-copy as
+  detached clones, chat-message rows included, every declared column copied — principal,
+  origin and text ride along. Erasure's passes sweep the chat-message TABLE by what the
+  row stores, not by junction reachability, so a detached clone is erased with its
+  original; this unit pins that parity rather than assuming it: fork a conversation
+  holding a quote of a member's message, erase the member, and both the source and the
+  fork must project no quoted text afterwards. *Rejected:* trusting the table-sweep
+  argument without the pin — the clone path is new enough that the claim must be
+  executable.
 - **No new stored fact, no privacy-document change, 2026-08-28.** The quote block stores
   a span reference over content already stored and already sent to the model in the same
   conversation; no new category of data is collected, stored, or reaches any recipient.
@@ -137,15 +164,21 @@ no privacy-document change, and no change to when the assistant answers or stays
   the reply's turn happens exactly as it would have, pinned in both answering modes.
 - **AC8** The descriptor declaration is the one required by slice 14 and is validated at
   open — pinned by the framework's own open-time check, driven from this workspace.
+- **AC9** Erasure parity over clones: after a conversation holding a quote of a member's
+  message forks through the startup refresh walk, erasing that member leaves BOTH the
+  source's and the fork's projections without the quoted text — pinned by running the
+  real fork and the real erasure, and proving the detached clone row itself no longer
+  carries the text.
 
 ## Notes for launch
 
-- **Blocked on framework slice 14 merging to the framework master this workspace
-  path-depends on.** Build order: slice 14, then this.
-- Branches from `main` (worktree `~/projects/halogenos-assistant-quotes`, branch
-  `unit/inbound-quotes`). Sites: the ingest edge in `core/src/assembly.rs` (the append
+- Unblocked: slice 14 merged to the framework master 2026-08-29 (`f2bf250`), and this
+  workspace path-depends on that master. The branch was rebased onto the consumer
+  `main` tip (`4f0f281`) the same day.
+- Worktree `~/projects/halogenos-assistant-quotes`, branch `unit/inbound-quotes`. Sites: the ingest edge in `core/src/assembly.rs` (the append
   sequence, around the existing chat-message landing), the origin-to-block resolution
-  beside the deletion path's precedent (`core/src/kind.rs:750`), the chat-message
+  beside the deletion path's precedent (the origin-keyed lookup named at
+  `core/src/kind.rs:795`), the chat-message
   descriptor (and whichever descriptor holds the assistant's own text) declaring the
   quotable column, and the spine tests.
 - The quality bar from the operator, verbatim scope for the reviewers: "The code must
