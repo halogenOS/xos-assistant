@@ -925,7 +925,10 @@ impl Assistant {
     /// conversation no longer rides in the model's context, so the assistant
     /// starts that channel fresh. A prompt edit is a change of instructions,
     /// and carrying half a conversation under new instructions is its own
-    /// kind of wrong.
+    /// kind of wrong; a model swap is a change of the dispatch itself, and a
+    /// channel left on the old binding keeps talking — and billing — through
+    /// it, which the operator watched happen before this walk learned to
+    /// look (2026-08-29).
     ///
     /// Returns how many channels were retired.
     ///
@@ -933,7 +936,7 @@ impl Assistant {
     ///
     /// [`CoreError::Store`] if a mapping read, a block read or the unmapping
     /// fails.
-    pub async fn retire_stale_prompts(&self) -> Result<usize, CoreError> {
+    pub async fn retire_stale_channels(&self) -> Result<usize, CoreError> {
         let store = self.ctx.store();
         let tx = store.tx();
         let mut retired = 0;
@@ -950,7 +953,22 @@ impl Assistant {
             // An absent prompt retires too: a mapped conversation that never
             // recorded one cannot be serving the current wording either, and
             // leaving it mapped would keep that silence permanent.
-            if recorded.as_deref() == Some(self.system_prompt.as_str()) {
+            let prompt_current = recorded.as_deref() == Some(self.system_prompt.as_str());
+            // The stored model is what the dispatch actually sends, and a
+            // conversation keeps the binding it was created with — so a
+            // configured swap reaches an existing channel only through this
+            // walk. The operator watched an old channel still billing the
+            // previous model while the introspection truthfully reported it
+            // (2026-08-29); staleness in EITHER the prompt or the model
+            // retires the channel.
+            let model_current = match store.find_conversation(record.conversation_id).await? {
+                Some(conversation) => {
+                    conversation.model.external_id == self.binding.model
+                        && conversation.model.provider_id == self.binding.provider_instance
+                }
+                None => true,
+            };
+            if prompt_current && model_current {
                 continue;
             }
             let Some(channel) =
@@ -966,8 +984,22 @@ impl Assistant {
             // context every answer is built from, and a prompt edit is not a
             // reason to forget what was said — the fork inherits the history
             // through the junction, so nothing is copied and nothing is lost.
+            // The fork always carries the CURRENT binding: inheriting would
+            // preserve the stale model through the very walk that exists to
+            // retire it, and a prompt-only refresh aligning the model too is
+            // the deployment's one truth applied whole.
             let successor = store
-                .fork_conversation(record.conversation_id, last, ModelOverride::default())
+                .fork_conversation(
+                    record.conversation_id,
+                    last,
+                    ModelOverride {
+                        provider_id: Some(self.binding.provider_instance.clone()),
+                        external_id: Some(self.binding.model.clone()),
+                        display_name: Some(self.binding.model_display_name.clone()),
+                        vendor: Some(self.binding.vendor.clone()),
+                        reasoning: None,
+                    },
+                )
                 .await?;
             // The fork inherits the old prompt along with everything else, and
             // an appended replacement would sit behind it, read second and
@@ -994,7 +1026,9 @@ impl Assistant {
             tracing::info!(
                 conversation_id = record.conversation_id,
                 successor,
-                "the recorded system prompt is stale; the channel forks and takes the current one"
+                prompt_current,
+                model_current,
+                "the recorded prompt or model is stale; the channel forks and takes the current ones"
             );
         }
         Ok(retired)

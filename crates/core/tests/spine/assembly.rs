@@ -165,7 +165,7 @@ async fn an_edited_prompt_moves_a_served_group_to_a_new_conversation() {
 
     let retired = restarted
         .assistant
-        .retire_stale_prompts()
+        .retire_stale_channels()
         .await
         .expect("the retirement reads the ledger");
     assert_eq!(retired, 1, "the one channel serving the old prompt retires");
@@ -185,7 +185,7 @@ async fn an_edited_prompt_moves_a_served_group_to_a_new_conversation() {
     // group stays where it was put.
     let again = restarted
         .assistant
-        .retire_stale_prompts()
+        .retire_stale_channels()
         .await
         .expect("the retirement reads the ledger");
     assert_eq!(again, 0, "an unchanged prompt retires nothing");
@@ -198,6 +198,76 @@ async fn an_edited_prompt_moves_a_served_group_to_a_new_conversation() {
         settled.conversation_id, after.conversation_id,
         "a second message stays in the conversation the first one opened"
     );
+}
+
+/// The walk retires a channel whose stored MODEL is stale, prompt unchanged —
+/// the operator's 2026-08-29 finding: a conversation keeps the binding it was
+/// created with, so a configured swap reached only new channels while old ones
+/// kept talking, and billing, through the previous model. The successor must
+/// carry the configured binding, which is also what the runtime-facts tool
+/// truthfully reports.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_swapped_model_moves_a_served_group_onto_it() {
+    let db = support::TempDb::new("stale-model");
+    let store = Store::open_with(db.path(), store_config()).expect("the configured store opens");
+
+    let first = support::start_assistant_on(store.clone(), None).await;
+    let room = support::authorized_group(&first.assistant, "room-stale-model").await;
+    let before = support::ingest_recorded(
+        &first.assistant,
+        support::inbound(&room, ChannelKind::Group, "member-1", "hello there"),
+    )
+    .await;
+
+    // The same store, the same prompt, a different configured model: the
+    // restart a model swap produces.
+    let mut swapped = support::assembly_config();
+    swapped.binding.model = "script-model-2".into();
+    swapped.binding.model_display_name = "Script Model Two".into();
+    let (provider, script) = support::scripted_provider(None);
+    let restarted = support::start_assistant_config(
+        store.clone(),
+        provider,
+        script,
+        assistant_core::tools::ToolSet::new(),
+        swapped,
+    )
+    .await;
+
+    let retired = restarted
+        .assistant
+        .retire_stale_channels()
+        .await
+        .expect("the retirement reads the ledger");
+    assert_eq!(retired, 1, "the one channel on the old model retires");
+
+    let after = support::ingest_recorded(
+        &restarted.assistant,
+        support::inbound(&room, ChannelKind::Group, "member-1", "still here?"),
+    )
+    .await;
+    assert_ne!(
+        after.conversation_id, before.conversation_id,
+        "the next message lands in the successor conversation"
+    );
+    let successor = store
+        .find_conversation(after.conversation_id)
+        .await
+        .expect("the successor reads")
+        .expect("the successor exists");
+    assert_eq!(
+        successor.model.external_id, "script-model-2",
+        "the successor runs on the configured model, which is what the \
+         dispatch sends and the runtime tool reports"
+    );
+
+    // Idempotent: nothing changed, nothing retires.
+    let again = restarted
+        .assistant
+        .retire_stale_channels()
+        .await
+        .expect("the retirement reads the ledger");
+    assert_eq!(again, 0, "an unchanged binding retires nothing");
 }
 
 /// Rules the group never changed are not announced again because the
@@ -260,7 +330,7 @@ async fn a_moved_channel_does_not_re_announce_rules_it_already_read() {
     assert_eq!(
         restarted
             .assistant
-            .retire_stale_prompts()
+            .retire_stale_channels()
             .await
             .expect("the retirement reads the ledger"),
         1,

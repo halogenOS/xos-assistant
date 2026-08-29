@@ -533,11 +533,11 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     // served instead of only the next group to appear. Startup is the one
     // moment the composed prompt can have moved — it comes from configuration
     // and from files read at boot — so this runs here and never again.
-    let retired = assistant.retire_stale_prompts().await?;
+    let retired = assistant.retire_stale_channels().await?;
     if retired > 0 {
         tracing::info!(
             channels = retired,
-            "the system prompt changed; those channels start new conversations"
+            "the prompt or the model changed; those channels start new conversations"
         );
     }
 
