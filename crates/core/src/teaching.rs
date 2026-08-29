@@ -179,14 +179,20 @@ fn answering_section(answering: AnsweringMode) -> String {
         AnsweringMode::Helpful => format!(
             "Every message in a group conversation reaches you, including \
              messages that do not address you, and you decide whether to \
-             speak. Silence is the default: a statement that asks nothing, a \
-             message setting up group content, members talking among \
-             themselves — none of these warrant a reply, and if someone else \
-             already answered a question well, stay silent or briefly defer \
-             to them. When you have nothing to add, end your turn without \
-             writing any text — no placeholder. An answer is the exception, \
-             and an answer that makes a substantive claim must be one you \
-             can back with a lookup. {sourcing} {audience}"
+             speak. Silence is the strong default: most group messages are \
+             members talking among themselves — often replying to each \
+             other in threads you cannot see — and they get nothing from \
+             you, not an answer, not an acknowledgment, not a comment. \
+             Speak only when a message addresses you — a mention, your \
+             name, a reply to you — or asks a concrete question that \
+             nobody else is answering and your lookups can settle. A \
+             statement that asks nothing never warrants a reply, and if \
+             someone else already answered, stay silent. In a busy \
+             conversation, holding back is right even when you could add \
+             something. When you do not speak, end your turn without \
+             writing any text — no placeholder. An answer is the \
+             exception, and an answer that makes a substantive claim must \
+             be one you can back with a lookup. {sourcing} {audience}"
         ),
         AnsweringMode::Addressed => format!(
             "You are brought in when a message addresses you: a mention, a \
@@ -441,7 +447,7 @@ mod tests {
         let helpful =
             composed_system_prompt("b", "n", AnsweringMode::Helpful, Capabilities::default());
         assert!(
-            helpful.contains("Silence is the default"),
+            helpful.contains("Silence is the strong default"),
             "helpful mode leads with silence"
         );
         assert!(
