@@ -14,11 +14,22 @@ workspace = true
 [dependencies]
 assistant-core = { path = "../../core" }
 chrono = "0.4"
+# The webhook intake's listener: the server half of the stack the client
+# already runs on, recorded in docs/dependency-review.md before this manifest
+# named it. `hyper` serves the connection, `hyper-util` adapts tokio's socket
+# to hyper's IO traits without the `unsafe` this workspace forbids and
+# supplies the timer the head-read bound is measured on, and
+# `http-body-util` bounds the body read and answers with an empty one.
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 reqwest = { version = "0.13", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["macros", "sync", "time"] }
+# `net` and `rt` are the listener's own: it binds a loopback socket and serves
+# each connection as a task.
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 tracing = "0.1"
 
 # Test-only. The scripted Bot API server in the test suite is a plain listener

@@ -8,8 +8,12 @@ platform-neutral core and one thin adapter per platform.
 **Status: pre-alpha.** The core spine stands: the platform-neutral core consumes the
 ledger framework, records inbound messages as ledger blocks, takes turns against a
 registered provider, and yields replies on a subscription edge. The Telegram adapter
-speaks the Bot API directly — long polling in, plain sends out — with its update offset
-persisted in a state file the embedder names (decisions 0013–0019). The live model is
+speaks the Bot API directly — updates in, plain sends out — with its update offset
+persisted in a state file the embedder names (decisions 0013–0019). Updates arrive by
+one of two answering modes, chosen by one predicate: a deployment with a public HTTPS
+address configures `[webhook]` and Telegram pushes each update to a loopback listener
+whose response code is the acknowledgement; a deployment without one long-polls exactly
+as before, first clearing any registered webhook. The live model is
 in: the assistant answers through the chat-completions provider with its key held in memory and
 never stored, addressing decides which messages are answered (a direct message, a
 mention, a reply to the assistant), a failed turn tells the chat once — except a
@@ -131,6 +135,17 @@ file path per secret — and never appear in the file itself:
     # every group add on it is refused and the assistant leaves the group.
     [operators]
     telegram = "<the operator's numeric Telegram user id>"
+
+    # Optional: how updates arrive. With this section the assistant registers
+    # the public address with Telegram and serves the deliveries on the
+    # loopback port behind the deployment's own HTTPS reverse proxy; without
+    # it the assistant long-polls. Both fields are required together — a
+    # section naming only one refuses the start — and no secret belongs here:
+    # the adapter generates its own, keeps it beside the state file readable
+    # by its owner alone, and no human ever handles it.
+    #[webhook]
+    #public_url = "https://assistant.example.org/telegram/webhook"
+    #listen_port = 8085
 
 The `[endpoints]` table carries one key per host the process talks to, and can override
 each of them: `telegram`, `chat_completions` (the OpenAI-compatible model endpoint),

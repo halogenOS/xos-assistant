@@ -120,6 +120,27 @@ enum StartError {
     )]
     ModerationHandleEmpty,
 
+    /// The `[webhook]` section is present but carries only one of its two
+    /// fields, or carries a blank address. Half a webhook is not an
+    /// answering mode: omitting the section entirely is how polling is
+    /// chosen.
+    #[error(
+        "the webhook section must carry `{field}`; name both public_url and \
+         listen_port, or omit the section to poll instead"
+    )]
+    WebhookFieldMissing { field: &'static str },
+
+    /// The webhook address is not one the platform can call, or not one the
+    /// listener could match a delivery against. The reason is the adapter's
+    /// own; nothing here guesses at it.
+    #[error("the webhook public_url is not usable: {reason}")]
+    WebhookAddressInvalid { reason: String },
+
+    /// The webhook port is zero. The adapter would bind an ephemeral port,
+    /// which no reverse proxy could forward to.
+    #[error("the webhook listen_port must name the port the reverse proxy forwards to")]
+    WebhookPortZero,
+
     /// The wiki endpoint override is present but empty or whitespace.
     /// Omitting the key is how the real host is chosen.
     #[error("the endpoints.wiki key must carry an address; omit it for the real host")]
@@ -219,6 +240,7 @@ fn run() -> Result<(), StartError> {
     let wiki_index_endpoint = configuration.resolve_wiki_index_endpoint()?;
     let name = configuration.resolve_name()?;
     let disclosure = configuration.resolve_disclosure()?;
+    let webhook = configuration.resolve_webhook()?;
     let bot_token = configuration.secrets.bot_token.resolve("bot_token")?;
     let chat_completions_api_key = configuration
         .secrets
@@ -253,6 +275,7 @@ fn run() -> Result<(), StartError> {
             wiki_index_endpoint,
             name,
             disclosure,
+            webhook,
             bot_token,
             chat_completions_api_key,
             mirror_token,
@@ -309,6 +332,7 @@ struct ServeInputs {
     wiki_index_endpoint: Option<String>,
     name: Option<String>,
     disclosure: Option<String>,
+    webhook: Option<assistant_adapter_telegram::WebhookConfig>,
     bot_token: String,
     chat_completions_api_key: String,
     mirror_token: Option<String>,
@@ -353,6 +377,7 @@ fn log_startup(
     wiki_endpoint: Option<&str>,
     wiki_index_endpoint: Option<&str>,
     search_endpoint: Option<&str>,
+    webhook_address: Option<&str>,
 ) {
     tracing::info!(
         store = %configuration.store_path.display(),
@@ -382,6 +407,7 @@ fn log_startup(
         wiki_endpoint = %wiki_endpoint.unwrap_or("the real host"),
         wiki_index_endpoint = %wiki_index_endpoint.unwrap_or("the real host"),
         search_endpoint = %search_endpoint.unwrap_or("not configured"),
+        webhook_address = %webhook_address.unwrap_or("not configured; updates are polled"),
         "the assistant is up"
     );
 }
@@ -394,6 +420,7 @@ async fn resolved_adapter(
     configuration: &Configuration,
     bot_token: String,
     name: Option<String>,
+    webhook: Option<assistant_adapter_telegram::WebhookConfig>,
 ) -> Result<(TelegramAdapter, String), StartError> {
     let mut adapter_config = assistant_adapter_telegram::Config::new(
         bot_token,
@@ -402,6 +429,9 @@ async fn resolved_adapter(
     if let Some(root) = configuration.endpoints.telegram.clone() {
         adapter_config.api_root = root;
     }
+    // The one predicate the adapter reads for how updates arrive; resolved
+    // from the configuration file and carried no further than here.
+    adapter_config.webhook = webhook;
     let name = match name {
         Some(name) => name,
         None => TelegramAdapter::read_display_name(&adapter_config)
@@ -427,6 +457,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         wiki_index_endpoint,
         name,
         disclosure,
+        webhook,
         bot_token,
         chat_completions_api_key,
         mirror_token,
@@ -441,7 +472,13 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     let mut sigterm = signal(SignalKind::terminate()).map_err(StartError::Runtime)?;
     // The adapter comes first because the name's default is read from the
     // platform, once, at startup.
-    let (adapter, name) = resolved_adapter(&configuration, bot_token, name).await?;
+    // Kept before the wiring moves into the adapter: the address the startup
+    // line names — there is no secret beside it to keep out, because the
+    // configuration never carries one.
+    let webhook_address = webhook
+        .as_ref()
+        .map(|webhook| webhook.address.url().to_owned());
+    let (adapter, name) = resolved_adapter(&configuration, bot_token, name, webhook).await?;
     let store = Store::open_with(&configuration.store_path, store_config())?;
     let provider = MemoryConfiguredProvider::new(
         &store,
@@ -509,6 +546,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         wiki_endpoint.as_deref(),
         wiki_index_endpoint.as_deref(),
         search_endpoint.as_deref(),
+        webhook_address.as_deref(),
     );
 
     tokio::select! {
