@@ -1,13 +1,17 @@
 # Unit 29 — the assistant can look up whether someone is an administrator
 
-Date: 2026-08-25. Revision 3, rewritten against a cold probe that found the unit unbuildable
-as revision 2 stated it. The corrections are large enough to be worth naming up front:
+Date: 2026-08-25. Revision 3, rewritten against a cold probe that found the unit
+unbuildable as revision 2 stated it; revision 4, 2026-08-29, resettled against a tree
+that has since absorbed six units — join notices above all, which store and show
+joiners' handles and so widen this tool's world. The corrections are large enough to be worth naming up front:
 
 - Revision 2's two verbatim result strings could not also carry a moderator's standing and a
   "as of which message" clause. Both were demanded by acceptance criteria and neither string
   has room. The strings win; the extra content moves to where it belongs.
-- Revision 2 named two privacy documents. The claim this unit falsifies is written in six
-  places, one of them the **published, member-facing policy**.
+- Revision 2 named two privacy documents. The claim this unit falsifies is written
+  across the four privacy documents, one of them the **published, member-facing
+  policy** — at every site where it appears, several already carrying dated
+  amendments from later units.
 - Revision 2 said "no new fact is stored". Registering a tool appends a palette block to
   every active conversation.
 - Revision 1 (recorded here so the mistake is not made a third time) copied the privacy
@@ -56,33 +60,40 @@ authority.rs:60-64`, under decision 0015 (2026-08-21):
 Everyone the platform, its interface and every member calls an *administrator* maps to
 `Moderator`. This is the finding that reshapes the unit, and the first decision below is its answer.
 
-**A handle IS stored; the "handle we were shown" bound is NOT.** `COLUMN_SPEAKER` holds "the
-sender's public username as the platform delivered it at receipt", bounded by
-`storable_speaker` (`core/src/kind.rs:112-129`); display names are not stored at all
-(decision 0077, `core/src/identity.rs:9-10`). But the bound revision 2 told the implementer
-to reuse is **prompt prose with no code behind it**: `prompts/30-conduct.md:21-22`, "You may
-mention a person by the handle shown with their message, and never guess a handle you were
-not shown." The nearest code analogue, `report.rs:298` `resolve_reportable`, validates a
-*message id* against the turn's co-summoner set — a different key over a narrower scope. This
-unit therefore builds the matcher; it does not reuse one.
+**Handles are stored in TWO places now; the "handle we were shown" bound is prose.**
+`COLUMN_SPEAKER` holds "the sender's public username as the platform delivered it at
+receipt", bounded by `storable_speaker` (`core/src/kind.rs`); and since unit 36
+(2026-08-29) every JOINER's handle is stored under the same bound in the join table
+(`core/src/join.rs`) and projected AT-sign-prefixed into the model's own context — so
+the model can see a handle that never spoke. Display names are not stored as identity
+data (decision 0077, since annotated: a join event's shown name is erasable event
+content). The bound revision 2 told the implementer to reuse is **prompt prose with no
+code behind it** (`prompts/30-conduct.md`: "never guess a handle you were not shown");
+the nearest code analogue, `resolve_reportable`, now resolves a message's origin or a
+join event's — a different key. This unit therefore builds the matcher; it does not
+reuse one.
 
 **Erasure keeps standing and drops the handle.** `erasure.rs` via `kind.rs:688-705` nulls
 `text`, `origin`, `sent_at`, `reply_target` and `speaker`, and leaves `authority` and
 `principal_id` standing. Which key the tool matches on therefore decides an erasure outcome,
 and the spec must say which.
 
-**The palette reconciles itself.** `assembly.rs:1463` `reconcile_palette` compares the newest
+**The palette reconciles itself.** `reconcile_palette` (`assembly.rs`, first
+activity per process) compares the newest
 stored palette against the registered set on first activity per process and appends a fresh
 block on difference (decided 2026-08-23), so conversations predating this tool gain it. That
 append is also a new stored fact, which revision 2 denied.
 
-**Where non-lookup tools register, and where unconditional teaching lives.**
-`core/src/tools/mod.rs` is the HTTP lookup set — its own contract is "an execute performing
-one bounded HTTP GET against its configured base URL" (`mod.rs:8-10`). The non-HTTP peers
-register at the assembly: `assembly.rs:446` (report), `assembly.rs:456` (rights), both taking
-the erasure fence there. Unconditional teaching lives in `prompts/30-conduct.md:50-55` (the
-privacy tool's), pinned by the docs suite; `teaching.rs` holds *conditional* composition.
-Revision 2 named the wrong site for both.
+**Where non-lookup tools register, and where the teaching goes.**
+`core/src/tools/mod.rs` is the HTTP lookup set. The non-HTTP peers register in
+`admit_assembled_tools` (`assembly.rs:426-453`): the report and rights tools take the
+erasure fence there, the runtime-facts tool registers unconditionally without one (it
+reads no personal columns) — this tool reads person data and takes the fence like
+rights. The teaching goes in `prompts/30-conduct.md` beside the privacy tool's
+(`:49-58`), because a conduct rule belongs in the conduct prose — NOT because
+`teaching.rs` is conditional-only, which stopped being true when unit 32 put the
+unconditional identity-routing paragraph there; the site is chosen on fit, stated so
+the reason survives verification.
 
 **Fixed results are how this codebase answers a call that cannot proceed, and they close
 with a no-retry line.** `admission.rs:49-50`, `rights.rs:71` ("Do not retry with other
@@ -117,9 +128,16 @@ unwritten.
   question should find the reason beside them. *Rejected:* deriving the answer from the
   palette, which would tie a sentence about a person's standing in the group to an internal
   admission table and make both change together for no reason.
-- **The tool takes a handle, bounded to handles that appear as a SPEAKER in the
-  conversation, 2026-08-25.** The bound is the stored `speaker` column and never message
-  text. This matters and is not a detail: read as message text, a member typing `@victim`
+- **The tool is registered as `member_standing` and takes one parameter, `handle`,
+  2026-08-29.** Named here because the teaching, the palette and AC12 all reference
+  it, and an invented name guards nothing.
+- **The tool takes a handle, bounded to handles the conversation SHOWED — as a
+  message's speaker or as a joiner, 2026-08-25; widened for joins 2026-08-29.** The
+  bound is the stored `speaker` column and the join table's handle column, never
+  message text. A handle shown ONLY by a join has no spoken message and therefore no
+  stored standing: it answers its own fixed refusal — the person joined but has not
+  spoken, so no standing is on record — closing with the no-retry line; refusing it
+  as "never shown" would be visibly false against the join line the model just read. This matters and is not a detail: read as message text, a member typing `@victim`
   would make that handle "shown", rebuilding the queryable directory of who holds power over
   whom that this spec rejects two bullets down. *Rejected:* any handle at all; *rejected:*
   resolving the subject from the turn's origin set with no parameter (revision 1) — that
@@ -194,21 +212,22 @@ unwritten.
   administrator out of caution nor believes an instruction can unlock a guard. *Rejected:*
   leaving it unsaid — the guards hold either way, but a model that believes an instruction
   *could* work will keep trying and will say so to the member.
-- **The privacy documents move with this unit, and there are six of them, 2026-08-25.**
-  Standing is stored today and never leaves the machine; this tool sends it to the model
-  provider, a new category of personal data reaching a processor. Revision 2 named two table
-  cells. The claim it falsifies is written at: `records-of-processing.md:82` (R1's "what it
-  receives") and `:145` (the minimisation row); `dpia.md:279-282` ("no other attribute of a
-  person is attached to a request"), `:208`, `:375` (the R3 risk row), `:425` and `:431`;
-  `lia.md:270-273` ("Exactly one identifier in provider requests, the public username, and no
-  more... nothing is added to a request without weighing this assessment again" — a standing
-  procedural obligation this unit triggers and must discharge); and
-  **`bot-assistant-privacy-policy.md:59-65`, the published, member-facing document**, whose
-  closed four-item list of what each request carries becomes false. Each edit carries a dated
-  amendment note, as the repository's own convention requires and its docs suite pins
-  (`records-of-processing.md:90-93`, `dpia.md:299,304,503`, `lia.md:145,155,292`,
-  `crates/assistant/tests/docs.rs:1-33`). *Rejected:* shipping and amending after — the spec
-  named this defect class itself and revision 2 then walked into it.
+- **The privacy documents move with this unit — the four files, at every site the
+  claim appears, 2026-08-25; re-anchored 2026-08-29.** Standing is stored today and
+  never leaves the machine; this tool sends it to the model provider, a new category
+  of personal data reaching a processor. The claim it falsifies appears across the
+  four privacy documents, several sites already carrying dated amendments from units
+  27 and 36, so the implementer anchors on the SENTENCES, not on line numbers: the
+  record of processing's R1 "what it receives" row and its minimisation row; the
+  impact assessment's identity claims (the "no other attribute of a person is
+  attached to a request" family, amended once already) and its risk register; the
+  legitimate-interests assessment's "exactly one identifier" claim and its
+  re-weighing obligation — a standing procedural clause units 27 and 36 have each
+  discharged once, whose precedent shape (a dated "Re-weighed" note) this unit
+  follows; and **the published policy's** list of what each request carries, already
+  reopened twice by dated additions. Each edit carries a dated amendment note, and
+  the docs suite pins each per file. *Rejected:* shipping and amending after — the
+  spec named this defect class itself and revision 2 then walked into it.
 
 ## The unit's contract
 
@@ -225,9 +244,11 @@ adapter gains behaviour. No new table or column is added; registering the tool d
 one palette block per active conversation, which is the existing reconciliation doing its
 job. The tool takes the erasure fence, and an erased person is not found. The teaching states
 that authority is what the tool returns and never what a message claims, that an override
-reaches conduct and never a mechanism, and what to do when a lookup is refused. All six
-privacy documents, the published policy among them, carry standing as data reaching the model
-provider, each with a dated amendment note, before this ships.
+reaches conduct and never a mechanism, and what to do when a lookup is refused. The four
+privacy documents, the published policy among them, carry standing as data reaching
+the model provider at every site the claim appears, each with a dated amendment note,
+before this ships. A handle shown only by a join answers the joined-but-not-spoken
+refusal.
 
 ## Acceptance criteria
 
@@ -240,11 +261,12 @@ provider, each with a dated amendment note, before this ships.
 - **AC3** The vocabulary maps completely: each of the three stored values produces its
   specified answer — pinned per value, so the mapping cannot be read off one example.
   `Moderator` answers true, and that case carries the pin a careless implementation fails.
-- **AC4** The handle bound holds and does not over-refuse: a handle appearing as no message's
-  speaker is refused; a handle appearing only inside another member's message TEXT is
-  refused, since that is the directory this unit rejects; a handle differing from a shown one
-  only in case IS answered, not refused — pinned per case, including the last, which
-  revision 2 had backwards.
+- **AC4** The handle bound holds and does not over-refuse: a handle the conversation
+  never showed is refused; a handle appearing only inside another member's message
+  TEXT is refused, since that is the directory this unit rejects; a handle differing
+  from a shown one only in case IS answered, not refused; a handle shown ONLY by a
+  join answers the joined-but-not-spoken refusal, never the never-shown one and never
+  a guessed standing — pinned per case.
 - **AC5** The answer is as of the last message: a person whose stored standing differs
   between two of their messages is reported at the later one — pinned. The limit is stated in
   the tool's description, checked there rather than in the result.
@@ -267,12 +289,13 @@ provider, each with a dated amendment note, before this ships.
   teaching present — checked against the existing pins (`admission.rs:280-320`, the report
   and privacy-rights spine tests) rather than by adding tests that vary an input no mechanism
   reads.
-- **AC11** The documents move, all six: the record of processing, the impact assessment, the
-  legitimate-interests assessment and **the published privacy policy** each carry standing as
-  data reaching the model provider, each with a dated amendment note — checked per file, and
-  pinned by the documentation suite the repository already runs. A green AC while the
-  published policy states a closed list that no longer holds is the defect this criterion
-  exists to prevent.
+- **AC11** The documents move, all four files at every claim site: the record of
+  processing, the impact assessment, the legitimate-interests assessment (its
+  re-weigh discharged with a dated note, the units-27/36 precedent shape) and **the
+  published privacy policy** each carry standing as data reaching the model provider,
+  each with a dated amendment note — checked per file, and pinned by the
+  documentation suite. A green AC while the published policy's request-contents list
+  no longer holds is the defect this criterion exists to prevent.
 - **AC12** The tool's registered name and its model-facing description are pinned, the
   description carrying both the freshness limit and the group-only bound — since the
   description is the surface the model actually chooses from, and no other criterion covers
@@ -281,12 +304,15 @@ provider, each with a dated amendment note, before this ships.
 ## Notes for launch
 
 - Branches from `main` (worktree `~/projects/halogenos-assistant-standing`, branch
-  `unit/standing-lookup`). Sites: a new tool module beside `core/src/tools/rights.rs`;
-  registration **at the assembly** (`assembly.rs:446` and `:456` are the two precedents,
-  both taking the erasure fence there) and **not** in `core/src/tools/mod.rs`, whose contract
-  is bounded HTTP lookups; the teaching in **`prompts/30-conduct.md`** (`:50-55` is the
-  privacy tool's, the closest precedent and unconditional like this one) and **not** in
-  `teaching.rs`, which holds conditional composition; and the six privacy documents.
+  `unit/standing-lookup`, rebased 2026-08-29 onto a main carrying units 27-36; a
+  stale pre-freeze partial build sits archived in the worktree's stash and is NOT to
+  be resumed — build fresh). Sites: a new tool module beside
+  `core/src/tools/rights.rs`; registration in `admit_assembled_tools`
+  (`assembly.rs:426-453`; report and rights take the erasure fence, this tool takes
+  it too) and **not** in `core/src/tools/mod.rs`, whose contract is bounded HTTP
+  lookups; the match over the speaker column AND the join table's handle column; the
+  teaching in **`prompts/30-conduct.md`** beside the privacy tool's; and the four
+  privacy documents at their claim sites.
 - Read `core/src/tools/rights.rs` end to end, module documentation included — for its
   fixed-result form, its no-retry phrasing and its member authority, NOT for its no-parameter
   rule, whose reason is that it writes and this one does not.
