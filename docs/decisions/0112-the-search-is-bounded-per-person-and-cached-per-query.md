@@ -26,8 +26,10 @@ fixed result naming the bound and when it reopens, and nothing is sent.
 Beside it sits a same-query cache: the query as written, case-folded and
 whitespace-collapsed, plus the page. A cache hit costs no vendor spend, so it is
 served even on a spent budget and resolves no person at all — the budget's stated
-ground is metered spend and nothing else. A failed request hands its grant straight
-back, because a refused key bills nothing.
+basis is metered spend and nothing else. The cache's own freshness window is a
+separate constant with a separate reason: how fast the web changes, not how fast
+money is spent. A failed request hands its grant straight back, because a refused key
+bills nothing.
 
 ## Rejected alternatives
 

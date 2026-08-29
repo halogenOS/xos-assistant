@@ -1099,7 +1099,7 @@ fn the_web_search_ships_its_five_privacy_edits() {
     );
     assert!(
         gap.contains("A web search query does not meet that description"),
-        "the amendment names the ground it removes"
+        "the amendment names the basis it removes"
     );
     assert!(
         gap.contains("The refusal echoes nothing"),
@@ -1123,7 +1123,7 @@ fn the_web_search_records_the_missing_agreement_as_outstanding() {
         "| The search provider (added 2026-08-29) |",
         "Extended 2026-08-29 with the web search",
         "Extended 2026-08-29 for the search provider",
-        "**The signed Article 28 instrument with the search provider**, Serper, on file \
+        "**No signed Article 28 instrument with the search provider**, Serper, is on file \
          with the controller.",
         "no signed instrument is on file with the controller yet",
         "Trigger fired and answered 2026-08-29",
@@ -1133,13 +1133,16 @@ fn the_web_search_records_the_missing_agreement_as_outstanding() {
             "the record of processing carries: {marker}"
         );
     }
-    assert!(
-        !records.contains(&flattened(
-            "processor agreement** with Serper, accepted and on file"
-        )),
-        "the search provider's open dependency claims an agreement on file that the \
-         same entry says is not on file"
-    );
+    for claimed in [
+        "processor agreement** with Serper, accepted and on file",
+        "**The signed Article 28 instrument with the search provider**, Serper, on file",
+    ] {
+        assert!(
+            !records.contains(&flattened(claimed)),
+            "the search provider's open dependency heads itself as an agreement on file \
+             that the same entry says is not on file: {claimed}"
+        );
+    }
 }
 
 /// AC9: the unit's decisions are recorded, each dated and carrying its

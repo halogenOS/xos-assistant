@@ -47,6 +47,6 @@ row without a host reads `unknown`.
 - **Pinning "ten results".** The vendor's own samples return eight.
 - **A JSON tool result.** A serialization decided as a side effect of a search unit.
 - **A curated authority list behind the source hint.** The hint is a shape cue for
-  the model, not a judgment about who is worth believing.
+  the model, not a judgment about which source to believe.
 - **The vendor's locale defaults.** US-English answers for a community that is
   neither, and corrected queries presented as uncorrected.

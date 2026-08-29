@@ -35,6 +35,10 @@ pub const KEY: &str = "sk-or-FAKE-PROCESS-TEST-KEY";
 /// string.
 pub const MIRROR_TOKEN: &str = "ghp-FAKE-PROCESS-TEST-MIRROR-TOKEN";
 
+/// The fake web-search key. Nothing real; the scans look for this exact
+/// string and for the fragments of it named at the assertion.
+pub const SEARCH_KEY: &str = "sk-search-FAKE-PROCESS-TEST-SEARCH-KEY";
+
 /// The one answer the scripted completions server streams.
 pub const ANSWER: &str = "The scripted process answer.";
 

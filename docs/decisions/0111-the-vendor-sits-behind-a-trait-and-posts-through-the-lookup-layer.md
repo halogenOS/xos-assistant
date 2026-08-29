@@ -19,7 +19,7 @@ implementation owns the endpoint, the key, the request body and the response sha
 and the tool names none of them.
 
 The implementation posts through the shared lookup layer, which grows a bounded POST
-seam rather than being bypassed. The seam hands back the STATUS as a number and the
+seam instead of bypassing it. The seam hands back the STATUS as a number and the
 decoded body, unworded, so a caller with taught results of its own maps them itself:
 the transport's verdict is typed (`WireFailure`) and each caller words it. The GET
 paths keep the sentences they always answered, by wording that same verdict.

@@ -1031,7 +1031,7 @@ pub async fn start_assistant_searching(
                 base_url: search_base_url,
                 api_key: SEARCH_KEY.into(),
                 country: None,
-                language: Some("en".into()),
+                language: "en".into(),
             }),
             ..assembly_config()
         },

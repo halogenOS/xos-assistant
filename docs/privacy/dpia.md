@@ -498,7 +498,7 @@ mitigations ship with the capability and each is pinned by the suite. The query
 guard refuses any query carrying a person reference in the handle form, whole,
 before anything is sent, and its refusal does not echo what it matched — so a
 deliberate identifier reaches neither the provider nor the tool record (decision
-0115). The query is bounded to 400 characters and refused rather than truncated past
+0115). The query is bounded to 400 characters and refused instead of truncated past
 it, the pages to five, and each person's searches to five per ten minutes, which
 bounds the volume of member-derived text that can cross at all (decisions 0112,
 0117). What crosses is the query and nothing else: no account identifier, no
@@ -507,7 +507,7 @@ the model provider's. And the recipient is a processor in an adequacy-covered
 country. What is NOT mitigated is the record: the query lives on framework-owned
 tables erasure does not reach, which is decision 0045's standing gap, amended the
 same day to say that its accepted ground — inputs that are "overwhelmingly
-technical" — no longer describes this input. That is stated rather than closed.
+technical" — no longer describes this input. That is stated, not closed.
 
 ## 8. Residual risk
 
@@ -802,7 +802,7 @@ sent, and its refusal names the rule without echoing what it matched (decision
 0115). The guard is a discipline device and is recorded as one: it stops the
 deliberate submission of an identifier, and no lexical rule can stop a model that
 describes a person instead. Beside it: a query is at most 400 characters and is
-refused rather than truncated past it, pages run to five, and each person draws at
+refused instead of truncated past it, pages run to five, and each person draws at
 most five searches per ten minutes (decisions 0112, 0117). The assistant's answer
 still names where a claim came from, and a claim about the project may not come from
 the web at all — the project lookups remain its only source (decision 0116).

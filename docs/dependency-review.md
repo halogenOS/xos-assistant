@@ -110,7 +110,7 @@ feature arrives for them.
 
 The web search posts JSON to a search vendor and reads a JSON answer back. **No
 dependency was added for it**, and this entry records the check that established
-that rather than an addition:
+that instead of an addition:
 
 - The request goes through the core's shared lookup layer, which already runs on
   `reqwest` with its `json` feature — reviewed in the tools entry above, at the same

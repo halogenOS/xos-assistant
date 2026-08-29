@@ -18,9 +18,10 @@
 //!    framework record erasure cannot reach, and a guard that writes the
 //!    identifier it refused into permanent storage protects nothing.
 //! 3. **The same-query cache**: the query as written, case-folded and
-//!    whitespace-collapsed, plus the page. A cache hit costs no vendor
-//!    spend and is therefore served even on a spent budget — the budget's
-//!    stated ground is metered spend and nothing else. The key is
+//!    whitespace-collapsed, plus the page, live for [`CACHE_TTL`]. A cache
+//!    hit costs no vendor spend and is therefore served even on a spent
+//!    budget — the budget's stated basis is metered spend and nothing
+//!    else, and cache freshness is its own question. The key is
 //!    deliberately NOT the guard's normalisation, which exists to find one
 //!    token and would merge queries a member wrote differently.
 //! 4. **The per-person budget**: [`SEARCH_BUDGET_CAP`] searches per person
@@ -60,7 +61,7 @@ use agent_ledger::{CoreEvent, ToolContext, ToolHandler, ToolOutcome};
 use serde_json::{Value, json};
 
 use crate::message::Authority;
-use crate::tools::lookup::{MemoryCache, truncated};
+use crate::tools::lookup::{MemoryCache, ORGANIZATION, truncated};
 use crate::tools::provenance::sole_principal;
 use crate::window::{ReplyWindow, SEARCH_BUDGET_CAP, SEARCH_BUDGET_WINDOW};
 
@@ -95,10 +96,12 @@ pub const TITLE_LIMIT: usize = 200;
 /// How many characters of one result snippet the envelope carries.
 pub const SNIPPET_LIMIT: usize = 400;
 
-/// How long one cached page serves. The same length as the budget window,
-/// for the same reason: both exist to bound metered spend, and a cache that
-/// outlived the window would answer from a page nobody could refresh.
-pub const CACHE_TTL: Duration = SEARCH_BUDGET_WINDOW;
+/// How long one cached page serves: ten minutes, the length a repeated
+/// question inside one conversation falls within. Its own number, because
+/// cache freshness is a question about how fast the web changes and the
+/// budget window is a question about metered spend — one answering the
+/// other would tie a freshness change to a spending change.
+pub const CACHE_TTL: Duration = Duration::from_mins(10);
 
 /// How many pages the cache holds. At the cap it is cleared whole, the
 /// established memory-cap shape: losing the cache costs one billed request
@@ -170,8 +173,17 @@ pub const REFUSED_REQUEST_RESULT: &str = "No web search was made: the search ser
 pub const RATE_LIMITED_RESULT: &str = "No web search was made: the search service is rate-limiting this \
      deployment right now. Answer without the web search.";
 
-/// The unreachable-host failure.
+/// The unreachable-host failure: nothing was answered at all.
 pub const UNREACHABLE_RESULT: &str = "No web search was made: the search service could not be reached. \
+     Answer without the web search.";
+
+/// The unusable-answer failure: the service was reached and answered, and
+/// the answer did not arrive in a state this tool can use — cut off partway,
+/// or longer than the size bound every lookup reads under. Told apart from
+/// the unreachable host on purpose: the request was made, so a retry costs
+/// another one.
+pub const UNUSABLE_ANSWER_RESULT: &str = "No web search was made: the search service answered, but the answer was \
+     unusable — it ended partway or ran past the size this tool reads. \
      Answer without the web search.";
 
 /// The timeout failure.
@@ -286,9 +298,10 @@ pub struct SearchConfig {
     /// The country code sent as the vendor's `gl`, absent when the
     /// deployment configured none.
     pub country: Option<String>,
-    /// The language code sent as the vendor's `hl`, absent when the
-    /// deployment configured none.
-    pub language: Option<String>,
+    /// The language code sent as the vendor's `hl`. Always present: the
+    /// embedder names one for every deployment, its own default included,
+    /// so there is no unconfigured-language case for this type to carry.
+    pub language: String,
 }
 
 /// What a redacted key renders as wherever the configuration is debugged.
@@ -331,6 +344,9 @@ pub(crate) enum SearchFailure {
     Unreachable,
     /// The service did not answer within the time bound.
     Timeout,
+    /// The service answered and the answer was unusable: it ended partway,
+    /// or ran past the size bound the lookup layer reads under.
+    UnusableAnswer,
     /// The service answered something this tool has no reading for.
     Unreadable,
 }
@@ -344,6 +360,7 @@ impl SearchFailure {
             Self::RateLimited => RATE_LIMITED_RESULT,
             Self::Unreachable => UNREACHABLE_RESULT,
             Self::Timeout => TIMEOUT_RESULT,
+            Self::UnusableAnswer => UNUSABLE_ANSWER_RESULT,
             Self::Unreadable => UNREADABLE_RESULT,
         }
     }
@@ -368,7 +385,7 @@ pub(crate) trait SearchProvider: Send + Sync {
 pub struct WebSearch {
     provider: Box<dyn SearchProvider>,
     /// The per-person spend bound, the tool's own: nothing else draws on
-    /// it, so it is constructed here rather than injected.
+    /// it, so it is constructed here instead of injected.
     budget: ReplyWindow,
     /// The same-query page cache, keyed by [`cache_key`].
     cache: MemoryCache<Vec<SearchRow>>,
@@ -382,7 +399,7 @@ impl WebSearch {
         Self::with_provider(Box::new(vendor::VendorSearch::new(config, timeout)))
     }
 
-    /// Construct over a given provider — how the crate's own tests drive
+    /// Construct over a given provider — how the crate's own tests exercise
     /// the envelope, the guard, the cache and the budget without a wire.
     pub(crate) fn with_provider(provider: Box<dyn SearchProvider>) -> Self {
         Self {
@@ -399,7 +416,7 @@ impl WebSearch {
     /// The person arrives as a LAZY future, and the order above is what
     /// that buys: a cache hit returns before the future is ever polled, so
     /// it reads no ledger, resolves nobody and spends nothing. It is also
-    /// the seam the crate's own tests drive the cache and the budget
+    /// the seam the crate's own tests exercise the cache and the budget
     /// through, since a real turn's dispatch anchor — what the co-summoner
     /// walk reads — is not something any public write surface can forge;
     /// the resolution itself is pinned end to end in the integration suite.
@@ -509,7 +526,7 @@ fn cache_key(query: &str, page: u32) -> String {
 /// turn, resolved once in the provenance reading — the same resolution the
 /// rights tool takes its subject from. Zero principals, several, or a
 /// taker whose principal is unreadable all read as no single person, and
-/// decline the spend rather than guessing a bucket.
+/// decline the spend instead of picking a bucket to book it to.
 async fn principal(ctx: &ToolContext<'_, CoreEvent>) -> Result<i64, String> {
     let conversation_id = ctx.agency.conversation_id;
     let ledger = match ctx.agency.store.list_blocks(conversation_id).await {
@@ -522,20 +539,18 @@ async fn principal(ctx: &ToolContext<'_, CoreEvent>) -> Result<i64, String> {
     sole_principal(&ledger, ctx.block_id).ok_or_else(|| NO_SINGLE_PERSON_RESULT.to_owned())
 }
 
-/// The host one link names, lowercased, or `None` when the link carries
-/// none: the scheme, any userinfo, the port and everything from the path on
-/// are dropped, and what is left must look like a host at all.
+/// The host one link names, or `None` when the link names none. The URL
+/// grammar is the one the HTTP client already parses every address with, so
+/// the userinfo, the port and the path are dropped by the parser instead of
+/// by a second reading of the same grammar written here. A link that does
+/// not parse — a relative path, or prose a vendor put in the field — carries
+/// no host, which is the `unknown` reading.
 fn host(link: &str) -> Option<String> {
-    let rest = link.split_once("://").map_or(link, |(_, rest)| rest);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let authority = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    let host = authority
-        .split_once(':')
-        .map_or(authority, |(host, _)| host);
-    let host = host.trim().trim_end_matches('.').to_lowercase();
-    (host.contains('.') && !host.contains(char::is_whitespace)).then_some(host)
+    let parsed = reqwest::Url::parse(link).ok()?;
+    // Already lowercased by the parser for a named host; the trailing root
+    // dot is the one thing it keeps, and `example.com.` is `example.com`.
+    let host = parsed.host_str()?.trim_end_matches('.').to_owned();
+    (!host.is_empty()).then_some(host)
 }
 
 /// The source hint for one link, computed from the host and nothing else
@@ -552,7 +567,7 @@ pub fn source_hint(link: &str) -> &'static str {
     if host == "wikipedia.org" || host.ends_with(".wikipedia.org") {
         return ENCYCLOPEDIA;
     }
-    // A government or education host, read by LABEL rather than by suffix,
+    // A government or education host, read by LABEL and not by suffix,
     // so `nasa.gov` and `www.gov.uk` both read official while `mygov.uk`
     // and a `gov.example.com` do not: the first label is a name, and only
     // the labels behind it say what kind of host this is.
@@ -581,9 +596,9 @@ impl ToolHandler<CoreEvent> for WebSearch {
             description: format!(
                 "Search the web and read the ranked results: each one's title, link, source \
                  hint and, where it has one, its snippet. Use it for questions about the \
-                 world; facts about halogenOS itself come from the project lookups and never \
-                 from here. It opens no page — a snippet is all you get of a result. A later \
-                 page of the same search may be requested with `page`, which runs from \
+                 world; facts about {ORGANIZATION} itself come from the project lookups and \
+                 never from here. It opens no page — a snippet is all you get of a result. A \
+                 later page of the same search may be requested with `page`, which runs from \
                  {FIRST_PAGE} to {LAST_PAGE} and may come back empty. Never put a person's \
                  handle in a query."
             ),
@@ -725,6 +740,7 @@ mod tests {
             "@h.a.n.d.l.e",
             "@han\u{200b}dle",
             "@HaNdLe",
+            "word\u{200b}@handle",
         ] {
             let input = json!({ "query": query }).to_string();
             let taught = declined(call(&tool, &input).await);
@@ -1011,6 +1027,7 @@ mod tests {
             SearchFailure::RateLimited,
             SearchFailure::Unreachable,
             SearchFailure::Timeout,
+            SearchFailure::UnusableAnswer,
             SearchFailure::Unreadable,
         ];
         let taught: Vec<&str> = failures.iter().map(|failure| failure.taught()).collect();
@@ -1042,7 +1059,7 @@ mod tests {
             base_url: "https://example.invalid".into(),
             api_key: key.into(),
             country: Some("de".into()),
-            language: Some("en".into()),
+            language: "en".into(),
         };
         let rendered = format!("{config:?}");
         assert!(
@@ -1066,6 +1083,7 @@ mod tests {
             RATE_LIMITED_RESULT,
             UNREACHABLE_RESULT,
             TIMEOUT_RESULT,
+            UNUSABLE_ANSWER_RESULT,
             UNREADABLE_RESULT,
             TRANSIENT_RESULT,
             PERSON_REFERENCE_RESULT,

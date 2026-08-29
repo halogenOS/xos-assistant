@@ -19,9 +19,12 @@ the shared lookup layer's own default, like every other outbound request here.
 
 Every refusal and every failure is a taught result the model reads and the chat never
 sees (decision 0044): the refused key, the refusal that is not about the key, the
-rate limit, the unreachable host, the timeout and the unreadable answer are each
-distinguishable from one another and from an honest empty page — and none of them
-carries a bare status number.
+rate limit, the unreachable host, the timeout, the answer that arrived unusable — cut
+off partway or past the size bound — and the answer this tool has no reading for are
+each distinguishable from one another and from an honest empty page, and none of them
+carries a bare status number. The unusable answer is its own result because the
+vendor WAS reached: telling the model the host could not be reached would misstate
+what happened and misprice a retry.
 
 ## Rejected alternatives
 

@@ -22,7 +22,7 @@ about the project, its features, its procedures or its builds.
 Beside it, two sentences about what a search result is: a snippet is a hint and an
 answer built on one says where it came from, naming the page; and a snippet that does
 not contain the claim is a miss, exactly as the existing lookup rule already says of
-an unanswering lookup — the model says it does not know rather than filling the gap
+an unanswering lookup — the model says it does not know instead of filling the gap
 from memory.
 
 ## Rejected alternatives

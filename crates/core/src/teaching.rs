@@ -23,7 +23,7 @@ use crate::assembly::AnsweringMode;
 
 /// What this deployment can actually do, as the composition needs to know
 /// it: one field per capability whose teaching is gated on its own
-/// mechanism existing (unit 27, 2026-08-29). Named fields rather than a row
+/// mechanism existing (unit 27, 2026-08-29). Named fields instead of a row
 /// of positional booleans — two adjacent flags at a call site are one
 /// silent swap away from teaching a tool the palette does not carry, which
 /// is the exact defect this gating exists to prevent.
@@ -89,10 +89,10 @@ pub const MODERATION_TEACHING: &str = "You also assess each group message agains
 /// would silently authorise a random web page to back a claim about the
 /// project.
 pub const SEARCH_TEACHING: &str = "You can also search the web with the search_web tool, for questions about \
-     the world rather than about the project. A result's snippet is a hint, \
+     the world and not about the project. A result's snippet is a hint, \
      not a source: when you answer from one, say where it came from and name \
      the page. A snippet that does not contain the claim is a miss, exactly \
-     as an unanswering lookup is — say you don't know rather than filling the \
+     as an unanswering lookup is — say you don't know instead of filling the \
      gap from memory. Facts about the project itself still come only from the \
      project lookups: a web result is never the source for a claim about \
      halogenOS, its features, its procedures or its builds.";
@@ -517,7 +517,7 @@ mod tests {
     fn the_search_teaching_carries_the_snippet_rules_and_the_project_carve_out() {
         for fact in [
             "the search_web tool",
-            "for questions about the world rather than about the project",
+            "for questions about the world and not about the project",
             "A result's snippet is a hint, not a source",
             "say where it came from and name the page",
             "A snippet that does not contain the claim is a miss",

@@ -13,7 +13,7 @@
 //!   request in the vendor's own samples), so nothing pins a row count;
 //! - a row can arrive without `snippet`, and can carry fields this tool
 //!   does not read (`position`, `date`, `sitelinks`, `attributes`), which
-//!   are ignored rather than refused;
+//!   are ignored instead of refused;
 //! - there is NO total-results field anywhere in the answer, which is why
 //!   the envelope promises no total and no more-pages flag;
 //! - an authentication failure is 403 for a missing and for a refused key
@@ -21,10 +21,10 @@
 //!
 //! The request sends `autocorrect: false` — an answer to a silently
 //! corrected query would break the unit's own rule that what is sent, and
-//! what is answered, is the query as written — and sends `gl` and `hl` only
-//! where the deployment configured them, so an international group's
-//! results are a deployment choice instead of a vendor default nobody
-//! chose.
+//! what is answered, is the query as written. It sends `hl` always, because
+//! the embedder resolves a language for every deployment, and `gl` only
+//! where a deployment named a country, so an international group's results
+//! are a deployment choice instead of a vendor default nobody chose.
 
 use std::time::Duration;
 
@@ -53,7 +53,7 @@ const REFUSED_STATUS: u16 = 403;
 /// The status that carries a rate limit.
 const RATE_LIMITED_STATUS: u16 = 429;
 
-/// What a 403's message must carry to read as a key refusal rather than
+/// What a 403's message must carry to read as a key refusal instead of
 /// some other refusal at the same status: the marks the vendor's own
 /// authentication messages use, matched case-folded on the `message` field
 /// alone. Every mark names the AUTHENTICATION — the bare reason phrase
@@ -70,8 +70,9 @@ pub(crate) struct VendorSearch {
     api_key: String,
     /// The country code sent as `gl`, absent when the deployment set none.
     country: Option<String>,
-    /// The language code sent as `hl`, absent when the deployment set none.
-    language: Option<String>,
+    /// The language code sent as `hl`, always present: the embedder resolves
+    /// one for every deployment.
+    language: String,
 }
 
 impl VendorSearch {
@@ -96,13 +97,11 @@ impl VendorSearch {
             "page": page,
             "num": REQUESTED_RESULTS,
             "autocorrect": false,
+            "hl": self.language,
         });
-        let object = body.as_object_mut().expect("the body is a JSON object");
         if let Some(country) = &self.country {
+            let object = body.as_object_mut().expect("the body is a JSON object");
             object.insert("gl".into(), json!(country));
-        }
-        if let Some(language) = &self.language {
-            object.insert("hl".into(), json!(language));
         }
         body
     }
@@ -128,19 +127,24 @@ impl SearchProvider for VendorSearch {
     }
 }
 
-/// What one transport verdict means to the tool above.
+/// What one transport verdict means to the tool above. The two verdicts
+/// that mean "answered, and the answer is no good" — a body that ended
+/// partway and a body past the size bound — read as the unusable answer,
+/// never as an unreachable host: the vendor was reached in both, and a model
+/// told the host was down would draw the wrong conclusion about retrying.
 fn transport_failure(failure: WireFailure) -> SearchFailure {
     match failure {
         WireFailure::Timeout => SearchFailure::Timeout,
-        WireFailure::Unreachable | WireFailure::Truncated => SearchFailure::Unreachable,
-        WireFailure::OverBound | WireFailure::Unreadable => SearchFailure::Unreadable,
+        WireFailure::Unreachable => SearchFailure::Unreachable,
+        WireFailure::Truncated | WireFailure::OverBound => SearchFailure::UnusableAnswer,
+        WireFailure::Unreadable => SearchFailure::Unreadable,
     }
 }
 
 /// What one refused answer means: the key refusal is told from any other
 /// refusal at the same status by the vendor's own `message`, a rate limit
 /// by its status, and everything else — a redirect included, which the
-/// shared client never follows — is the unusable answer.
+/// shared client never follows — is an answer this tool has no reading for.
 fn refusal(status: u16, body: Option<&Value>) -> SearchFailure {
     let message = body
         .and_then(|body| body.get("message"))
@@ -159,7 +163,7 @@ fn refusal(status: u16, body: Option<&Value>) -> SearchFailure {
 
 /// The ranked rows in one answer: every entry of `organic` carrying a title
 /// and a link, its snippet where the row has one, and every other field
-/// ignored. A row missing a title or a link is dropped rather than
+/// ignored. A row missing a title or a link is dropped instead of being
 /// rendered half — there is nothing to show for it.
 fn rows(body: &Value) -> Vec<SearchRow> {
     body.get("organic")
@@ -190,7 +194,7 @@ mod tests {
             base_url: "http://127.0.0.1:1".into(),
             api_key: "FAKE-SEARCH-KEY".into(),
             country: Some("de".into()),
-            language: Some("en".into()),
+            language: "en".into(),
         }
     }
 
@@ -209,21 +213,26 @@ mod tests {
         assert_eq!(body["hl"], json!("en"));
     }
 
-    /// An unconfigured locale sends no locale key at all, rather than a
-    /// guess at one.
+    /// An unconfigured country sends no country key at all, instead of a
+    /// guess at one. The language is not in the same position: the embedder
+    /// resolves one for every deployment, so `hl` is always sent.
     #[test]
-    fn an_unconfigured_locale_sends_no_locale_keys() {
+    fn an_unconfigured_country_sends_no_country_key_and_the_language_still_travels() {
         let provider = VendorSearch::new(
             SearchConfig {
                 country: None,
-                language: None,
+                language: "fr".into(),
                 ..config()
             },
             Duration::from_secs(5),
         );
         let body = provider.body("kernel", 1);
         assert!(body.get("gl").is_none(), "no country, no gl");
-        assert!(body.get("hl").is_none(), "no language, no hl");
+        assert_eq!(
+            body["hl"],
+            json!("fr"),
+            "the resolved language always travels"
+        );
     }
 
     /// The response shapes the grounding recorded: a short page, a row
@@ -262,7 +271,39 @@ mod tests {
         assert!(rows(&json!({})).is_empty());
     }
 
-    /// The refusals, told apart exactly as the grounding says they can be:
+    /// The transport verdicts, each meaning what actually happened on the
+    /// wire: only a host that answered nothing at all reads as unreachable,
+    /// while a body that ended partway and a body past the size bound both
+    /// read as an answer that arrived unusable — the vendor was reached in
+    /// both, and its taught result says so.
+    #[test]
+    fn a_vendor_that_answered_never_reads_as_one_that_could_not_be_reached() {
+        assert_eq!(
+            transport_failure(WireFailure::Unreachable),
+            SearchFailure::Unreachable
+        );
+        assert_eq!(
+            transport_failure(WireFailure::Timeout),
+            SearchFailure::Timeout
+        );
+        for answered in [WireFailure::Truncated, WireFailure::OverBound] {
+            assert_eq!(
+                transport_failure(answered),
+                SearchFailure::UnusableAnswer,
+                "{answered:?} means the vendor answered, unusably"
+            );
+        }
+        assert_eq!(
+            transport_failure(WireFailure::Unreadable),
+            SearchFailure::Unreadable
+        );
+        assert!(
+            !crate::tools::search::UNUSABLE_ANSWER_RESULT.contains("could not be reached"),
+            "the unusable answer must not teach the unreachable host's wording"
+        );
+    }
+
+    /// The refusals, told apart exactly as the recorded probe says they can be:
     /// the key by the 403's own message, the rate limit by its status, and
     /// anything else by neither.
     #[test]

@@ -132,13 +132,14 @@ file path per secret — and never appear in the file itself:
     [operators]
     telegram = "<the operator's numeric Telegram user id>"
 
-The `[endpoints]` table can override any of the six hosts the process talks to —
-`telegram`, `chat_completions` (the OpenAI-compatible model endpoint), `forge` (the commit
-lookup's canonical forge, default
+The `[endpoints]` table carries one key per host the process talks to, and can override
+each of them: `telegram`, `chat_completions` (the OpenAI-compatible model endpoint),
+`forge` (the commit lookup's canonical forge, default
 `https://git.halogenos.org`), `mirror` (the release lookup's API host, default
 `https://api.github.com`), `wiki` (the wiki lookup's raw host, default
-`https://raw.githubusercontent.com`) and `search` (the web search vendor, default
-`https://google.serper.dev`); omitted entries keep the real hosts, and the
+`https://raw.githubusercontent.com`), `wiki_index` (the host the wiki lookup reads its
+rendered page index from, default `https://github.com`) and `search` (the web search
+vendor, default `https://google.serper.dev`); omitted entries keep the real hosts, and the
 overrides exist for the test suites' loopback servers.
 
 The three lookup tools answer community questions from the project's own sources: a

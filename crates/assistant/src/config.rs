@@ -561,7 +561,7 @@ impl Configuration {
             api_key,
             country: locale_code(self.search.country.as_deref(), "country")?,
             language: locale_code(self.search.language.as_deref(), "language")?
-                .or_else(|| Some(DEFAULT_SEARCH_LANGUAGE.to_owned())),
+                .unwrap_or_else(|| DEFAULT_SEARCH_LANGUAGE.to_owned()),
         }))
     }
 }
@@ -1328,8 +1328,7 @@ mod tests {
         assert_eq!(configured.base_url, search::DEFAULT_BASE_URL);
         assert_eq!(configured.api_key, "FAKE-SEARCH-KEY");
         assert_eq!(
-            configured.language.as_deref(),
-            Some(DEFAULT_SEARCH_LANGUAGE),
+            configured.language, DEFAULT_SEARCH_LANGUAGE,
             "the language default is the one the documentation states"
         );
         assert_eq!(
@@ -1380,7 +1379,7 @@ mod tests {
     }
 
     /// The address override and the locale entries resolve trimmed, and a
-    /// blank one refuses the start rather than reaching the vendor as an
+    /// blank one refuses the start instead of reaching the vendor as an
     /// empty code.
     #[test]
     fn the_search_address_and_locale_resolve_trimmed_and_refuse_blanks() {
@@ -1398,7 +1397,7 @@ mod tests {
         .expect("a key configures the search");
         assert_eq!(configured.base_url, "http://127.0.0.1:1");
         assert_eq!(configured.country.as_deref(), Some("de"));
-        assert_eq!(configured.language.as_deref(), Some("fr"));
+        assert_eq!(configured.language, "fr");
 
         let refused = loaded(
             "log = \"stderr\"",

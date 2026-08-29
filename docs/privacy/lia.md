@@ -274,7 +274,7 @@ again:
 
    > Re-weighed 2026-08-29, with the web search. The obligation in the last clause
    > fired: the search sends member-derived text to a place it did not go before.
-   > The weighing was performed and its outcome is recorded here rather than
+   > The weighing was performed and its outcome is recorded here instead of
    > assumed. What crosses to the search provider is the QUERY and nothing else —
    > no account identifier, no username, no other part of the conversation — so
    > this safeguard's own subject, the identifiers in a request, is not weakened;

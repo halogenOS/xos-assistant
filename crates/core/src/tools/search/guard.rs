@@ -15,10 +15,10 @@
 //! - a NAME CHARACTER is a letter, a digit or an underscore;
 //! - a CANDIDATE TOKEN is an at sign followed by name characters of which
 //!   the FIRST is a letter — so a version pin like `package@1.2.3` is
-//!   outside the grammar itself rather than a special case;
-//! - an at sign PRECEDED by a name character is an email address and is
-//!   never a candidate — which is what lets `a.duffy@example.com` through
-//!   whole, dotted local part and all;
+//!   outside the grammar itself instead of being a special case;
+//! - an at sign PRECEDED by a name character IN THE QUERY AS WRITTEN is an
+//!   email address's and is never a candidate — which is what lets
+//!   `a.duffy@example.com` through whole, dotted local part and all;
 //! - a candidate token ENDED by a slash is a scoped package name
 //!   (`@scope/package`), not a person.
 //!
@@ -30,8 +30,18 @@
 //! collapse separator: it is what ENDS a candidate, and collapsing it would
 //! swallow the scoped-package exception. Case folding is part of the
 //! normalised view's definition and is a no-op for this grammar, which
-//! tests character CLASSES and never a literal — stated here rather than
+//! tests character CLASSES and never a literal — stated here instead of
 //! performed, so nobody goes looking for a fold that would change nothing.
+//!
+//! The email exception alone reads the query AS WRITTEN and never the
+//! normalised view. Every other part of the grammar widens what is refused,
+//! so reading the normalised view can only refuse more; this one part
+//! narrows it, and on the normalised view an invisible character between a
+//! word and an at sign would fuse the two — `word\u{200B}@handle` would read
+//! as an email's local part and the handle would travel to the vendor. The
+//! character immediately before the at sign in the ORIGINAL text is what
+//! decides, so an invisible character there means the at sign begins a
+//! token and the handle form is refused.
 //!
 //! Normalisation is applied to FIND a token and never to the whole query as
 //! one string, so word boundaries survive and a single ordinary word is
@@ -57,8 +67,8 @@ fn name_char(c: char) -> bool {
 /// A formatting character the normalised view drops outright: the
 /// zero-width marks, every bidirectional control, the word joiner and the
 /// soft hyphen — the invisible padding a spelled-out handle hides in.
-/// Dropped rather than treated as a separator, because they are not visible
-/// separation at all.
+/// Dropped instead of being treated as a separator, because they are not
+/// visible separation at all.
 ///
 /// The bidirectional controls are covered WHOLE: the embedding and override
 /// range (U+202A..U+202E), the isolates (U+2066..U+2069) that replaced them
@@ -91,18 +101,33 @@ fn collapse_separator(c: char) -> bool {
 /// caller's refusal names the rule and never the token.
 #[must_use]
 pub(crate) fn carries_person_reference(query: &str) -> bool {
-    let chars: Vec<char> = query.chars().filter(|c| !ignorable(*c)).collect();
-    (0..chars.len()).any(|at| chars[at] == '@' && candidate_at(&chars, at))
+    let (chars, email_preceded) = normalised(query);
+    (0..chars.len()).any(|at| chars[at] == '@' && !email_preceded[at] && candidate_at(&chars, at))
+}
+
+/// The normalised view of one query: every character that is not a
+/// formatting character, beside the one fact the email exception needs from
+/// the text as written — whether the character immediately before this one
+/// IN THE ORIGINAL QUERY was a name character. The two vectors share their
+/// indices. The flag is carried per character because dropping the
+/// formatting characters destroys exactly the adjacency it states.
+fn normalised(query: &str) -> (Vec<char>, Vec<bool>) {
+    let mut chars = Vec::new();
+    let mut email_preceded = Vec::new();
+    let mut previous = None;
+    for character in query.chars() {
+        if !ignorable(character) {
+            chars.push(character);
+            email_preceded.push(previous.is_some_and(name_char));
+        }
+        previous = Some(character);
+    }
+    (chars, email_preceded)
 }
 
 /// Whether the at sign at `at` starts a candidate token, under the
-/// exceptions and the separator collapse.
+/// separator collapse and the scoped-package exception.
 fn candidate_at(chars: &[char], at: usize) -> bool {
-    // An at sign behind a name character is an email address's, whatever
-    // its local part looked like.
-    if at > 0 && name_char(chars[at - 1]) {
-        return false;
-    }
     let mut cursor = at + 1;
     let mut first = true;
     loop {
@@ -164,6 +189,13 @@ mod tests {
             "what did @handle say about the kernel",
             "@handle_2 and the build",
             "@пользователь",
+            // The email exception judged as written: an invisible character
+            // between a word and the at sign is not a local part, so the
+            // handle is still a handle.
+            "word\u{200b}@handle",
+            "word\u{00ad}@handle",
+            "word\u{2066}@handle",
+            "word\u{feff}@handle",
         ] {
             assert!(
                 carries_person_reference(query),
@@ -230,6 +262,24 @@ mod tests {
             "the exception is the slash itself, as the unit spells it: an \
              at-name followed by a slash is a scoped package, and the guard \
              does not go on to ask what follows the slash"
+        );
+    }
+
+    /// The email exception reads the query AS WRITTEN, and that is the whole
+    /// point: an invisible character before the at sign fuses a word to a
+    /// handle only in the normalised view, and a view-side reading would let
+    /// the handle travel to the vendor as somebody's local part. Both sides
+    /// are pinned together, because the exception exists for the address and
+    /// must keep letting it through.
+    #[test]
+    fn an_invisible_character_before_the_at_sign_is_no_local_part() {
+        assert!(
+            carries_person_reference("word\u{200b}@handle"),
+            "a zero-width space before the at sign is not an email's local part"
+        );
+        assert!(
+            !carries_person_reference("a.duffy@example.com"),
+            "an address written as an address still passes whole"
         );
     }
 }

@@ -37,11 +37,11 @@ quote a person's prose, still waiting on the framework seam.
 ---
 
 Amended 2026-08-29, with unit 27 (the web search). The acceptance above rests on a
-stated ground: "the group tools are project lookups whose inputs are overwhelmingly
+stated basis: "the group tools are project lookups whose inputs are overwhelmingly
 technical". A web search query does not meet that description. It is written by the
 model out of the conversation, in the members' own words, and it is recorded on the
 same framework-owned tables erasure does not reach — so the unreached surface is
-WIDER than the ground that was accepted for it, and this record says so instead of
+WIDER than the basis that was accepted for it, and this record says so instead of
 letting the widening pass unnamed.
 
 The gap stays OPEN and still waits on the same framework seam. Two mitigations

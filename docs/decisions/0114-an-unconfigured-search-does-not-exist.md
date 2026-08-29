@@ -20,7 +20,7 @@ the tool and the composed prompt teaches it. Without one, the tool is not admitt
 the palette every conversation records names no search, the delta mechanism removes
 it from conversations that had it, and no sentence of the search teaching is
 composed. There is no call path on which an unconfigured search can answer, so the
-missing-key refusal is deleted rather than kept as a second answer to a settled
+missing-key refusal is deleted instead of kept as a second answer to a settled
 question. Nothing fails at startup either way.
 
 The key is a secret reference — an environment variable name or a file path — and

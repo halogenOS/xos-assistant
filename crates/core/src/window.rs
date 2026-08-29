@@ -268,7 +268,7 @@ mod tests {
     /// The web search's own bound under its own constants (unit 27, AC7):
     /// five searches per person per ten minutes, the sixth declined, and
     /// the window's expiry giving the person their searches back. The
-    /// expiry is pinned here rather than on the tool, because a paused
+    /// expiry is pinned here instead of on the tool, because a paused
     /// clock auto-advances through every await a tool makes.
     #[tokio::test(start_paused = true)]
     async fn the_search_budget_caps_five_per_person_and_recovers_past_the_window() {
