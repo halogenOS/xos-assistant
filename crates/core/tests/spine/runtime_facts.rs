@@ -9,7 +9,10 @@
 //! Unit 34's clock lines ride the same byte-exact pin (AC2): the result
 //! recorded by a real turn is the rendering of a reading taken while that
 //! turn ran, so the date and time reach the ledger through the assembled
-//! core and not only through the rendering's own tests.
+//! core and not only through the rendering's own tests. Unit 37's rows —
+//! the host's distribution, the architecture and the two public homes —
+//! ride it the same way, with the distribution recomputed through the
+//! production reader the execute path itself calls.
 //!
 //! The byte-exact rendering, the coarse uptime, the anchor read once, the
 //! absent zone parts and the ignored input are pinned beside the rendering
@@ -63,7 +66,7 @@ fn only(blocks: &[Block], kind: &str) -> Block {
 
 /// An ordinary member asks what the assistant runs on: the scripted model
 /// calls the tool, admission through the recorded palette admits the call
-/// at member authority, and the recorded result is the four fact lines
+/// at member authority, and the recorded result is the whole fact list
 /// over the model this conversation was created on — which, for a
 /// conversation opened under the running configuration, is that
 /// configured id.
@@ -130,6 +133,11 @@ async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
     // own record, the version and revision compiled in, and the date and
     // time from the clock read while the turn ran.
     let result = field(&only(&blocks, "tool_result"), "content");
+    // The distribution is recomputed through the same production reader
+    // the execute path calls, never injected: no test shape reaches the
+    // assembly, no field joins the tool, and the pin holds on a host that
+    // states a release and on one that has no such file to state.
+    let distribution = runtime::host_distribution();
     let expected = |clock: &ClockReading| {
         runtime::fact_lines(
             CONFIGURED_MODEL,
@@ -137,6 +145,8 @@ async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
             runtime::REVISION,
             Duration::ZERO,
             clock,
+            distribution.as_deref(),
+            runtime::ARCH,
         )
     };
     assert!(

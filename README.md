@@ -36,10 +36,11 @@ message (decisions 0058–0063).
 
 ## The framework checkout
 
-The core depends on the agent-ledger framework, which has no public home yet (decision
-0004): the manifest names a relative path, and the framework repository is expected as a
-checkout named `agent-ledger` beside this repository's own directory. Clone the two side
-by side before building.
+The core depends on the agent-ledger framework, published as ronna-core at
+`https://github.com/xdevs23/ronna-core`. The manifest names a relative path and not that
+address (decision 0004, revisited by decision 0134): the framework repository is expected
+as a checkout named `agent-ledger` beside this repository's own directory. Clone the two
+side by side before building.
 
 ## Running
 
