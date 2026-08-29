@@ -104,6 +104,18 @@ as that promise.
   as today, quoteless. The stored reply-target fact is unchanged either way. *Rejected:* a
   placeholder quote ("replied to an unavailable message") — content the member never
   wrote, in the member's voice.
+- **The quoter's erasure leaves the quote, because the quote holds nothing of the
+  quoter, 2026-08-29.** A framework user block carries no principal — the store's
+  append takes only the conversation and the blocks — and the quote block stores a
+  span reference and a voice, no handle, no author fact, none of the quoter's words.
+  When the reply's author erases, the principal pass nulls their message's text and
+  origin as today, and the quote block survives as an unattributed reference to text
+  whose owner has not asked for erasure; if the target erases too, the resolution
+  empties on its own. Pinned rather than assumed: after the quoter's erasure the
+  message is nulled, the quote still resolves, and nothing anywhere ties the quote to
+  the erased person. *Rejected:* deleting the quote on the quoter's erasure — a pass
+  would have to FIND it, and the only route to it would be recording who appended it,
+  which stores a new fact about the quoter for the sole purpose of erasing it.
 - **The reply-target column and the quote block are two facts, not one decision twice,
   2026-08-28.** The column stores the PLATFORM fact (which origin was replied to) and
   serves waking, reports and erasure's naming pass. The quote block is derived projection
@@ -124,15 +136,29 @@ as that promise.
   *rejected:* storing her message ids as a side effect of this unit.
 - **Ordering within the ingest, and the crash window, named, 2026-08-28.** The quote
   lands through the framework's public user-block append, then the chat message through
-  the consumer append, sequentially under the ingest's existing serialization. A crash
-  between the two leaves a user-voiced quote owing a turn with no message — the same
-  class of window the ingest's other multi-write sequences already carry, bounded by the
-  store's idempotency-and-retry model. The framework append also commits outside the
-  consumer append's serialized transaction, so a concurrent ingest on the same
-  conversation may land between a quote and its message; each quote still precedes its
-  own message, which is the invariant the projection needs, and the interleave is
-  named here so nobody reads "sequentially" as one transaction. Accepted and stated; making the two atomic would
+  the consumer append, both INSIDE the ingest's stamp-locked stretch — one feeder runs
+  per process and the lock already promises that no concurrent ingestion slides a
+  block in between, so the pair is contiguous by the machinery that exists, and the
+  quote append must be placed inside that stretch, not before it. Delivery is
+  at-least-once — a halted step is redelivered, and no origin dedupe exists in the
+  ingest — so a crash between the two appends means the retried update would land its
+  quote AGAIN before its message: the append therefore skips the quote when the
+  conversation's last block is already a quote of the same span, which is exactly the
+  crash-retry signature and one read of the tail. A fully redelivered update doubling
+  its chat message is today's behavior, unchanged and out of scope here; the quote
+  rides whatever the message does. And because duplicate origins can exist for that
+  reason, the origin-to-block resolution picks the NEWEST matching chat-message block
+  — the latest stored version of that origin is what the member replied to.
+  *Rejected:* claiming an idempotency model bounds the window — none exists in either
+  tree, and the earlier revision cited one; the skip rule above is what actually
+  closes the doubling. Accepted and stated; making the two atomic would
   need a mixed framework-and-consumer append the store deliberately does not have.
+- **A quote whose message fell off the projection window renders bare, and that is
+  accepted, 2026-08-29.** Window trimming is pre-existing machinery; when it cuts
+  between a quote and its message, the model reads an unattached quoted line as
+  context. Harmless, and the alternative — teaching the window about block pairs —
+  smears a consumer pairing into a general mechanism. Named so the reviewer finds it
+  decided.
 - **The date-marker interaction is known and harmless, 2026-08-28.** The framework
   user-block append runs the date-marker seam (slice 13); the consumer append that
   follows runs it too; the same-day dedupe makes the pair insert at most one marker,
@@ -194,7 +220,16 @@ no privacy-document change, and no change to when the assistant answers or stays
   the reply's turn happens exactly as it would have, pinned in both answering modes.
 - **AC8** The descriptor declaration is the one required by slice 14 and is validated at
   open — pinned by the framework's own open-time check, driven from this workspace.
-- **AC9** Erasure parity across the refresh fork: after a conversation holding a
+- **AC9** The manual-quote fact survives the adapter thread: a decoded update
+  carrying the platform's quote field reaches the core's inbound message with its
+  text and manual flag intact — pinned at the translate/intake seam with the
+  adapter's existing unit-test convention, so a decoder or copy regression cannot
+  silently disable narrowing while the core ACs stay green.
+- **AC10** Quoter-side erasure holds the recorded decision: after the reply author's
+  erasure their message is nulled as today, the quote block survives, still resolves
+  the target's text, and stores no fact tying it to the erased person — pinned by
+  running the real principal erasure.
+- **AC11** Erasure parity across the refresh fork: after a conversation holding a
   quote of a member's message forks through the startup refresh walk, erasing that
   member leaves BOTH the source's and the fork's projections without the quoted text —
   pinned by running the real fork and the real erasure against the shared row.
@@ -202,16 +237,16 @@ no privacy-document change, and no change to when the assistant answers or stays
 ## Notes for launch
 
 - Unblocked: slice 14 merged to the framework master 2026-08-29 (`f2bf250`), and this
-  workspace path-depends on that master. The branch was rebased onto the consumer
-  `main` tip (`4f0f281`) the same day.
+  workspace path-depends on that master. The branch sits on the consumer `main`
+  tip of its launch day (unit 29's merge included); the build's first step rebases
+  again regardless.
 - Worktree `~/projects/halogenos-assistant-quotes`, branch `unit/inbound-quotes`. Sites: the ingest edge in `core/src/assembly.rs` (the append
   sequence, around the existing chat-message landing), the new origin-to-block
   resolution (no existing lookup maps an origin to a block id; the erasure passes
   around `core/src/kind.rs:691-827` only NULL by origin), the manual-quote thread
   through `adapters/telegram/src/client.rs`, `translate.rs`, `driver.rs` and
   `core/src/message.rs`, the chat-message
-  descriptor (and whichever descriptor holds the assistant's own text) declaring the
-  quotable column, and the spine tests.
+  descriptor declaring the quotable column, and the spine and adapter tests.
 - The quality bar from the operator, verbatim scope for the reviewers: "The code must
   always be better and cleaner afterwards than it was before. If you had to add a
   snowflake if somewhere, it's a smell." If the ingest edge needs a bolted-on conditional
