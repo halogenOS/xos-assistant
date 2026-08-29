@@ -169,9 +169,10 @@ quietly widen a decision whose stated ground it removes.
   candidate token is an at sign followed by name characters of which the FIRST is a
   letter — so the digit exception is the grammar itself made precise, not a special
   case. Matching runs on a normalised
-  view — zero-width and formatting characters removed, case folded, and single separators
-  between the letters of a candidate token collapsed, so `@ h a n d l e`, `@h.a.n.d.l.e`
-  and `@handle` are one token — while what is sent to the vendor is always the query as
+  view — zero-width and formatting characters removed, and single separators between the
+  letters of a candidate token collapsed, so `@ h a n d l e`, `@h.a.n.d.l.e` and
+  `@handle` are one token; case folding is deliberately absent, because the grammar
+  matches character CLASSES (letter, digit, underscore), which case cannot change — while what is sent to the vendor is always the query as
   written, or nothing. Normalisation is applied to FIND the token, never to the whole
   query as one string, so word boundaries survive and single ordinary words are never
   matched — the operator's rule of 2026-08-25 verbatim: a search for a word somebody
