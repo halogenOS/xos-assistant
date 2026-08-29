@@ -40,6 +40,7 @@ use crate::message::{
 };
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
+use crate::quoting;
 use crate::streams::StreamObserver;
 use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
@@ -832,6 +833,18 @@ impl Assistant {
             &message.timestamp.to_rfc3339(),
             stamp,
         );
+        // The reply's context lands first (unit 31, 2026-08-28): a reply
+        // to a message this conversation holds is preceded by a quote
+        // block referencing it, so the model reads the quoted words above
+        // the member's own instead of a sentence with its subject
+        // missing. Inside the stamp lock with the append below, and after
+        // the stamp is decided, so the pair is serialized against every
+        // other ingestion and the quote never enters the tail read the
+        // stamp was taken against. Everything it decides — whether there
+        // is anything to quote at all, which span, and the crash-retry
+        // skip — is the quoting module's; nothing about it reaches the
+        // stamp, the windows or the answer.
+        quoting::land_reply_quote(self.ctx.store(), conversation_id, &message).await?;
         self.ctx
             .store()
             .append_consumer_block(

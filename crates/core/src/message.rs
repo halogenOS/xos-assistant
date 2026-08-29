@@ -166,6 +166,30 @@ pub enum ReplyTarget {
     AssistantMessage,
 }
 
+/// The excerpt a reply quotes of the message it replies to, as the adapter
+/// translated it (unit 31, 2026-08-28): the quoted words, and whether the
+/// member selected them themselves.
+///
+/// Two fields and no more. A platform that carries an OFFSET beside the
+/// excerpt carries it in its own text encoding, and converting one
+/// encoding's offsets onto stored text is arithmetic this repository has
+/// been burned by; the core decides where the excerpt sits by searching
+/// the stored text for it instead, so the offset never crosses the
+/// boundary and there is nothing here to convert. The excerpt is
+/// meaningful only beside a [`ReplyTarget::Message`]: it says which part
+/// of THAT message the reply points at, and without a resolvable target
+/// there is nothing for it to narrow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuotedExcerpt {
+    /// The quoted words as the platform delivered them.
+    pub text: String,
+    /// Whether the member chose the excerpt by hand. A hand-chosen excerpt
+    /// is the member narrowing what they answer; anything the platform
+    /// composed on its own narrows nothing, because the member never
+    /// pointed at a part.
+    pub manual: bool,
+}
+
 /// One message on its way into the core.
 #[derive(Debug, Clone)]
 pub struct InboundMessage {
@@ -194,6 +218,12 @@ pub struct InboundMessage {
     /// and stored on the message block, under the same erasure null as the
     /// origin. `None` for a non-reply and for a reply without a usable id.
     pub reply_target: Option<ReplyTarget>,
+    /// The part of the replied-to message this reply quotes, where the
+    /// platform reports one (unit 31, 2026-08-28). Nothing is stored from
+    /// it: it decides only WHICH span of the target the quote block
+    /// references. `None` for a message quoting nothing in particular, in
+    /// which case a reply quotes its target whole.
+    pub quoted: Option<QuotedExcerpt>,
     /// The command the message invokes, as the adapter reports it beside
     /// the addressed flag — the core matches this, never the text.
     pub command: Option<InvokedCommand>,

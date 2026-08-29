@@ -70,6 +70,7 @@ mod outbound;
 pub mod privacy;
 #[cfg(feature = "chat_completions")]
 pub mod provider;
+mod quoting;
 mod reply_commands;
 pub mod schema;
 mod streams;
@@ -91,8 +92,8 @@ pub use error::{CoreError, FailureKind};
 pub use message::{
     Authority, ChannelKey, ChannelKind, ComposingState, ComposingUpdate, DeliveryItem,
     InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand, JoinedMember, Observation,
-    ObserveOutcome, ObservedFact, OutboundReply, ReplyKind, ReplyTarget, ReplyThread,
-    SenderIdentity,
+    ObserveOutcome, ObservedFact, OutboundReply, QuotedExcerpt, ReplyKind, ReplyTarget,
+    ReplyThread, SenderIdentity,
 };
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,

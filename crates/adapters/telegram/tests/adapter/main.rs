@@ -16,6 +16,7 @@ mod end_to_end;
 mod group_context;
 mod joins;
 mod offset;
+mod quotes;
 mod report;
 mod sending;
 mod server;

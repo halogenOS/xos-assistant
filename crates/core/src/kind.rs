@@ -19,7 +19,7 @@ use std::future::Future;
 use std::num::NonZeroU64;
 use std::sync::LazyLock;
 
-use agent_ledger::agency::DateMarker;
+use agent_ledger::agency::{DateMarker, Quote};
 use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{
     Agency, AgencyCtx, Awaiting, Block, BlockKind, Column, ColumnType, ContentDescriptor,
@@ -596,7 +596,15 @@ impl LeafKind for ChatMessage {
             Column::new(COLUMN_REPLY_TO_ASSISTANT, ColumnType::Boolean),
         ],
         reference_columns: &[],
-        quoted_text_column: None,
+        // What a quote of one of these messages resolves to (unit 31,
+        // 2026-08-28). The framework reads this column raw into a quoted
+        // span, and validates the declaration when the store opens: the
+        // named column must be declared here, must not be the role column,
+        // must be `ColumnType::Text` by variant, and the kind must not be
+        // ephemeral — all four hold for the message's own text. An erased
+        // row's NULL text resolves to nothing, so erasure needs no second
+        // pass for the quotes pointing at it.
+        quoted_text_column: Some(COLUMN_TEXT),
         ephemeral: false,
     }];
 
@@ -833,26 +841,43 @@ pub(crate) async fn erase_reply_targets_naming(
     crate::erasure::null_references_naming(tx, REPLY_TARGET_SITE, principal_id, sources).await
 }
 
-/// The framework record that is never an answerable block (2026-08-28): the
-/// date marker, the ledger's own calendar entry, which the framework writes
-/// inside the same transaction as the user-voiced append that tripped it and
-/// orders immediately before it. It carries no voice, no ask and no answer,
-/// so it can answer for nothing that reads the ledger back: a reader that
-/// stops on one has read a record of the day in place of the message the day
-/// was recorded for — a member's standing question swallowed by the calendar.
-/// The fact belongs to the kind, holds for every reader there will ever be,
-/// and is independent of any caller's kind list.
+/// The framework records that are never an answerable block (2026-08-28;
+/// the quote joined 2026-08-29).
 ///
-/// This is the whole of that decision, recorded once and read by exactly two
-/// sites, so the two can never drift apart: [`newest_block_id_past_erased`]
-/// below, which excludes these rows in SQL for every caller, and the tail
-/// condition in `Assistant::owing_tail_debt`, which treats such a tail as
-/// transparent and reads behind it. It is deliberately NOT folded into
+/// The date marker is the ledger's own calendar entry, which the framework
+/// writes inside the same transaction as the user-voiced append that
+/// tripped it and orders immediately before it. It carries no voice, no ask
+/// and no answer, so it can answer for nothing that reads the ledger back:
+/// a reader that stops on one has read a record of the day in place of the
+/// message the day was recorded for — a member's standing question
+/// swallowed by the calendar.
+///
+/// The quote is the context a member attached to their reply (unit 31): it
+/// precedes their own message and, between the two appends, stands at the
+/// tail alone — the exact state a crash leaves, and the state the retry's
+/// tail-skip then preserves. A reader that settled a debt on it would let
+/// a quote of someone's words answer for the standing question behind it,
+/// which no member ever asked it to do.
+///
+/// Both facts belong to their kinds, hold for every reader there will ever
+/// be, and are independent of any caller's kind list. This is the whole of
+/// that decision, recorded once and read by exactly two sites, so the two
+/// can never drift apart: [`newest_block_id_past_erased`] below, which
+/// excludes these rows in SQL for every caller, and the tail condition in
+/// `Assistant::owing_tail_debt`, which treats such a tail as transparent
+/// and reads behind it. It is deliberately NOT folded into
 /// [`crate::assembly::DEBT_READ_THROUGH`] — that list is the consumer's own
 /// policy about its own kinds, chosen per caller, while this holds whoever
-/// asks. The kind is named through the framework leaf's own `KINDS`
-/// declaration, never a literal here.
-pub(crate) const NEVER_ANSWERABLE: &[&str] = DateMarker::KINDS;
+/// asks. Each kind is named through the framework leaf's own `KINDS`
+/// declaration, never a literal here, which is why the list is composed at
+/// first read instead of spelled as a const: the leaves own their strings.
+pub(crate) static NEVER_ANSWERABLE: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    DateMarker::KINDS
+        .iter()
+        .chain(Quote::KINDS)
+        .copied()
+        .collect()
+});
 
 /// The newest block of one conversation that can settle the owing-tail
 /// walk: outside the caller's read-through kinds, and past every erased
@@ -888,7 +913,7 @@ pub(crate) async fn newest_block_id_past_erased(
     domain_run(tx, crate::schema::DOMAIN, move |conn| {
         let excluded: Vec<&'static str> = read_through
             .iter()
-            .chain(NEVER_ANSWERABLE)
+            .chain(NEVER_ANSWERABLE.iter())
             .copied()
             .collect();
         let placeholders: Vec<String> = (0..excluded.len())
@@ -913,6 +938,71 @@ pub(crate) async fn newest_block_id_past_erased(
                 ),
                 parameters.as_slice(),
                 |row| row.get(0),
+            )
+            .optional()?)
+    })
+    .await
+}
+
+/// One recorded message a quote can reference: the block a span points at,
+/// and the stored text a span is measured against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct QuotableMessage {
+    /// The block the span's endpoints name.
+    pub block_id: i64,
+    /// The message's stored text, as the quote will resolve it.
+    pub text: String,
+}
+
+/// The message one origin names in one conversation, for the reply quote of
+/// unit 31 (2026-08-28) — the NEWEST such row, and none of the erased ones.
+///
+/// Newest, because delivery is at-least-once and no origin dedupe exists in
+/// the ingest: a redelivered update records its message a second time under
+/// the same origin, and the latest stored version of that origin is the one
+/// the member was looking at when they replied. Erased rows are excluded by
+/// their nulled text — the erasing passes null the origin beside it, so a
+/// fully erased row matches nothing here anyway, and the text condition
+/// covers a row a half-reached pass left behind. A conversation with no
+/// matching row answers `None`, and the reply lands quoteless: nothing is
+/// invented in place of a message the ledger does not hold.
+///
+/// This is the first read in the consumer that maps an origin to a BLOCK
+/// ID. The erasure passes match the same column but only ever null by it,
+/// so there was no existing lookup to reuse. Scoped through the
+/// conversation junction like every other origin match: platform message
+/// ids are opaque and unique only per channel, and a bare id match would
+/// reach a stranger conversation's row. The framework-table name it joins
+/// carries the deliberate coupling decision 0032 records.
+///
+/// # Errors
+///
+/// [`StoreError`] if the query fails or the store's actor has stopped.
+pub(crate) async fn newest_message_of_origin(
+    tx: &StoreTx,
+    conversation_id: i64,
+    origin: &str,
+) -> Result<Option<QuotableMessage>, StoreError> {
+    let origin = origin.to_owned();
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT m.block_id, m.{COLUMN_TEXT} \
+                     FROM {CHAT_MESSAGE_TABLE} m \
+                     JOIN conversation_blocks cb ON cb.block_id = m.block_id \
+                     WHERE cb.conversation_id = ?1 \
+                     AND m.{COLUMN_ORIGIN} = ?2 \
+                     AND m.{COLUMN_TEXT} IS NOT NULL \
+                     ORDER BY cb.id DESC LIMIT 1"
+                ),
+                (conversation_id, &origin),
+                |row| {
+                    Ok(QuotableMessage {
+                        block_id: row.get(0)?,
+                        text: row.get(1)?,
+                    })
+                },
             )
             .optional()?)
     })
@@ -1097,8 +1187,30 @@ impl FromBlock for FrameworkKind {
 }
 
 impl Agency for FrameworkKind {
+    /// Transparent delegation with ONE consumer policy over it (unit 31,
+    /// 2026-08-29): a quote asks for nothing here.
+    ///
+    /// The framework serves a model turn for any user-voiced frontier, and
+    /// its quote is user-voiced — a person selecting a span in a composer
+    /// IS an ask there. In this consumer nobody composes: a quote is
+    /// context the ingest attaches ahead of the member's own message, and
+    /// the turn duty lives on that message's answer-due stamp alone. Left
+    /// delegating, a quote sitting bare — its message refused on retry, or
+    /// the process restarted between the two appends — would draw a turn
+    /// answering a quotation nobody asked about.
+    ///
+    /// It lives here, at the delegation, because this impl already IS the
+    /// consumer's recorded policy over the framework's kinds; the
+    /// alternative shapes were rejected with the decision — a leaf claiming
+    /// the quote string overlaps the delegate's claim, which the derive's
+    /// coherence assertion rightly refuses. Storage, projection and
+    /// resolution are untouched: the quote still renders its `> `-prefixed
+    /// lines above the message it precedes.
     fn awaiting(&self) -> Option<Awaiting> {
-        self.0.awaiting()
+        match &self.0 {
+            BlockKind::Quote(_) => None,
+            kind => kind.awaiting(),
+        }
     }
 
     fn durable(&self) -> bool {
