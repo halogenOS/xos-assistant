@@ -51,10 +51,12 @@ addressed flag in `translate.rs`); the stored flag has no production reader toda
 the reply-target column is read by erasure's target-keyed pass. No production code maps
 an origin to a block id — the erasure passes NULL by origin without ever selecting the
 id — so the quote's origin-to-block resolution is new code with no existing lookup to
-adapt. Erasure runs three passes — `erase_principal_content`
-(`kind.rs:691`), `erase_message_named` (`kind.rs:736`), `erase_reply_targets_naming`
-(`kind.rs:827`) — nulling a message's text and origin, and a quote of an erased row
-resolves to the empty string by slice 14's construction — no special case.
+adapt. Erasure's nulling passes include `erase_principal_content`
+(`kind.rs:692`) and `erase_message_named` (`kind.rs:737`), each nulling a message's
+text and origin, and `erase_reply_targets_naming` (`kind.rs:828`), which nulls only
+the reply-target reference column on other rows; person-wide erasure composes these
+with the join, report and reported-origin passes. A quote of an erased row resolves
+to the empty string by slice 14's construction — no special case.
 
 **What the platform supplies, and where it must be carried.** A reply carries the
 replied-to message; a manual quote additionally arrives in the message's `quote` field
@@ -104,6 +106,21 @@ as that promise.
   as today, quoteless. The stored reply-target fact is unchanged either way. *Rejected:* a
   placeholder quote ("replied to an unavailable message") — content the member never
   wrote, in the member's voice.
+- **The quote is transparent in the debt walk, like the date marker, 2026-08-29.**
+  The tail-debt walk treats a settled framework block as an answer, and a quote at
+  the tail — the exact state a crash between the two appends leaves, and what the
+  tail-skip then preserves on retry — would silently settle a debt it merely sits on:
+  an unaddressed reply that would have been answered lands answer_due false. A quote
+  is context a member attached, not an answer; the walk's own recorded invariant is
+  that a message can never cancel a debt it merely propagates. So the consumer's
+  debt walk reads THROUGH a quote block, exactly as it reads through a date marker,
+  and the crash-retry case is pinned: debt owed before the crash survives the retry.
+  No turn is served for a bare quote either — turns are driven by the ingest's
+  stamping of chat messages, and an orphaned quote (its message refused on retry)
+  simply waits transparent until the next real message decides as if it were not
+  there. *Rejected:* leaving the quote settled in the walk with the divergence
+  pinned — it makes the redelivery decision quietly break AC7's promise that the
+  reply's turn happens exactly as it would have.
 - **The quoter's erasure leaves the quote, because the quote holds nothing of the
   quoter, 2026-08-29.** A framework user block carries no principal — the store's
   append takes only the conversation and the blocks — and the quote block stores a
@@ -153,16 +170,14 @@ as that promise.
   tree, and the earlier revision cited one; the skip rule above is what actually
   closes the doubling. Accepted and stated; making the two atomic would
   need a mixed framework-and-consumer append the store deliberately does not have.
-- **A quote whose message fell off the projection window renders bare, and that is
-  accepted, 2026-08-29.** Window trimming is pre-existing machinery; when it cuts
-  between a quote and its message, the model reads an unattached quoted line as
-  context. Harmless, and the alternative — teaching the window about block pairs —
-  smears a consumer pairing into a general mechanism. Named so the reviewer finds it
-  decided.
-- **The date-marker interaction is known and harmless, 2026-08-28.** The framework
-  user-block append runs the date-marker seam (slice 13); the consumer append that
-  follows runs it too; the same-day dedupe makes the pair insert at most one marker,
-  ordered before the quote. Nothing to build; stated so the reviewer finds it decided.
+- **The date-marker interaction is known and harmless, 2026-08-28; restated
+  2026-08-29 for the day boundary.** Each append runs the date-marker seam
+  independently, so on the same day the pair inserts at most one marker, ordered
+  before the quote — and across a midnight boundary a second marker may land BETWEEN
+  the quote and its message. Both shapes are harmless to the projection, and the
+  tail-skip survives the seam because a marker and its quote commit in one
+  transaction: after a crash between the appends the tail is always the quote, never
+  a bare marker. Nothing to build; stated so the reviewer finds it decided.
 - **Erasure parity across the refresh fork, 2026-08-29 — the pin slice 14 assigned
   to this consumer, anchored on what the walk actually does.** The startup walk that
   moves channels onto an edited prompt or a swapped model forks with
@@ -222,9 +237,11 @@ no privacy-document change, and no change to when the assistant answers or stays
   open — pinned by the framework's own open-time check, driven from this workspace.
 - **AC9** The manual-quote fact survives the adapter thread: a decoded update
   carrying the platform's quote field reaches the core's inbound message with its
-  text and manual flag intact — pinned at the translate/intake seam with the
-  adapter's existing unit-test convention, so a decoder or copy regression cannot
-  silently disable narrowing while the core ACs stay green.
+  text and manual flag intact. Two pins, because the existing struct-built seam
+  convention cannot catch a decoder regression: one RAW-JSON decode through serde
+  proving the message-level quote field parses (a new, stated convention for the
+  decoder), and one at the translate/intake seam proving the fact is carried and
+  copied.
 - **AC10** Quoter-side erasure holds the recorded decision: after the reply author's
   erasure their message is nulled as today, the quote block survives, still resolves
   the target's text, and stores no fact tying it to the erased person — pinned by
