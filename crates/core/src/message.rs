@@ -225,6 +225,28 @@ pub struct Observation {
     pub fact: ObservedFact,
 }
 
+/// One person as a join notice showed them (unit 36, 2026-08-29): the
+/// identity the joiner's principal resolves from — the same two fields a
+/// sender crosses the boundary with — plus the name the platform displayed
+/// beside the entry.
+///
+/// The shown name rides here and nowhere else. Decision 0077 is not
+/// reopened: a message still carries no display name, because a message's
+/// content is what was said. A join notice's content IS the shown name, so
+/// it is recorded once, on the event that carried it, and erased with the
+/// person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinedMember {
+    /// Who joined, as the adapter saw them — the input to principal
+    /// resolution, exactly as a sender's is.
+    pub identity: SenderIdentity,
+    /// The name the platform displayed for the joiner, already composed by
+    /// the adapter into the one string members saw. Empty when the platform
+    /// showed no name at all: nothing is invented in its place, and the
+    /// projected line falls back to the handle.
+    pub name: String,
+}
+
 /// What one observation reports.
 #[derive(Debug, Clone)]
 pub enum ObservedFact {
@@ -240,6 +262,23 @@ pub enum ObservedFact {
         /// adapter saw them. Absence fails closed: an add nobody is named
         /// for is nobody's invitation.
         by: Option<SenderIdentity>,
+    },
+    /// People entered the channel's member set, as one platform service
+    /// message reported them (unit 36, 2026-08-29). One event, a list of
+    /// joiners: the observation surface stores one block per joiner behind
+    /// its existing authorization gate, all of them under this event's one
+    /// origin. The assistant's own entry is never in the list — its own
+    /// membership is [`ObservedFact::Added`]'s territory — and a joiner
+    /// whose suppression flag stands is stored not at all.
+    MembersJoined {
+        /// The joiners the event named, in the platform's own order.
+        joiners: Vec<JoinedMember>,
+        /// The service message's own id, opaque — what every joiner's
+        /// block records, so a report can name the event and the human
+        /// side can act on it.
+        origin: String,
+        /// When the platform says the service message was sent.
+        timestamp: DateTime<Utc>,
     },
 }
 

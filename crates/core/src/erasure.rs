@@ -10,15 +10,24 @@
 //!    the separate personal-data table of decision 0003. First, though,
 //!    the reply-target copies OTHER people's rows hold — a reply stores
 //!    the replied-to message's id, the erased person's own identifier —
-//!    are nulled by the target-keyed pass (2026-08-23), which joins on the
-//!    very origins the author-keyed pass nulls next, so the order between
-//!    the two is
+//!    are nulled by the target-keyed pass (2026-08-23) — with the report
+//!    block's stored target beside them since unit 36 (2026-08-29), the
+//!    second place a copy of somebody else's platform id is held — which
+//!    joins on the very origins the author-keyed pass nulls next, so the
+//!    order between the two is
 //!    load-bearing. Block header rows are never touched; positions,
 //!    references and conversation order keep their shape, and an erased
 //!    message projects none of its prose to the model — only the kind's
-//!    fixed marker. Beside it, every report block naming the principal as
-//!    the reported person loses its target origin (2026-08-23, narrowing
-//!    the 0045 lineage), so the report line goes undeliverable.
+//!    fixed marker. Beside it, every join notice recording the principal
+//!    loses its shown name, its handle, its event origin and its send time
+//!    (unit 36, 2026-08-29) — one row per joiner, so a co-joiner of the
+//!    same event keeps theirs — and every report block naming the
+//!    principal as the reported person loses its target origin
+//!    (2026-08-23, narrowing the 0045 lineage), so the report line goes
+//!    undeliverable. A report filed against a join event several people
+//!    share names no reported person at all, by design, so that last pass
+//!    cannot reach it: the target-keyed pass above is what nulls its
+//!    filed target, from the same collection of the person's own origins.
 //! 2. The principal's direct conversations are removed entirely — a
 //!    two-party chat that lost its human is metadata that still identifies
 //!    the person. Each one is unmapped through the mapping module first,
@@ -48,12 +57,164 @@
 //! execute trust the plan — without it an ingestion could record a new
 //! message or map a new direct channel for the person between the steps.
 
+use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{FromBlock, Store, StoreError};
 
 use crate::identity;
+use crate::join;
 use crate::kind::{self, AssistantKind};
 use crate::mapping;
 use crate::message::ChannelKind;
+
+/// Where one kind records a person under a platform id — what the
+/// target-keyed reply pass joins against to find the copies OTHER people's
+/// rows hold of an erased person's own message ids.
+///
+/// Each kind that records a person beside an origin exports one of these;
+/// the composition below names the whole set, so no kind knows another's
+/// table and adding a third source is a data change here rather than a
+/// second spelling of the join. The names are the kinds' own column
+/// constants, never literals.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct OriginSource {
+    /// The content table the kind owns.
+    pub table: &'static str,
+    /// The column holding the platform's own id for the record.
+    pub origin_column: &'static str,
+    /// The column holding the recorded person's principal id.
+    pub principal_column: &'static str,
+}
+
+/// Every place a person's own platform ids are recorded, in the order they
+/// were added: the chat message's origin, and the join notice's event
+/// origin (unit 36, 2026-08-29) — members reply to join notices, a welcome
+/// reply is ordinary, and a replier's row holds the event's id, so without
+/// this second source the residual decisions 0063 and 0085 closed would
+/// come back through the join table.
+const ORIGIN_SOURCES: &[OriginSource] = &[kind::ORIGIN_SOURCE, join::ORIGIN_SOURCE];
+
+/// Where one kind holds a COPY of a platform id that belongs to another
+/// record — the mirror image of [`OriginSource`], which is where a kind
+/// records a person's OWN ids.
+///
+/// A copy is the residual decisions 0063 and 0085 close: the record it
+/// names can be erased or deleted, and the copy would keep a verbatim
+/// identifier of an erased person that no later pass could reach. Both
+/// passes below are keyed differently — by the person whose records are
+/// named, and by the one record a deletion removed — and both nullify
+/// through the site the owning kind exports, so the join they run is
+/// spelled once for every kind that holds such a copy.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReferenceSite {
+    /// The content table holding the copy.
+    pub table: &'static str,
+    /// The column the copy sits in, nullable for exactly this reason.
+    pub column: &'static str,
+}
+
+/// Null every held copy of a platform id this principal's records carry —
+/// the target-keyed pass (2026-08-23; widened to the report block's target
+/// by unit 36, 2026-08-29). The match runs through each source's origin
+/// column within the same conversation: platform message ids are opaque
+/// and unique only per channel, so a bare id match across conversations
+/// would null a stranger's copy. The framework-table names it joins carry
+/// the deliberate coupling decision 0032 records.
+///
+/// The caller runs this BEFORE the passes that null the origins it joins
+/// on; within one attempt that order guarantees the join still matches,
+/// and across retries any attempt that reached the origin-nulling passes
+/// had already completed this one. Nulling already-null columns is a
+/// no-op, so the step is idempotent.
+///
+/// # Errors
+///
+/// [`StoreError`] if the update fails or the store's actor has stopped.
+pub(crate) async fn null_references_naming(
+    tx: &StoreTx,
+    site: ReferenceSite,
+    principal_id: i64,
+    sources: &'static [OriginSource],
+) -> Result<(), StoreError> {
+    if sources.is_empty() {
+        // No source records the person under an origin, so no copy can
+        // name them: the pass has nothing to match and says so instead of
+        // building a predicate out of nothing.
+        return Ok(());
+    }
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        let authored = sources
+            .iter()
+            .map(|source| {
+                format!(
+                    "EXISTS (\
+                       SELECT 1 FROM {source_table} author \
+                       JOIN conversation_blocks acb ON acb.block_id = author.block_id \
+                       JOIN conversation_blocks rcb ON rcb.block_id = {table}.block_id \
+                       WHERE author.{principal} = ?1 \
+                       AND author.{origin} = {table}.{column} \
+                       AND acb.conversation_id = rcb.conversation_id\
+                     )",
+                    source_table = source.table,
+                    principal = source.principal_column,
+                    origin = source.origin_column,
+                    table = site.table,
+                    column = site.column,
+                )
+            })
+            .collect::<Vec<String>>()
+            .join(" OR ");
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET {column} = NULL \
+                 WHERE {column} IS NOT NULL AND ({authored})",
+                table = site.table,
+                column = site.column,
+            ),
+            [principal_id],
+        )?;
+        Ok(())
+    })
+    .await
+}
+
+/// Null every held copy of ONE origin inside one conversation — the
+/// deletion mirror's own reach (decision 0085; widened to the report
+/// block's target by unit 36, 2026-08-29). Without it each holder would
+/// keep a verbatim copy of the deleted record's identifier that no later
+/// erasure could reach, because [`null_references_naming`] joins on the
+/// very origins the deletion just nulled.
+///
+/// Returns how many copies were nulled. Idempotent: nulling already-null
+/// columns is a no-op, and a second run finds nothing left naming the
+/// origin.
+///
+/// # Errors
+///
+/// [`StoreError`] if the update fails or the store's actor has stopped.
+pub(crate) async fn null_references_to(
+    tx: &StoreTx,
+    site: ReferenceSite,
+    conversation_id: i64,
+    origin: &str,
+) -> Result<usize, StoreError> {
+    let origin = origin.to_owned();
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        Ok(conn.execute(
+            &format!(
+                "UPDATE {table} SET {column} = NULL \
+                 WHERE {column} = ?1 AND EXISTS (\
+                   SELECT 1 FROM conversation_blocks cb \
+                   WHERE cb.block_id = {table}.block_id \
+                   AND cb.conversation_id = ?2\
+                 )",
+                table = site.table,
+                column = site.column,
+            ),
+            (&origin, conversation_id),
+        )?)
+    })
+    .await
+}
 
 /// What one erasure call reports.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,13 +299,35 @@ pub(crate) async fn execute(
     // keeps its copy, unlinked inside the store but stored. Decision
     // 0063's refinements record that residual with its follow-up, a reach
     // key resolved when the reply is recorded.
-    kind::erase_reply_targets_naming(&tx, plan.principal_id).await?;
+    kind::erase_reply_targets_naming(&tx, plan.principal_id, ORIGIN_SOURCES).await?;
+    // The report block's stored target is the second held copy, nulled by
+    // the same collection and for the same reason (unit 36, 2026-08-29): a
+    // report filed against a join event several people share attaches NO
+    // reported principal, so the principal-keyed pass below cannot reach
+    // it, while the filed target is a verbatim copy of the erased joiner's
+    // own event id. Ordered with the pass above, ahead of everything that
+    // nulls the origins both join on.
+    crate::tools::report::erase_report_targets_naming(&tx, plan.principal_id, ORIGIN_SOURCES)
+        .await?;
     kind::erase_principal_content(&tx, plan.principal_id).await?;
-    // The report table's pass (2026-08-23, narrowing the 0045 lineage):
-    // every report naming the person as the reported principal loses its
-    // target origin, so the line goes undeliverable and the edge skips it.
-    // The block stores that principal id precisely so this pass can reach
-    // it.
+    // The join notice's own person-keyed pass (unit 36, 2026-08-29): the
+    // shown name, the handle, the event origin and the send time of every
+    // join recording the person are nulled, one row at a time, so a
+    // co-joiner of the same event keeps their own row whole. It runs
+    // beside the message kind's for the same reason — the columns are the
+    // kind's own contract — and after the target-keyed pass above, which
+    // joins on the very origins this one nulls.
+    join::erase_principal_joins(&tx, plan.principal_id).await?;
+    // The report table's person-keyed pass (2026-08-23, narrowing the 0045
+    // lineage): every report naming the person as the reported principal
+    // loses its target origin, so the line goes undeliverable and the edge
+    // skips it. The block stores that principal id precisely so this pass
+    // can reach it. It is not the target-keyed pass above restated: this
+    // one reaches a report by WHOM it names, which still matches after the
+    // reported record's own origin is gone — a message the deletion mirror
+    // already nulled leaves no origin for the collection to join on — while
+    // the pass above reaches a report by WHICH record it points at, the
+    // only reach a filing that names several people has.
     crate::tools::report::erase_reported_origin(&tx, plan.principal_id).await?;
 
     for &conversation_id in &plan.direct_conversations {

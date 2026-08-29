@@ -44,7 +44,10 @@ own community groups. You can object at any time, see below.
 
 We store your username and the numeric account identifier your chat platform assigns you,
 in tables of their own so that a deletion request can remove them. We do not store your
-display name. We
+display name as identity data, and no message carries it. Added 2026-08-29: when the group
+announces that you joined, we store the name that announcement showed, once, as the content
+of that announcement — the same way we store what a message says — and a deletion request
+removes it with everything else. We
 store beside each message the platform's send time and the time it reached us, which
 message it replied to, whether it was addressed to the assistant, whether you were an
 administrator then, and whether an answer was due or a limit refused one. We take the
@@ -62,6 +65,7 @@ We send the conversation to a language model through a processor, and each reque
 - the text of the messages in that conversation
 - the public username of each writer, so the assistant can address you by your handle
 - the maintainers' instructions and the group's pinned rules
+- the group's stored join announcements, each with the name it showed (added 2026-08-29)
 - what the assistant looked up, and its own earlier answers in that conversation
 
 We send the whole stored conversation every time, because an answer that cannot see the
@@ -79,7 +83,11 @@ group's messages and judge them against the group's pinned rules, and when a mes
 clearly breaks them it reports that message to the group's moderation bot — the group's
 administrators decide what happens, and the assistant itself takes no action (changed
 2026-08-24: this assessment is the assistant's own; before, a member had to ask for a
-report). The same language model that writes the answers makes that judgment, so it can
+report). Added 2026-08-29: it reads the group's join announcements the same way, and where
+a joining account's displayed name is itself an advertisement it reports that announcement,
+before the account has posted anything. Filing the report is the whole of what it does
+there too: it removes nobody, replies to nobody, and the administrators decide.
+The same language model that writes the answers makes that judgment, so it can
 misfire and report a message that broke no rule; the report goes out as a public reply,
 so you see it. We store the reported message's identifier with the report and empty it
 when the reported person is deleted.
@@ -127,7 +135,8 @@ deletion made without that reply stay under the rule above, and asking remains t
 clear those from the store. If the service stops for good, we delete the store with it.
 
 We delete on request the text of every message you wrote, its send time and reply reference,
-and your identity data. What remains in a
+your identity data, and — added 2026-08-29 — the join announcement we recorded for you,
+with the name and handle it showed. What remains in a
 group is an empty placeholder holding a position in the conversation.
 
 Some things stay. The assistant's own answers stay, and one can carry your handle and repeat

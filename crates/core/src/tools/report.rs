@@ -5,9 +5,11 @@
 //!
 //! The flow: the prompt teaches the model to judge each group message
 //! against the pinned rules, and on a clear violation the model calls this
-//! tool NAMING the violating message by its projected id. The named origin
-//! is validated against the turn's own co-summoner set — the messages the
-//! model is actually assessing this turn — so the model gains the
+//! tool NAMING the violating record by its projected id. The named origin
+//! is validated against the turn's own assessment set — the co-summoning
+//! messages, and since unit 36 (2026-08-29) the join notices the same
+//! window carried, whose promotional-bait names are the offense before any
+//! message is sent — so the model gains the
 //! precision to pick one violator among several absorbed messages and
 //! cannot aim a report at anything else: not an old message, not an
 //! arbitrary id, not another channel's. Executing the tool appends a
@@ -37,7 +39,11 @@
 //! fence, so a report cannot re-materialize an origin an erasure just
 //! nulled; the reported message's principal id is stored precisely so
 //! erasure can reach the block, through the crate-private
-//! `erase_reported_origin` pass the erasure operation composes.
+//! `erase_reported_origin` pass the erasure operation composes. Since
+//! unit 36 a filing may name a join event several people share and so
+//! store no reported principal at all, which is why erasure reaches this
+//! kind a second way — by the filed target, from the erased person's own
+//! recorded origins, and from the deletion mirror's named origin.
 
 use std::sync::Arc;
 
@@ -53,7 +59,7 @@ use tokio::sync::RwLock;
 use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{Authority, ChannelKind};
-use crate::tools::provenance::co_summoners;
+use crate::tools::provenance::{assessed_joins, co_summoners};
 
 // ─── The block kind ──────────────────────────────────────────────────────
 
@@ -63,12 +69,16 @@ pub const REPORT_KIND: &str = "report";
 /// The content table the kind's descriptor owns.
 pub const REPORT_TABLE: &str = "block_report";
 
-/// The reported message's platform origin — what the edge threads the
+/// The reported record's platform origin — what the edge threads the
 /// report line onto. Nullable for exactly one reason: the reported
 /// person's erasure nulls it, and the edge skips the targetless report.
 pub const COLUMN_TARGET_ORIGIN: &str = "target_origin";
-/// The reported message's sender in the identity tables — stored precisely
-/// so erasure can reach this block by the reported principal.
+/// The reported person in the identity tables — stored precisely so
+/// erasure can reach this block by the reported principal. Nullable since
+/// unit 36 (2026-08-29): a join event naming several joiners attaches no
+/// single principal, because a first-joiner guess would record the wrong
+/// person, and the human acting on the report reads the filed text and the
+/// event either way.
 pub const COLUMN_REPORTED_PRINCIPAL_ID: &str = "reported_principal_id";
 /// The fixed report line the edge delivers. It names nobody, so erasure
 /// leaves it.
@@ -83,8 +93,10 @@ pub struct Report {
     /// erasure — the edge skips the report — or for a row the store did
     /// not produce.
     pub target_origin: Option<String>,
-    /// The reported message's sender. `None` only for a row the store did
-    /// not produce (the schema stores it NOT NULL).
+    /// The reported person. `None` is a stored meaning since unit 36: the
+    /// filing named an event several people share, so it attaches no
+    /// single principal — and `None` also for a row the store did not
+    /// produce.
     pub reported_principal_id: Option<i64>,
     /// The fixed line the edge delivers. `None` only for a row the store
     /// did not produce.
@@ -97,15 +109,17 @@ impl Report {
     #[must_use]
     pub fn stored_fields(
         target_origin: &str,
-        reported_principal_id: i64,
+        reported_principal_id: Option<i64>,
         line: &str,
     ) -> serde_json::Map<String, Value> {
         let mut fields = serde_json::Map::new();
         fields.insert(COLUMN_TARGET_ORIGIN.into(), json!(target_origin));
-        fields.insert(
-            COLUMN_REPORTED_PRINCIPAL_ID.into(),
-            json!(reported_principal_id),
-        );
+        if let Some(reported_principal_id) = reported_principal_id {
+            fields.insert(
+                COLUMN_REPORTED_PRINCIPAL_ID.into(),
+                json!(reported_principal_id),
+            );
+        }
         fields.insert(COLUMN_LINE.into(), json!(line));
         fields
     }
@@ -160,11 +174,74 @@ impl Agency for Report {
 /// and the model's knowledge of it is the tool result.
 impl Projection for Report {}
 
+/// Where this kind holds a copy of ANOTHER record's platform id: the
+/// filed target, which is a message's origin or a join event's. The column
+/// is the kind's own; both passes over it are driven by the erasure
+/// composition, which knows which records name a person and when a
+/// deletion removed one.
+pub(crate) const TARGET_ORIGIN_SITE: crate::erasure::ReferenceSite =
+    crate::erasure::ReferenceSite {
+        table: REPORT_TABLE,
+        column: COLUMN_TARGET_ORIGIN,
+    };
+
+/// Null the filed target of every report that names one of this
+/// principal's own records (unit 36, 2026-08-29) — the target-keyed reach,
+/// beside the reply target's. A report filed against a join event several
+/// people share stores NO reported principal by design, so
+/// [`erase_reported_origin`] below cannot reach it, and the stored target
+/// is a verbatim copy of the erased joiner's own event id — the residual
+/// decisions 0063 and 0085 closed for every other holder of such a copy.
+/// The line text stays; it names nobody.
+///
+/// Erasure runs this BEFORE the passes that null the origins it joins on,
+/// for the reason the composition states. Nulling already-null columns is
+/// a no-op, so the step is idempotent.
+///
+/// # Errors
+///
+/// [`StoreError`] if the update fails or the store's actor has stopped.
+pub(crate) async fn erase_report_targets_naming(
+    tx: &StoreTx,
+    principal_id: i64,
+    sources: &'static [crate::erasure::OriginSource],
+) -> Result<(), StoreError> {
+    crate::erasure::null_references_naming(tx, TARGET_ORIGIN_SITE, principal_id, sources).await
+}
+
+/// Null the filed target of every report in one conversation that names
+/// the deleted origin (unit 36, 2026-08-29) — the deletion mirror's reach
+/// into this kind, decision 0085's rule applied to the second holder of a
+/// copy: deleting the reported message or the reported join event takes
+/// the record the report threads onto, and the copy left behind would be
+/// an identifier no later erasure could reach. The undeliverable report
+/// is skipped by the edge, exactly as after the reported person's erasure.
+///
+/// Returns how many filed targets were nulled. Idempotent: a second run
+/// finds nothing left naming the origin.
+///
+/// # Errors
+///
+/// [`StoreError`] if the update fails or the store's actor has stopped.
+pub(crate) async fn erase_report_references_naming(
+    tx: &StoreTx,
+    conversation_id: i64,
+    origin: &str,
+) -> Result<usize, StoreError> {
+    crate::erasure::null_references_to(tx, TARGET_ORIGIN_SITE, conversation_id, origin).await
+}
+
 /// Null the target origin of every report naming this principal as the
 /// reported person — erasure's reach into the report block (decided
 /// 2026-08-23, narrowing the 0045 lineage): the line goes undeliverable
 /// and the edge skips it. The line text stays; it names nobody. Nulling
 /// already-null columns is a no-op, so the step is idempotent.
+///
+/// This reaches a report by WHOM it names, which still matches after the
+/// reported record's own origin is gone — a message an earlier deletion
+/// mirror nulled leaves no origin for [`erase_report_targets_naming`] to
+/// join on — so the two passes are two reaches of one rule, not one rule
+/// spelled twice.
 ///
 /// # Errors
 ///
@@ -197,8 +274,12 @@ pub const NAME: &str = "report_spam";
 /// under it because every tool does (stated, not implied).
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 
-/// The one parameter: the violating message, named by the id the
-/// projection shows in brackets ahead of it.
+/// The one parameter: the violating record — a message, or since unit 36 a
+/// join notice — named by the id the projection shows in brackets ahead of
+/// it. The key keeps its shipped spelling while the descriptions carry the
+/// widened vocabulary: what the model may name is decided by the
+/// reportable resolution alone, and the definition states that decision
+/// instead of a narrower one.
 pub const PARAMETER_MESSAGE_ID: &str = "message_id";
 
 /// What the fixed report line opens with; the configured moderation handle
@@ -277,35 +358,128 @@ fn named_origin(input: &str) -> Option<String> {
     (!origin.is_empty()).then(|| origin.to_owned())
 }
 
+/// Whom a filed report would name — the closed vocabulary of the answer,
+/// stated by whichever record the model aimed at (unit 36, 2026-08-29).
+/// The shape knows nothing about which kind produced it; each producer
+/// says which case it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReportedPerson {
+    /// Exactly one recorded person: their principal rides the filing, and
+    /// erasure reaches the report block through it.
+    One(i64),
+    /// Several people share the named record, so the filing attaches no
+    /// single principal — a guess would put the wrong person in a
+    /// moderation record, and the filed text names which of them offends.
+    Several,
+    /// The named record holds no person at all — a row the store did not
+    /// produce whole. A report erasure could never reach must not exist,
+    /// so the filing declines.
+    Unrecorded,
+}
+
+/// One thing this turn could report: the platform id the model names it
+/// by, whom a filing would name, and the record's stored voice where it
+/// has one. The report's whole target vocabulary, produced from a chat
+/// message or from a join event, so one resolution serves both without
+/// either kind's shape reaching into the tool.
+#[derive(Debug, Clone)]
+struct Reportable {
+    /// The platform's own id for the record — what the model names and
+    /// what the filing threads onto.
+    origin: String,
+    /// Whom a filing against it would name.
+    person: ReportedPerson,
+    /// The record's stored voice, where the record has one. `None` for a
+    /// record that carries no voice at all — a join notice — which is why
+    /// a join can never read as the assistant's own words.
+    role: Option<Role>,
+}
+
+/// Everything the turn is assessing, in one list: the co-summoning
+/// messages, then the join notices the same window carried (unit 36).
+/// The union is the REPORT's own question — `co_summoners` itself is
+/// untouched, because it also answers the disclosure fold, the answer
+/// threading and the sole-principal reading, and a witnessed join is a
+/// person toward none of those.
+///
+/// A record with no stored origin cannot be named and so cannot be
+/// aimed at; an erased join has no origin left and drops out here.
+fn assessment_set(ledger: &[Block], call_block_id: i64) -> Vec<Reportable> {
+    let messages = co_summoners(ledger, call_block_id)
+        .into_iter()
+        .filter_map(|message| {
+            Some(Reportable {
+                origin: message.origin?,
+                person: message
+                    .principal_id
+                    .map_or(ReportedPerson::Unrecorded, ReportedPerson::One),
+                role: message.role,
+            })
+        });
+    // Every joiner of one service message shares that message's origin, so
+    // the EVENT is what a report can name — one filing for the event, its
+    // text naming which joiner offends.
+    let joins = assessed_joins(ledger, call_block_id);
+    let mut events: Vec<Reportable> = Vec::new();
+    for origin in joins.iter().filter_map(|join| join.origin.as_deref()) {
+        if events.iter().any(|event| event.origin == origin) {
+            continue;
+        }
+        let sharing: Vec<&crate::join::JoinNotice> = joins
+            .iter()
+            .filter(|join| join.origin.as_deref() == Some(origin))
+            .collect();
+        events.push(Reportable {
+            origin: origin.to_owned(),
+            person: match sharing.as_slice() {
+                [only] => only
+                    .principal_id
+                    .map_or(ReportedPerson::Unrecorded, ReportedPerson::One),
+                _ => ReportedPerson::Several,
+            },
+            // A join notice is stated in the ledger's own system voice and
+            // carries no stored role of its own, so the self-report guard
+            // reads the absence and a join never resolves as the
+            // assistant's words.
+            role: None,
+        });
+    }
+    messages.chain(events).collect()
+}
+
 /// The pure target resolution over one loaded ledger, in the order of the
-/// claims: the named origin must belong to the turn's co-summoner set —
-/// the messages the model is assessing this turn, the anti-aiming bound;
-/// the resolved row must not be the assistant's own voice (the assistant
+/// claims: the named origin must belong to the turn's assessment set —
+/// the messages the model is assessing this turn and the joins the same
+/// window carried, the anti-aiming bound;
+/// the resolved record must not be the assistant's own voice (the assistant
 /// holds no principal row, so "the assistant's own" is the stored role
 /// fact — no ingestion writes an assistant-voiced chat row today, and the
-/// refusal covers the in-principle shapes structurally); the row must
-/// carry a recorded principal, because a report erasure could never reach
-/// must not exist (the schema stores the column NOT NULL, so this absence
-/// is a row the store did not produce whole — refused all the same); and
+/// refusal covers the in-principle shapes structurally); the record must
+/// name someone erasure could reach, or openly name several people; and
 /// no report of the origin may already stand, the per-origin dedup that
-/// bounds the die-after-filing re-summon path. `Ok` is the reported
-/// principal; `Err` is the decline the model reads.
+/// bounds the die-after-filing re-summon path — and which, for a join
+/// event, means one filing per event: a second offender in the same event
+/// is named in the same filing, never in a second one. `Ok` is the
+/// reported principal, absent for a record several people share; `Err` is
+/// the decline the model reads.
 fn resolve_reportable(
     ledger: &[Block],
     call_block_id: i64,
     origin: &str,
-) -> Result<i64, &'static str> {
-    let Some(target) = co_summoners(ledger, call_block_id)
+) -> Result<Option<i64>, &'static str> {
+    let Some(target) = assessment_set(ledger, call_block_id)
         .into_iter()
-        .find(|message| message.origin.as_deref() == Some(origin))
+        .find(|reportable| reportable.origin == origin)
     else {
         return Err(NOT_ASSESSED_ERROR);
     };
     if target.role == Some(Role::Assistant) {
         return Err(SELF_REPORT_ERROR);
     }
-    let Some(reported_principal_id) = target.principal_id else {
-        return Err(UNRECORDED_TARGET_ERROR);
+    let reported = match target.person {
+        ReportedPerson::One(principal_id) => Some(principal_id),
+        ReportedPerson::Several => None,
+        ReportedPerson::Unrecorded => return Err(UNRECORDED_TARGET_ERROR),
     };
     let already = ledger
         .iter()
@@ -316,7 +490,7 @@ fn resolve_reportable(
     if already {
         return Err(ALREADY_REPORTED_ERROR);
     }
-    Ok(reported_principal_id)
+    Ok(reported)
 }
 
 /// The report tool: member authority, group conversations only, one
@@ -382,7 +556,7 @@ impl ReportTool {
                 return Err(transient_error());
             }
         };
-        // The validation of decision 2026-08-24, whole: the co-summoner
+        // The validation of decision 2026-08-24, whole: the assessment-set
         // bound, the voice and record guards, and the per-origin dedup —
         // one pure resolution over the loaded vector, its order and its
         // reasoning on [`resolve_reportable`].
@@ -414,8 +588,9 @@ impl ToolHandler<CoreEvent> for ReportTool {
         ToolDefinition {
             name: NAME.into(),
             description: "File a report with the group's moderation bot for a message that \
-                 violates the group's pinned rules. Name the violating message by its id, \
-                 shown in brackets ahead of the message; it must be a message you are \
+                 violates the group's pinned rules, or for a join notice whose shown name \
+                 does. Name the violating message or join notice by its id, shown in \
+                 brackets ahead of it; it must be a message or join notice you are \
                  assessing in this turn. The report is an assessment only — the group's \
                  administrators decide. This tool is the only way to report — never write \
                  the report command into an answer yourself."
@@ -425,8 +600,8 @@ impl ToolHandler<CoreEvent> for ReportTool {
                 "properties": {
                     PARAMETER_MESSAGE_ID: {
                         "type": "string",
-                        "description": "The violating message's id, exactly as shown in \
-                             brackets ahead of the message"
+                        "description": "The violating message's or join notice's id, exactly \
+                             as shown in brackets ahead of it"
                     }
                 },
                 "required": [PARAMETER_MESSAGE_ID]
@@ -471,7 +646,7 @@ mod tests {
     fn the_stored_fields_round_trip_through_the_parse() {
         let report = Report::parse(&report_block(Report::stored_fields(
             "origin-77",
-            42,
+            Some(42),
             "/report@moderation_bot",
         )));
         assert_eq!(report.target_origin.as_deref(), Some("origin-77"));
@@ -481,7 +656,7 @@ mod tests {
 
     #[test]
     fn a_report_is_inert_transparent_and_invisible() {
-        let report = Report::parse(&report_block(Report::stored_fields("o", 1, "line")));
+        let report = Report::parse(&report_block(Report::stored_fields("o", Some(1), "line")));
         assert_eq!(report.awaiting(), None, "a report summons nothing");
         assert!(
             report.frontier_transparent(),
@@ -658,12 +833,12 @@ mod tests {
         ];
         assert_eq!(
             resolve_reportable(&ledger, 9, "origin-violator"),
-            Ok(7),
+            Ok(Some(7)),
             "the named co-summoner resolves to its recorded principal"
         );
         assert_eq!(
             resolve_reportable(&ledger, 9, "origin-anchor"),
-            Ok(5),
+            Ok(Some(5)),
             "the anchor's own message is in the assessment set too"
         );
         assert_eq!(
@@ -695,7 +870,7 @@ mod tests {
                 block_type: REPORT_KIND.into(),
                 created_at: String::new(),
                 dispatch_anchor: Some(2),
-                fields: Report::stored_fields("origin-violator", 7, "/report@m"),
+                fields: Report::stored_fields("origin-violator", Some(7), "/report@m"),
             },
         );
         assert_eq!(
@@ -705,21 +880,160 @@ mod tests {
         );
         assert_eq!(
             resolve_reportable(&ledger, 9, "origin-anchor"),
-            Ok(5),
+            Ok(Some(5)),
             "the dedup is per origin: a distinct violation still files"
+        );
+    }
+
+    /// One stored join notice as a loaded block, under the given event
+    /// origin — the joiners of one event share it, which is what makes the
+    /// event the thing a report names.
+    fn join_row(id: i64, origin: &str, principal: Option<i64>) -> Block {
+        let mut fields = crate::join::JoinNotice::stored_fields(
+            crate::join::RecordedJoiner {
+                principal_id: principal.unwrap_or_default(),
+                name: "Free Crypto Signals",
+                handle: None,
+            },
+            origin,
+            "2026-08-29T00:00:00Z",
+        );
+        if principal.is_none() {
+            fields.remove(crate::join::COLUMN_PRINCIPAL_ID);
+        }
+        Block {
+            id,
+            role: None,
+            block_type: crate::join::JOIN_NOTICE_KIND.into(),
+            created_at: String::new(),
+            dispatch_anchor: None,
+            fields,
+        }
+    }
+
+    /// One finalized answer block, which ends the assessment window behind
+    /// it: what the turn before this one already answered is not what this
+    /// turn is assessing.
+    fn answer_row(id: i64, anchor: i64) -> Block {
+        let mut fields = serde_json::Map::new();
+        fields.insert("content".into(), json!("a recorded answer"));
+        Block {
+            id,
+            role: Some(Role::Assistant),
+            block_type: "text".into(),
+            created_at: String::new(),
+            dispatch_anchor: Some(anchor),
+            fields,
+        }
+    }
+
+    /// The join half of the assessment set (unit 36): a windowed
+    /// single-joiner event resolves to that joiner's principal; a windowed
+    /// event several joiners share resolves to no single principal, because
+    /// a guess would record the wrong person; a joiner whose row records
+    /// nobody declines as unrecorded — the join table's NOT NULL principal
+    /// keeps that shape out of every stored ledger, exactly as the message
+    /// table's does, so the two producers fold the same absence the same
+    /// way and it is pinned here at the pure seam where it is reachable; a
+    /// join is never the assistant's own voice; and a join outside the
+    /// window — behind the answer that ended the turn before — is not one
+    /// this turn is assessing.
+    #[test]
+    fn the_resolution_reaches_the_windowed_joins_and_no_others() {
+        let ledger = vec![
+            join_row(1, "origin-old-join", Some(11)),
+            answer_row(2, 1),
+            join_row(3, "origin-one-joiner", Some(21)),
+            join_row(4, "origin-two-joiners", Some(31)),
+            join_row(5, "origin-two-joiners", Some(32)),
+            join_row(6, "origin-nameless-record", None),
+            chat_row(7, Role::User, "origin-anchor", Some(5), true),
+            call_row(9, 7),
+        ];
+        assert_eq!(
+            resolve_reportable(&ledger, 9, "origin-one-joiner"),
+            Ok(Some(21)),
+            "a single-joiner event names the one person a filing would report"
+        );
+        assert_eq!(
+            resolve_reportable(&ledger, 9, "origin-two-joiners"),
+            Ok(None),
+            "an event several joiners share attaches no single principal"
+        );
+        assert_eq!(
+            resolve_reportable(&ledger, 9, "origin-nameless-record"),
+            Err(UNRECORDED_TARGET_ERROR),
+            "a join row recording nobody names nobody erasure can reach"
+        );
+        assert_eq!(
+            resolve_reportable(&ledger, 9, "origin-old-join"),
+            Err(NOT_ASSESSED_ERROR),
+            "a join behind the answer that closed the previous turn is out of sight"
+        );
+
+        // The per-origin dedup is per EVENT: one filing names it, and the
+        // second offender of the same event is named in that same filing.
+        let mut filed = ledger.clone();
+        filed.insert(
+            6,
+            Block {
+                id: 8,
+                role: None,
+                block_type: REPORT_KIND.into(),
+                created_at: String::new(),
+                dispatch_anchor: Some(7),
+                fields: Report::stored_fields("origin-two-joiners", None, "/report@m"),
+            },
+        );
+        assert_eq!(
+            resolve_reportable(&filed, 9, "origin-two-joiners"),
+            Err(ALREADY_REPORTED_ERROR),
+            "one filing per event, however many joiners it named"
+        );
+        assert_eq!(
+            resolve_reportable(&filed, 9, "origin-one-joiner"),
+            Ok(Some(21)),
+            "the dedup is per origin: another event still files"
+        );
+    }
+
+    /// An erased join carries no origin left, so it can be named by
+    /// nothing: the report path cannot re-materialize what erasure nulled.
+    #[test]
+    fn an_erased_join_is_nameable_by_nobody() {
+        let erased = Block {
+            id: 3,
+            role: None,
+            block_type: crate::join::JOIN_NOTICE_KIND.into(),
+            created_at: String::new(),
+            dispatch_anchor: None,
+            fields: serde_json::Map::new(),
+        };
+        let ledger = vec![
+            erased,
+            chat_row(4, Role::User, "origin-anchor", Some(5), true),
+            call_row(9, 4),
+        ];
+        assert_eq!(
+            resolve_reportable(&ledger, 9, "origin-gone"),
+            Err(NOT_ASSESSED_ERROR)
         );
     }
 
     /// The description teaches the validated shape: the id parameter, the
     /// assessment bound, the administrators' decision, and the only-way
-    /// rule.
+    /// rule. Since unit 36 it names both reportable kinds, in the
+    /// description and in the parameter alike — the model reads the
+    /// parameter contract here, and a definition naming messages alone
+    /// would deny the join case [`resolve_reportable`] admits.
     #[test]
     fn the_definition_teaches_the_id_the_bound_and_the_decision() {
         let definition = ReportTool::new("moderation_bot", Arc::new(RwLock::new(()))).definition();
         assert_eq!(definition.name, NAME);
         for fact in [
             "by its id",
-            "a message you are assessing in this turn",
+            "a message or join notice you are assessing in this turn",
+            "a join notice whose shown name does",
             "administrators decide",
             "never write the report command into an answer yourself",
         ] {
@@ -728,6 +1042,13 @@ mod tests {
                 "the description carries: {fact}"
             );
         }
+        let parameter = definition.parameters["properties"][PARAMETER_MESSAGE_ID]["description"]
+            .as_str()
+            .expect("the parameter describes itself");
+        assert!(
+            parameter.contains("message's or join notice's id"),
+            "the parameter names both reportable kinds: {parameter}"
+        );
         let required = definition.parameters["required"]
             .as_array()
             .expect("the schema names its required list");

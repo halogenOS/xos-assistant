@@ -63,11 +63,38 @@ framework's metadata ledger of upgraded stores, and decision 0012's OPEN
 item on erased prose shaping a derived title still applies to them. No new
 derivation will ever join them.
 
+## Amended 2026-08-29 — the join notice, and what this decision still holds
+
+Unit 36 stores one display name, and this decision is not reopened by it.
+What 0077 removed was a display name held as IDENTITY data — a column on the
+identity row, refreshed on every message, read by nothing. That stays
+removed: `SenderIdentity` still carries the external id and the username
+alone, the adapter still decodes no name field on a message, and the
+`principals` table still has no column for one.
+
+What unit 36 adds is different in kind. A group's join announcement SHOWS a
+name, and that name is the announcement's content the way a message's text
+is its content — it is the thing being assessed, since a joining account
+whose displayed name is itself an advertisement is the offense before it
+posts anything. So it is stored once, on the event that carried it, in the
+join-notice table, under the same erasure discipline as message text: the
+person-keyed pass empties it, and the projected join line carries it into a
+request as event content, never as an attribute of a person's message.
+
+The privacy documents move with it — the processing record's new category
+and its corrected boundary sentences, the policy's identity and deletion
+wording, and the two assessments' identity claims — so no published sentence
+claims a display name is never stored or never sent.
+
 ## Rejected alternatives
 
 - **Keeping the dead column.** A stored personal attribute nobody reads is
   liability without function, and every privacy document would keep
   carrying sentences about data held for nothing.
+- **Reopening the identity column for the join notice (2026-08-29).** A name
+  shown once at a join is a fact about that event; hanging it on the identity
+  row would make it a standing attribute of the person, refreshed and kept —
+  exactly the processing this decision removed.
 - **Nulling the column instead of dropping it.** The null-and-retire path
   exists for machinery that cannot drop a column; this store's SQLite drops
   columns, and a retired-but-present column invites the next writer to

@@ -367,6 +367,87 @@ static LITERAL_ADDRESSED_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The join notice's content table — an appended migration step of the
+/// join-notice unit (unit 36, 2026-08-29), per decision 0026's discipline.
+/// The table shape is the join kind's descriptor contract: the block header
+/// row is the ledger entry, this row carries one joiner's shown name, their
+/// handle, their principal, the shared event origin and the platform send
+/// time. Four of the five are personal data under the person-keyed null,
+/// which is why they are nullable; the principal id is NOT NULL, because a
+/// join nobody is recorded for is a record erasure could never reach. No
+/// frozen vocabulary list: the step quotes no enum.
+static JOIN_NOTICE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {table} (
+            block_id     INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {name}       TEXT,
+            {handle}     TEXT,
+            {principal}  INTEGER NOT NULL,
+            {origin}     TEXT,
+            {joined_at}  TEXT
+        );
+        CREATE INDEX {principal_index} ON {table}({principal});
+        CREATE INDEX {origin_index} ON {table}({origin});",
+        table = crate::join::JOIN_NOTICE_TABLE,
+        name = crate::join::COLUMN_NAME,
+        handle = crate::join::COLUMN_HANDLE,
+        principal = crate::join::COLUMN_PRINCIPAL_ID,
+        origin = crate::join::COLUMN_ORIGIN,
+        joined_at = crate::join::COLUMN_JOINED_AT,
+        principal_index = JOIN_NOTICE_PRINCIPAL_INDEX.as_str(),
+        origin_index = JOIN_NOTICE_ORIGIN_INDEX.as_str(),
+    )
+});
+
+/// The join notice's person-keyed index, named once: the appended step
+/// creates it and the suite's schema pins read it back under this name.
+/// The erasure pass and the target-keyed reply join both key on the
+/// principal column.
+pub static JOIN_NOTICE_PRINCIPAL_INDEX: LazyLock<String> =
+    LazyLock::new(|| format!("idx_{}_principal", crate::join::JOIN_NOTICE_TABLE));
+
+/// The join notice's event-keyed index, named once beside the person's.
+/// The table's other two access paths key on the event origin: the
+/// deletion mirror's whole-event null, and the reference collection that
+/// drives the reply-target and report-target nulls — both of them
+/// per-conversation lookups over a table that grows with every join the
+/// assistant ever saw.
+pub static JOIN_NOTICE_ORIGIN_INDEX: LazyLock<String> =
+    LazyLock::new(|| format!("idx_{}_origin", crate::join::JOIN_NOTICE_TABLE));
+
+/// The reported column's nullability — an appended migration step of the
+/// join-notice unit (unit 36, 2026-08-29). The column stood NOT NULL
+/// because every reportable was exactly one person; a join event naming
+/// several joiners is the first that is not, and a filing against it
+/// attaches no single principal rather than recording the wrong one. A
+/// column constraint cannot be altered in place, so the step recreates the
+/// report table without it, copies every row, and drops the old one. Every
+/// stored value survives unchanged; only the constraint relaxes. The table
+/// carries no index to rebuild.
+static REPORTED_NULLABLE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    let columns = format!(
+        "block_id, {target}, {reported}, {line}",
+        target = crate::tools::report::COLUMN_TARGET_ORIGIN,
+        reported = crate::tools::report::COLUMN_REPORTED_PRINCIPAL_ID,
+        line = crate::tools::report::COLUMN_LINE,
+    );
+    format!(
+        "CREATE TABLE {table}_nullable (
+            block_id   INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {target}   TEXT,
+            {reported} INTEGER,
+            {line}     TEXT NOT NULL
+        );
+        INSERT INTO {table}_nullable ({columns}) SELECT {columns} FROM {table};
+        DROP TABLE {table};
+        ALTER TABLE {table}_nullable RENAME TO {table};",
+        table = crate::tools::report::REPORT_TABLE,
+        target = crate::tools::report::COLUMN_TARGET_ORIGIN,
+        reported = crate::tools::report::COLUMN_REPORTED_PRINCIPAL_ID,
+        line = crate::tools::report::COLUMN_LINE,
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -391,6 +472,8 @@ pub fn store_config() -> StoreConfig {
                 DISPLAY_NAME_DROP_MIGRATION,
                 SUPPRESSION_FLAG_MIGRATION.as_str(),
                 LITERAL_ADDRESSED_MIGRATION.as_str(),
+                JOIN_NOTICE_MIGRATION.as_str(),
+                REPORTED_NULLABLE_MIGRATION.as_str(),
             ],
         }],
     }

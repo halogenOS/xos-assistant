@@ -55,6 +55,7 @@
 use agent_ledger::agency::Status;
 use agent_ledger::{Block, BlockKind, FromBlock};
 
+use crate::join::JoinNotice;
 use crate::kind::{AssistantKind, ChatMessage, FrameworkKind};
 use crate::message::Authority;
 
@@ -90,6 +91,7 @@ pub fn turn_reading(ledger: &[Block], call_block_id: i64) -> Authority {
             AssistantKind::Core(_)
             | AssistantKind::ToolPalette(_)
             | AssistantKind::ContextNote(_)
+            | AssistantKind::JoinNotice(_)
             | AssistantKind::Report(_) => None,
         });
     fold(origin, span)
@@ -110,6 +112,37 @@ pub fn turn_reading(ledger: &[Block], call_block_id: i64) -> Authority {
 /// frontier, a chain of pure propagators — each one more absence folded to
 /// the refusing side, exactly as the reading folds them downward.
 pub(crate) fn co_summoners(ledger: &[Block], call_block_id: i64) -> Vec<ChatMessage> {
+    windowed(ledger, call_block_id)
+        .into_iter()
+        .filter_map(|block| match AssistantKind::from_block(block) {
+            AssistantKind::ChatMessage(message) => Some(message),
+            _ => None,
+        })
+        .filter(ChatMessage::own_debt_taken)
+        .collect()
+}
+
+/// Everything one turn's window holds, newest first: the blocks recorded
+/// between the anchor and the call, then the anchor's own chain behind it,
+/// walked back to where [`chain_step`] says a turn's sight ends. The walk
+/// itself, recorded once — the questions asked OF the window differ, the
+/// window does not, and two hand-copied walks would eventually disagree
+/// about what a turn saw.
+///
+/// Empty for every unloadable shape, each one an absence folded to the
+/// refusing side exactly as the reading folds them downward: a null
+/// anchor, a call or anchor missing from the vector, a non-message
+/// frontier. The chain exists only behind a chat-message frontier, the
+/// same precondition as [`origin_reading`]: machinery is read through only
+/// BEHIND a real summons, never in place of one.
+///
+/// The filtering is the caller's, and the two callers filter differently:
+/// [`co_summoners`] keeps the chat messages that took a debt of their own,
+/// [`assessed_joins`] keeps the join notices. Every chat message the chain
+/// yields carries an answer-due stamp — a message owing nothing IS the end
+/// of the chain — so the debt predicate over the walk's blocks is the same
+/// set [`ChainStep::Votes`] names.
+fn windowed(ledger: &[Block], call_block_id: i64) -> Vec<&Block> {
     let Some(call) = ledger.iter().find(|block| block.id == call_block_id) else {
         return Vec::new();
     };
@@ -122,15 +155,7 @@ pub(crate) fn co_summoners(ledger: &[Block], call_block_id: i64) -> Vec<ChatMess
     let span = ledger
         .iter()
         .rev()
-        .filter(|block| block.id > anchor && block.id < call_block_id)
-        .filter_map(|block| match AssistantKind::from_block(block) {
-            AssistantKind::ChatMessage(message) => Some(message),
-            _ => None,
-        })
-        .filter(ChatMessage::own_debt_taken);
-    // The chain exists only behind a chat-message frontier, the same
-    // precondition as [`origin_reading`]: machinery is read through only
-    // BEHIND a real summons, never in place of one.
+        .filter(|block| block.id > anchor && block.id < call_block_id);
     let chain = matches!(
         AssistantKind::from_block(&ledger[anchor_index]),
         AssistantKind::ChatMessage(_)
@@ -139,17 +164,42 @@ pub(crate) fn co_summoners(ledger: &[Block], call_block_id: i64) -> Vec<ChatMess
         ledger[..=anchor_index]
             .iter()
             .rev()
-            .map(|block| (block, chain_step(block, ledger)))
-            .take_while(|(_, step)| !matches!(step, ChainStep::Ends))
-            .filter(|(_, step)| matches!(step, ChainStep::Votes(_)))
-            .filter_map(|(block, _)| match AssistantKind::from_block(block) {
-                AssistantKind::ChatMessage(message) => Some(message),
-                _ => None,
-            })
+            .take_while(|block| !matches!(chain_step(block, ledger), ChainStep::Ends))
     })
     .into_iter()
     .flatten();
     span.chain(chain).collect()
+}
+
+/// The join notices the turn's window carried — the report's own half of
+/// its assessment set (unit 36, 2026-08-29), read over the SAME
+/// [`windowed`] walk [`co_summoners`] reads, so both halves of what a turn
+/// assessed cover one turn's sight and neither can drift.
+///
+/// It is a question of its own instead of a widening of `co_summoners`,
+/// deliberately: that walk answers four questions with different needs —
+/// the report's target validation, the sole-principal reading, the answer
+/// threading and the disclosure fold — and a person the assistant merely
+/// WITNESSED joining is a summoner toward none of them. Widening the
+/// shared walk would make a windowed joiner count toward the
+/// first-contact disclosure line and toward the two-distinct decline, for
+/// a turn they never spoke in.
+///
+/// Empty for every unloadable shape the walk folds away: a null anchor, a
+/// call or anchor missing from the vector, a non-message frontier.
+pub(crate) fn assessed_joins(ledger: &[Block], call_block_id: i64) -> Vec<JoinNotice> {
+    windowed(ledger, call_block_id)
+        .into_iter()
+        .filter_map(join_of)
+        .collect()
+}
+
+/// One block as a join notice, `None` for every other kind.
+fn join_of(block: &Block) -> Option<JoinNotice> {
+    match AssistantKind::from_block(block) {
+        AssistantKind::JoinNotice(join) => Some(join),
+        _ => None,
+    }
 }
 
 /// The one PERSON behind the turn, over the co-summoners of

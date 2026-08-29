@@ -21,6 +21,9 @@
 //! deterministic replies' exemption),
 //! helpful (the answering mode's summons, the silent empty turn and the
 //! unspent window),
+//! joins (the join notice: its marked blocks through the observation seam,
+//! its transparency on both walks, its reach into the report path and its
+//! erasure by person and by event),
 //! projection (role alternation under erasure), speaker (the username
 //! projection), erasure with its stream
 //! ordering, the end-to-end turn, tools (the lookups against the scripted
@@ -54,6 +57,7 @@ mod erasure;
 mod erasure_streams;
 mod group_context;
 mod helpful;
+mod joins;
 mod lookup_wire;
 mod mirror;
 mod privacy_rights;

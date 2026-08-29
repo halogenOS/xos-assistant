@@ -62,6 +62,7 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         AssistantKind::Core(_)
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
+        | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_) => {
             panic!("the assistant's kind resolved through the delegate")
         }
@@ -79,7 +80,7 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         "a framework kind resolves through the delegate, untouched"
     );
 
-    assert_eq!(AssistantKind::DESCRIPTORS.len(), 4);
+    assert_eq!(AssistantKind::DESCRIPTORS.len(), 5);
     assert_eq!(AssistantKind::DESCRIPTORS[0].table, CHAT_MESSAGE_TABLE);
     assert_eq!(
         AssistantKind::DESCRIPTORS[1].table,
@@ -91,6 +92,10 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
     );
     assert_eq!(
         AssistantKind::DESCRIPTORS[3].table,
+        assistant_core::join::JOIN_NOTICE_TABLE
+    );
+    assert_eq!(
+        AssistantKind::DESCRIPTORS[4].table,
         assistant_core::tools::report::REPORT_TABLE
     );
     agent_ledger::agency::check_descriptor_durability::<AssistantKind>(AssistantKind::DESCRIPTORS)
@@ -130,6 +135,7 @@ fn resting_and_erased_messages_summon_no_turn() {
         AssistantKind::Core(_)
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
+        | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_) => {
             panic!("the resting row resolved through the delegate")
         }
@@ -172,6 +178,7 @@ fn resting_and_erased_messages_summon_no_turn() {
         AssistantKind::Core(_)
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
+        | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_) => {
             panic!("the erased row resolved through the delegate")
         }
@@ -251,6 +258,7 @@ async fn a_file_backed_store_reopens_and_loads_the_stored_kind() {
         AssistantKind::Core(_)
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
+        | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_) => {
             panic!("the reopened row resolved through the delegate")
         }
@@ -281,6 +289,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
                 "ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
                  ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
+                 DROP TABLE block_join_notice;
                  INSERT INTO principals (adapter, external_id, display_name, username)
                      VALUES ('test-adapter', '42', 'Ada Lovelace', 'ada');",
             )?;
@@ -297,7 +306,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
         .expect("the version-eleven store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        14,
+        16,
         "the appended steps advanced the domain's version"
     );
     let (columns, row): (Vec<String>, (String, String, Option<String>)) =
@@ -362,7 +371,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             Store::open_with(db.path(), store_config()).expect("the configured store opens");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            14,
+            16,
             "the domain's recorded version is the grounded-answer unit's"
         );
         // One recorded summoned message, then the rewind: drop exactly the
@@ -395,7 +404,9 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             .expect("the pre-upgrade row appends");
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
-                "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;"
+                "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
+                 DROP TABLE {join};",
+                join = assistant_core::join::JOIN_NOTICE_TABLE,
             ))?;
             Ok(())
         })
@@ -410,7 +421,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         .expect("the version-thirteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        14,
+        16,
         "the appended step advanced the domain's version"
     );
     let blocks = support::consumer_view(
@@ -434,8 +445,244 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         AssistantKind::Core(_)
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
+        | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_) => {
             panic!("the upgraded row resolved through the delegate")
         }
     }
+}
+
+/// AC1 of the join-notice unit (unit 36): a store the previous unit's
+/// binary wrote — version fourteen, its report table still carrying the
+/// NOT NULL reported column, a filed report standing in it — upgrades
+/// through the two appended steps. The table-recreating step is the one
+/// migration in this domain that can LOSE data, so the pin is about the
+/// data: the populated row survives column for column, the block still
+/// resolves as a report through the loaded ledger, and the relaxed
+/// constraint then accepts the filing a plural join event produces, which
+/// the old shape would have refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() {
+    let db = TempDb::new("v14-upgrade");
+    let conversation = a_populated_version_fourteen_store(&db).await;
+
+    let reopened = Store::open_with(db.path(), store_config())
+        .expect("the version-fourteen store reopens under the shipped configuration");
+    assert_eq!(
+        support::domain_migration_version(&reopened).await,
+        16,
+        "the appended steps advanced the domain's version"
+    );
+
+    // The recreated table's own shape, read back from the store: every
+    // column of the shipped table in its shipped order, the reported column
+    // relaxed and nothing else — the target stays nullable, the line stays
+    // NOT NULL, the primary key and its cascade to the block header stand.
+    let (columns, parent) = table_shape(&reopened, assistant_core::tools::report::REPORT_TABLE)
+        .await
+        .expect("the upgraded report table reads");
+    assert_eq!(
+        columns,
+        vec![
+            ("block_id".to_owned(), "INTEGER".to_owned(), 0, 1),
+            (
+                assistant_core::tools::report::COLUMN_TARGET_ORIGIN.to_owned(),
+                "TEXT".to_owned(),
+                0,
+                0
+            ),
+            (
+                assistant_core::tools::report::COLUMN_REPORTED_PRINCIPAL_ID.to_owned(),
+                "INTEGER".to_owned(),
+                0,
+                0
+            ),
+            (
+                assistant_core::tools::report::COLUMN_LINE.to_owned(),
+                "TEXT".to_owned(),
+                1,
+                0
+            ),
+        ],
+        "the recreated table keeps every column, its order and its types; \
+         only the reported column's NOT NULL is gone"
+    );
+    assert_eq!(
+        parent, "blocks",
+        "the header cascade survives the recreation"
+    );
+
+    // The data: the pre-migration row still stands, whole.
+    let blocks = support::consumer_view(
+        &reopened
+            .list_blocks(conversation)
+            .await
+            .expect("the upgraded ledger reads"),
+    );
+    match AssistantKind::from_block(&blocks[0]) {
+        AssistantKind::Report(report) => {
+            assert_eq!(
+                report.target_origin.as_deref(),
+                Some("origin-pre-upgrade"),
+                "the stored target survives the table recreation"
+            );
+            assert_eq!(
+                report.reported_principal_id,
+                Some(77),
+                "the stored reported principal survives it"
+            );
+            assert_eq!(
+                report.line.as_deref(),
+                Some("/report@moderation_bot"),
+                "the stored line survives it"
+            );
+        }
+        AssistantKind::Core(_)
+        | AssistantKind::ToolPalette(_)
+        | AssistantKind::ContextNote(_)
+        | AssistantKind::JoinNotice(_)
+        | AssistantKind::ChatMessage(_) => {
+            panic!("the upgraded report row resolved as another kind")
+        }
+    }
+
+    // The point of the step: a filing that names no single person — the
+    // plural join event's — now stores, where version fourteen refused it.
+    reopened
+        .append_consumer_block(
+            conversation,
+            None,
+            assistant_core::tools::report::REPORT_KIND,
+            assistant_core::tools::report::Report::stored_fields(
+                "origin-plural-event",
+                None,
+                "/report@moderation_bot",
+            ),
+            None,
+        )
+        .await
+        .expect("a report naming no single person appends over the relaxed column");
+
+    // The join table's own step brought both of its indexes with it.
+    let indexes = table_indexes(&reopened, assistant_core::join::JOIN_NOTICE_TABLE)
+        .await
+        .expect("the join table's indexes read");
+    assert!(
+        indexes.contains(&*assistant_core::schema::JOIN_NOTICE_PRINCIPAL_INDEX)
+            && indexes.contains(&*assistant_core::schema::JOIN_NOTICE_ORIGIN_INDEX),
+        "both keyed access paths of the join table are indexed: {indexes:?}"
+    );
+}
+
+/// A store on disk in the shape the previous unit's binary left: one filed
+/// report standing in a report table that still carries its NOT NULL
+/// reported column, no join table, the domain's version at fourteen.
+/// Returns the conversation the report sits in.
+///
+/// The rewind undoes exactly what the two steps past fourteen do, and the
+/// store closes before the caller reopens, so the upgrade reads the disk
+/// and not a live connection.
+async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
+    let store = Store::open_with(db.path(), store_config()).expect("the configured store opens");
+    let conversation = store
+        .create_conversation(
+            "scripted-1".into(),
+            "script-model".into(),
+            "Script Model".into(),
+            support::VENDOR.into(),
+        )
+        .await
+        .expect("a conversation row");
+    store
+        .append_consumer_block(
+            conversation,
+            None,
+            assistant_core::tools::report::REPORT_KIND,
+            assistant_core::tools::report::Report::stored_fields(
+                "origin-pre-upgrade",
+                Some(77),
+                "/report@moderation_bot",
+            ),
+            None,
+        )
+        .await
+        .expect("the pre-upgrade report appends");
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
+        conn.execute_batch(&format!(
+            "DROP TABLE {join};
+             CREATE TABLE {report}_v14 (
+                 block_id   INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+                 {target}   TEXT,
+                 {reported} INTEGER NOT NULL,
+                 {line}     TEXT NOT NULL
+             );
+             INSERT INTO {report}_v14 (block_id, {target}, {reported}, {line})
+                 SELECT block_id, {target}, {reported}, {line} FROM {report};
+             DROP TABLE {report};
+             ALTER TABLE {report}_v14 RENAME TO {report};",
+            join = assistant_core::join::JOIN_NOTICE_TABLE,
+            report = assistant_core::tools::report::REPORT_TABLE,
+            target = assistant_core::tools::report::COLUMN_TARGET_ORIGIN,
+            reported = assistant_core::tools::report::COLUMN_REPORTED_PRINCIPAL_ID,
+            line = assistant_core::tools::report::COLUMN_LINE,
+        ))?;
+        Ok(())
+    })
+    .await
+    .expect("the store rewinds to the previous unit's shape");
+    support::rewind_domain_migration_version(&store, 14).await;
+    conversation
+}
+
+/// One table's declared shape, read through the domain seam: each column's
+/// name, type, NOT NULL flag and primary-key position, in the table's own
+/// order, plus the table its foreign key points at. What a recreating
+/// migration must reproduce exactly.
+async fn table_shape(
+    store: &Store,
+    table: &str,
+) -> Result<(Vec<(String, String, i64, i64)>, String), agent_ledger::StoreError> {
+    let table = table.to_owned();
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
+        let mut statement = conn.prepare(&format!(
+            "SELECT name, type, \"notnull\", pk FROM pragma_table_info('{table}')"
+        ))?;
+        let columns = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let parent: String = conn.query_row(
+            &format!("SELECT \"table\" FROM pragma_foreign_key_list('{table}')"),
+            [],
+            |row| row.get(0),
+        )?;
+        Ok((columns, parent))
+    })
+    .await
+}
+
+/// The index names one table carries, alphabetically — what a migration
+/// step's own `CREATE INDEX` lines are read back through.
+async fn table_indexes(
+    store: &Store,
+    table: &str,
+) -> Result<Vec<String>, agent_ledger::StoreError> {
+    let table = table.to_owned();
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
+        let mut statement = conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?1 ORDER BY name",
+        )?;
+        let names = statement
+            .query_map([table], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(names)
+    })
+    .await
 }
