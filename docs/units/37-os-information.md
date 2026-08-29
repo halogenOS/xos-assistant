@@ -41,8 +41,11 @@ without; the single decline stays, deliberately.
   (the CPU architecture), and `source:` (the public homes). The operator named exactly
   these; no kernel version, no hostname, no uptime duplication. *Rejected:* a separate
   `os_info` tool — unit 34 recorded that operator-named facts join the runtime tool.
-- **The distribution is read from `/etc/os-release` at execute time through a reader
-  that answers the file's text or nothing, 2026-08-30.** Execute-time, so a rebuilt
+- **The distribution is read from `/etc/os-release` at execute time through ONE
+  public reader that owns the read AND the parse — it answers the finished
+  distribution string or nothing, 2026-08-30.** The spine pin recomputes through
+  this same reader and `fact_lines`; the module tests exercise the parse through a
+  public parse-from-text step the reader wraps, injecting shapes. Execute-time, so a rebuilt
   host answers truthfully without a restart. The reader collapses every failure —
   missing file, unreadable file — into nothing, and nothing renders `unknown` (the
   revision precedent: a named fact that should exist says so when absent; silence is
@@ -53,7 +56,8 @@ without; the single decline stays, deliberately.
   line at its FIRST `=`; trim ASCII whitespace around the value; strip ONE matching
   pair of surrounding double or single quotes; no escape processing — an escape
   sequence inside a value passes through as stored, accepted and stated. Empty after
-  that, treat as nothing. *Rejected:* an os-info crate for two keys;
+  that, treat as nothing and FALL THROUGH — an empty `PRETTY_NAME` yields to a
+  usable `NAME`; both empty is nothing. A repeated key: the FIRST occurrence wins. *Rejected:* an os-info crate for two keys;
   *rejected:* a subprocess (`uname`) — the header's promise;
   *rejected:* compile-time capture — it would state the build host's OS, not the one
   the process runs on;
@@ -71,8 +75,9 @@ without; the single decline stays, deliberately.
   the commit lookup's default hosts. Both are public facts: the framework was pushed
   to that public home on 2026-08-29 and announces its public name, ronna-core, in its
   user agent. The README's line saying the framework "has no public home yet" predates
-  that push and is corrected by this unit — the tool must not state what the README
-  denies. What does NOT move: decision 0004 — this repository's own record, about the
+  that push and is corrected by this unit, and so is the same denial's twin in the
+  `crates/core/Cargo.toml` comment (~:19-20) — the tool must not state what any
+  tracked file denies. What does NOT move: decision 0004 — this repository's own record, about the
   manifest's sibling-checkout path — stays as written; its dependency mechanics are
   untouched, and switching to a git dependency is separate work this unit does not
   start. *Rejected:* `CARGO_PKG_REPOSITORY` — empty in every manifest today, and
@@ -81,6 +86,10 @@ without; the single decline stays, deliberately.
   deployment;
   *rejected:* leaving the README as is — a published sentence contradicting a shipped
   tool answer.
+- **The three rows' bytes, exactly, 2026-08-30.** They append after the `time:`
+  row, in the order `os:`, `arch:`, `source:`; the source row joins the two URLs
+  with one `", "` — assistant's repository first, framework's second. *Rejected:*
+  two source rows — one fact (where the software lives), one row.
 - **The teaching and the description name the new questions, 2026-08-30.** "What OS
   do you run on", "what are you built on" route to the tool the same way the clock
   questions do; the description's enumeration grows, and the verbatim teaching pin
