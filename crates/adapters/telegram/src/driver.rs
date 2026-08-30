@@ -38,6 +38,8 @@
 //! the chat's next contact after a rest — the once-per-process memory is
 //! not set on failure, but the failure rests for a bounded window so a
 //! chat whose lookup keeps failing pays one platform call per window
+//! (a reset directive on an ingestion voids the memory too, so a chat
+//! whose session the core replaced is looked up afresh)
 //! instead of one per message — and never refuses the update: group facts are
 //! enrichment, not authority. A lookup that answered sets the memory
 //! whether the core observed or withdrew: an unadmitted group already
@@ -69,9 +71,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use assistant_core::{
-    Assistant, ChannelKind, ComposingState, ComposingUpdate, DeliveryHandle, FailureKind,
-    InboundMessage, IngestOutcome, Observation, ObserveOutcome, ObservedFact, Outbound,
-    OutboundMark, OutboundReply,
+    Assistant, ChannelKind, ChannelReset, ComposingState, ComposingUpdate, DeliveryHandle,
+    FailureKind, InboundMessage, IngestOutcome, Observation, ObserveOutcome, ObservedFact,
+    Outbound, OutboundMark, OutboundReply,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -569,7 +571,20 @@ impl<'a> Intake<'a> {
             timestamp: pending.sent_at,
         };
         match self.assistant.ingest(message).await {
-            Ok(IngestOutcome::Recorded { receipt, deliver }) => {
+            Ok(IngestOutcome::Recorded {
+                receipt,
+                deliver,
+                reset,
+            }) => {
+                // The core replaced the chat's session, so everything this
+                // process looked up for the old one describes a
+                // conversation the chat no longer speaks into: the memory
+                // is voided exactly as an admission voids it, and the next
+                // contact looks the chat up afresh. A translation of the
+                // core's directive, no decision of the adapter's.
+                if reset == ChannelReset::Replaced {
+                    self.memories.lookups.void(pending.chat_id);
+                }
                 if let Some(item) = deliver {
                     // The receipt names the conversation the item's send is
                     // recorded in (unit 38, 2026-08-30) — the ingestion's

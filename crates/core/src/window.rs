@@ -14,9 +14,11 @@
 //!   DISTINCT violations in a bad hour, and the report path bounds itself
 //!   per origin instead — each message reported at most once, in the
 //!   report tool's own dedup over the stored report blocks.
-//! - [`ReplyWindow`] — up to a cap of replies per key per window, the
-//!   privacy family's per-person bound, carrying the one writing of the
-//!   grant-exactly-with-the-action protocol in [`ReplyWindow::grant_with`].
+//! - [`ReplyWindow`] — up to a cap of replies per key per window, carrying
+//!   the one writing of the grant-exactly-with-the-action protocol in
+//!   [`ReplyWindow::grant_with`]. Three instances exist, one per family that
+//!   bounds something different: the privacy family's per-person bound, the
+//!   session resets' own bound beside it, and the web search's spend.
 //!
 //! The flood-amplifier discipline the protection unit recorded for notices
 //! applies to the lines anyone can trigger. The bookkeeping is in-memory on
@@ -55,6 +57,20 @@ pub const PRIVACY_REPLY_WINDOW: Duration = Duration::from_mins(5);
 /// silence, and the state change a silenced command would make is withheld
 /// with the reply, never applied silently.
 pub const PRIVACY_REPLY_CAP: u32 = 8;
+
+/// The session resets' own per-person window (unit 45, 2026-08-30), the
+/// same length as the rights replies' bound and its own constant beside it:
+/// the two families bound different things, and one family's flood must
+/// never silence the other's. `/wipe` and `/compact` share this one window,
+/// the privacy family's one-window-per-family shape.
+pub const RESET_REPLY_WINDOW: Duration = Duration::from_mins(5);
+
+/// How many session-reset replies one person draws inside one
+/// [`RESET_REPLY_WINDOW`]: eight, the rights replies' count, for the same
+/// reason — it covers a moderator's whole flow with repeats, and a flood
+/// past it draws recorded silence with the reset it would have made
+/// withheld alongside.
+pub const RESET_REPLY_CAP: u32 = 8;
 
 /// The web search's own per-person window (decided 2026-08-27, sized
 /// 2026-08-29): ten minutes, the same shape as the rights replies' bound

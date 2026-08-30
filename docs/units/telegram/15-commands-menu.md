@@ -1,5 +1,23 @@
 # Telegram unit 15 — the commands menu: published from the list the core accepts
 
+**Note, 2026-08-30: part of this design is built.** Unit 45 (the session-reset commands)
+adopted the catalogue's core half and shipped it, because it would otherwise have written a
+fourth hand-matched command list. What exists now: `crates/core/src/commands.rs` with
+`enum Command`, its pinned `ALL` order, `invocation()`, `offered(ChannelKind, Authority)`
+and `recognized()` folding ASCII case; the seven variants are the five privacy commands
+plus `/wipe` and `/compact`. `privacy::family_command` is a projection of `recognized()`;
+the command stamp has widened to any recognised command; `offered()` already decides the
+answer as well as the audience; `/del` stayed out of the catalogue as decided below. The
+decisions above are recorded as 0160 and 0161.
+
+What is left for THIS unit, unchanged: `summary()` and all the copy, `/help` and `/start`
+with their answers and their bounds, `offered_commands` on the assembly, the `LineWindow`
+re-keying, the whole platform publication with its scopes, retries and menu button, the
+drift check, and the documentation edits. Adding `Start` and `Help` to the enum will change
+`ALL`'s order to the one decided below; the pin over it is the deliberate act that records
+the change. This unit's own decision numbers are assigned when it merges, from the next
+free number then.
+
 Date: 2026-08-25, revised the same day against two independent reviews. The assistant already
 has commands. Five of them are the privacy family (`privacy.rs:45-60`), the adapter reports
 which one a message invoked and the core matches the report instead of the text

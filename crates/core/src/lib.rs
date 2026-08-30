@@ -29,6 +29,9 @@
 //! The public modules stay addressable by path, because their items read by
 //! their module's name:
 //!
+//! - [`commands`] — the command catalogue: the one list of commands this
+//!   assistant answers, the recognition that folds ASCII case, and the
+//!   reading of who is offered each command in which kind of channel.
 //! - [`delivery`] — the delivery-receipt kind: one message the assistant
 //!   successfully sent, recorded through [`Assistant::report_delivery`] so
 //!   a reply to it can quote her stored words.
@@ -61,6 +64,8 @@
 mod acknowledgment;
 mod assembly;
 mod authorization;
+pub mod commands;
+mod compaction;
 mod composing;
 pub mod delivery;
 mod disclosure;
@@ -81,6 +86,7 @@ pub mod provider;
 mod quoting;
 mod reply_commands;
 pub mod schema;
+mod session;
 mod streams;
 mod teaching;
 pub mod tools;
@@ -98,10 +104,11 @@ pub use disclosure::{Disclosure, composed_disclosure_line};
 pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
 pub use message::{
-    Authority, ChannelKey, ChannelKind, ComposingState, ComposingUpdate, DeliveryHandle,
-    DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand, JoinedMember,
-    Observation, ObserveOutcome, ObservedDelivery, ObservedFact, Outbound, OutboundMark,
-    OutboundReply, QuotedExcerpt, ReplyKind, ReplyTarget, ReplyThread, SenderIdentity,
+    Authority, ChannelKey, ChannelKind, ChannelReset, ComposingState, ComposingUpdate,
+    DeliveryHandle, DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand,
+    JoinedMember, Observation, ObserveOutcome, ObservedDelivery, ObservedFact, Outbound,
+    OutboundMark, OutboundReply, QuotedExcerpt, ReplyKind, ReplyTarget, ReplyThread,
+    SenderIdentity,
 };
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
@@ -111,6 +118,6 @@ pub use teaching::{
     moderation_taught,
 };
 pub use window::{
-    ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, SEARCH_BUDGET_CAP,
-    SEARCH_BUDGET_WINDOW,
+    ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, RESET_REPLY_CAP,
+    RESET_REPLY_WINDOW, SEARCH_BUDGET_CAP, SEARCH_BUDGET_WINDOW,
 };

@@ -32,6 +32,43 @@
 //! write path ever backfilled an older block id into a newer junction slot,
 //! the seed would mark too little as history and re-deliver, never lose.
 //!
+//! # A conversation this edge has never seen (unit 45, 2026-08-30)
+//!
+//! A conversation with no cursor here starts at its INHERITED BOUNDARY: the
+//! newest of its blocks that another conversation also holds, or zero when
+//! it holds none. Zero alone rested on a premise that held while every
+//! conversation was born empty and stopped holding the moment one could be
+//! born from a fork. A fork inherits its source's history through the
+//! junction, so its oldest blocks are answers this edge already delivered
+//! from the source: seeding at zero would send every one of them to the chat
+//! a second time, and would write a first-delivery disclosure line into
+//! blocks the source still holds — the edit through a fork that detaching
+//! exists to avoid.
+//!
+//! The boundary is exact rather than approximate, and it is a fact about
+//! the blocks instead of a moment anyone has to catch. A junction row is
+//! what makes a block part of a conversation, so a block two conversations
+//! hold is a block this one inherited, and ids ascend along junction order —
+//! so every inherited block sits at or below the newest shared one, and
+//! every block this conversation authored for itself sits above it. A
+//! conversation created fresh shares nothing with anybody and seeds at zero,
+//! so first contact delivers its first answer normally.
+//!
+//! The durable ratchet cursor is deliberately NOT the seed. It is the
+//! frontier of what the model has been driven through, it moves with every
+//! turn, and by the time a completed stream wakes this edge it already
+//! stands past the very answer the wake is about — reading it here would
+//! swallow that answer.
+//!
+//! # A conversation with no channel
+//!
+//! An item resolves its channel from the mapping at delivery time, so a
+//! conversation the channel has moved off — a retired one, or the source of
+//! a session reset — has nothing to deliver to and its stored items are
+//! dropped, at warn level. That is the point of a reset and not a defect:
+//! the session being replaced owes its unsent products to the record, not to
+//! the chat.
+//!
 //! On a stream error the edge yields the failure notice for that turn —
 //! marked [`ReplyKind::Notice`], derived from the lossy bus event and
 //! therefore at most once. One class of failure yields nothing at all and is
@@ -122,8 +159,10 @@
 //! exactly as a report is.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
+use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{Block, BlockKind, CoreEvent, FromBlock, Role, RuntimeContext, StoreError};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -303,9 +342,7 @@ pub(crate) async fn spawn_edge(
 /// The history boundary: every conversation mapped for this adapter starts
 /// its cursor at its newest stored block — one row per conversation through
 /// the framework's newest-block read, never a whole ledger — so nothing
-/// already stored when the edge is taken is ever delivered. A conversation
-/// mapped after the seed has no row here and starts at zero: all of its
-/// blocks postdate the edge.
+/// already stored when the edge is taken is ever delivered.
 async fn seed_cursors(
     ctx: &RuntimeContext<AssistantKind, CoreEvent>,
     adapter: &str,
@@ -351,13 +388,20 @@ async fn deliver_stored_items(
 ) -> Result<(), StoreError> {
     let tx = ctx.store().tx();
     let Some(channel) = mapping::channel_for_conversation(&tx, conversation_id).await? else {
+        tracing::warn!(
+            conversation_id,
+            "the conversation maps to no channel; its stored items are not delivered"
+        );
         return Ok(());
     };
     if channel.adapter != adapter {
         return Ok(());
     }
     let mut blocks = ctx.store().list_blocks(conversation_id).await?;
-    let cursor = cursors.entry(conversation_id).or_insert(0);
+    let cursor = match cursors.entry(conversation_id) {
+        Entry::Occupied(entry) => entry.into_mut(),
+        Entry::Vacant(entry) => entry.insert(inherited_boundary(&tx, conversation_id).await?),
+    };
     for index in 0..blocks.len() {
         let block_id = blocks[index].id;
         if block_id <= *cursor {
@@ -452,6 +496,36 @@ async fn deliver_stored_items(
     Ok(())
 }
 
+/// The newest block of this conversation that another conversation also
+/// holds — the position everything this conversation INHERITED sits at or
+/// below — or 0 when it inherited nothing (unit 45, 2026-08-30).
+///
+/// One query instead of a remembered moment: a junction row is what makes a
+/// block part of a conversation, and a block two conversations hold is one
+/// this conversation was forked with. The framework-table names it joins
+/// carry the deliberate coupling decision 0032 records.
+///
+/// # Errors
+///
+/// [`StoreError`] if the query fails or the store's actor has stopped.
+async fn inherited_boundary(tx: &StoreTx, conversation_id: i64) -> Result<i64, StoreError> {
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        let newest: Option<i64> = conn.query_row(
+            "SELECT MAX(cb.block_id) FROM conversation_blocks cb \
+             WHERE cb.conversation_id = ?1 \
+             AND EXISTS (\
+               SELECT 1 FROM conversation_blocks other \
+               WHERE other.block_id = cb.block_id \
+               AND other.conversation_id != ?1\
+             )",
+            [conversation_id],
+            |row| row.get(0),
+        )?;
+        Ok(newest.unwrap_or(0))
+    })
+    .await
+}
+
 /// Yield the one failure notice for a failed turn on this adapter's channel.
 /// A conversation that is not mapped, or is mapped for another adapter, is
 /// none of this edge's business — same as an answer's delivery.
@@ -467,6 +541,10 @@ async fn deliver_notice(
 ) -> Result<(), StoreError> {
     let tx = ctx.store().tx();
     let Some(channel) = mapping::channel_for_conversation(&tx, conversation_id).await? else {
+        tracing::warn!(
+            conversation_id,
+            "the conversation maps to no channel; its failure notice is not delivered"
+        );
         return Ok(());
     };
     if channel.adapter != adapter {

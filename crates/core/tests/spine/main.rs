@@ -44,7 +44,9 @@
 //! the turn's provenance), `privacy_rights` (the suppression drop, the
 //! self-service commands, the spawned deletion and the privacy tool),
 //! `mirror` (the deletion mirror riding the moderation bot's reply
-//! command), search (the web search's envelope over a scripted vendor, its
+//! command), reset (the session-reset commands: the wipe's empty session,
+//! the compact's kept tail, the outbound edge's inherited boundary, the
+//! floor and the direct-chat fence, and the unattended compaction), search (the web search's envelope over a scripted vendor, its
 //! guard and person bound refusing before the wire, its taught failures,
 //! and the one predicate deciding whether the tool exists), sourcing (the lookup-backed answer discipline: the literal
 //! addressed fact beside the summons, the silent empty turn and the
@@ -88,6 +90,7 @@ mod quotes;
 mod reactions;
 mod reasoning;
 mod report;
+mod reset;
 mod runtime_facts;
 mod search;
 mod sourcing;

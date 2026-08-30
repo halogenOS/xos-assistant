@@ -20,6 +20,7 @@ mod offset;
 mod quotes;
 mod reactions;
 mod report;
+mod reset;
 mod sending;
 mod server;
 mod support;

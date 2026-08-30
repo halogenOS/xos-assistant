@@ -738,6 +738,8 @@ impl std::fmt::Display for Skip {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assistant_core::commands::Command;
+
     use crate::client::{Chat, Incoming, PinnedContent, QuotedPart, RepliedTo, Update, User};
 
     /// The bot identity the tests resolve addressing against.
@@ -1426,6 +1428,38 @@ mod tests {
             recorded(&group_text_update("mail a@helper_bot.example")).command,
             None,
             "a non-command text reports nothing"
+        );
+    }
+
+    /// The shape the core's catalogue is handed for the two session
+    /// resets, whatever the person typed around the token: the bare
+    /// invocation. The addressed suffix is normalized away here, everything
+    /// past the token is dropped here, and a command aimed at another
+    /// recipient reports nothing — which is what lets the catalogue match
+    /// one token and fold nothing but case.
+    #[test]
+    fn the_session_reset_commands_arrive_as_the_bare_token_the_catalogue_matches() {
+        for (typed, command) in [
+            ("/wipe", Command::Wipe),
+            ("/wipe@helper_bot", Command::Wipe),
+            ("/wipe now", Command::Wipe),
+            ("/wipe@Helper_Bot now", Command::Wipe),
+            ("/compact", Command::Compact),
+            ("/compact@helper_bot please", Command::Compact),
+            ("/COMPACT", Command::Compact),
+        ] {
+            let pending = recorded(&group_text_update(typed));
+            assert_eq!(pending.text, typed, "the text is never rewritten");
+            assert_eq!(
+                assistant_core::commands::recognized(pending.command.as_ref()),
+                Some(command),
+                "{typed} reaches the catalogue as {command:?}"
+            );
+        }
+        assert_eq!(
+            recorded(&group_text_update("/wipe@helper_bot2 now")).command,
+            None,
+            "a reset aimed at another recipient reports no command"
         );
     }
 

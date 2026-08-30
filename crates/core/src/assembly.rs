@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use agent_ledger::providers::ReasoningLevel;
-use agent_ledger::store::{ModelOverride, ProviderInstance, StoreTx};
+use agent_ledger::store::{ProviderInstance, StoreTx};
 use agent_ledger::{
     BlockKind, CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext, Store,
     spawn_reactor,
@@ -26,6 +26,8 @@ use agent_ledger::{
 use tokio::sync::{Mutex, RwLock, mpsc};
 
 use crate::acknowledgment;
+use crate::commands::{self, Command};
+use crate::compaction::CompactTrigger;
 use crate::composing;
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
@@ -35,13 +37,14 @@ use crate::kind::{
     self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage, NEVER_ANSWERABLE,
 };
 use crate::message::{
-    Authority, ChannelKey, ChannelKind, ComposingUpdate, DeliveryHandle, DeliveryItem,
-    InboundMessage, IngestOutcome, IngestReceipt, JoinedMember, Observation, ObserveOutcome,
-    ObservedDelivery, ObservedFact, Outbound,
+    Authority, ChannelKey, ChannelKind, ChannelReset, ComposingUpdate, DeliveryHandle,
+    DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt, JoinedMember, Observation,
+    ObserveOutcome, ObservedDelivery, ObservedFact, Outbound,
 };
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::quoting;
+use crate::session::{CompactOutcome, Sessions, WipeOutcome};
 use crate::streams::StreamObserver;
 use crate::tools::changelog::HarnessChangelog;
 use crate::tools::mark::{self, MarkTool};
@@ -52,9 +55,12 @@ use crate::tools::search::{SearchConfig, WebSearch};
 use crate::tools::standing::StandingLookup;
 use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
 use crate::window::{
-    ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, ReplyWindow,
+    ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, RESET_REPLY_CAP,
+    RESET_REPLY_WINDOW, ReplyWindow,
 };
-use crate::{authorization, delivery, identity, join, mapping, mirror, outbound, privacy, streams};
+use crate::{
+    authorization, delivery, identity, join, mapping, mirror, outbound, privacy, session, streams,
+};
 
 /// The erasure fence, as the shared handle the report tool receives at its
 /// construction: ingestions and the tool's filing hold it shared, the
@@ -315,16 +321,19 @@ pub struct AssemblyConfig {
 /// composed kind, plus the assistant's two edges and the erasure operation.
 pub struct Assistant {
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
-    binding: ModelBinding,
-    /// The reasoning-effort level every new conversation is set to at its
-    /// creation. Read-only after start.
-    reasoning: ReasoningLevel,
-    /// The system prompt recorded into every conversation at its creation,
-    /// through the framework's system-prompt kind — already composed with
-    /// the identity and answering sections. The framework records a
-    /// conversation's prompt exactly once, so an edited prompt, name or
-    /// mode reaches new conversations only.
-    system_prompt: String,
+    /// The channel's conversation lifecycle: the model binding, the
+    /// reasoning level, the composed system prompt and the tool palette
+    /// every new conversation is created with, plus the operations that
+    /// create or replace one. Shared with the unattended compaction
+    /// watcher, which holds it weakly and ends with this assembly.
+    ///
+    /// It is also the one home of the two holds this assembly runs under —
+    /// the ingestion stamp lock and the erasure fence (unit 45,
+    /// 2026-08-30). They ordered ingestion before they ordered a reset, and
+    /// a reset is where the two meet, so every path here takes them through
+    /// [`Sessions::stamp_lock`] and [`Sessions::erasure_fence`] instead of
+    /// this type keeping a second handle to each.
+    sessions: Arc<Sessions>,
     /// How group messages summon a turn. Read-only after start; consulted
     /// at exactly one place, the ingest entry point's summons resolution.
     answering: AnsweringMode,
@@ -335,13 +344,6 @@ pub struct Assistant {
     /// The resolved first-interaction disclosure, handed to every outbound
     /// edge. Read-only after start.
     disclosure: Arc<crate::disclosure::Disclosure>,
-    /// The tool names every new conversation's palette block records —
-    /// exactly the set the assembly registered, derived from the one
-    /// [`ToolSet`] so the palette and the registry cannot name different
-    /// tools. Written at creation beside the system prompt; a conversation
-    /// created before the palette existed carries no block and admits
-    /// nothing.
-    palette: Vec<String>,
     /// The streaming state the erasure ordering reads; the observation's
     /// contract and its lossy edges are stated on the streams module.
     streams: Arc<StreamObserver>,
@@ -372,6 +374,13 @@ pub struct Assistant {
     /// one bound. The budgets never gate the family; this window is the
     /// whole bound, and a withheld reply withholds its state change too.
     privacy_replies: Arc<ReplyWindow>,
+    /// The session resets' per-person bound (unit 45, 2026-08-30): `/wipe`
+    /// and `/compact` share ONE instance, the privacy family's
+    /// one-window-per-family shape, and it is deliberately not the privacy
+    /// family's own — a flood of resets must not silence somebody else's
+    /// rights command. The reset is applied exactly with the granted reply,
+    /// so a withheld reply withholds the reset.
+    reset_replies: ReplyWindow,
     /// The pending deletion confirmations, keyed by principal and shared
     /// with the privacy tool: `/privacydelete` and the tool's
     /// `request_deletion` file here, `/confirmdelete` consumes here. Process
@@ -389,28 +398,6 @@ pub struct Assistant {
     /// [`PALETTE_MEMORY_CAP`] and cleared whole at the cap. Guarded by the
     /// stamp lock's serialization: every reader holds it.
     palette_reconciled: Mutex<HashSet<i64>>,
-    /// Serializes the answer-due stamp against other ingestions: the tail
-    /// read and the append it feeds are a read-then-write, and two
-    /// concurrent ingestions into one conversation could both observe the
-    /// pre-append tail — the later, unaddressed write would then be stamped
-    /// false, cancelling exactly the owed answer decision 0021 exists to
-    /// protect. Ingestion against ingestion is all this lock orders: the
-    /// runtime commits its answer blocks outside it, so a tail read can see
-    /// an answer-due tail whose answer commits a moment later, and the
-    /// stamp then summons one extra turn over an already-answered tail —
-    /// never a lost answer. One lock across all conversations, because
-    /// ingestion runs at chat scale and a per-conversation lock map would
-    /// buy contention nobody has.
-    stamp_lock: Mutex<()>,
-    /// Orders erasure against ingestion. An erasure reads, nulls and deletes
-    /// in several store operations, and an ingestion interleaved between
-    /// them could record a new message or map a new direct channel for the
-    /// person being erased, leaving personal data behind after the erasure
-    /// returns. Ingestions hold this shared, an erasure holds it
-    /// exclusively, so the erasure's steps see no half-recorded message.
-    /// Shared as a handle (2026-08-23) because the report tool holds it
-    /// across its resolution and its append, under the same reasoning.
-    erasure_fence: ErasureFence,
     /// Orders the deletion mirror's nulls against the tools that file a
     /// block naming a message origin — the same door those tools take
     /// around their own scan-then-append, because the fence cannot order
@@ -529,6 +516,43 @@ fn admit_unconditional_tools(tools: &mut ToolSet, started_at: Instant) {
     );
 }
 
+/// The two wiring checks the assembly refuses to start without, and the
+/// binding's provider instance recorded in the store.
+///
+/// Both refusals are loud on purpose: a store opened without the message
+/// kind's content table would fail every append later and further from the
+/// cause, and a vendor no registered module answers to would silently
+/// strand every conversation the binding creates.
+///
+/// # Errors
+///
+/// [`CoreError::MissingContentTable`], [`CoreError::UnknownVendor`], or
+/// [`CoreError::Store`] if recording the instance fails.
+async fn check_and_record_wiring(
+    store: &Store,
+    providers: &ProviderRegistry,
+    binding: &ModelBinding,
+) -> Result<(), CoreError> {
+    if !store.content_tables().contains(&CHAT_MESSAGE_TABLE) {
+        return Err(CoreError::MissingContentTable {
+            table: CHAT_MESSAGE_TABLE,
+        });
+    }
+    if providers.get(&binding.vendor).is_none() {
+        return Err(CoreError::UnknownVendor {
+            vendor: binding.vendor.clone(),
+        });
+    }
+    store
+        .save_provider_instance(ProviderInstance {
+            id: binding.provider_instance.clone(),
+            provider_type: binding.vendor.clone(),
+            name: binding.provider_display_name.clone(),
+        })
+        .await?;
+    Ok(())
+}
+
 impl Assistant {
     /// Assemble and start the core: check the wiring, record the binding's
     /// provider instance in the store, and spawn the runtime over the given
@@ -584,16 +608,7 @@ impl Assistant {
             disclosure.as_deref(),
             &name,
         ));
-        if !store.content_tables().contains(&CHAT_MESSAGE_TABLE) {
-            return Err(CoreError::MissingContentTable {
-                table: CHAT_MESSAGE_TABLE,
-            });
-        }
-        if providers.get(&binding.vendor).is_none() {
-            return Err(CoreError::UnknownVendor {
-                vendor: binding.vendor,
-            });
-        }
+        check_and_record_wiring(&store, &providers, &binding).await?;
         let erasure_fence: ErasureFence = Arc::new(RwLock::new(()));
         let filing_door = filing::door();
         let privacy_replies = Arc::new(ReplyWindow::new(PRIVACY_REPLY_WINDOW, PRIVACY_REPLY_CAP));
@@ -623,24 +638,31 @@ impl Assistant {
         let ctx: RuntimeContext<AssistantKind, CoreEvent> =
             RuntimeContext::new(store, bus, providers, Arc::new(registry))
                 .without_title_derivation();
-        ctx.store()
-            .save_provider_instance(ProviderInstance {
-                id: binding.provider_instance.clone(),
-                provider_type: binding.vendor.clone(),
-                name: binding.provider_display_name.clone(),
-            })
-            .await?;
         let streams = streams::spawn_observer(ctx.bus());
-        spawn_reactor(ctx.clone());
-        Ok(Self {
-            ctx,
+        // The two holds are handed to the sessions and kept there: every
+        // path in this assembly takes them back through it, so neither has
+        // a second home to drift from.
+        let sessions = Arc::new(Sessions::new(
+            ctx.clone(),
             binding,
             reasoning,
             system_prompt,
+            palette,
+            Arc::new(Mutex::new(())),
+            erasure_fence,
+        ));
+        // The unattended compaction watcher, beside the stream observer and
+        // on the same broadcast: a turn the framework ended over a spent
+        // tool-call window has left the conversation in the shape the
+        // command exists to clear, and nobody is going to type anything.
+        session::spawn_auto_compact(&sessions, ctx.bus());
+        spawn_reactor(ctx.clone());
+        Ok(Self {
+            ctx,
+            sessions,
             answering,
             name,
             disclosure,
-            palette,
             streams,
             protection,
             operators,
@@ -648,12 +670,11 @@ impl Assistant {
             privacy_policy_address,
             notice_answered: LineWindow::new(ACKNOWLEDGMENT_WINDOW),
             privacy_replies,
+            reset_replies: ReplyWindow::new(RESET_REPLY_WINDOW, RESET_REPLY_CAP),
             pending_deletions,
             note_read_pause: None,
             standing_read_pause: None,
             palette_reconciled: Mutex::new(HashSet::new()),
-            stamp_lock: Mutex::new(()),
-            erasure_fence,
             filing_door,
         })
     }
@@ -673,6 +694,15 @@ impl Assistant {
     /// Production never calls this.
     pub fn pause_between_standing_read_and_append(&mut self, pause: ScriptedPause) {
         self.standing_read_pause = Some(pause);
+    }
+
+    /// Install the reset claim race's test seam: the given pause runs
+    /// between a session reset's mapping delete and its claim, which is the
+    /// window a concurrent racer takes the channel in — so a suite proves
+    /// what a reset that lost the claim answers. Production never calls
+    /// this.
+    pub fn pause_between_reset_delete_and_claim(&mut self, pause: ScriptedPause) {
+        self.sessions.pause_between_reset_delete_and_claim(pause);
     }
 
     /// The ingestion edge: record one inbound message and answer with what
@@ -774,13 +804,12 @@ impl Assistant {
     /// row mid-claim. [`CoreError::Store`] if identity resolution, mapping
     /// or the append fails.
     pub async fn ingest(&self, message: InboundMessage) -> Result<IngestOutcome, CoreError> {
-        let _no_erasure_mid_message = self.erasure_fence.read().await;
+        let _no_erasure_mid_message = self.sessions.erasure_fence().read().await;
         let tx = self.ctx.store().tx();
 
         // The channel admission runs whole before the sender is looked at;
         // its checks and their order are on [`Self::admit_channel`].
-        let (mapped, refused) = self.admit_channel(&tx, &message).await?;
-        if let Some(refusal) = refused {
+        if let Some(refusal) = self.admit_channel(&tx, &message).await? {
             return Ok(refusal);
         }
         let Some(sender) = self.resolve_writing_sender(&tx, &message).await? else {
@@ -789,6 +818,7 @@ impl Assistant {
         let WritingSender {
             principal_id,
             authority,
+            command,
             family,
             suppressed,
         } = sender;
@@ -796,21 +826,14 @@ impl Assistant {
             pause().await;
         }
 
-        let conversation_id = match mapped {
-            Some((existing, _)) => existing,
-            None => {
-                self.map_new_channel(&message.channel, message.channel_kind)
-                    .await?
-            }
-        };
-
         // Held from the tail read and the budget counts through the append:
         // the stamp is decided against the tail this write is appended
         // behind, and the counts must see every earlier taken debt — so no
         // concurrent ingestion may slide a block in between, and two racing
-        // messages cannot both take the last budget slot. The lock's
-        // contract is on its field.
-        let _one_stamp_at_a_time = self.stamp_lock.lock().await;
+        // messages cannot both take the last budget slot. The lock's whole
+        // contract is on the field it lives on, [`Sessions::stamp_lock`].
+        let _one_stamp_at_a_time = self.sessions.stamp_lock().lock().await;
+        let conversation_id = self.conversation_under_lock(&tx, &message).await?;
         // The under-lock re-read closes the suppression race; its whole
         // reasoning is on [`Self::suppressed_under_lock`]. The command
         // family stays exempt, exactly as before the lock.
@@ -846,7 +869,12 @@ impl Assistant {
         }
         let summons = self.resolved_summons(&message);
         let owing_tail = self.owed_tail(conversation_id, &message, summons).await?;
-        let limited = if family.is_some() || mirrored.is_some() {
+        // The command stamp covers ANY recognized command since unit 45
+        // (2026-08-30), not the privacy family alone: recognition is global
+        // and the audience reading decides only the ANSWER, so a command
+        // invoked where it is not offered still takes no debt, opens no
+        // turn and never unlatches.
+        let limited = if command.is_some() || mirrored.is_some() {
             Some(kind::LimitedBy::Command)
         } else if summons.summoned {
             self.refusing_budget(principal_id, conversation_id).await?
@@ -905,7 +933,12 @@ impl Assistant {
         // skip — is the quoting module's; nothing about it reaches the
         // stamp, the windows or the answer.
         quoting::land_reply_quote(self.ctx.store(), conversation_id, &message).await?;
-        self.ctx
+        // The recorded row's own id travels to the command answer below: a
+        // `/compact` counts the conversation it FOUND, which is the rows
+        // older than this very block, and naming the row beats assuming it
+        // is the newest one.
+        let recorded_row = self
+            .ctx
             .store()
             .append_consumer_block(
                 conversation_id,
@@ -921,18 +954,24 @@ impl Assistant {
         // per-person slot — a grant spent before the append would answer
         // the redelivered command with silence — and a self-service state
         // change applies exactly when its reply is granted, never silently.
-        // The split on the recognized kind is total: the notice keeps its
-        // channel-keyed answer, the rights commands take the per-person
-        // reply path.
-        let deliver = match family {
-            Some(PrivacyCommand::Notice) if notice_admitted => {
-                self.notice_answer(conversation_id).await
-            }
-            Some(PrivacyCommand::SelfService(command)) => {
-                self.rights_reply(&tx, command, principal_id).await
-            }
-            Some(PrivacyCommand::Notice) | None => None,
-        };
+        //
+        // The audience reading decides the answer (unit 45, 2026-08-30): a
+        // command invoked below its floor, or in a kind of channel it does
+        // not serve, answers SILENCE. No refusal line goes out, because a
+        // refusal line advertises a surface the person cannot use — the
+        // stamp above already took the debt out of the message.
+        let (deliver, reset) = self
+            .command_answer(
+                &tx,
+                &message,
+                RecordedRow {
+                    conversation_id,
+                    block_id: recorded_row,
+                },
+                sender,
+                notice_admitted,
+            )
+            .await;
         if stamp.own_debt_taken() {
             self.ctx
                 .bus()
@@ -944,6 +983,44 @@ impl Assistant {
                 conversation_id,
             },
             deliver,
+            reset,
+        })
+    }
+
+    /// The conversation an ingested message is written into, resolved with
+    /// the stamp lock HELD — the observation path's own idiom, for the same
+    /// reason and one more.
+    ///
+    /// A session reset moves a channel from one conversation to another
+    /// under this very lock, so a mapping read taken before the lock can
+    /// name a conversation the channel has already left; the message would
+    /// then be appended into a retired ledger the model never reads again,
+    /// and the adapter's acknowledgment of that update means nothing
+    /// redelivers it. Resolved here, a message queued across a reset lands
+    /// in the session that survived it.
+    ///
+    /// The channel's first message creates the conversation, and the loser
+    /// of a creation race reads the winner's — the claim decides, here as
+    /// everywhere.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::ClaimLost`] if a first-message claim lost its mapping
+    /// row mid-claim; [`CoreError::Store`] if the read or the creation
+    /// fails.
+    async fn conversation_under_lock(
+        &self,
+        tx: &StoreTx,
+        message: &InboundMessage,
+    ) -> Result<i64, CoreError> {
+        Ok(match mapping::find(tx, &message.channel).await? {
+            Some((existing, _)) => existing,
+            None => {
+                self.sessions
+                    .map_new_channel(&message.channel, message.channel_kind)
+                    .await?
+                    .conversation_id
+            }
         })
     }
 
@@ -1036,7 +1113,7 @@ impl Assistant {
             // An absent prompt retires too: a mapped conversation that never
             // recorded one cannot be serving the current wording either, and
             // leaving it mapped would keep that silence permanent.
-            let prompt_current = recorded.as_deref() == Some(self.system_prompt.as_str());
+            let prompt_current = recorded.as_deref() == Some(self.sessions.system_prompt());
             // The stored model is what the dispatch actually sends, and a
             // conversation keeps the binding it was created with — so a
             // configured swap reaches an existing channel only through this
@@ -1046,8 +1123,9 @@ impl Assistant {
             // retires the channel.
             let model_current = match store.find_conversation(record.conversation_id).await? {
                 Some(conversation) => {
-                    conversation.model.external_id == self.binding.model
-                        && conversation.model.provider_id == self.binding.provider_instance
+                    conversation.model.external_id == self.sessions.binding().model
+                        && conversation.model.provider_id
+                            == self.sessions.binding().provider_instance
                 }
                 None => true,
             };
@@ -1059,52 +1137,35 @@ impl Assistant {
             else {
                 continue;
             };
-            let blocks = &blocks;
             let Some(last) = blocks.last().map(|block| block.id) else {
                 continue;
             };
-            // Fork rather than start over. The group's conversation is the
+            // Fork instead of starting over. The group's conversation is the
             // context every answer is built from, and a prompt edit is not a
             // reason to forget what was said — the fork inherits the history
             // through the junction, so nothing is copied and nothing is lost.
-            // The fork always carries the CURRENT binding: inheriting would
-            // preserve the stale model through the very walk that exists to
-            // retire it, and a prompt-only refresh aligning the model too is
-            // the deployment's one truth applied whole.
-            let successor = store
-                .fork_conversation(
-                    record.conversation_id,
-                    last,
-                    ModelOverride {
-                        provider_id: Some(self.binding.provider_instance.clone()),
-                        external_id: Some(self.binding.model.clone()),
-                        display_name: Some(self.binding.model_display_name.clone()),
-                        vendor: Some(self.binding.vendor.clone()),
-                        reasoning: None,
-                    },
-                )
-                .await?;
-            // The fork inherits the old prompt along with everything else, and
-            // an appended replacement would sit behind it, read second and
-            // obeyed unevenly. So the inherited one is detached from the fork
-            // — the source keeps it, because a fork does not edit what it came
-            // from — and the current prompt is recorded in its place.
-            for block in blocks.iter().filter(|block| {
-                matches!(
-                    AssistantKind::from_block(block),
-                    AssistantKind::Core(kind::FrameworkKind(BlockKind::SystemPrompt(_)))
-                )
-            }) {
-                store.detach_block(successor, block.id).await?;
-            }
-            store
-                .insert_system_prompt(successor, self.system_prompt.clone())
+            // The inherited prompt blocks are what the fork detaches: an
+            // appended replacement would sit behind them, read second and
+            // obeyed unevenly. Everything else about the fork — the current
+            // binding, the current prompt in their place, the configured
+            // reasoning level — is the session module's one recording of
+            // what a fork under the current deployment is.
+            let inherited_prompts: Vec<i64> = blocks
+                .iter()
+                .filter(|block| {
+                    matches!(
+                        AssistantKind::from_block(block),
+                        AssistantKind::Core(kind::FrameworkKind(BlockKind::SystemPrompt(_)))
+                    )
+                })
+                .map(|block| block.id)
+                .collect();
+            let successor = self
+                .sessions
+                .forked_with_current_prompt(record.conversation_id, last, &inherited_prompts)
                 .await?;
             mapping::delete_by_conversation(&tx, record.conversation_id).await?;
             mapping::claim(&tx, &channel, record.kind, successor).await?;
-            store
-                .set_conversation_reasoning(successor, Some(self.reasoning.as_key().to_owned()))
-                .await?;
             retired += 1;
             tracing::info!(
                 conversation_id = record.conversation_id,
@@ -1130,7 +1191,7 @@ impl Assistant {
         // Named without an underscore because the rules path below releases
         // it explicitly ahead of the acknowledgment generation; every other
         // path holds it to its return.
-        let no_erasure_mid_observation = self.erasure_fence.read().await;
+        let no_erasure_mid_observation = self.sessions.erasure_fence().read().await;
         let tx = self.ctx.store().tx();
 
         if let Some((_, stored_kind)) = mapping::find(&tx, &observation.channel).await?
@@ -1190,12 +1251,14 @@ impl Assistant {
                 // and both append. Mapping resolution sits inside the lock
                 // for the same reason — the loser of a creation race must
                 // see the winner's note, not its own empty conversation.
-                let one_stamp_at_a_time = self.stamp_lock.lock().await;
+                let one_stamp_at_a_time = self.sessions.stamp_lock().lock().await;
                 let conversation_id = match mapping::find(&tx, &observation.channel).await? {
                     Some((existing, _)) => existing,
                     None => {
-                        self.map_new_channel(&observation.channel, ChannelKind::Group)
+                        self.sessions
+                            .map_new_channel(&observation.channel, ChannelKind::Group)
                             .await?
+                            .conversation_id
                     }
                 };
                 // The palette supersession fires on observed activity too
@@ -1326,10 +1389,15 @@ impl Assistant {
         origin: &str,
         joined_at: &str,
     ) -> Result<(), CoreError> {
-        let _one_stamp_at_a_time = self.stamp_lock.lock().await;
+        let _one_stamp_at_a_time = self.sessions.stamp_lock().lock().await;
         let conversation_id = match mapping::find(tx, channel).await? {
             Some((existing, _)) => existing,
-            None => self.map_new_channel(channel, ChannelKind::Group).await?,
+            None => {
+                self.sessions
+                    .map_new_channel(channel, ChannelKind::Group)
+                    .await?
+                    .conversation_id
+            }
         };
         self.reconcile_palette(conversation_id).await?;
         if join::event_recorded(tx, conversation_id, origin).await? {
@@ -1488,7 +1556,7 @@ impl Assistant {
         erase_behind_the_fence(
             self.ctx.clone(),
             Arc::clone(&self.streams),
-            Arc::clone(&self.erasure_fence),
+            Arc::clone(self.sessions.erasure_fence()),
             principal_id,
         )
         .await
@@ -1525,7 +1593,12 @@ impl Assistant {
             message.sender.external_id.clone(),
         )
         .await?;
-        let family = privacy::family_command(message.command.as_ref());
+        // One recognition for the whole write (unit 45, 2026-08-30): the
+        // stamp reads whether ANY command was invoked, the delivery reads
+        // which, and the suppression exemption reads the privacy family
+        // projected out of it.
+        let command = commands::recognized(message.command.as_ref());
+        let family = command.and_then(privacy::family_of);
         let suppressed = standing.is_some_and(|standing| standing.opted_out);
         if suppressed && family.is_none() {
             return Ok(None);
@@ -1547,6 +1620,7 @@ impl Assistant {
         Ok(Some(WritingSender {
             principal_id,
             authority,
+            command,
             family,
             suppressed,
         }))
@@ -1560,16 +1634,17 @@ impl Assistant {
     /// switch off is refused the same fail-closed way, before the sender's
     /// principal exists, before the channel maps, before any block appends
     /// — so a deployment with the switch off keeps a stranger's direct
-    /// contact out of every table, not merely unanswered. Returns the
-    /// mapping read alongside the refusal, if any, so the entry point
-    /// reads the mapping exactly once.
+    /// contact out of every table, not merely unanswered. Answers the
+    /// refusal, if any, and nothing else: the conversation this message is
+    /// written into is resolved by the entry point INSIDE the stamp lock,
+    /// because a mapping read taken out here can be stale by the time the
+    /// append runs.
     async fn admit_channel(
         &self,
         tx: &StoreTx,
         message: &InboundMessage,
-    ) -> Result<(Option<(i64, ChannelKind)>, Option<IngestOutcome>), CoreError> {
-        let mapped = mapping::find(tx, &message.channel).await?;
-        if let Some((_, stored_kind)) = mapped
+    ) -> Result<Option<IngestOutcome>, CoreError> {
+        if let Some((_, stored_kind)) = mapping::find(tx, &message.channel).await?
             && stored_kind != message.channel_kind
         {
             return Err(CoreError::ChannelKindMismatch {
@@ -1580,12 +1655,12 @@ impl Assistant {
         if message.channel_kind == ChannelKind::Group
             && !authorization::is_authorized(tx, &message.channel).await?
         {
-            return Ok((mapped, Some(IngestOutcome::Withdraw)));
+            return Ok(Some(IngestOutcome::Withdraw));
         }
         if message.channel_kind == ChannelKind::Direct && self.direct_chats == DirectChats::Off {
-            return Ok((mapped, Some(IngestOutcome::Disregarded)));
+            return Ok(Some(IngestOutcome::Disregarded));
         }
-        Ok((mapped, None))
+        Ok(None)
     }
 
     /// The mirror's erasure, run for a triggering deletion command
@@ -1734,8 +1809,8 @@ impl Assistant {
     async fn rules_acknowledgment(&self, conversation_id: i64, rules_text: &str) -> String {
         acknowledgment::rules_acknowledgment(
             self.ctx.providers(),
-            &self.binding,
-            self.reasoning,
+            self.sessions.binding(),
+            self.sessions.reasoning(),
             &self.name,
             conversation_id,
             rules_text,
@@ -1801,7 +1876,7 @@ impl Assistant {
                     if self.pending_deletions.take(principal_id).await {
                         let ctx = self.ctx.clone();
                         let streams = Arc::clone(&self.streams);
-                        let fence = Arc::clone(&self.erasure_fence);
+                        let fence = Arc::clone(self.sessions.erasure_fence());
                         tokio::spawn(async move {
                             match erase_behind_the_fence(ctx, streams, fence, principal_id).await {
                                 Ok(outcome) => {
@@ -1846,58 +1921,173 @@ impl Assistant {
         }
     }
 
-    /// First message on a channel: create the conversation under the
-    /// assembly's binding, record the system prompt and the tool palette as
-    /// its first blocks, claim the mapping, and set the winner's reasoning
-    /// level to the assembly's configured one. Direct and group channels
-    /// take the identical path, so both get the same palette and the same
-    /// level.
+    /// What one recognized command answers, and what it did to the
+    /// channel's session — the delivery half of the ingestion, run after
+    /// the message row stands so a transiently failed append spends no
+    /// window and a granted change never applies into recorded silence.
     ///
-    /// Two ingestions can race here; the mapping's claim decides, and the
-    /// loser's conversation is deleted — its prompt and palette blocks with
-    /// it — before anything referenced it. Recording both before the claim
-    /// is what makes them the winner's first blocks: the losing racer's
-    /// message arrives in the winning conversation only after the winner's
-    /// records are in. The reasoning set follows the claim instead, on the
-    /// winner: both racers write the one configured value, so the second
-    /// write repeats the first, and the loser's deleted row never needed
-    /// one. Conversations created before the level shipped keep their
-    /// deferring null — no backfill, because a stored null already reads as
-    /// the provider's own default.
-    async fn map_new_channel(
+    /// The audience reading decides the answer, not only who is told about
+    /// the command: a command invoked below its floor, or in a kind of
+    /// channel it does not serve, is recognized, stamped and answered with
+    /// silence.
+    ///
+    /// The caller holds the erasure fence shared and the stamp lock, which
+    /// is what lets the two session resets swap a channel's conversation
+    /// from here with no ingestion halfway through one.
+    async fn command_answer(
         &self,
-        channel: &ChannelKey,
-        kind: ChannelKind,
-    ) -> Result<i64, CoreError> {
-        let store = self.ctx.store();
-        let created = store
-            .create_conversation(
-                self.binding.provider_instance.clone(),
-                self.binding.model.clone(),
-                self.binding.model_display_name.clone(),
-                self.binding.vendor.clone(),
-            )
-            .await?;
-        store
-            .insert_system_prompt(created, self.system_prompt.clone())
-            .await?;
-        store
-            .append_consumer_block(
-                created,
-                None,
-                TOOL_PALETTE_KIND,
-                ToolPalette::stored_fields(&self.palette),
-                None,
-            )
-            .await?;
-        let winner = mapping::claim(&store.tx(), channel, kind, created).await?;
-        if winner != created {
-            store.delete_conversation(created).await?;
+        tx: &StoreTx,
+        message: &InboundMessage,
+        recorded: RecordedRow,
+        sender: WritingSender,
+        notice_admitted: bool,
+    ) -> (Option<DeliveryItem>, ChannelReset) {
+        let WritingSender {
+            principal_id,
+            authority,
+            command,
+            ..
+        } = sender;
+        let RecordedRow {
+            conversation_id,
+            block_id,
+        } = recorded;
+        let offered = command.filter(|command| command.offered(message.channel_kind, authority));
+        match offered {
+            Some(Command::Wipe) => {
+                self.reset_reply(principal_id, Command::Wipe, async {
+                    Ok(
+                        match self
+                            .sessions
+                            .wipe(conversation_id, &message.channel, message.channel_kind)
+                            .await?
+                        {
+                            // The fresh conversation carries none of the
+                            // channel's standing observations, so the
+                            // adapter is told to forget what it looked up
+                            // for the old session.
+                            WipeOutcome::Replaced => {
+                                Some((commands::WIPE_DONE, ChannelReset::Replaced))
+                            }
+                            // A lost claim made nothing: the fresh
+                            // conversation is gone and the channel holds
+                            // whatever the racer left it with. Answering
+                            // the done line would report a replacement this
+                            // command did not make, and firing the
+                            // directive would make the adapter forget for a
+                            // session that never arrived.
+                            WipeOutcome::ClaimLost => None,
+                        },
+                    )
+                })
+                .await
+            }
+            Some(Command::Compact) => {
+                self.reset_reply(principal_id, Command::Compact, async {
+                    Ok(
+                        match self
+                            .sessions
+                            .compact(
+                                conversation_id,
+                                &message.channel,
+                                message.channel_kind,
+                                CompactTrigger::Command {
+                                    invoking_row: block_id,
+                                },
+                            )
+                            .await?
+                        {
+                            CompactOutcome::AlreadyCompact => {
+                                Some((commands::COMPACT_ALREADY, ChannelReset::Kept))
+                            }
+                            // The fork keeps the newest context notes, so
+                            // the channel's standing observations cross
+                            // with it and the adapter has nothing to
+                            // forget.
+                            CompactOutcome::Compacted => {
+                                Some((commands::COMPACT_DONE, ChannelReset::Kept))
+                            }
+                            // A lost claim trimmed nothing: the fork was
+                            // dropped, and the surviving session is the
+                            // racer's doing, not this command's.
+                            CompactOutcome::ClaimLost => None,
+                        },
+                    )
+                })
+                .await
+            }
+            // Every other recognized command is the privacy family's, read
+            // through the family's own projection so the mapping between
+            // the catalogue and the family stays recorded once. The split
+            // there is total: the notice keeps its channel-keyed answer,
+            // the rights commands take the per-person reply path.
+            Some(command) => (
+                match privacy::family_of(command) {
+                    Some(PrivacyCommand::Notice) if notice_admitted => {
+                        self.notice_answer(conversation_id).await
+                    }
+                    Some(PrivacyCommand::SelfService(rights)) => {
+                        self.rights_reply(tx, rights, principal_id).await
+                    }
+                    Some(PrivacyCommand::Notice) | None => None,
+                },
+                ChannelReset::Kept,
+            ),
+            None => (None, ChannelReset::Kept),
         }
-        store
-            .set_conversation_reasoning(winner, Some(self.reasoning.as_key().to_owned()))
-            .await?;
-        Ok(winner)
+    }
+
+    /// One session-reset command's reply, on the resets' own per-person
+    /// window (unit 45, 2026-08-30), through the same
+    /// grant-exactly-with-the-change operation the rights commands ride: a
+    /// withheld reply withholds the reset, so a flood never resets a
+    /// session into recorded silence, and a reset that failed hands its
+    /// grant back before it is logged and answered with nothing.
+    ///
+    /// The silence claims nothing about atomicity, and the claim would be
+    /// false: the swap is several store calls. The sweep itself is one
+    /// transaction, so no fork is ever half-swept; what is left is the
+    /// fork-then-claim window the creation race already has, where a
+    /// failure can leave a fork nothing points at — harmless, never
+    /// cleaned — or a channel with no mapping, which the adapter's
+    /// redelivery of the unacknowledged update converges on at the next
+    /// attempt. The failure log says that instead of promising nothing
+    /// moved.
+    ///
+    /// The change answers what to say AND what the adapter must forget, so
+    /// the directive is decided by the operation that made it and not
+    /// re-derived from the command afterwards. It answers `None` when the
+    /// reset made nothing of its own — a mapping claim lost to a concurrent
+    /// racer — and then the chat hears nothing and no directive fires: the
+    /// surviving session is the racer's, and this command has nothing to
+    /// report as its own. That case is not a failure, so the grant stays
+    /// spent, and the record of it is the reset's own warn log where the
+    /// claim was lost.
+    async fn reset_reply(
+        &self,
+        principal_id: i64,
+        command: Command,
+        change: impl Future<Output = Result<Option<(&'static str, ChannelReset)>, CoreError>>,
+    ) -> (Option<DeliveryItem>, ChannelReset) {
+        match self.reset_replies.grant_with(principal_id, change).await {
+            Some(Ok(Some((line, reset)))) => {
+                (Some(DeliveryItem::CommandAnswer(line.to_owned())), reset)
+            }
+            // Two silences of one shape: a claim lost to a racer, where
+            // this command made nothing to report, and an exhausted window,
+            // where the reply was withheld and its change with it. Neither
+            // says anything and neither fires a directive.
+            Some(Ok(None)) | None => (None, ChannelReset::Kept),
+            Some(Err(error)) => {
+                tracing::warn!(
+                    principal_id,
+                    invocation = command.invocation(),
+                    %error,
+                    "the session reset failed partway; the chat hears nothing, and what stands is in the log above"
+                );
+                (None, ChannelReset::Kept)
+            }
+        }
     }
 
     /// The palette supersession on delta (decided 2026-08-23), under the
@@ -1924,7 +2114,7 @@ impl Assistant {
         }
         let stored = palette::newest_tools(self.ctx.store(), conversation_id).await?;
         let already_current =
-            stored.is_some_and(|tools| tools.as_deref() == Some(self.palette.as_slice()));
+            stored.is_some_and(|tools| tools.as_deref() == Some(self.sessions.palette()));
         if !already_current {
             self.ctx
                 .store()
@@ -1932,7 +2122,7 @@ impl Assistant {
                     conversation_id,
                     None,
                     TOOL_PALETTE_KIND,
-                    ToolPalette::stored_fields(&self.palette),
+                    ToolPalette::stored_fields(self.sessions.palette()),
                     None,
                 )
                 .await?;
@@ -2081,13 +2271,20 @@ impl Assistant {
 }
 
 /// What the writing path knows about an admitted sender: the resolved
-/// principal, the delivered authority, the privacy command family member
-/// the message invokes, if any, and whether the suppression flag stands —
-/// the facts [`Assistant::resolve_writing_sender`] hands the stamp, the
-/// stored fields and the delivery.
+/// principal, the delivered authority, the command the message invokes with
+/// the privacy family it projects to, and whether the suppression flag
+/// stands — the facts [`Assistant::resolve_writing_sender`] hands the stamp,
+/// the stored fields and the delivery.
+#[derive(Debug, Clone, Copy)]
 struct WritingSender {
     principal_id: i64,
     authority: Authority,
+    /// The catalogue command the message invokes, if any — the one
+    /// recognition of the write. The stamp reads whether it is present at
+    /// all; the delivery reads which one it is.
+    command: Option<Command>,
+    /// The privacy family member the command projects to, if any: the
+    /// suppression exemption's own reading.
     family: Option<PrivacyCommand>,
     /// The standing suppression flag: `true` only on an exempt command,
     /// since every other suppressed message was dropped before this. The
@@ -2095,6 +2292,19 @@ struct WritingSender {
     /// speaker, so after a deletion no command re-materializes the emptied
     /// handle.
     suppressed: bool,
+}
+
+/// Where one ingested message landed: the conversation it was written into,
+/// resolved under the stamp lock, and the id of its own recorded row.
+///
+/// The two travel together because the delivery half needs both and neither
+/// answers the other's question: a `/compact` acts on the conversation and
+/// counts against the row, and a reading that inferred the row from the
+/// conversation's tail would be assuming exactly what this states.
+#[derive(Debug, Clone, Copy)]
+struct RecordedRow {
+    conversation_id: i64,
+    block_id: i64,
 }
 
 /// The one erasure body, behind the fence taken for writing: what
