@@ -1,9 +1,9 @@
 # Unit 44 — the bait bar rises to certainty
 
-Date: 2026-08-30. The operator's instruction, verbatim, after the live assistant
-reported a joiner named "PurePerson" as promotional bait ("that name smells like
-promotional bait"): "Waaaaay too sensitive. It must be actual bait like 100% obvious.
-Not just smelling." So: the join-name report fires only on a name that is
+Date: 2026-08-30. The assistant reported a joiner whose ordinary name merely
+sounded promotional, explaining that it smelled like bait, and the operator
+ruled the bar wrong: only actual bait — one hundred percent obvious — may be
+reported, never a smell. So: the join-name report fires only on a name that is
 unmistakably bait, and suspicion — however strong it smells — means doing nothing.
 
 ## Grounding

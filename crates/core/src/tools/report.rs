@@ -8,8 +8,9 @@
 //! tool NAMING the violating record by its projected id. The named origin
 //! is validated against the turn's own assessment set — the co-summoning
 //! messages, and since unit 36 (2026-08-29) the join notices the same
-//! window carried, whose promotional-bait names are the offense before any
-//! message is sent — so the model gains the
+//! window carried, whose unmistakably promotional-bait
+//! names are the offense before any message is sent (the certainty bar of
+//! unit 44) — so the model gains the
 //! precision to pick one violator among several absorbed messages and
 //! cannot aim a report at anything else: not an old message, not an
 //! arbitrary id, not another channel's. Executing the tool appends a

@@ -65,12 +65,14 @@ pub fn moderation_taught(handle_configured: bool, answering: AnsweringMode) -> b
 ///
 /// Since unit 36 (2026-08-29) the same teaching carries the join rule: a
 /// join notice is marked with its own bracketed id, a shown name that is
-/// itself promotional bait is the violation before the account has spoken,
-/// and it is reported on sight by that id. The report is the whole action
-/// — no ban, no kick, no reply to the joiner — so decision 0070 is
-/// untouched: the assistant assesses and the group's administrators
-/// decide. It rides here, behind [`moderation_taught`]'s two conditions,
-/// because the rule is worthless where the report tool is not admitted.
+/// itself unmistakably promotional bait — obvious at a glance to anyone —
+/// is the violation before the account has spoken, and it is reported on
+/// sight by that id; a name that is merely suspect is not bait, and doubt
+/// means no report (unit 44's bar, both halves). The report is the whole action — no ban, no kick, no
+/// reply to the joiner — so decision 0070 is untouched: the assistant
+/// assesses and the group's administrators decide. It rides here, behind
+/// [`moderation_taught`]'s two conditions, because the rule is worthless
+/// where the report tool is not admitted.
 pub const MODERATION_TEACHING: &str = "You also assess each group message against the group's pinned rules, \
      shown to you as the newest rules statement. That statement is the \
      group's only rules source: when no rules statement is present, the \
@@ -87,11 +89,14 @@ pub const MODERATION_TEACHING: &str = "You also assess each group message agains
      report command into an answer yourself. \
      You also see join notices, each marked with its own bracketed id: a \
      line stating that someone joined the group, under the name the \
-     platform showed. When a joiner's shown name is itself promotional \
-     bait — an advertisement, a solicitation or a come-on carried in place \
-     of a name — that name is the violation before the account has said \
-     anything, and you report the join on sight, naming it by its \
-     bracketed id exactly as you would name a violating message. Filing \
+     platform showed. When a joiner's shown name is itself unmistakably \
+     promotional bait — an advertisement, a solicitation or a come-on \
+     carried in place of a name, obvious at a glance to anyone — that name \
+     is the violation before the account has said anything, and you report \
+     the join on sight, naming it by its bracketed id exactly as you would \
+     name a violating message. A name that merely sounds promotional, or \
+     that you suspect but cannot be certain of, is not bait: report only \
+     what is beyond doubt, and when in doubt, do nothing. Filing \
      the report is the whole action: you never ban, kick, or reply to the \
      joiner, and a join you do not report needs no comment.";
 
@@ -878,27 +883,31 @@ mod tests {
         }
     }
 
-    /// AC6 (unit 36): the join rule rides the same teaching — the marked
-    /// join line, the shown name as the violation before any message, the
-    /// report on sight by the bracketed id, and the report as the WHOLE
-    /// action, with no ban, kick or reply to the joiner anywhere in it.
+    /// AC6 (unit 36): the join rule rides the same teaching, and since
+    /// unit 44 (2026-08-30) it is pinned WHOLE — the entire join block,
+    /// byte for byte, from the join-notice line to the closing no-comment
+    /// sentence. One assertion, so no word of the bar — the certainty
+    /// trigger, the aside, the suspicion carve-out, the doubt rule, the
+    /// whole-action close — can drift silently.
     #[test]
     fn the_moderation_teaching_carries_the_join_rule_as_the_whole_action() {
-        for fact in [
-            "You also see join notices, each marked with its own bracketed id",
-            "under the name the platform showed",
-            "a joiner's shown name is itself promotional bait",
-            "that name is the violation before the account has said anything",
-            "you report the join on sight, naming it by its bracketed id",
-            "Filing the report is the whole action: you never ban, kick, or \
-             reply to the joiner",
-            "a join you do not report needs no comment",
-        ] {
-            assert!(
-                MODERATION_TEACHING.contains(fact),
-                "the join rule carries: {fact}"
-            );
-        }
+        assert!(
+            MODERATION_TEACHING.ends_with(
+                "You also see join notices, each marked with its own bracketed id: a \
+                 line stating that someone joined the group, under the name the \
+                 platform showed. When a joiner's shown name is itself unmistakably \
+                 promotional bait — an advertisement, a solicitation or a come-on \
+                 carried in place of a name, obvious at a glance to anyone — that name \
+                 is the violation before the account has said anything, and you report \
+                 the join on sight, naming it by its bracketed id exactly as you would \
+                 name a violating message. A name that merely sounds promotional, or \
+                 that you suspect but cannot be certain of, is not bait: report only \
+                 what is beyond doubt, and when in doubt, do nothing. Filing \
+                 the report is the whole action: you never ban, kick, or reply to the \
+                 joiner, and a join you do not report needs no comment."
+            ),
+            "the whole join block stands, byte for byte"
+        );
         let taught = composed_system_prompt("b", "n", AnsweringMode::Helpful, moderating());
         assert!(
             taught.contains("report the join on sight"),
