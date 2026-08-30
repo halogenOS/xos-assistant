@@ -1656,6 +1656,32 @@ fn the_her_reply_quotes_decisions_are_recorded_with_dates_and_rejected_alternati
     );
 }
 
+/// Unit 44: the raised join bar's decision is recorded beside the others —
+/// dated, naming the unit, carrying the alternatives it beat — and it
+/// quotes the shipped suspicion sentence exactly, so the record can serve
+/// as the drift reference for the bar it decided.
+#[test]
+fn the_bait_bar_decision_is_recorded_and_quotes_the_shipped_words() {
+    let content = repo_file("docs/decisions/0167-the-join-report-requires-certainty.md");
+    assert!(
+        content.contains("Date: 2026-08-30, with unit 44."),
+        "the record carries its date and the unit it was decided with"
+    );
+    assert!(
+        content.contains("## Rejected alternatives"),
+        "the record carries its rejected alternatives"
+    );
+    let quoted = flattened(
+        "A name that merely sounds promotional, or that you suspect but \
+         cannot be certain of, is not bait: report only what is beyond \
+         doubt, and when in doubt, do nothing.",
+    );
+    assert!(
+        flattened(&content).contains(&quoted),
+        "the record quotes the shipped suspicion sentence verbatim"
+    );
+}
+
 /// Unit 40's AC5: the heads-up line's decisions are recorded beside the
 /// others — numbered from the highest shipped, dated, each naming the unit
 /// it was decided with and the alternatives it beat — and the teaching the
