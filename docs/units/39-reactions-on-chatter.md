@@ -73,9 +73,10 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   table's CHECK bounds length alone (non-empty, at most 32 bytes), the schema
   twin of the tool bound below. T6's target validation survives with one collapse: a call
   naming no id or an unknown origin is refused exactly as T6 pins it, and the
-  assistant's own message is caught by the no-principal refusal — her messages
-  carry no principal row — so T6's DISTINCT own-message decline text is
-  unreachable, is not built, and its pin dies with it — "bot messages are reactable"
+  assistant's own message is caught by the ANTI-AIMING decline before any other
+  check — her voice writes no chat rows, so her message ids are never in the
+  co-summoner set — so T6's DISTINCT own-message decline text is unreachable,
+  is not built, and its pin dies with it — "bot messages are reactable"
   means OTHER bots' messages, which carry principals like any member's. The tool's model-facing name moves with the vocabulary: `mark_seen` no
   longer says what the tool does, so the tool is named `react`, its parameters
   the message id and the emoji — a model-facing string decided here, T6's
@@ -89,7 +90,11 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   error naming the bound; within the bound the string is stored verbatim. A mark
   the platform cannot carry is dropped by the adapter with a log line and the model
   is never told — the tool has already returned, and an act whose whole point is
-  being cheap earns no delivery report. Stated as the accepted consequence.
+  being cheap earns no delivery report. The composite is stated plainly: a
+  mis-picked emoji files the mark, the drop loses it, and the per-origin
+  existence check then refuses every later attempt on that message — one bad
+  pick permanently unmarks it, the same accepted permanence as the death-window
+  loss. Stated as the accepted consequence.
   *Rejected:* echoing delivery back into the conversation, or recording the
   mark's delivery at all — a return path EXISTS since unit 38 (the Reply arm
   carries a delivery handle the adapter hands back), and the Mark arm omits it
@@ -195,7 +200,8 @@ no-judging-variant structure, the glyph table, or the single named mark's wire f
 is superseded (AC-D and AC-E replace them; AC4's block-append half survives and is
 re-pinned under AC-D, its request-shape pin re-created among AC-D's membership
 pins); T6's AC2 allowlist is superseded by the cleanliness decision's enumerated
-scan; T6's AC14 is replaced whole by AC-E; and T6's AC16 — the decision-file
+scan; T6 AC5's own-message decline pin dies with the collapse the palette
+decision records; T6's AC14 is replaced whole by AC-E; and T6's AC16 — the decision-file
 recording of the closed enum and the no-negative-mark shape as standing decisions
 — is replaced whole by AC-C, whose records supersede exactly those statements. T6's trigger rule lives
 in its decisions, not its criteria, and is superseded by the trigger decision above.
@@ -217,9 +223,10 @@ in its decisions, not its criteria, and is superseded by the trigger decision ab
   checks the cleanliness decision defines, each proven by its failing fixture;
   the adapter's membership rule is pinned five ways: the model's bare heart and
   its selector-carrying form both map to the list's bare-heart entry (the
-  heart-on-fire entry stays distinct under its joiner), each byte-ambiguous
-  entry (the bare heart among them)
-  has its list bytes asserted independently (the byte-hazard rule), the request
+  heart-on-fire entry stays distinct under its joiner), the WHOLE list is asserted — all
+  seventy-three entries' bytes and the count itself, the byte-hazard rule read
+  against a palette where every entry is sendable (a dropped, transposed or
+  selector-polluted entry must fail a test, not surface as invisible drops) — the request
   shape is pinned (one send, a one-element emoji-typed reaction array — no
   custom-emoji parameter can be built), an out-of-list emoji is dropped without
   a platform call and logged, and the sent bytes are the list's, not the
@@ -227,7 +234,11 @@ in its decisions, not its criteria, and is superseded by the trigger decision ab
 - **AC-E** The privacy-document changes land as the privacy decision states:
   the D11 collection row, the D11 erasure row, the retention fact and the
   recipients statement pinned on their facts; the plain-language line and the
-  impact-assessment passage pinned byte for byte; the DPIA review note dated.
+  impact-assessment passage pinned byte for byte, the passage keeping the two
+  surviving facts the palette never falsified (the assistant collects nobody
+  else's reactions, on the administrator-requirement grounds T6 recorded, and
+  the stored mark record travels to no processor beyond the platform send
+  itself); the DPIA review note dated.
 
 ## Notes for launch
 
