@@ -466,7 +466,17 @@ impl ChatMessage {
             Some(crate::message::ReplyTarget::Message { origin }) => {
                 fields.insert(COLUMN_REPLY_TARGET.into(), json!(origin));
             }
-            Some(crate::message::ReplyTarget::AssistantMessage) => {
+            // The origin the variant carries since unit 38 is deliberately
+            // not stored: it is consumed during ingestion, where it
+            // resolves which of the assistant's own recorded deliveries
+            // the reply quotes, and it never reaches a column.
+            // [`COLUMN_REPLY_TARGET`]'s documentation states that the
+            // column is NULL for a reply to one of the assistant's own
+            // messages and classifies its values as two people's personal
+            // data; a column that sometimes held the assistant's own id
+            // would make both statements false, and erasure's target-keyed
+            // pass reads it as member-message references.
+            Some(crate::message::ReplyTarget::AssistantMessage { origin: _ }) => {
                 fields.insert(COLUMN_REPLY_TO_ASSISTANT.into(), json!(true));
             }
             None => {}
@@ -1287,6 +1297,10 @@ pub enum AssistantKind {
     /// A filed report awaiting delivery (the report module owns the kind;
     /// it composes here so one parse path reads every block).
     Report(crate::tools::report::Report),
+    /// One message the assistant successfully sent, as the platform took
+    /// it (the delivery module owns the kind; it composes here so one
+    /// parse path reads every block).
+    Delivered(crate::delivery::Delivered),
 }
 
 /// A text field read by column name from a loaded block's fields, absent when

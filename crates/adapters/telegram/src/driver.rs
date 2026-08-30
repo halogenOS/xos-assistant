@@ -69,13 +69,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use assistant_core::{
-    Assistant, ChannelKind, ComposingState, ComposingUpdate, FailureKind, InboundMessage,
-    IngestOutcome, Observation, ObserveOutcome, ObservedFact, OutboundReply,
+    Assistant, ChannelKind, ComposingState, ComposingUpdate, DeliveryHandle, FailureKind,
+    InboundMessage, IngestOutcome, Observation, ObserveOutcome, ObservedFact, OutboundReply,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::authority::AdminCache;
-use crate::client::{BotClient, BotIdentity, SendThread, Update};
+use crate::client::{BotClient, BotIdentity, SendError, SendThread, Update};
 use crate::translate::{self, LookupScope, Translation};
 use crate::{ADAPTER_NAME, AdapterError, Config, Sleep, state, webhook};
 
@@ -317,7 +317,7 @@ pub(crate) async fn run(
     .await?;
     tokio::select! {
         () = feeder => {}
-        () = consume_replies(replies, &client, &typing) => {}
+        () = consume_replies(replies, &client, &typing, &assistant) => {}
         () = consume_composing(composing, &client, &typing) => {}
     }
     Ok(())
@@ -568,9 +568,19 @@ impl<'a> Intake<'a> {
             timestamp: pending.sent_at,
         };
         match self.assistant.ingest(message).await {
-            Ok(IngestOutcome::Recorded { deliver, .. }) => {
+            Ok(IngestOutcome::Recorded { receipt, deliver }) => {
                 if let Some(item) = deliver {
-                    send_item(self.client, pending.chat_id, item.text()).await;
+                    // The receipt names the conversation the item's send is
+                    // recorded in (unit 38, 2026-08-30) — the ingestion's
+                    // own, which is where the item was resolved.
+                    send_item(
+                        self.client,
+                        self.assistant,
+                        pending.chat_id,
+                        item.text(),
+                        receipt.delivery(),
+                    )
+                    .await;
                 }
                 Step::Acknowledged
             }
@@ -709,8 +719,15 @@ impl<'a> Intake<'a> {
     async fn report(&mut self, observation: Observation, chat_id: i64) -> Handled {
         match self.assistant.observe(observation).await {
             Ok(ObserveOutcome::Observed { deliver }) => {
-                if let Some(item) = deliver {
-                    send_item(self.client, chat_id, item.text()).await;
+                if let Some(delivered) = deliver {
+                    send_item(
+                        self.client,
+                        self.assistant,
+                        chat_id,
+                        delivered.item.text(),
+                        delivered.delivery,
+                    )
+                    .await;
                 }
                 Handled::Proceed
             }
@@ -734,10 +751,31 @@ impl<'a> Intake<'a> {
     }
 }
 
-/// Deliver one returned fixed text to its chat; a failure is logged and the
-/// item dropped, the same rule the reply consumer applies to a failed send.
-async fn send_item(client: &BotClient, chat_id: i64, text: &str) {
-    if let Err(failure) = client.send_message(chat_id, text, SendThread::Plain).await {
+/// Deliver one returned fixed text to its chat and record its delivery; a
+/// failure is logged and the item dropped, the same rule the reply consumer
+/// applies to a failed send.
+///
+/// The handle rides with the item from the call that returned it (unit 38,
+/// 2026-08-30): ingestion's from its receipt, an observation's from the
+/// observed delivery. An item carries no block of the assistant's own, so
+/// its record names none and a reply to it lands quoteless.
+async fn send_item(
+    client: &BotClient,
+    assistant: &Assistant,
+    chat_id: i64,
+    text: &str,
+    delivery: DeliveryHandle,
+) {
+    if let Err(failure) = send_recording(
+        client,
+        assistant,
+        chat_id,
+        text,
+        SendThread::Plain,
+        delivery,
+    )
+    .await
+    {
         tracing::warn!(chat_id, error = %failure.error, "a returned item did not send; dropped");
     }
 }
@@ -869,6 +907,7 @@ async fn consume_replies(
     mut replies: UnboundedReceiver<OutboundReply>,
     client: &BotClient,
     typing: &TypingRefreshers,
+    assistant: &Assistant,
 ) {
     while let Some(reply) = replies.recv().await {
         let Some(chat_id) = translate::chat_id_of(&reply.channel) else {
@@ -877,22 +916,64 @@ async fn consume_replies(
         };
         typing.stop(chat_id);
         let thread = translate::send_thread(reply.reply_target.as_ref());
-        if let Err(failure) = client.send_message(chat_id, &reply.text, thread).await {
+        if let Err(failure) = send_recording(
+            client,
+            assistant,
+            chat_id,
+            &reply.text,
+            thread,
+            reply.delivery,
+        )
+        .await
+        {
             // Two different outcomes, per decision 0019: nothing reached the
             // chat, or earlier chunks did and the tail was dropped with the
             // failing one — the log must state which one happened.
-            if failure.delivered_chunks == 0 {
+            if failure.delivered.is_empty() {
                 tracing::warn!(chat_id, error = %failure.error, "the send failed; reply dropped");
             } else {
                 tracing::warn!(
                     chat_id,
-                    delivered_chunks = failure.delivered_chunks,
+                    delivered_chunks = failure.delivered.len(),
                     error = %failure.error,
                     "a chunk failed; reply cut short after the delivered chunks"
                 );
             }
         }
     }
+}
+
+/// Send one of the assistant's own messages and report to the core what
+/// reached the chat (unit 38, 2026-08-30) — the one place either send path
+/// records a delivery, so neither can drift from the other.
+///
+/// The report runs on both outcomes, because both put messages in the chat:
+/// a whole send reports every chunk's id, and a send cut short reports
+/// exactly the ids the platform took before the failing chunk. Nothing here
+/// decides anything: the handle came from the core with the text, the
+/// origins are the platform's own ids under the adapter's naming rule, and
+/// what the record means is the core's business. The send's own outcome is
+/// handed back untouched for the caller to log.
+async fn send_recording(
+    client: &BotClient,
+    assistant: &Assistant,
+    chat_id: i64,
+    text: &str,
+    thread: SendThread,
+    delivery: DeliveryHandle,
+) -> Result<(), SendError> {
+    let outcome = client.send_message(chat_id, text, thread).await;
+    let delivered = match &outcome {
+        Ok(delivered) => delivered.as_slice(),
+        Err(failure) => failure.delivered.as_slice(),
+    };
+    let origins: Vec<String> = delivered
+        .iter()
+        .copied()
+        .map(translate::origin_of)
+        .collect();
+    assistant.report_delivery(delivery, &origins).await;
+    outcome.map(|_| ())
 }
 
 #[cfg(test)]

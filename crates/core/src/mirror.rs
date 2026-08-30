@@ -65,7 +65,12 @@ pub fn mirrored_target(message: &InboundMessage, authority: Authority) -> Option
     }
     match message.reply_target.as_ref()? {
         ReplyTarget::Message { origin } => Some(origin),
-        ReplyTarget::AssistantMessage => None,
+        // The assistant's own words are no person's row. Since unit 38 the
+        // variant names which of her messages was replied to, and this
+        // reading deliberately still mirrors nothing with it: the origin
+        // is the quote's, and taking one of her own messages back is unit
+        // T4's, whose build hooks this arm.
+        ReplyTarget::AssistantMessage { origin: _ } => None,
     }
 }
 
@@ -135,11 +140,13 @@ mod tests {
         );
 
         let mut to_assistant = deletion_reply();
-        to_assistant.reply_target = Some(ReplyTarget::AssistantMessage);
+        to_assistant.reply_target = Some(ReplyTarget::AssistantMessage {
+            origin: Some("19".into()),
+        });
         assert_eq!(
             mirrored_target(&to_assistant, Authority::Admin),
             None,
-            "the assistant's own message is no person's row"
+            "the assistant's own message is no person's row, named origin or not"
         );
 
         let mut other_command = deletion_reply();

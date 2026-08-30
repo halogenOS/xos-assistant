@@ -66,7 +66,8 @@ fn parsed(block: &Block) -> ChatMessage {
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
-        | AssistantKind::Report(_) => panic!("the chat row resolved through the delegate"),
+        | AssistantKind::Report(_)
+        | AssistantKind::Delivered(_) => panic!("the chat row resolved through the delegate"),
     }
 }
 
@@ -416,7 +417,8 @@ async fn erasure_nulls_the_speaker_and_the_handle_returns_with_the_person() {
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
-        | AssistantKind::Report(_) => panic!("the stored row resolved through the delegate"),
+        | AssistantKind::Report(_)
+        | AssistantKind::Delivered(_) => panic!("the stored row resolved through the delegate"),
     }
     let requests = fixture.script.seen.lock().unwrap();
     assert!(
@@ -537,8 +539,10 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
-                 DROP TABLE {join};",
+                 DROP TABLE {join};
+                 DROP TABLE {delivered};",
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
+                delivered = assistant_core::delivery::DELIVERED_TABLE,
             ))?;
             let refused = conn.execute(
                 &format!("UPDATE {CHAT_MESSAGE_TABLE} SET speaker = 'ada'"),
@@ -561,7 +565,7 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         .expect("the version-ten store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        16,
+        17,
         "the appended steps advanced the domain's version to the newest"
     );
     let blocks = support::consumer_view(
@@ -588,7 +592,8 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
-        | AssistantKind::Report(_) => panic!("the upgraded row resolved through the delegate"),
+        | AssistantKind::Report(_)
+        | AssistantKind::Delivered(_) => panic!("the upgraded row resolved through the delegate"),
     }
 
     // The upgraded store serves the write path: the first post-upgrade

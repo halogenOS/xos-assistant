@@ -7,7 +7,7 @@ use agent_ledger::Role;
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::{
     ChannelKind, DeliveryItem, ErasureOutcome, FAILURE_NOTICE, IngestOutcome, Observation,
-    ObserveOutcome, ObservedFact, PRIVACY_UNPUBLISHED, composed_disclosure_line,
+    ObservedFact, PRIVACY_UNPUBLISHED, composed_disclosure_line,
 };
 use serde_json::json;
 
@@ -386,15 +386,13 @@ async fn deterministic_replies_carry_no_disclosure() {
         })
         .await
         .expect("the observation is judged");
-    let ObserveOutcome::Observed {
-        deliver: Some(DeliveryItem::Acknowledgment(acknowledgment)),
-    } = outcome
+    let Some(DeliveryItem::Acknowledgment(acknowledgment)) = support::observed_item(&outcome)
     else {
         panic!("a first rules note draws the acknowledgment: {outcome:?}");
     };
     assert_eq!(
         acknowledgment,
-        support::scripted_acknowledgment("Stay civil.")
+        &support::scripted_acknowledgment("Stay civil.")
     );
     assert!(
         !acknowledgment.contains(support::fixture_disclosure().line()),

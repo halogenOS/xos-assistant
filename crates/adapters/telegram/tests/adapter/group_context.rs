@@ -552,11 +552,13 @@ async fn a_rules_pin_appends_on_delta_and_acknowledges_each_delta_over_the_wire(
     }
 
     let conversation = await_conversations(&fixture.store, 1).await[0];
-    let blocks = fixture
-        .store
-        .list_blocks(conversation)
-        .await
-        .expect("the ledger reads");
+    let blocks = support::consumer_view(
+        &fixture
+            .store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads"),
+    );
     let shape: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
     assert_eq!(
         shape,

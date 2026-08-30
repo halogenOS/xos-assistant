@@ -352,12 +352,14 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
                  DROP TABLE group_authorizations;
                  DROP TABLE {report};
                  DROP TABLE {join};
+                 DROP TABLE {delivered};
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
                  {V5_CHAT_MESSAGE_DDL}",
                 note = assistant_core::note::CONTEXT_NOTE_TABLE,
                 report = assistant_core::tools::report::REPORT_TABLE,
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
+                delivered = assistant_core::delivery::DELIVERED_TABLE,
             ))?;
             // Non-vacuity: the rebuilt table really is the two-kind
             // version-five shape — the command stamp the widening step
@@ -386,7 +388,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             .expect("the version-five store reopens under the shipped configuration");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            16,
+            17,
             "the appended steps advanced the domain's version"
         );
         let fixture = support::start_assistant_on(store.clone(), None).await;
@@ -470,12 +472,10 @@ async fn a_rules_change_appends_on_delta_acknowledges_each_delta_and_projects_in
         .await
         .expect("the rules pin is judged");
     assert_eq!(
-        first,
-        ObserveOutcome::Observed {
-            deliver: Some(DeliveryItem::Acknowledgment(
-                support::scripted_acknowledgment("1. Be kind.")
-            ))
-        },
+        support::observed_item(&first),
+        Some(&DeliveryItem::Acknowledgment(
+            support::scripted_acknowledgment("1. Be kind.")
+        )),
         "a fresh rules note carries the model-generated acknowledgment, typed"
     );
 
@@ -502,12 +502,10 @@ async fn a_rules_change_appends_on_delta_acknowledges_each_delta_and_projects_in
         .await
         .expect("the changed pin is judged");
     assert_eq!(
-        changed,
-        ObserveOutcome::Observed {
-            deliver: Some(DeliveryItem::Acknowledgment(
-                support::scripted_acknowledgment("1. Be kind.\n2. Stay on topic.")
-            ))
-        },
+        support::observed_item(&changed),
+        Some(&DeliveryItem::Acknowledgment(
+            support::scripted_acknowledgment("1. Be kind.\n2. Stay on topic.")
+        )),
         "a further real delta acknowledges again, whatever the interval"
     );
 
@@ -1126,10 +1124,8 @@ async fn every_rules_delta_acknowledges_and_the_command_answer_returns_past_the_
     let rules = |text: &str| observed(&key, ObservedFact::PinnedAnnouncement(text.to_owned()));
     let acknowledged = |outcome: &ObserveOutcome| {
         matches!(
-            outcome,
-            ObserveOutcome::Observed {
-                deliver: Some(DeliveryItem::Acknowledgment(_))
-            }
+            support::observed_item(outcome),
+            Some(DeliveryItem::Acknowledgment(_))
         )
     };
     let first = fixture
@@ -1291,12 +1287,10 @@ async fn a_transient_note_append_failure_lands_nothing_and_the_redelivery_lands_
         .await
         .expect("the redelivered observation is judged");
     assert_eq!(
-        outcome,
-        ObserveOutcome::Observed {
-            deliver: Some(DeliveryItem::Acknowledgment(
-                support::scripted_acknowledgment("Be kind.")
-            ))
-        },
+        support::observed_item(&outcome),
+        Some(&DeliveryItem::Acknowledgment(
+            support::scripted_acknowledgment("Be kind.")
+        )),
         "the redelivered note lands with its acknowledgment"
     );
     let conversation = only_conversation(&fixture.store).await;
@@ -1331,12 +1325,10 @@ async fn every_real_change_in_a_pin_burst_appends_and_acknowledges() {
             .await
             .expect("the toggled pin is judged");
         assert_eq!(
-            outcome,
-            ObserveOutcome::Observed {
-                deliver: Some(DeliveryItem::Acknowledgment(
-                    support::scripted_acknowledgment(rules)
-                ))
-            },
+            support::observed_item(&outcome),
+            Some(&DeliveryItem::Acknowledgment(
+                support::scripted_acknowledgment(rules)
+            )),
             "every real change in the burst acknowledges"
         );
     }

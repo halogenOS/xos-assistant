@@ -63,7 +63,8 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
-        | AssistantKind::Report(_) => {
+        | AssistantKind::Report(_)
+        | AssistantKind::Delivered(_) => {
             panic!("the assistant's kind resolved through the delegate")
         }
     }
@@ -80,7 +81,7 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         "a framework kind resolves through the delegate, untouched"
     );
 
-    assert_eq!(AssistantKind::DESCRIPTORS.len(), 5);
+    assert_eq!(AssistantKind::DESCRIPTORS.len(), 6);
     assert_eq!(AssistantKind::DESCRIPTORS[0].table, CHAT_MESSAGE_TABLE);
     assert_eq!(
         AssistantKind::DESCRIPTORS[1].table,
@@ -97,6 +98,10 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
     assert_eq!(
         AssistantKind::DESCRIPTORS[4].table,
         assistant_core::tools::report::REPORT_TABLE
+    );
+    assert_eq!(
+        AssistantKind::DESCRIPTORS[5].table,
+        assistant_core::delivery::DELIVERED_TABLE
     );
     agent_ledger::agency::check_descriptor_durability::<AssistantKind>(AssistantKind::DESCRIPTORS)
         .expect("durable() and the descriptor's ephemerality are one fact");
@@ -136,7 +141,8 @@ fn resting_and_erased_messages_summon_no_turn() {
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
-        | AssistantKind::Report(_) => {
+        | AssistantKind::Report(_)
+        | AssistantKind::Delivered(_) => {
             panic!("the resting row resolved through the delegate")
         }
     }
@@ -179,7 +185,8 @@ fn resting_and_erased_messages_summon_no_turn() {
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
-        | AssistantKind::Report(_) => {
+        | AssistantKind::Report(_)
+        | AssistantKind::Delivered(_) => {
             panic!("the erased row resolved through the delegate")
         }
     }
@@ -259,7 +266,8 @@ async fn a_file_backed_store_reopens_and_loads_the_stored_kind() {
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
-        | AssistantKind::Report(_) => {
+        | AssistantKind::Report(_)
+        | AssistantKind::Delivered(_) => {
             panic!("the reopened row resolved through the delegate")
         }
     }
@@ -290,6 +298,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
                  ALTER TABLE principals DROP COLUMN opted_out;
                  ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
                  DROP TABLE block_join_notice;
+                 DROP TABLE block_delivered;
                  INSERT INTO principals (adapter, external_id, display_name, username)
                      VALUES ('test-adapter', '42', 'Ada Lovelace', 'ada');",
             )?;
@@ -306,7 +315,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
         .expect("the version-eleven store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        16,
+        17,
         "the appended steps advanced the domain's version"
     );
     let (columns, row): (Vec<String>, (String, String, Option<String>)) =
@@ -371,8 +380,8 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             Store::open_with(db.path(), store_config()).expect("the configured store opens");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            16,
-            "the domain's recorded version is the grounded-answer unit's"
+            17,
+            "the domain's recorded version is the shipped step count"
         );
         // One recorded summoned message, then the rewind: drop exactly the
         // column the literal-addressed step adds and set the version back,
@@ -405,8 +414,10 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
                 "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
-                 DROP TABLE {join};",
+                 DROP TABLE {join};
+                 DROP TABLE {delivered};",
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
+                delivered = assistant_core::delivery::DELIVERED_TABLE,
             ))?;
             Ok(())
         })
@@ -421,7 +432,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         .expect("the version-thirteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        16,
+        17,
         "the appended step advanced the domain's version"
     );
     let blocks = support::consumer_view(
@@ -446,7 +457,8 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
-        | AssistantKind::Report(_) => {
+        | AssistantKind::Report(_)
+        | AssistantKind::Delivered(_) => {
             panic!("the upgraded row resolved through the delegate")
         }
     }
@@ -470,7 +482,7 @@ async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() 
         .expect("the version-fourteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        16,
+        17,
         "the appended steps advanced the domain's version"
     );
 
@@ -541,7 +553,8 @@ async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() 
         | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
-        | AssistantKind::ChatMessage(_) => {
+        | AssistantKind::ChatMessage(_)
+        | AssistantKind::Delivered(_) => {
             panic!("the upgraded report row resolved as another kind")
         }
     }
@@ -610,6 +623,7 @@ async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
     agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
         conn.execute_batch(&format!(
             "DROP TABLE {join};
+             DROP TABLE {delivered};
              CREATE TABLE {report}_v14 (
                  block_id   INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
                  {target}   TEXT,
@@ -621,6 +635,7 @@ async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
              DROP TABLE {report};
              ALTER TABLE {report}_v14 RENAME TO {report};",
             join = assistant_core::join::JOIN_NOTICE_TABLE,
+            delivered = assistant_core::delivery::DELIVERED_TABLE,
             report = assistant_core::tools::report::REPORT_TABLE,
             target = assistant_core::tools::report::COLUMN_TARGET_ORIGIN,
             reported = assistant_core::tools::report::COLUMN_REPORTED_PRINCIPAL_ID,
@@ -632,6 +647,73 @@ async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
     .expect("the store rewinds to the previous unit's shape");
     support::rewind_domain_migration_version(&store, 14).await;
     conversation
+}
+
+/// AC1 of the her-replies-quote unit (unit 38): a store the previous
+/// unit's binary wrote — version sixteen, no delivery table at all —
+/// upgrades cleanly through the one appended step, which creates the table
+/// and both of its keyed access paths, and a receipt then stores where the
+/// older shape had nowhere to put one.
+///
+/// The step is additive: nothing existing is recreated, so a pre-upgrade
+/// conversation reads back exactly as it was written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_version_sixteen_store_upgrades_through_the_delivery_step() {
+    let db = TempDb::new("v16-upgrade");
+    let conversation;
+    {
+        let store =
+            Store::open_with(db.path(), store_config()).expect("the configured store opens");
+        conversation = store
+            .create_conversation(
+                "scripted-1".into(),
+                "script-model".into(),
+                "Script Model".into(),
+                support::VENDOR.into(),
+            )
+            .await
+            .expect("a conversation row");
+        agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
+            conn.execute_batch(&format!(
+                "DROP TABLE {table};",
+                table = assistant_core::delivery::DELIVERED_TABLE
+            ))?;
+            Ok(())
+        })
+        .await
+        .expect("the store rewinds to the previous unit's shape");
+        support::rewind_domain_migration_version(&store, 16).await;
+        // The first store closes before the reopen, so the upgrade reads
+        // the disk, not a live connection.
+    }
+
+    let reopened = Store::open_with(db.path(), store_config())
+        .expect("the version-sixteen store reopens under the shipped configuration");
+    assert_eq!(
+        support::domain_migration_version(&reopened).await,
+        17,
+        "the appended step advanced the domain's version"
+    );
+
+    let indexes = table_indexes(&reopened, assistant_core::delivery::DELIVERED_TABLE)
+        .await
+        .expect("the delivery table's indexes read");
+    assert!(
+        indexes.contains(&*assistant_core::schema::DELIVERY_ORIGIN_INDEX)
+            && indexes.contains(&*assistant_core::schema::DELIVERY_KEY_INDEX),
+        "both keyed access paths of the delivery table are indexed: {indexes:?}"
+    );
+
+    reopened
+        .append_consumer_block(
+            conversation,
+            None,
+            assistant_core::delivery::DELIVERED_KIND,
+            assistant_core::delivery::Delivered::stored_fields("31", "31", None),
+            None,
+        )
+        .await
+        .expect("a receipt appends over the created table");
 }
 
 /// One table's declared shape, read through the domain seam: each column's

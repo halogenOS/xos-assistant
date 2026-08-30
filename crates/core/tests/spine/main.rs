@@ -13,6 +13,9 @@
 //! protection (the budgets, the limited stamp, the debt authority),
 //! reasoning (the configured effort level on every created conversation
 //! and on the provider's requests),
+//! delivery (the delivery receipt: what one send records, the model
+//! reading nothing of it, a receipt at the tail burying no debt, and the
+//! reply-target column staying NULL),
 //! `date_marker` (the framework's calendar row: written once per recorded
 //! date, ahead of the message that tripped it, reaching the model as its
 //! own system line — the fact every other module's consumer view filters),
@@ -57,6 +60,7 @@ mod audience;
 #[cfg(feature = "chat_completions")]
 mod chat_completions;
 mod date_marker;
+mod delivery;
 mod direct_chats;
 mod disclosure;
 mod end_to_end;

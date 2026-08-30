@@ -11,8 +11,8 @@ use serde_json::json;
 use crate::server::BotApiServer;
 use crate::support::{
     BOT_USERNAME, TempStateFile, answer_to, authorize_group, await_chat_messages,
-    await_conversations, first_answer_to, group_update, mention_update, private_update,
-    recording_sleep, reply_to_bot_update, spawn_adapter, start_assistant,
+    await_conversations, await_receipts, first_answer_to, group_update, mention_update,
+    private_update, recording_sleep, reply_to_bot_update, spawn_adapter, start_assistant,
 };
 
 /// The identity comes before the first poll: while `getMe` fails, the
@@ -252,12 +252,22 @@ async fn a_failed_turn_sends_the_plain_notice_line_and_the_chat_recovers() {
     );
     assert_eq!(sends[0].body["chat_id"], json!(5));
 
+    // The notice's own delivery is recorded before the next message, so
+    // the ledger the second turn projects is settled rather than raced
+    // (unit 38, 2026-08-30): a receipt is a real block, appended after the
+    // send, and it ends the contiguous user run before it — the framework's
+    // stated consequence for every record kind, the report's included.
+    let conversation = await_conversations(&fixture.store, 1).await[0];
+    await_receipts(&fixture.store, conversation, 1).await;
+
     // The next message from the same chat is addressed — a direct chat
     // always is — so it unlatches and gets answered.
     server.push_update(private_update(2, 5, "asking again"));
     let sends = server.await_recorded("sendMessage", 2).await;
     assert_eq!(
         sends[1].body["text"],
-        json!(first_answer_to("the failing ask\n\nasking again"))
+        json!(first_answer_to("asking again")),
+        "the failed ask stands in its own user message, behind the notice's \
+         receipt, and the second turn answers the message that summoned it"
     );
 }

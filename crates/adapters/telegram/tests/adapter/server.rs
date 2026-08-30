@@ -109,6 +109,13 @@ struct ServerState {
     /// Whether every `deleteWebhook` answers a scripted server failure —
     /// the fixture for a polling start whose deletion fails.
     failing_webhook_delete: Mutex<bool>,
+    /// The last platform id a `sendMessage` was answered with. The platform
+    /// gives every message it takes an id of its own, so the stub does too
+    /// (unit 38, 2026-08-30): each delivered send mints the next one, and
+    /// nothing that reads a delivery record can pass by accident on a
+    /// constant. Counting from zero makes the first send's id one, which is
+    /// what it always was.
+    last_message_id: Mutex<i64>,
 }
 
 /// The running scripted server. Dropping it stops accepting; the per-test
@@ -475,7 +482,15 @@ fn send_answer(state: &Arc<ServerState>, body: &Value) -> (u16, Value) {
             json!({ "ok": false, "description": "scripted send failure" }),
         ),
         Some(SendScript::Delivered) | None => {
-            (200, json!({ "ok": true, "result": { "message_id": 1 } }))
+            let mut last = state
+                .last_message_id
+                .lock()
+                .expect("the message id counter locks");
+            *last += 1;
+            (
+                200,
+                json!({ "ok": true, "result": { "message_id": *last } }),
+            )
         }
     }
 }

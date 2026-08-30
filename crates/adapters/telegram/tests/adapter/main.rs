@@ -11,6 +11,7 @@ mod addressing;
 mod classification;
 mod composing;
 mod deletion;
+mod delivery;
 mod direct_chats;
 mod end_to_end;
 mod group_context;
