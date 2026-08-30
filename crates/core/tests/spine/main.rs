@@ -54,7 +54,9 @@
 //! threading (which message an answer is
 //! delivered as a reply to, and when it goes out plain), `runtime_facts`
 //! (the self-introspection tool an ordinary member reaches, stating the
-//! model its own conversation runs on), and — behind the
+//! model its own conversation runs on), `changelog` (the harness-changelog
+//! tool an ordinary member reaches, stating what changed in the assistant's
+//! own software or its stated absence), and — behind the
 //! `chat_completions`
 //! feature — the framework's real `OpenRouter` module, the shared
 //! chat-completions wire, against a loopback server.
@@ -64,6 +66,7 @@ mod addressing;
 mod assembly;
 mod audience;
 mod bots;
+mod changelog;
 #[cfg(feature = "chat_completions")]
 mod chat_completions;
 mod date_marker;

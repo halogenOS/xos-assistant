@@ -43,6 +43,7 @@ use crate::note::{self, ContextNote, NoteTopic};
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::quoting;
 use crate::streams::StreamObserver;
+use crate::tools::changelog::HarnessChangelog;
 use crate::tools::mark::{self, MarkTool};
 use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
@@ -505,6 +506,29 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
     );
 }
 
+/// The tools no assembly is without (unit 32, unit 47): the runtime facts
+/// and the harness changelog join unconditionally, because neither has a
+/// configuration to be absent — the questions they answer are asked
+/// wherever the assistant runs, the one value the changelog states is
+/// embedded in the build, and a build that passed no changelog gets a tool
+/// that answers that absence, not a tool that vanishes.
+///
+/// The runtime-facts tool takes the binary's start instant here, the one
+/// fact it cannot reach for itself. The model is not injected: that one
+/// belongs to the conversation being answered, which the tool has in hand
+/// at the call, and the binding decides it only for the conversations
+/// this assembly goes on to create.
+fn admit_unconditional_tools(tools: &mut ToolSet, started_at: Instant) {
+    tools.admit(
+        crate::tools::runtime::REQUIRED_AUTHORITY,
+        RuntimeFacts::new(started_at),
+    );
+    tools.admit(
+        crate::tools::changelog::REQUIRED_AUTHORITY,
+        HarnessChangelog::new(),
+    );
+}
+
 impl Assistant {
     /// Assemble and start the core: check the wiring, record the binding's
     /// provider instance in the store, and spawn the runtime over the given
@@ -587,18 +611,7 @@ impl Assistant {
                 filing_door: Arc::clone(&filing_door),
             },
         );
-        // The runtime-facts tool joins unconditionally too (unit 32): it
-        // has no configuration to be absent, and the question it answers
-        // — which model, which version, how long up — is asked wherever
-        // the assistant runs. The one fact it cannot reach for itself is
-        // injected here, the binary's start instant. The model is not:
-        // that one belongs to the conversation being answered, which the
-        // tool has in hand at the call, and the binding decides it only
-        // for the conversations this assembly goes on to create.
-        tools.admit(
-            crate::tools::runtime::REQUIRED_AUTHORITY,
-            RuntimeFacts::new(started_at),
-        );
+        admit_unconditional_tools(&mut tools, started_at);
         // One source for what tools exist: the registry the runtime resolves
         // calls against and the palette every new conversation records are
         // both derived from the set right here.

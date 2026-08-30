@@ -1786,11 +1786,12 @@ fn fresh_handle() -> ScriptHandle {
 }
 
 /// The full registered set of a moderating deployment, sorted as the
-/// palette records it: the three production lookups, the four
-/// always-registered tools — the standing lookup, privacy, the react tool
-/// and runtime facts — and the report tool.
+/// palette records it: the three production lookups, the five
+/// always-registered tools — the standing lookup, privacy, the react tool,
+/// runtime facts and the harness changelog — and the report tool.
 fn reporting_palette() -> Vec<String> {
     vec![
+        assistant_core::tools::changelog::NAME.into(),
         "lookup_commit".into(),
         "lookup_release".into(),
         "lookup_wiki".into(),
@@ -2082,6 +2083,7 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
         assert_eq!(
             palette_names(palettes[1]),
             vec![
+                assistant_core::tools::changelog::NAME.to_owned(),
                 "lookup_commit".to_owned(),
                 "lookup_release".to_owned(),
                 "lookup_wiki".to_owned(),

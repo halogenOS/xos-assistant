@@ -28,6 +28,7 @@ use agent_ledger::{CoreEvent, ToolHandler, ToolRegistry};
 use crate::message::Authority;
 
 pub(crate) mod admission;
+pub mod changelog;
 pub mod commit;
 pub(crate) mod lookup;
 pub mod mark;

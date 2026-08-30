@@ -1752,6 +1752,24 @@ pub fn field(block: &Block, name: &str) -> String {
     block.fields[name].as_str().unwrap_or_default().to_owned()
 }
 
+/// The conversation's one block of the given kind.
+pub fn only(blocks: &[Block], kind: &str) -> Block {
+    let mut found = blocks.iter().filter(|block| block.block_type == kind);
+    let block = found.next().unwrap_or_else(|| panic!("one {kind} block"));
+    assert!(found.next().is_none(), "exactly one {kind} block");
+    block.clone()
+}
+
+/// The stored palette names of the conversation's newest palette block.
+pub fn palette_names(blocks: &[Block]) -> Vec<String> {
+    let block = blocks
+        .iter()
+        .rev()
+        .find(|block| block.block_type == "tool_palette")
+        .expect("the conversation records a palette");
+    serde_json::from_str(&field(block, "tools")).expect("the stored list parses")
+}
+
 /// Await the next item on the outbound edge, or name the stall.
 pub async fn recv_outbound(outbound: &mut mpsc::UnboundedReceiver<Outbound>) -> Outbound {
     tokio::time::timeout(DEADLINE, outbound.recv())

@@ -11,7 +11,7 @@
 //! mapping, the freshness, the erasure outcome and every fixed string are
 //! pinned beside the resolution itself, in the tool's own module.
 
-use agent_ledger::{Block, Store};
+use agent_ledger::Store;
 use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::standing;
@@ -19,19 +19,9 @@ use assistant_core::{Authority, ChannelKind, InboundMessage, ProtectionConfig};
 use serde_json::json;
 
 use crate::support::{
-    self, ScriptHandle, ToolScript, channel, field, inbound, inbound_as, settle_shape,
-    tool_scripted_provider, with_username,
+    self, ScriptHandle, ToolScript, channel, field, inbound, inbound_as, palette_names,
+    settle_shape, tool_scripted_provider, with_username,
 };
-
-/// The stored palette names of the conversation's newest palette block.
-fn palette_names(blocks: &[Block]) -> Vec<String> {
-    let block = blocks
-        .iter()
-        .rev()
-        .find(|block| block.block_type == "tool_palette")
-        .expect("the conversation records a palette");
-    serde_json::from_str(&field(block, "tools")).expect("the stored list parses")
-}
 
 /// One assembled fixture whose scripted model calls the standing lookup
 /// once, for the given handle, and then closes with its answer.
