@@ -135,20 +135,14 @@ unit, deliberately.
   storing the bot fact on the row so the walk can name bot rows — a stored copy
   that drifts, for a distinction the stamp already encodes; *rejected:* answering
   the owed debt eagerly on a timer — a mechanism this unit has no order for.
-- **An unmentioned bot's recognized commands are refused silently; the mirror
-  alone stays sender-blind, 2026-08-30.** Command recognition and the delivery
-  match run regardless of summoning, so without a ruling a bot's `/privacy`
-  would still draw the fixed notice — a delivered answer IS the bot triggering
-  the assistant, which the operator's rule forbids at all. Decided: a recognized
-  family command from a bot sender without the mention keeps its command stamp
-  (no model turn, exactly as today) but applies no state change and delivers no
-  answer; data-protection rights belong to persons, and a bot exercising
-  `/privacyout` is not a case this assistant serves. The deletion mirror is
-  deliberately exempt: it answers nothing and performs bookkeeping the group's
-  lawful record depends on, and the moderation bot is its main author.
-  *Rejected:* answering bots' commands as today — it contradicts "at all";
-  *rejected:* skipping recognition for bots — the stamp must stay so the command
-  text opens no model turn.
+- **Programmatic commands stay answerable by anyone, the operator's reading,
+  2026-08-30.** A recognized command is handled deterministically — no model, no
+  turn, no request — so a bot invoking one is not the model being triggered, and
+  the operator confirmed that reading when a stricter ruling was floated ("But
+  isnt /privacy a programmatic command?"). Command recognition, the fixed
+  answers and the mirror all stay exactly as built for every sender; the notice's
+  own channel window already bounds any flood of it. The fence of this unit is
+  MODEL turns alone.
 - **Everything else decided before the summons stays exactly as built,
   2026-08-30.** The deletion mirror, identity resolution and recording are
   untouched by construction: they run before or independently of the summons
@@ -182,9 +176,9 @@ unit, deliberately.
 - **AC4 — the mirror is untouched.** The moderation bot's `/del` mirrors exactly as
   before (existing pins pass); a `/del` carrying the assistant's mention still
   mirrors and takes its command stamp (pin).
-- **AC4b — bot commands answer nothing.** A bot sender's unmentioned `/privacy`
-  is stamped, delivers no answer and changes no state; the same command from a
-  human answers as today (pins on both).
+- **AC4b — programmatic commands are sender-blind.** A bot sender's unmentioned
+  `/privacy` answers the fixed notice exactly as a member's does, under the same
+  channel window, and opens no model turn (pin).
 - **AC5 — nobody else moves behaviorally.** Mechanical fixture edits filling the
   new field are expected wherever a `SenderIdentity`, `User` or `Joiner` is
   constructed, and the exact-two-fields pin becomes the three-fact assertion the
