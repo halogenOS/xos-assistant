@@ -1655,3 +1655,61 @@ fn the_her_reply_quotes_decisions_are_recorded_with_dates_and_rejected_alternati
         "the supersession carries the operator's own words for it"
     );
 }
+
+/// Unit 40's AC5: the heads-up line's decisions are recorded beside the
+/// others — numbered from the highest shipped, dated, each naming the unit
+/// it was decided with and the alternatives it beat — and the teaching the
+/// unit is made of is pinned in the composed prompt, where the sentence
+/// carries its own bounds.
+#[test]
+fn the_announce_units_decisions_are_recorded_and_the_line_is_taught() {
+    for record in [
+        "0146-the-announce-is-taught-never-mechanized.md",
+        "0147-the-heads-up-line-is-scoped-to-the-search.md",
+        "0148-the-heads-up-line-coexists-with-the-no-filler-rules.md",
+        "0149-the-heads-up-line-is-budget-inert.md",
+        "0150-two-pins-close-the-composition-gap.md",
+    ] {
+        let content = repo_file(&format!("docs/decisions/{record}"));
+        assert!(
+            content.contains("Date: 2026-08-30, with unit 40."),
+            "{record} carries its date and the unit it was decided with"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+
+    let composed = assistant_core::composed_system_prompt(
+        &repo_prompt(),
+        "Probe",
+        assistant_core::AnsweringMode::Helpful,
+        assistant_core::Capabilities {
+            moderation_handle: false,
+            web_search: true,
+        },
+    );
+    for fact in [
+        "Before you run a search, say in one short line what you are about \
+         to look up, then run the search, then answer",
+        "one line and no more",
+        "never a placeholder standing in for an answer",
+        "never a restatement of the words the member just wrote",
+    ] {
+        assert!(
+            composed.contains(&flattened(fact)),
+            "the composed prompt carries the heads-up line's rule: {fact}"
+        );
+    }
+    assert!(
+        !assistant_core::composed_system_prompt(
+            &repo_prompt(),
+            "Probe",
+            assistant_core::AnsweringMode::Helpful,
+            assistant_core::Capabilities::default(),
+        )
+        .contains("what you are about to look up"),
+        "a deployment with no search key is taught no heads-up line"
+    );
+}
