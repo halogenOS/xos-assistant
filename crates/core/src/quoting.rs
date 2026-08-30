@@ -11,9 +11,15 @@
 //!
 //! Nothing of the quoted text is copied. The block stores a SPAN — which
 //! block, which character offsets — and the store resolves it at read time
-//! through the chat-message kind's declared quotable column, so an erased
+//! through the quoted block's own declared quotable column, so an erased
 //! target resolves to the empty string and renders nothing, with no
 //! erasure pass needing to know quotes exist at all.
+//!
+//! A reply to one of the assistant's own messages quotes her the same way
+//! (unit 38, 2026-08-30). The one thing that differs is how the target is
+//! found: a member's message is named by the origin stored on its own row,
+//! and hers by the origin her delivery receipt recorded for the message
+//! she was sent as. Past that lookup the two are one path.
 //!
 //! What the span covers is decided here, from the stored text and the
 //! excerpt the member selected, and never from a platform offset: the
@@ -24,6 +30,7 @@ use agent_ledger::agency::Quote;
 use agent_ledger::{Block, InputBlock, LeafKind, Store, StoreError};
 use serde_json::Value;
 
+use crate::delivery;
 use crate::kind;
 use crate::message::{InboundMessage, QuotedExcerpt, ReplyTarget};
 
@@ -124,14 +131,19 @@ fn characters(text: &str) -> i64 {
 /// Nothing lands, and nothing is invented, unless the reply names a
 /// message this conversation actually holds:
 ///
-/// - a message that is no reply, and a reply to one of the assistant's own
-///   messages, quote nothing — no stored fact says which of her blocks a
-///   reply answers, and guessing one would reproduce the misattribution
-///   this unit exists to end;
+/// - a message that is no reply quotes nothing;
 /// - a reply naming an origin the conversation has no live message for —
 ///   from before the assistant joined, skipped as no-text, said in another
 ///   conversation, recorded by another kind such as a join event, or
-///   already erased — lands exactly as it did before this unit.
+///   already erased — lands exactly as it did before this unit;
+/// - a reply to one of the assistant's own messages that the ledger cannot
+///   resolve lands quoteless the same way (unit 38, 2026-08-30): a message
+///   she sent before her deliveries were recorded, one whose receipt never
+///   landed, a deterministic item or a notice, which carry no block of
+///   hers at all, and a reply the platform carried no id on. The quote
+///   resolves against what the ledger holds when the reply lands and
+///   nothing heals backwards — a receipt appended after a reply already
+///   landed leaves that reply quoteless for good.
 ///
 /// **The tail-skip.** Delivery is at-least-once and the two appends are
 /// not one transaction, so a crash between them is redelivered and would
@@ -154,10 +166,8 @@ pub(crate) async fn land_reply_quote(
     conversation_id: i64,
     message: &InboundMessage,
 ) -> Result<(), StoreError> {
-    let Some(ReplyTarget::Message { origin }) = message.reply_target.as_ref() else {
-        return Ok(());
-    };
-    let Some(target) = kind::newest_message_of_origin(&store.tx(), conversation_id, origin).await?
+    let Some(target) =
+        quoted_message(store, conversation_id, message.reply_target.as_ref()).await?
     else {
         return Ok(());
     };
@@ -178,6 +188,42 @@ pub(crate) async fn land_reply_quote(
         .insert_user_blocks(conversation_id, vec![span.input_block()])
         .await?;
     Ok(())
+}
+
+/// The recorded message one reply target names, where this conversation
+/// holds it: the resolution, and the only part of this path that reads the
+/// target's variant at all.
+///
+/// Two sides, one shape. A member's message is found by its stored origin
+/// on the chat-message row; one of the assistant's own is found by the
+/// origin her delivery receipt recorded for the sent message, which names
+/// the block she said it as (unit 38, 2026-08-30). Everything past this
+/// function — the span decision, the excerpt narrowing, the tail-skip, the
+/// user-voiced append — works on the answer and never asks whose message
+/// it was, so a quote of her words and a quote of a member's are the same
+/// block landing the same way.
+///
+/// An unresolvable target answers `None` and the reply lands quoteless;
+/// [`land_reply_quote`]'s own documentation lists the cases.
+///
+/// # Errors
+///
+/// [`StoreError`] if a lookup fails or the store's actor has stopped.
+async fn quoted_message(
+    store: &Store,
+    conversation_id: i64,
+    target: Option<&ReplyTarget>,
+) -> Result<Option<kind::QuotableMessage>, StoreError> {
+    let tx = store.tx();
+    match target {
+        Some(ReplyTarget::Message { origin }) => {
+            kind::newest_message_of_origin(&tx, conversation_id, origin).await
+        }
+        Some(ReplyTarget::AssistantMessage {
+            origin: Some(origin),
+        }) => delivery::newest_answer_of_origin(&tx, conversation_id, origin).await,
+        Some(ReplyTarget::AssistantMessage { origin: None }) | None => Ok(None),
+    }
 }
 
 #[cfg(test)]

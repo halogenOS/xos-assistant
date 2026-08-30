@@ -20,6 +20,7 @@ use agent_ledger::{
     StopReason, Store, StoreError, StreamEvent,
 };
 use assistant_adapter_telegram::{ADAPTER_NAME, Config, Sleep, TelegramAdapter};
+use assistant_core::delivery::Delivered;
 use assistant_core::schema::store_config;
 use assistant_core::{
     Assistant, ChannelKey, ChannelKind, ModelBinding, Observation, ObserveOutcome, ObservedFact,
@@ -942,23 +943,51 @@ pub fn mention_update(update_id: i64, chat_id: i64, user_id: i64, text: &str) ->
     )
 }
 
-/// A group message replying to one of the bot's own messages — addressed
-/// through the reply rule.
+/// A message replying to one of the bot's own messages — addressed through
+/// the reply rule — naming the platform id of the message of hers it points
+/// at, in the given chat kind.
+///
+/// The id is a parameter because it is the whole subject of the delivery
+/// pins (unit 38, 2026-08-30): a reply resolves against the id her send was
+/// answered with, so a test that cannot name one proves nothing.
 #[must_use]
-pub fn reply_to_bot_update(update_id: i64, chat_id: i64, user_id: i64, text: &str) -> Value {
-    let mut update = message_update(update_id, "group", chat_id, user_id, text);
+pub fn reply_to_bot_message(
+    update_id: i64,
+    chat_kind: &str,
+    chat_id: i64,
+    user_id: i64,
+    her_message_id: i64,
+    text: &str,
+) -> Value {
+    let mut update = message_update(update_id, chat_kind, chat_id, user_id, text);
     update["message"]["reply_to_message"] = json!({
-        "message_id": message_id_of(update_id) - 1,
+        "message_id": her_message_id,
         "date": date_of(update_id) - 1,
-        "chat": { "id": chat_id, "type": "group" },
+        "chat": { "id": chat_id, "type": chat_kind },
         "from": { "id": BOT_ID, "is_bot": true, "first_name": "Fixture", "username": BOT_USERNAME },
         "text": "an earlier answer",
     });
     update
 }
 
+/// A group message replying to one of the bot's own messages — addressed
+/// through the reply rule, pointing at a message of hers this suite does
+/// not otherwise name.
+#[must_use]
+pub fn reply_to_bot_update(update_id: i64, chat_id: i64, user_id: i64, text: &str) -> Value {
+    reply_to_bot_message(
+        update_id,
+        "group",
+        chat_id,
+        user_id,
+        message_id_of(update_id) - 1,
+        text,
+    )
+}
+
 /// The ledger as the consumer's own content: every block the assistant or a
-/// member put there, and none of the framework's date records.
+/// member put there, and none of the framework's date records nor the
+/// adapter's own delivery receipts.
 ///
 /// The framework writes a `date_marker` on the first user-voiced append of
 /// a day — its own calendar entry, ordered before the block that tripped
@@ -967,13 +996,59 @@ pub fn reply_to_bot_update(update_id: i64, chat_id: i64, user_id: i64, text: &st
 /// judges this view in one place instead of each test carrying its own
 /// arithmetic about the framework's records. The kind is named through the
 /// framework leaf's own `KINDS`, never a literal here.
+///
+/// A delivery receipt (unit 38, 2026-08-30) is filtered for a second
+/// reason on top of that one: it is appended AFTER the send it records, so
+/// its arrival is not ordered against anything a test drives, and a shape
+/// assertion holding it would be racing the wire rather than pinning the
+/// ledger. What the receipts themselves record is pinned by the suite's
+/// `delivery` module, which reads them on purpose.
 #[must_use]
 pub fn consumer_view(blocks: &[Block]) -> Vec<Block> {
     blocks
         .iter()
-        .filter(|block| !DateMarker::KINDS.contains(&block.block_type.as_str()))
+        .filter(|block| {
+            !DateMarker::KINDS.contains(&block.block_type.as_str())
+                && block.block_type != assistant_core::delivery::DELIVERED_KIND
+        })
         .cloned()
         .collect()
+}
+
+/// Every delivery receipt one conversation holds, oldest first (unit 38,
+/// 2026-08-30) — the rows [`consumer_view`] filters out, read on purpose.
+pub async fn receipts(store: &Store, conversation_id: i64) -> Vec<Delivered> {
+    store
+        .list_blocks(conversation_id)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .filter(|block| block.block_type == assistant_core::delivery::DELIVERED_KIND)
+        .map(Delivered::parse)
+        .collect()
+}
+
+/// Await one conversation holding at least `count` delivery receipts, or
+/// name the stall.
+///
+/// A receipt is appended AFTER the send it records, so a test that has seen
+/// the send on the wire has not yet seen the record — and a test that wants
+/// a later write ordered behind the receipt waits here for it, instead of
+/// racing the two.
+pub async fn await_receipts(store: &Store, conversation_id: i64, count: usize) -> Vec<Delivered> {
+    let deadline = std::time::Instant::now() + DEADLINE;
+    loop {
+        let rows = receipts(store, conversation_id).await;
+        if rows.len() >= count {
+            return rows;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting {count} delivery receipts; have {}",
+            rows.len()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Await one conversation's settled turn by its exact block-type shape —

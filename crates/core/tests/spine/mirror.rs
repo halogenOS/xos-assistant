@@ -273,7 +273,12 @@ async fn the_silent_no_ops_leave_the_standing_state_alone() {
     ingest_silent(
         &fixture,
         support::with_command(
-            support::with_reply(to_assistant, ReplyTarget::AssistantMessage),
+            support::with_reply(
+                to_assistant,
+                ReplyTarget::AssistantMessage {
+                    origin: Some("her-own".into()),
+                },
+            ),
             DELETION_COMMAND,
         ),
     )

@@ -34,14 +34,11 @@ fn rules_pin(key: &ChannelKey, pinned: &str) -> Observation {
 
 /// The delivered acknowledgment of one judged observation, or the panic
 /// that names what arrived instead.
-fn delivered(outcome: ObserveOutcome) -> String {
-    let ObserveOutcome::Observed {
-        deliver: Some(DeliveryItem::Acknowledgment(text)),
-    } = outcome
-    else {
+fn delivered(outcome: &ObserveOutcome) -> String {
+    let Some(DeliveryItem::Acknowledgment(text)) = support::observed_item(outcome) else {
         panic!("the rules delta delivers an acknowledgment: {outcome:?}");
     };
-    text
+    text.clone()
 }
 
 /// AC2, AC5 and the reasoning half of AC6: the real delta runs exactly one
@@ -61,7 +58,7 @@ async fn a_real_delta_generates_the_acknowledgment_from_the_new_rules() {
         .await
         .expect("the rules pin is judged");
     assert_eq!(
-        delivered(outcome),
+        delivered(&outcome),
         scripted_acknowledgment("Be kind to newcomers."),
         "the model's completion is the delivered acknowledgment"
     );
@@ -144,7 +141,7 @@ async fn the_identical_re_pin_and_the_title_change_run_no_call() {
         .observe(rules_pin(&key, "Rules:\nStay on topic."))
         .await
         .expect("the first pin is judged");
-    assert_eq!(delivered(first), scripted_acknowledgment("Stay on topic."));
+    assert_eq!(delivered(&first), scripted_acknowledgment("Stay on topic."));
     assert_eq!(fixture.script.turns.load(Ordering::SeqCst), 1);
 
     let repeated = fixture
@@ -195,7 +192,7 @@ async fn a_failed_call_delivers_the_deterministic_fallback() {
         .await
         .expect("the rules pin is judged");
     assert_eq!(
-        delivered(outcome),
+        delivered(&outcome),
         RULES_ACKNOWLEDGMENT,
         "the failed call falls back to the fixed line"
     );
@@ -235,7 +232,7 @@ async fn a_completion_that_streams_no_text_delivers_the_deterministic_fallback()
         .await
         .expect("the cued pin is judged");
     assert_eq!(
-        delivered(outcome),
+        delivered(&outcome),
         RULES_ACKNOWLEDGMENT,
         "a textless completion falls back to the fixed line"
     );
@@ -291,7 +288,7 @@ async fn a_whitespace_result_delivers_the_deterministic_fallback() {
         .await
         .expect("the rules pin is judged");
     assert_eq!(
-        delivered(outcome),
+        delivered(&outcome),
         RULES_ACKNOWLEDGMENT,
         "a whitespace completion falls back to the fixed line"
     );
@@ -310,7 +307,7 @@ async fn an_over_cap_stream_delivers_the_deterministic_fallback() {
         .await
         .expect("the rules pin is judged");
     assert_eq!(
-        delivered(outcome),
+        delivered(&outcome),
         RULES_ACKNOWLEDGMENT,
         "an over-cap completion falls back to the fixed line"
     );
@@ -338,7 +335,7 @@ async fn a_timed_out_call_delivers_the_deterministic_fallback() {
         .await
         .expect("the rules pin is judged");
     assert_eq!(
-        delivered(outcome),
+        delivered(&outcome),
         RULES_ACKNOWLEDGMENT,
         "the timed-out call falls back to the fixed line"
     );

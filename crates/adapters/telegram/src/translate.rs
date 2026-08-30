@@ -225,7 +225,7 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity, wake: Option<&str>) -
         },
         sender_id: from.id,
         text: text.to_owned(),
-        origin: message.message_id.to_string(),
+        origin: origin_of(message.message_id),
         sent_at,
     })
 }
@@ -292,7 +292,7 @@ fn translate_join(
         channel_kind: ChannelKind::Group,
         fact: ObservedFact::MembersJoined {
             joiners,
-            origin: message.message_id.to_string(),
+            origin: origin_of(message.message_id),
             timestamp: sent_at,
         },
     })
@@ -421,10 +421,20 @@ pub(crate) fn chat_id_of(key: &ChannelKey) -> Option<i64> {
     key.channel.parse().ok()
 }
 
+/// The origin one platform message id is named by, everywhere this adapter
+/// hands one to the core: its decimal spelling, written once here so the
+/// rule has one owner (unit 38, 2026-08-30). Every reported origin goes
+/// through it — a message's own, a join event's, a reply's target, and the
+/// ids of the messages the assistant's own sends became — so
+/// [`message_id_of`] reads back exactly what was written.
+pub(crate) fn origin_of(message_id: i64) -> String {
+    message_id.to_string()
+}
+
 /// The message a stored reply target names — the inverse of the decimal
-/// spelling [`reply_target_of`] stored the id under, so both directions of
-/// the naming rule live beside each other. `None` names a target this
-/// adapter did not mint; the send goes out unthreaded.
+/// spelling [`origin_of`] writes, so both directions of the naming rule
+/// live beside each other. `None` names a target this adapter did not
+/// mint; the send goes out unthreaded.
 pub(crate) fn message_id_of(origin: &str) -> Option<i64> {
     origin.parse().ok()
 }
@@ -564,18 +574,24 @@ fn replies_to_bot(message: &Incoming, me: &BotIdentity) -> bool {
 
 /// The reply target the message carries, in the core's vocabulary
 /// (2026-08-23): a reply to one of the bot's own messages is the
-/// assistant-message fact — no origin rides it — and every other reply
-/// with a usable id contributes that id as the opaque origin, in the same
-/// decimal spelling [`Pending::origin`] uses for the message's own id. A
-/// reply without a usable id stores no target.
+/// assistant-message fact, and every other reply is the replied-to id as
+/// the opaque origin. Both spell the id through [`origin_of`], the same
+/// naming rule [`Pending::origin`] uses for the message's own id. A reply
+/// without a usable id stores no target, and one to the bot's own message
+/// without a usable id stores the fact and no origin.
+///
+/// The assistant-message fact carries that origin since unit 38
+/// (2026-08-30): the platform reports the replied-to id whoever wrote the
+/// message, and the core resolves which of her recorded messages it names
+/// so the reply can quote her words. The value is consumed during
+/// ingestion and never stored on the chat message.
 fn reply_target_of(message: &Incoming, me: &BotIdentity) -> Option<ReplyTarget> {
     let replied = message.reply_to_message.as_ref()?;
+    let origin = replied.message_id.map(origin_of);
     if replies_to_bot(message, me) {
-        return Some(ReplyTarget::AssistantMessage);
+        return Some(ReplyTarget::AssistantMessage { origin });
     }
-    replied.message_id.map(|id| ReplyTarget::Message {
-        origin: id.to_string(),
-    })
+    origin.map(|origin| ReplyTarget::Message { origin })
 }
 
 /// The quoted excerpt the message carries, in the core's vocabulary (unit
@@ -836,11 +852,13 @@ mod tests {
         assert_eq!(wake_trigger("   "), None, "an empty trim falls back");
     }
 
-    /// The reply-target translation (2026-08-23): a reply to another
-    /// person's message carries that message's id as the opaque origin, a
-    /// reply to the bot's own message carries the assistant-message fact,
-    /// a reply without a usable id stores no target, and a non-reply
-    /// stores none either.
+    /// The reply-target translation (2026-08-23, widened unit 38
+    /// 2026-08-30): a reply to another person's message carries that
+    /// message's id as the opaque origin, a reply to the bot's own message
+    /// carries the assistant-message fact AND the same id, so the core can
+    /// resolve which of her messages was replied to; a reply without a
+    /// usable id stores no target — and to the bot's own message, the fact
+    /// with no origin — while a non-reply stores none either.
     #[test]
     fn the_reply_target_translates_beside_the_addressed_flag() {
         assert_eq!(
@@ -852,8 +870,10 @@ mod tests {
         );
         assert_eq!(
             recorded(&group_update("thanks!", Some(4242))).reply_target,
-            Some(ReplyTarget::AssistantMessage),
-            "a reply to the bot's own message is the assistant-message fact"
+            Some(ReplyTarget::AssistantMessage {
+                origin: Some("19".into())
+            }),
+            "a reply to the bot's own message names which of her messages it is"
         );
         assert_eq!(
             recorded(&group_update("no reply here", None)).reply_target,
@@ -861,19 +881,27 @@ mod tests {
             "a non-reply stores no target"
         );
 
-        let mut idless = group_update("report this", Some(9));
-        idless
-            .message
-            .as_mut()
-            .expect("the fixture carries a message")
-            .reply_to_message
-            .as_mut()
-            .expect("the fixture carries a reply")
-            .message_id = None;
+        let idless = |replied_author: i64| {
+            let mut update = group_update("report this", Some(replied_author));
+            update
+                .message
+                .as_mut()
+                .expect("the fixture carries a message")
+                .reply_to_message
+                .as_mut()
+                .expect("the fixture carries a reply")
+                .message_id = None;
+            recorded(&update).reply_target
+        };
         assert_eq!(
-            recorded(&idless).reply_target,
+            idless(9),
             None,
             "a reply without a usable id stores no target"
+        );
+        assert_eq!(
+            idless(4242),
+            Some(ReplyTarget::AssistantMessage { origin: None }),
+            "a reply to the bot with no usable id is the fact and no origin"
         );
     }
 

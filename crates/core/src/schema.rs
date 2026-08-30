@@ -448,6 +448,57 @@ static REPORTED_NULLABLE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The delivery receipt's content table — an appended migration step of
+/// the her-replies-quote unit (unit 38, 2026-08-30), per decision 0026's
+/// discipline. The table shape is the delivery kind's descriptor contract:
+/// the block header row is the ledger entry, this row carries the
+/// platform's id for one delivered message, the key of the send it
+/// belonged to, and the stored block a reply to that message quotes. The
+/// answer block is nullable because most sends carry none — a
+/// deterministic item, the failure notice, a report's line — and the two
+/// text columns are nullable for no reason of erasure's: the row is
+/// structure, erasure leaves it, and the conversation's own deletion
+/// removes it through the block cascade. No frozen vocabulary list: the
+/// step quotes no enum.
+///
+/// Both keyed access paths are indexed in the same step, as the protection
+/// stamp's own precedent shows: the origin, which the reply resolution
+/// matches per conversation, and the delivery key, which ties the messages
+/// of one send together. Neither index is unique — one send reports once
+/// by construction, and the newest-row resolution tolerates a duplicate
+/// rather than refusing to record it.
+static DELIVERY_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {table} (
+            block_id   INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {origin}   TEXT,
+            {delivery} TEXT,
+            {answer}   INTEGER
+        );
+        CREATE INDEX {origin_index} ON {table}({origin});
+        CREATE INDEX {delivery_index} ON {table}({delivery});",
+        table = crate::delivery::DELIVERED_TABLE,
+        origin = crate::delivery::COLUMN_ORIGIN,
+        delivery = crate::delivery::COLUMN_DELIVERY,
+        answer = crate::delivery::COLUMN_ANSWER_BLOCK,
+        origin_index = DELIVERY_ORIGIN_INDEX.as_str(),
+        delivery_index = DELIVERY_KEY_INDEX.as_str(),
+    )
+});
+
+/// The delivery receipt's origin-keyed index, named once: the appended
+/// step creates it and the suite's schema pins read it back under this
+/// name. The reply resolution matches one delivered message's origin
+/// inside one conversation.
+pub static DELIVERY_ORIGIN_INDEX: LazyLock<String> =
+    LazyLock::new(|| format!("idx_{}_origin", crate::delivery::DELIVERED_TABLE));
+
+/// The delivery receipt's send-keyed index, named once beside the
+/// origin's: the key ties the messages of one send together, which is the
+/// table's other keyed access path.
+pub static DELIVERY_KEY_INDEX: LazyLock<String> =
+    LazyLock::new(|| format!("idx_{}_delivery", crate::delivery::DELIVERED_TABLE));
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -474,6 +525,7 @@ pub fn store_config() -> StoreConfig {
                 LITERAL_ADDRESSED_MIGRATION.as_str(),
                 JOIN_NOTICE_MIGRATION.as_str(),
                 REPORTED_NULLABLE_MIGRATION.as_str(),
+                DELIVERY_MIGRATION.as_str(),
             ],
         }],
     }

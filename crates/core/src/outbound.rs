@@ -117,7 +117,7 @@ use tokio::sync::mpsc;
 use crate::disclosure::Disclosure;
 use crate::kind::{AssistantKind, FrameworkKind};
 use crate::mapping;
-use crate::message::{OutboundReply, ReplyKind, ReplyThread};
+use crate::message::{DeliveryHandle, OutboundReply, ReplyKind, ReplyThread};
 use crate::tools::provenance;
 
 /// The one failure notice a failed turn yields, uniform across failure
@@ -354,6 +354,7 @@ async fn deliver_answers_and_reports(
                 text,
                 kind,
                 threading,
+                quotable_block,
             } => {
                 // The empty-answer check comes FIRST, on the raw stored
                 // text (unit 22): the model ended its turn without writing
@@ -400,6 +401,8 @@ async fn deliver_answers_and_reports(
                     text,
                     kind,
                     reply_target,
+                    delivery: DeliveryHandle::in_conversation(conversation_id)
+                        .quoting(quotable_block),
                 };
                 if replies.send(reply).is_err() {
                     return Ok(());
@@ -443,6 +446,10 @@ async fn deliver_notice(
         text: FAILURE_NOTICE.into(),
         kind: ReplyKind::Notice,
         reply_target: None,
+        // The notice records its delivery like every other send and names
+        // no quotable block: the notice is the core's fixed prose and is
+        // never stored, so a reply to it lands quoteless.
+        delivery: DeliveryHandle::in_conversation(conversation_id),
     });
     Ok(())
 }
@@ -503,11 +510,13 @@ enum Threading {
 /// What one undelivered block means to this edge.
 enum Deliverable {
     /// A reply to yield: an answer's prose, or a report's stored line,
-    /// each with where it threads.
+    /// each with where it threads and which stored block a member
+    /// replying to it quotes.
     Reply {
         text: String,
         kind: ReplyKind,
         threading: Threading,
+        quotable_block: Option<i64>,
     },
     /// A report gone undeliverable — its target origin nulled by the
     /// reported person's erasure, or a row the store did not produce —
@@ -525,7 +534,14 @@ enum Deliverable {
 /// message; the answer names the rule instead of an origin, since the
 /// message it answers is a fact about the turn and this reading holds one
 /// block.
+///
+/// Which block a member replying to this send would quote is decided here
+/// too, once per kind (unit 38, 2026-08-30): an answer names its own
+/// block, whose stored text is what the channel saw, and a report's line
+/// names none — the report block declares no quotable column, and that
+/// declaration is not this unit's to reopen.
 fn deliverable_of(block: &Block) -> Option<Deliverable> {
+    let block_id = block.id;
     match AssistantKind::from_block(block) {
         AssistantKind::Core(FrameworkKind(BlockKind::Text(text)))
             if text.role == Some(Role::Assistant) =>
@@ -534,6 +550,7 @@ fn deliverable_of(block: &Block) -> Option<Deliverable> {
                 text: text.content,
                 kind: ReplyKind::Answer,
                 threading: Threading::OntoTheAddressedMessage,
+                quotable_block: Some(block_id),
             })
         }
         AssistantKind::Report(report) => match (report.line, report.target_origin) {
@@ -541,6 +558,7 @@ fn deliverable_of(block: &Block) -> Option<Deliverable> {
                 text: line,
                 kind: ReplyKind::Report,
                 threading: Threading::Onto(ReplyThread::OntoOnly(target)),
+                quotable_block: None,
             }),
             _ => Some(Deliverable::Skipped),
         },

@@ -152,14 +152,17 @@ impl SendThread {
     }
 }
 
-/// A send that did not deliver its whole reply. The delivered count exists
-/// so the caller can state what actually happened: zero means the reply was
-/// dropped whole, more means the chat holds the reply's head and the tail
-/// was dropped — two different outcomes a log must not conflate.
+/// A send that did not deliver its whole reply. The delivered ids exist so
+/// the caller can state what actually happened and record it: an empty list
+/// means the reply was dropped whole, a non-empty one means the chat holds
+/// the reply's head and the tail was dropped — two different outcomes a log
+/// must not conflate, and exactly the messages a delivery receipt may name
+/// (unit 38, 2026-08-30).
 #[derive(Debug)]
 pub(crate) struct SendError {
-    /// How many chunks reached the chat before the failing one.
-    pub delivered_chunks: usize,
+    /// The platform's ids for the chunks that reached the chat before the
+    /// failing one, in send order.
+    pub delivered: Vec<i64>,
     /// What the failing chunk's request failed with.
     pub error: ClientError,
 }
@@ -331,6 +334,14 @@ pub(crate) struct QuotedPart {
 pub(crate) struct RepliedTo {
     pub from: Option<User>,
     pub message_id: Option<i64>,
+}
+
+/// A message the assistant just sent, reduced to the one field the send
+/// path reads back: the platform's own id for it (unit 38, 2026-08-30).
+/// Every other field of the answer is the text the caller already holds.
+#[derive(Debug, Deserialize)]
+pub(crate) struct Sent {
+    pub message_id: i64,
 }
 
 /// The chat a message lives in: its id and its platform type string.
@@ -539,29 +550,34 @@ impl BotClient {
     /// [`Self::send_chunk_threaded`], which recovers exactly where the
     /// core asked for it. A chunk that fails ends the reply there: sending
     /// the tail after a lost middle would deliver a spliced statement, so
-    /// the caller drops the rest with it — and the error carries how many
-    /// chunks were already delivered, because "dropped" and "cut short in
+    /// the caller drops the rest with it — and the error carries the ids of
+    /// the chunks already delivered, because "dropped" and "cut short in
     /// the chat" are different outcomes to report.
+    ///
+    /// The platform answers each send with the sent message, so the ids
+    /// come back either way (unit 38, 2026-08-30): the whole send answers
+    /// its ids in send order, and a cut-short one carries exactly the ids
+    /// that reached the chat on its error. The caller records them; this
+    /// module keeps no state about what it sent.
     pub(crate) async fn send_message(
         &self,
         chat_id: i64,
         text: &str,
         thread: SendThread,
-    ) -> Result<(), SendError> {
-        for (delivered_chunks, chunk) in chunks_within_cap(text).into_iter().enumerate() {
-            let threaded = if delivered_chunks == 0 {
+    ) -> Result<Vec<i64>, SendError> {
+        let mut delivered = Vec::new();
+        for chunk in chunks_within_cap(text) {
+            let threaded = if delivered.is_empty() {
                 thread
             } else {
                 SendThread::Plain
             };
-            if let Err(error) = self.send_chunk_threaded(chat_id, chunk, threaded).await {
-                return Err(SendError {
-                    delivered_chunks,
-                    error,
-                });
+            match self.send_chunk_threaded(chat_id, chunk, threaded).await {
+                Ok(message_id) => delivered.push(message_id),
+                Err(error) => return Err(SendError { delivered, error }),
             }
         }
-        Ok(())
+        Ok(delivered)
     }
 
     /// One chunk's send, with the thread's own recovery where the core
@@ -590,9 +606,10 @@ impl BotClient {
         chat_id: i64,
         chunk: &str,
         thread: SendThread,
-    ) -> Result<(), ClientError> {
-        let Err(error) = self.send_chunk(chat_id, chunk, thread.target()).await else {
-            return Ok(());
+    ) -> Result<i64, ClientError> {
+        let error = match self.send_chunk(chat_id, chunk, thread.target()).await {
+            Ok(message_id) => return Ok(message_id),
+            Err(error) => error,
         };
         if !thread.plain_when_refused() || !error.is_refusal() {
             return Err(error);
@@ -622,13 +639,14 @@ impl BotClient {
         Ok(())
     }
 
-    /// One chunk's `sendMessage` call.
+    /// One chunk's `sendMessage` call, answering the platform's own id for
+    /// the message it became.
     async fn send_chunk(
         &self,
         chat_id: i64,
         chunk: &str,
         reply_to: Option<i64>,
-    ) -> Result<(), ClientError> {
+    ) -> Result<i64, ClientError> {
         match self
             .send_body(chat_id, &crate::formatting::to_html(chunk), true, reply_to)
             .await
@@ -650,14 +668,22 @@ impl BotClient {
         }
     }
 
-    /// One `sendMessage`, formatted or plain.
+    /// One `sendMessage`, formatted or plain, answering the id the platform
+    /// gave the message.
+    ///
+    /// The answer to a send IS the sent message, so the id costs no second
+    /// call (unit 38, 2026-08-30). It is read strictly: an answer the
+    /// platform called a success while naming no message is an anomaly, and
+    /// failing the send says so rather than recording a delivery under an
+    /// invented id. The failure is a decode failure, which is not a refusal,
+    /// so nothing re-sends the text on it.
     async fn send_body(
         &self,
         chat_id: i64,
         text: &str,
         formatted: bool,
         reply_to: Option<i64>,
-    ) -> Result<(), ClientError> {
+    ) -> Result<i64, ClientError> {
         let mut body = serde_json::json!({ "chat_id": chat_id, "text": text });
         if formatted {
             body["parse_mode"] = serde_json::json!("HTML");
@@ -671,8 +697,8 @@ impl BotClient {
         let response = self
             .request("sendMessage", &body, Some(MAX_RATE_LIMIT_WAIT))
             .await?;
-        let _sent: serde_json::Value = self.decode(response).await?;
-        Ok(())
+        let sent: Sent = self.decode(response).await?;
+        Ok(sent.message_id)
     }
 
     /// One chat's administrator list, statuses included.

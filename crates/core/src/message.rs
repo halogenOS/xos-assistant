@@ -160,10 +160,20 @@ pub enum ReplyTarget {
         /// The platform's own id for the replied-to message, opaque.
         origin: String,
     },
-    /// A reply to one of the assistant's own messages. No origin rides
-    /// here: the assistant never reports itself, so nothing downstream
-    /// threads onto it.
-    AssistantMessage,
+    /// A reply to one of the assistant's own messages, named by that
+    /// message's origin where the platform carried one (unit 38,
+    /// 2026-08-30). The origin is consumed during ingestion — it resolves
+    /// which of her recorded deliveries the reply points at, so the reply
+    /// can quote her stored words — and it is never stored on the chat
+    /// message: [`crate::kind::ChatMessage::stored_fields`] keeps writing
+    /// the reply-to-assistant flag alone, so the reply-target column stays
+    /// the personal-data column its own documentation describes. `None`
+    /// for a reply the platform carried no usable id for.
+    AssistantMessage {
+        /// The platform's own id for the replied-to message of hers,
+        /// opaque.
+        origin: Option<String>,
+    },
 }
 
 /// The excerpt a reply quotes of the message it replies to, as the adapter
@@ -336,6 +346,75 @@ impl DeliveryItem {
     }
 }
 
+/// Where one of the assistant's own sends is recorded (unit 38,
+/// 2026-08-30): the conversation the sent message belongs to, and the
+/// stored block a reply to that message quotes, where the send carried one
+/// of her blocks at all.
+///
+/// Opaque to adapters. An adapter receives a handle beside the text it is
+/// asked to send and hands the same handle back to
+/// [`crate::Assistant::report_delivery`] once the platform has taken the
+/// message; it reads nothing out of it and decides nothing from it. The
+/// two values inside are the core's own: which ledger the delivery record
+/// is appended to, and which block that record points a later quote at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeliveryHandle {
+    /// The conversation the sent message belongs to.
+    pub(crate) conversation_id: i64,
+    /// The stored block a reply to this send quotes. `None` where the
+    /// send carries no quotable block of the assistant's own: the failure
+    /// notice, which is not stored at all, a report's line, whose block
+    /// declares no quotable column, and every deterministic item.
+    pub(crate) quotable_block: Option<i64>,
+}
+
+impl DeliveryHandle {
+    /// The handle of a send that carries no quotable block of the
+    /// assistant's own.
+    pub(crate) fn in_conversation(conversation_id: i64) -> Self {
+        Self {
+            conversation_id,
+            quotable_block: None,
+        }
+    }
+
+    /// The same handle, naming the stored block a reply to this send
+    /// quotes.
+    pub(crate) fn quoting(self, quotable_block: Option<i64>) -> Self {
+        Self {
+            quotable_block,
+            ..self
+        }
+    }
+
+    /// The conversation the delivery record is appended to.
+    pub(crate) fn conversation_id(self) -> i64 {
+        self.conversation_id
+    }
+
+    /// The block a reply to this send quotes, where there is one.
+    pub(crate) fn quotable_block(self) -> Option<i64> {
+        self.quotable_block
+    }
+}
+
+/// One deterministic item an observation returns, with the handle its send
+/// is recorded under (unit 38, 2026-08-30).
+///
+/// The two ride together because a delivered item and the place its
+/// delivery is recorded are one fact: an item with nowhere to record its
+/// send cannot exist, and pairing them keeps the adapter from ever having
+/// to decide what to do with one half. The ingestion side needs no pairing
+/// — its [`IngestReceipt`] always names the conversation — and answers the
+/// same handle through [`IngestReceipt::delivery`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedDelivery {
+    /// Where the send is recorded, handed back to the core afterwards.
+    pub delivery: DeliveryHandle,
+    /// What the adapter delivers on the channel.
+    pub item: DeliveryItem,
+}
+
 /// What one observation call comes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObserveOutcome {
@@ -343,9 +422,9 @@ pub enum ObserveOutcome {
     /// appended its note, an unchanged fact appended nothing.
     Observed {
         /// The item the adapter delivers on the channel — the rules
-        /// acknowledgment, when a rules note was appended. `None` says
-        /// nothing.
-        deliver: Option<DeliveryItem>,
+        /// acknowledgment, when a rules note was appended — with the
+        /// handle its send is recorded under. `None` says nothing.
+        deliver: Option<ObservedDelivery>,
     },
     /// Refused fail-closed: the channel is a group the operator never
     /// admitted, or the membership observation named no admissible adder.
@@ -389,6 +468,17 @@ pub struct IngestReceipt {
     pub principal_id: i64,
     /// The conversation the message was recorded in.
     pub conversation_id: i64,
+}
+
+impl IngestReceipt {
+    /// Where a deterministic item returned beside this receipt has its
+    /// send recorded (unit 38, 2026-08-30): this ingestion's own
+    /// conversation, carrying no quotable block — an item is the core's
+    /// fixed prose and no block of the assistant's own.
+    #[must_use]
+    pub fn delivery(&self) -> DeliveryHandle {
+        DeliveryHandle::in_conversation(self.conversation_id)
+    }
 }
 
 /// What one outbound item is: the assistant's own prose, or the core's
@@ -500,6 +590,12 @@ pub struct OutboundReply {
     /// and an answer whose prose carries the moderation command shape
     /// (2026-08-24).
     pub reply_target: Option<ReplyThread>,
+    /// Where this reply's send is recorded (unit 38, 2026-08-30): the
+    /// conversation it was read from, and — for the assistant's own
+    /// answer — the stored block a member replying to it quotes. The
+    /// adapter hands it back to [`crate::Assistant::report_delivery`]
+    /// after the send and reads nothing out of it.
+    pub delivery: DeliveryHandle,
 }
 
 #[cfg(test)]

@@ -18,9 +18,9 @@ use agent_ledger::{
 use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::{
-    Assistant, Authority, Budget, ChannelKey, ChannelKind, InboundMessage, IngestReceipt,
-    InvokedCommand, ModelBinding, Observation, ObserveOutcome, ObservedFact, OperatorConfig,
-    OutboundReply, ProtectionConfig, SenderIdentity,
+    Assistant, Authority, Budget, ChannelKey, ChannelKind, DeliveryHandle, DeliveryItem,
+    InboundMessage, IngestReceipt, InvokedCommand, ModelBinding, Observation, ObserveOutcome,
+    ObservedFact, OperatorConfig, OutboundReply, ProtectionConfig, SenderIdentity,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc};
@@ -1152,6 +1152,34 @@ pub async fn authorize(assistant: &Assistant, channel: &ChannelKey) {
     );
 }
 
+/// Record what one send put in the chat, the way an adapter does (unit 38,
+/// 2026-08-30): the opaque handle the core handed out with the text, and
+/// the platform's ids for the messages the send became.
+///
+/// The suite never mints a handle of its own — it takes the one the
+/// outbound edge put on the reply, or the one the ingest receipt answers
+/// for a deterministic item, which is exactly what the adapter's two send
+/// paths do. A handle this suite could build itself would prove nothing
+/// about the seam.
+pub async fn report_delivery(assistant: &Assistant, delivery: DeliveryHandle, origins: &[&str]) {
+    let origins: Vec<String> = origins.iter().map(|origin| (*origin).to_owned()).collect();
+    assistant.report_delivery(delivery, &origins).await;
+}
+
+/// The item one judged observation delivers, or `None` where it delivers
+/// nothing.
+///
+/// Since unit 38 (2026-08-30) the item rides with the handle its send is
+/// recorded under, and that handle is the core's own bookkeeping: every
+/// assertion in this suite is about WHAT is delivered, so the reading is
+/// spelled once here instead of at each call site.
+pub fn observed_item(outcome: &ObserveOutcome) -> Option<&DeliveryItem> {
+    match outcome {
+        ObserveOutcome::Observed { deliver } => deliver.as_ref().map(|observed| &observed.item),
+        ObserveOutcome::Withdraw => None,
+    }
+}
+
 /// Ingest one message that must be recorded, and return its receipt — the
 /// shape almost every test wants. Authorization is the caller's, spelled
 /// out at every group call site with [`authorize`]: an implicit admission
@@ -1451,7 +1479,8 @@ pub async fn await_ledger(
 }
 
 /// The ledger as the consumer's own content: every block the assistant or a
-/// member put there, and none of the framework's date records.
+/// member put there, and none of the framework's date records nor the
+/// assistant's own delivery receipts.
 ///
 /// The framework writes a `date_marker` on the first user-voiced append of
 /// a day — its own calendar entry, ordered before the block that tripped
@@ -1464,14 +1493,26 @@ pub async fn await_ledger(
 /// records. The kind is named through the framework leaf's own `KINDS`,
 /// never a literal here.
 ///
+/// A delivery receipt (unit 38, 2026-08-30) is filtered for a second
+/// reason on top of that one: it is bookkeeping no reader meets (decision
+/// 0139), and it is appended AFTER the send it records, so its arrival is
+/// ordered against nothing a test drives and a shape assertion holding it
+/// would race the report rather than pin the ledger. Both suites read the
+/// same view here, so a test that reports a delivery and then gates on
+/// [`settle`] counts content alone, on either side of the adapter seam.
+///
 /// What the marker itself does — that it exists, where it sits, how often
 /// it is written, and how it reaches the model — is pinned by the suite's
-/// `date_marker` module, which reads the raw ledger on purpose.
+/// `date_marker` module, and what the receipts record by its `delivery`
+/// module; both read the raw ledger on purpose.
 #[must_use]
 pub fn consumer_view(blocks: &[Block]) -> Vec<Block> {
     blocks
         .iter()
-        .filter(|block| !DateMarker::KINDS.contains(&block.block_type.as_str()))
+        .filter(|block| {
+            !DateMarker::KINDS.contains(&block.block_type.as_str())
+                && block.block_type != assistant_core::delivery::DELIVERED_KIND
+        })
         .cloned()
         .collect()
 }

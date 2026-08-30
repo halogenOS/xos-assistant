@@ -1608,3 +1608,50 @@ fn the_prompt_teaches_the_standing_lookup_and_the_conduct_boundary() {
         );
     }
 }
+
+/// Unit 38's decisions are recorded beside the others: numbered after the
+/// runtime-facts unit's, dated, each naming the unit it was decided with
+/// and the alternatives it beat.
+///
+/// The privacy reading is pinned as a claim about the published documents
+/// rather than accepted from its own record: the deletion mirror is the
+/// one exception the retention section states, and the assistant's own
+/// message ids introduce no second one.
+#[test]
+fn the_her_reply_quotes_decisions_are_recorded_with_dates_and_rejected_alternatives() {
+    for record in [
+        "0138-every-message-she-sends-records-its-delivery.md",
+        "0139-the-delivery-receipt-is-bookkeeping-no-reader-meets.md",
+        "0140-her-origin-rides-the-reply-target-and-is-never-stored.md",
+        "0141-the-observed-item-rides-with-the-handle-its-send-records-under.md",
+        "0142-her-resolution-is-one-lookup-beside-the-member-one.md",
+        "0143-a-reply-to-a-deterministic-item-lands-quoteless.md",
+        "0144-the-quoteless-her-decision-is-superseded.md",
+        "0145-her-own-message-ids-need-no-privacy-document-change.md",
+    ] {
+        let content = repo_file(&format!("docs/decisions/{record}"));
+        assert!(
+            content.contains("Date: 2026-08-30, with unit 38."),
+            "{record} carries its date and the unit it was decided with"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains(&flattened(
+            "Deleting a message in your chat app does not reach us"
+        )),
+        "the retention statement the new rows must not contradict still stands"
+    );
+    let superseded = flattened(&repo_file(
+        "docs/decisions/0144-the-quoteless-her-decision-is-superseded.md",
+    ));
+    assert!(
+        superseded.contains(&flattened("Why not? Please fix it")),
+        "the supersession carries the operator's own words for it"
+    );
+}

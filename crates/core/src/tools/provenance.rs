@@ -92,7 +92,8 @@ pub fn turn_reading(ledger: &[Block], call_block_id: i64) -> Authority {
             | AssistantKind::ToolPalette(_)
             | AssistantKind::ContextNote(_)
             | AssistantKind::JoinNotice(_)
-            | AssistantKind::Report(_) => None,
+            | AssistantKind::Report(_)
+            | AssistantKind::Delivered(_) => None,
         });
     fold(origin, span)
 }

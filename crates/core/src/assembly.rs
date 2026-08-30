@@ -34,9 +34,9 @@ use crate::kind::{
     self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage, NEVER_ANSWERABLE,
 };
 use crate::message::{
-    Authority, ChannelKey, ChannelKind, ComposingUpdate, DeliveryItem, InboundMessage,
-    IngestOutcome, IngestReceipt, JoinedMember, Observation, ObserveOutcome, ObservedFact,
-    OutboundReply,
+    Authority, ChannelKey, ChannelKind, ComposingUpdate, DeliveryHandle, DeliveryItem,
+    InboundMessage, IngestOutcome, IngestReceipt, JoinedMember, Observation, ObserveOutcome,
+    ObservedDelivery, ObservedFact, OutboundReply,
 };
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
@@ -51,7 +51,7 @@ use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPa
 use crate::window::{
     ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, ReplyWindow,
 };
-use crate::{authorization, identity, join, mapping, mirror, outbound, privacy, streams};
+use crate::{authorization, delivery, identity, join, mapping, mirror, outbound, privacy, streams};
 
 /// The erasure fence, as the shared handle the report tool receives at its
 /// construction: ingestions and the tool's filing hold it shared, an
@@ -74,6 +74,12 @@ pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
     // this list exists for — a member's unanswered question behind a run
     // of joins still owes its turn.
     join::JOIN_NOTICE_KIND,
+    // The delivery receipt (unit 38, 2026-08-30): the adapter reports one
+    // the moment the platform takes a message, so a receipt can land at
+    // the tail behind anything. Load-bearing on day one — a failed turn's
+    // failure notice records its own delivery AT THE TAIL, and an opaque
+    // tail there would bury the standing question behind it.
+    delivery::DELIVERED_KIND,
 ];
 
 /// The most conversations the palette-reconciliation memory holds. Past
@@ -1181,13 +1187,54 @@ impl Assistant {
                 // deterministic fallback — the acknowledgment module states
                 // the bounds and the guarantee.
                 let deliver = match topic {
-                    NoteTopic::Rules => Some(DeliveryItem::Acknowledgment(
-                        self.rules_acknowledgment(conversation_id, &text).await,
-                    )),
+                    // The item rides with the handle its send is recorded
+                    // under (unit 38, 2026-08-30): the acknowledgment is
+                    // one of the assistant's own messages like any other,
+                    // so its delivery is recorded like any other — and it
+                    // names no quotable block, an item being the core's
+                    // fixed prose.
+                    NoteTopic::Rules => Some(ObservedDelivery {
+                        delivery: DeliveryHandle::in_conversation(conversation_id),
+                        item: DeliveryItem::Acknowledgment(
+                            self.rules_acknowledgment(conversation_id, &text).await,
+                        ),
+                    }),
                     NoteTopic::Title => None,
                 };
                 Ok(ObserveOutcome::Observed { deliver })
             }
+        }
+    }
+
+    /// Record what one send put in the chat (unit 38, 2026-08-30): the
+    /// third entry point beside [`Assistant::ingest`] and
+    /// [`Assistant::observe`], taking the handle the core handed out with
+    /// the text and the platform's own ids for the messages that actually
+    /// reached the chat, in send order.
+    ///
+    /// One [`crate::delivery::Delivered`] block per reported origin, all
+    /// under the first one as the delivery key, each naming the stored
+    /// block a reply to that message quotes where the send carried one.
+    /// The adapter reports after every successful send on either path,
+    /// including a send cut short partway: the reported list is exactly
+    /// what reached the chat, so an empty list records nothing.
+    ///
+    /// This answers nothing and never fails outward. A conversation that no
+    /// longer exists — erasure can delete a direct conversation between the
+    /// send and the report — and a failed append are both logged and
+    /// dropped here, because the alternative is an adapter deciding what to
+    /// do about the core's bookkeeping. The consequence is stated rather
+    /// than hidden: the message is then unrecorded, so a member's reply to
+    /// it lands quoteless, exactly as a reply to a message sent before this
+    /// unit does.
+    pub async fn report_delivery(&self, delivery: DeliveryHandle, origins: &[String]) {
+        if let Err(error) = delivery::record(self.ctx.store(), delivery, origins).await {
+            tracing::warn!(
+                conversation_id = delivery.conversation_id(),
+                delivered = origins.len(),
+                %error,
+                "the delivery was not fully recorded; a reply to an unrecorded message lands quoteless"
+            );
         }
     }
 
@@ -1870,7 +1917,8 @@ impl Assistant {
                 | AssistantKind::ToolPalette(_)
                 | AssistantKind::ContextNote(_)
                 | AssistantKind::JoinNotice(_)
-                | AssistantKind::Report(_),
+                | AssistantKind::Report(_)
+                | AssistantKind::Delivered(_),
             )
             | None => None,
         })

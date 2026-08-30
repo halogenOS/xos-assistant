@@ -27,6 +27,9 @@
 //! The public modules stay addressable by path, because their items read by
 //! their module's name:
 //!
+//! - [`delivery`] — the delivery-receipt kind: one message the assistant
+//!   successfully sent, recorded through [`Assistant::report_delivery`] so
+//!   a reply to it can quote her stored words.
 //! - [`join`] — the join-notice kind: one person's recorded entry into a
 //!   group, stored through the observation surface and erased with the
 //!   person.
@@ -56,6 +59,7 @@ mod acknowledgment;
 mod assembly;
 mod authorization;
 mod composing;
+pub mod delivery;
 mod disclosure;
 mod erasure;
 mod error;
@@ -90,10 +94,10 @@ pub use disclosure::{Disclosure, composed_disclosure_line};
 pub use erasure::ErasureOutcome;
 pub use error::{CoreError, FailureKind};
 pub use message::{
-    Authority, ChannelKey, ChannelKind, ComposingState, ComposingUpdate, DeliveryItem,
-    InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand, JoinedMember, Observation,
-    ObserveOutcome, ObservedFact, OutboundReply, QuotedExcerpt, ReplyKind, ReplyTarget,
-    ReplyThread, SenderIdentity,
+    Authority, ChannelKey, ChannelKind, ComposingState, ComposingUpdate, DeliveryHandle,
+    DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand, JoinedMember,
+    Observation, ObserveOutcome, ObservedDelivery, ObservedFact, OutboundReply, QuotedExcerpt,
+    ReplyKind, ReplyTarget, ReplyThread, SenderIdentity,
 };
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,

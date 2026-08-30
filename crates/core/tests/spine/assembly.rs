@@ -306,12 +306,10 @@ async fn a_moved_channel_does_not_re_announce_rules_it_already_read() {
         .await
         .expect("the rules pin is judged");
     assert_eq!(
-        announced,
-        ObserveOutcome::Observed {
-            deliver: Some(DeliveryItem::Acknowledgment(
-                support::scripted_acknowledgment("1. Be kind.")
-            ))
-        },
+        support::observed_item(&announced),
+        Some(&DeliveryItem::Acknowledgment(
+            support::scripted_acknowledgment("1. Be kind.")
+        )),
         "rules the assistant has not read before are acknowledged"
     );
 
