@@ -1,7 +1,7 @@
 # Unit 39 — a reaction where a reply would add nothing
 
-Date: 2026-08-30. The operator's queue entry, verbatim: "Add reactions to the queue to
-reduce the amount of terminal responses to off topic", confirmed as: the assistant
+Date: 2026-08-30. The operator queued this to cut the low-value short replies that
+off-topic chatter draws, confirmed as: the assistant
 reacts to a message with an emoji reaction instead of sending a short reply where a
 reply adds nothing — mostly the off-topic chatter that today draws either a low-value
 text answer or total silence.
@@ -62,8 +62,8 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   nothing." It becomes, verbatim and pinned:
   `Match your response to the message's weight: a casual share earns an emoji reaction, not a written reply; a real question earns a real answer, and restating someone's own words back at them adds nothing.`
 - **The mark vocabulary is the full palette, on the operator's answer, 2026-08-30.**
-  The operator's answer, verbatim: "I didn't say only a positive set. Give her the
-  full palette." This supersedes three of T6's decisions at once: the closed core
+  Asked whether the marks should be a curated positive set, the operator ruled the
+  opposite: the full palette, nothing pre-filtered by sentiment. This supersedes three of T6's decisions at once: the closed core
   mark enum, its structurally-no-judging-variant shape, and the adapter's
   byte-pinned glyph table. The mark tool takes the emoji as its
   vocabulary parameter beside the message id; the core records it verbatim as the
@@ -242,12 +242,8 @@ in its decisions, not its criteria, and is superseded by the trigger decision ab
 
 ## Notes for launch
 
-- Worktree `~/projects/halogenos-assistant-reactions`, branch `unit/reactions`,
-  from `main` (`e4222a7`). First step of the build: `git rebase main`.
 - The build's implementer reads T6 in full alongside this doc; anchors are grepped,
   never trusted.
-- Every decision is settled; the build launches after one more unbriefed round
-  clears this revision.
 - The persona sentence is committed to the deployment repository before the deploy
   that ships this unit, so the palette and its taste line go live together; the
   push itself waits on the operator's deploy approval as always. The sentence
@@ -255,6 +251,6 @@ in its decisions, not its criteria, and is superseded by the trigger decision ab
   chat-emoji vocabulary lies mostly outside the 73 reactions, and a non-list
   choice is silently dropped — the taste line naming the reaction set is what
   keeps her picks placeable.
-- The quality bar from the operator, verbatim scope for the reviewers: "The code
-  must always be better and cleaner afterwards than it was before. If you had to
-  add a snowflake if somewhere, it's a smell."
+- The operator's quality bar, restated for the reviewers: the code is better and
+  cleaner after the change than before it, and a special-case conditional slipped
+  in anywhere to make the feature fit is itself a finding.
