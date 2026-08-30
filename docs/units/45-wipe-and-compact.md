@@ -1,6 +1,6 @@
 # Unit 45 — /wipe and /compact, the session reset commands
 
-Date: 2026-08-31. The operator's order, verbatim (2026-08-30, working copy — de-quoted
+Date: 2026-08-30. The operator's order, verbatim (2026-08-30, working copy — de-quoted
 at landing): "I also need two more slash commands /wipe – creates a brand new session
 /compact – compacts the current session", with "Direct chats arent allowed for these
 bots at the moment" fencing the audience, and the earlier design for the runaway case:
@@ -17,9 +17,9 @@ ships its `tool_calls_exhausted` status key for exactly this consumer hook.
 table; conversation state derives from append-only blocks, and the model reads the
 WHOLE ledger every turn (`store.list_blocks` at the framework's `actor.rs:1044`,
 `blocks_to_messages` over the full vector at `:1145`; `LedgerSource::list` is "Every
-block in this ledger, in ledger order", `ratchet.rs:39-42`). No window, floor, or
-summary mechanism exists anywhere in the framework — greps for compact/summarize/
-prune/window surface only slice 16's tool-call window, whose own launch notes assign
+block in this ledger, in ledger order", `ratchet.rs:39-42`). No read-window, floor, or
+summary mechanism over the model's ledger read exists anywhere in the framework
+(the words compact/window elsewhere name unrelated bounds), and slice 16's own launch notes assign
 "the consumer's auto-compaction on the status key" to "the consumer's own unit (with
 /compact)" (`docs/slices/16-the-tool-call-window.md:263-264`).
 
@@ -62,12 +62,15 @@ recipient; retention is "kept until erasure is requested" and P2 already covers
 reading older discussion. Hiding history from the MODEL changes projection, not
 retention — no D-row moves, and the update triggers (a retention change, a new
 off-machine path) do not fire. Deleting blocks WOULD be a retention change; this
-unit deletes nothing.
+unit deletes nothing. (The one conversation deletion outside erasure is
+`map_new_channel`'s race-loser — a just-created empty conversation the mapping
+claim deletes before anything references it, `assembly.rs:1812-1823`; no
+established history is ever deleted by anything but erasure.)
 
 ## Decisions taken with this unit
 
 - **The command catalogue arrives here, minimally, adopted from the commands-menu
-  design, 2026-08-31.** `crates/core/src/commands.rs` lands with `enum Command`,
+  design, 2026-08-30.** `crates/core/src/commands.rs` lands with `enum Command`,
   `ALL`, `invocation()`, `offered(ChannelKind, Authority) -> bool` and
   `recognized()` folding ASCII case, carrying variants for the five privacy
   commands, `/wipe` and `/compact`; `privacy::family_command` becomes a projection
@@ -76,42 +79,63 @@ unit deletes nothing.
   foreign words refused — the design's own intent). The stamp condition at
   `assembly.rs:795-801` widens to "a recognised command, or the mirror". `summary()`
   and the menu publication stay with the commands-menu unit; a dated note at the top
-  of its spec records what this unit built (the same note the parked limits-commands
-  unit will extend — its spec adopted the identical design first but lands later,
-  and re-anchors on the catalogue as built here). `/del` keeps its exact comparison
+  of its spec records what this unit built. `/del` keeps its exact comparison
   in the mirror, outside the catalogue. *Rejected:* a fourth hand-matched list —
-  the recorded smell the catalogue design exists to end; *rejected:* waiting for
-  the limits unit to build the catalogue — it is parked and this unit is approved
-  first.
+  the recorded smell the catalogue design exists to end; *rejected:* waiting for any other
+  catalogue adopter — this unit is approved and lands first.
 - **Both commands are offered in groups at Moderator and above, and nowhere else,
-  2026-08-31.** `offered(Group, Moderator)` true, `offered(Direct, _)` false — the
-  operator fenced direct chats out. An invocation below the floor, or in a direct
+  2026-08-30.** `offered(Group, Moderator)` true, `offered(Direct, _)` false — the
+  operator fenced direct chats out. The five privacy variants' rows are
+  stated, not derived: offered to Member and above in BOTH channel kinds,
+  today's behavior exactly — the direct-chat fence is these two commands' own,
+  never catalogue-wide. An invocation below the floor, or in a direct
   chat, is recognized, stamped `LimitedBy::Command`, and answers silence — the
   commands-menu rule: no debt, no model turn, no refusal line advertising a
   moderator surface. The floor is checked against the delivered authority the
   ingest path holds, the mirror's precedent. *Rejected:* an Admin-only floor — the
   mirror already trusts Moderator with message deletion, a heavier effect than a
   context reset.
-- **/wipe retires the mapping and claims a brand-new conversation, 2026-08-31.**
+- **/wipe retires the mapping and claims a brand-new conversation, 2026-08-30.**
   The group's mapping row is deleted and the first-contact path runs for the same
   channel: a fresh conversation, the composed prompt, the palette, the mapping
   claim — exactly what a newly admitted group gets, with no history inherited. The
   old conversation stays whole and erasure-reachable (the retire promise). The next
-  member message speaks into an empty session; standing observations (title, pinned
-  announcement) re-arrive through the adapter's lazy first-contact lookup, whose
-  once-per-process memory is cleared for the channel so the fresh conversation is
-  re-enriched. *Rejected:* the framework's `fork_continuation::NewThread` — it
+  member message speaks into an empty session. Standing observations (title,
+  pinned announcement) re-arrive because the command's outcome carries a
+  CHANNEL-RESET directive beside its answer — the withdraw directive's exact
+  precedent: the core decides, the adapter mechanically translates by forgetting
+  its once-per-process lookup memory for that channel (`driver.rs:685-690`), so
+  the channel's next contact re-runs the first-contact lookup and re-enriches
+  the fresh conversation. No adapter decision is added, only a translation.
+  Every debt the old conversation still owed is consciously cut with it — the
+  operator ordered the reset, and the old conversation still shows any
+  unanswered message to a human reader; stated here so nobody calls it a
+  burial. An answer or outbound item mid-flight at the swap resolves its
+  channel from the mapping at delivery time (`outbound.rs:8-10`,
+  `driver.rs:913-914`) and is dropped with a log — accepted openly: a session
+  the operator is resetting owes its in-flight products to the record, not to
+  the chat. *Rejected:* the framework's `fork_continuation::NewThread` — it
   deep-copies the trailing user group into the fresh thread, and a wipe that
   carries the triggering text over is not "a brand new session"; *rejected:*
   deleting the old conversation — a retention change the privacy record forbids
   without revision, and the tree's only conversation deletions are erasure's.
 - **/compact forks the conversation and detaches everything but the kept tail,
-  2026-08-31.** The retire machinery runs for the group's conversation with one
+  2026-08-30.** The retire machinery runs for the group's conversation with one
   addition: after the fork inherits the full history and takes the fresh prompt,
-  every inherited block is detached from the FORK except the kept tail — the
-  trailing chat-message blocks (member and assistant text rows, their stamps and
-  debts riding) up to `COMPACT_KEPT_MESSAGES = 20` of them, and every date marker
-  among them. NO tool block survives a compact — no call, no result, no error:
+  every block of the PRE-FORK snapshot (the retire precedent's enumeration
+  basis, `assembly.rs:995,1023-1031` — never the post-insert list, so the fresh
+  prompt is structurally exempt) is detached from the FORK except the kept set:
+  the trailing chat-message blocks (member and assistant text rows, their stamps
+  and debts riding) up to `COMPACT_KEPT_MESSAGES = 20` of them — the constant
+  lives in `commands.rs` beside the catalogue and its copy, one home for both
+  the sweep and the nothing-to-cut check — every date marker among them PLUS the
+  marker immediately preceding the oldest kept row (the kept rows keep their own
+  day), the inherited `ToolPalette` block (configuration, not traffic — swept,
+  a fork whose first wake is a framework drive would run tool-less), and any
+  filed-but-undelivered report block (it delivers under the fork's mapping;
+  dropping it would lose a moderation report for good). TOOL TRAFFIC is defined
+  exactly: `ToolCall`, `ToolResult` and `ToolError` blocks. None survives a
+  compact — no call, no result, no error:
   tool traffic is exactly the poison the command exists to cut, and the lawful
   record keeps it in the source conversation. Because no tool call crosses, the
   fork can never park on a dangling call; because detaching only removes junction
@@ -122,7 +146,15 @@ unit deletes nothing.
   the walk reads the same stamps; a debt older than the kept tail is consciously
   cut with the context that poisoned it, stated here so nobody calls it a burial:
   the operator ordered the session reset, and the old conversation still shows the
-  unanswered message to any human reader. *Rejected:* a summary block — the
+  unanswered message to any human reader. In-flight answers at the
+  swap drop exactly as /wipe's do, accepted the same way. The channel-reset
+  directive fires here too: the fork's swept context notes re-arrive through
+  the same re-enrichment. The sweep's cost is stated: no bulk detach exists
+  (`store/conversations.rs:338-358`, one round-trip per junction row), so the
+  motivating thousand-row flood detaches row by row under the global stamp lock
+  (`assembly.rs:376-386`) — a seconds-long, once-per-compact ingestion pause,
+  accepted; the command exists for exactly the conversations where it costs.
+  *Rejected:* a summary block — the
   framework has no summarization capability and inventing model-written summaries
   of member messages is new personal-data processing this unit refuses to smuggle
   in; *rejected:* per-position projection (a marker hiding what sits below it) —
@@ -131,14 +163,25 @@ unit deletes nothing.
   *rejected:* keeping tool blocks inside the tail — the kept tail must be
   poison-free by construction.
 - **The auto-compact rides the same operation, keyed on the framework's own
-  signal, 2026-08-31.** The app observes `BlocksChanged`, folds the conversation's
-  status blocks, and when a `tool_calls_exhausted` status lands, runs the compact
-  operation on that conversation — the operator's design for the corrupted-session
-  case, and slice 16's launch note names this unit as its home. One operation, two
-  triggers: the command and the signal. The auto-compact answers nothing in chat
-  (no command was invoked); a warn-level log records it. *Rejected:* a second,
-  different auto-compact shape — one decision, recorded once.
-- **Both commands answer like rights commands, on their own window, 2026-08-31.**
+  signal, level-triggered and self-consuming, 2026-08-30.** On any
+  `BlocksChanged` for a conversation, the app folds that conversation's status
+  blocks; when the fold finds a `tool_calls_exhausted` status AND the
+  conversation is currently MAPPED to a channel, the compact operation runs on
+  it — the operator's design for the corrupted-session case, and slice 16's
+  launch note names this unit as its home. The trigger is level-read from the
+  durable fold, so a lagged or dropped bus event self-heals on the next wake
+  (the bus is deliberately lossy, `bus.rs:396-402`); it is self-consuming
+  because the exhausted marker is never in the kept set — the FORK carries no
+  marker, so the fresh conversation cannot re-fire — and the mapped-only guard
+  makes the swept SOURCE (now unmapped) ineligible however many late appends
+  wake its fold. An unmapped conversation is never auto-compacted. One
+  operation, two triggers: the command and the signal. The auto-compact
+  answers nothing in chat (no command was invoked); a warn-level log records
+  it — implemented but unpinned, the commands-menu precedent for log
+  assertions. *Rejected:* a second, different auto-compact shape — one
+  decision, recorded once; *rejected:* edge-triggering on the bus event alone —
+  the lossy channel would drop exactly the incident it exists for.
+- **Both commands answer like rights commands, on their own window, 2026-08-30.**
   Per-principal `ReplyWindow` with `grant_with`, budget-exempt, its own constants
   equal to the privacy window's values (each bound carries its own constant — the
   tree's rule). The reset is applied exactly with the granted reply; a failed
@@ -146,8 +189,9 @@ unit deletes nothing.
   exact copy, stored as consts beside the catalogue and pinned byte for byte:
   - Wipe, applied: `Done. This group starts a fresh session; the old one stays on record.`
   - Compact, applied: `Done. This session was compacted: recent messages stay, old context is set aside.`
-  - Compact, nothing to cut (the conversation already holds no more than the kept
-    tail and no tool traffic): `This session is already compact. Nothing changed.`
+  - Compact, nothing to cut (the conversation already holds no tool-traffic
+    blocks — the exact three kinds — and no more chat rows than the kept
+    bound): `This session is already compact. Nothing changed.`
   *Rejected:* sharing the privacy window instance — a flood of one family must not
   silence the other's rights commands.
 
@@ -156,9 +200,11 @@ unit deletes nothing.
 A moderator or admin in a group resets that group's session with `/wipe` or trims it
 with `/compact`; the model's next turn reads the fresh or trimmed conversation;
 everyone else, and every direct chat, meets silence on both commands. The framework's
-forced turn-end triggers the same compaction unattended. Nothing is deleted anywhere:
-old conversations remain whole, readable, and erasure-reachable, and no privacy row
-moves.
+forced turn-end triggers the same compaction unattended. Nothing established is deleted anywhere:
+old conversations remain whole, readable, and erasure-reachable (the mapping
+claim's just-created race-loser is the recorded exception, as today), no privacy
+row moves, and an answer in flight at the moment of a reset is dropped with a
+log — the reset is the point, stated openly.
 
 ## Acceptance criteria
 
@@ -170,21 +216,27 @@ moves.
   takes the stamp and opens no turn).
 - **AC2 — /wipe resets.** A moderator's `/wipe` maps the channel to a new empty
   conversation (fresh prompt, palette, no inherited blocks), answers its exact
-  line, and the old conversation remains whole and erasure-reachable (pins on the
-  new mapping, the empty history, the old rows, and the line).
+  line, the old conversation remains whole and erasure-reachable, and the
+  channel's next contact re-runs the first-contact lookup (pins on the new
+  mapping, the empty history, the old rows, the line, and the re-enrichment
+  through the reset directive).
 - **AC3 — /compact trims.** With a conversation holding tool traffic and more chat
   than the kept tail, a moderator's `/compact` maps the channel to a fork whose
-  readable history is exactly the kept tail (no tool block, at most
-  `COMPACT_KEPT_MESSAGES` chat rows plus their date markers, stamps and debts
-  intact), answers its exact line; the source conversation keeps every block; a
+  readable history is exactly the kept set (no tool-traffic block, at most
+  `COMPACT_KEPT_MESSAGES` chat rows plus their date markers including the
+  oldest kept row's own, the palette block, any undelivered report, stamps and
+  debts intact), answers its exact line; the source conversation keeps every block; a
   second `/compact` immediately after answers the nothing-to-cut line (pins).
 - **AC4 — the floor and the fence.** Below-floor and direct-chat invocations of
   both commands are stamped silent; the Moderator floor reads the delivered
-  authority (pins; the monotonicity check covers the new variants).
+  authority; a direct-chat `/privacy` still answers (the fence is not
+  catalogue-wide) (pins; the monotonicity check covers the new variants).
 - **AC5 — the auto-compact.** When a `tool_calls_exhausted` status lands in a
-  conversation, the app runs the same compact operation on it, logs at warn, and
-  answers nothing in chat; the operation observably equals the command's (one
-  test drives both paths to the same shape).
+  MAPPED conversation, the app runs the same compact operation on it and
+  answers nothing in chat; the fork carries no marker and the unmapped source
+  never re-fires (pins); the operation observably equals the command's (one
+  test drives both paths to the same shape); the warn log is implemented but
+  unpinned, the commands-menu precedent.
 - **AC6 — nothing personal moves.** No block is deleted (pin over the source
   conversation after both commands); the privacy documents are untouched; the
   windows are budget-exempt and flood-bounded (pins).
@@ -196,6 +248,6 @@ moves.
 - Decision records number from the highest shipped at merge; expected: the
   catalogue's minimal landing, the wipe shape, the compact shape and its kept-tail
   bound, the auto-compact trigger.
-- The commands-menu unit's spec gains the dated note; the parked limits-commands
-  spec re-anchors when that unit is next touched.
+- The commands-menu unit's spec gains the dated note recording what this unit
+  built of its design.
 - The framework is consumed as it is: no framework change rides this unit.
