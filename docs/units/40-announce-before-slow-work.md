@@ -22,7 +22,11 @@ The composing cue goes dark during the tool window (`composing.rs:139-188`), so 
 announce is the only activity signal there — the operator's point. Nothing in any
 prompt asks the model to write the line; that is this unit.
 
-**The one slow tool today is the web search.** Every other tool is a local read.
+**The announce's home is the search, as a product call.** The operator's example
+was the search, and only the search reaches the open web; the forge, release and
+wiki lookups are HTTP reads too, against configured project hosts with the same
+10-second timeout, and they stay un-announced — a scoping decided by the operator's
+example, not by a locality claim.
 The search teaching (`SEARCH_TEACHING`, `core/src/teaching.rs:109-116`) already
 composes if and only if the tool is admitted — the capability-gated pattern this
 unit extends (`teaching.rs:98-99`, pins at :526-572).
@@ -32,15 +36,16 @@ unit extends (`teaching.rs:98-99`, pins at :526-572).
 - **The announce is taught, never mechanized, 2026-08-30.** One sentence joins the
   search teaching: before running a search, say in one short line what you are about
   to look up, then search, then answer. The mechanism delivers whatever text
-  precedes the call — that is already shipped and pinned — so this unit's whole
-  surface is prose plus pins, and the spec states honestly that a taught behavior is
+  precedes the call — that is already shipped and pinned — so this unit's
+  surface is prose, pins, and one grown test fixture (the loopback SSE server's
+  tool round), and the spec states honestly that a taught behavior is
   probabilistic, never a mechanism guarantee. *Rejected:* a framework early-flush
   boundary — the per-round StreamDone already IS the pre-tool flush, and a second
   boundary would duplicate it; *rejected:* any adapter or core code.
 - **The announce is scoped to slow work, which today means the search, 2026-08-30.**
   The sentence lives inside the capability-gated search teaching, so it composes
-  only when the search is admitted and never teaches announcing before fast local
-  lookups — and never before a report, whose own teaching wants the thinking done
+  only when the search is admitted and never teaches announcing before the
+  project-host lookups — and never before a report, whose own teaching wants the thinking done
   quietly (decision 0070's flow). A future slow tool brings its own announce
   sentence with it. *Rejected:* a general announce-before-any-tool rule — chatter
   before sub-second lookups.
@@ -57,19 +62,26 @@ unit extends (`teaching.rs:98-99`, pins at :526-572).
   standing, an announced failed turn does not — acceptable, because the member SAW
   the attempt and the failure notice, which is more honest than a silently
   re-owed turn. Stated so the reviewer finds it decided.
-- **Two pins close the composition gap, 2026-08-30.** Every existing narration pin
-  scripts the event-native shape while production speaks SSE; this unit adds one
-  narration pin driven through the production wire decoder's shape and one pairing
-  a narration with the search tool specifically (today's search fixtures carry no
-  narration). No new mechanism — the pins prove the shipped one under the exact
-  production composition.
+- **Two pins close the composition gap, both in the core spine suite,
+  2026-08-30.** Every existing narration DELIVERY pin scripts the event-native
+  shape while production speaks SSE (one search fixture does carry a narration —
+  spine/search.rs:530-536 — but no pin asserts its delivery ORDER). This unit adds:
+  in `spine/search.rs`, a pin that a narration ahead of the search delivers before
+  the search's result exists with the answer following; and in
+  `spine/chat_completions.rs`, a production-wire pin — the loopback SSE server
+  there grows a two-round script (text deltas, tool-call fragments, a tool_calls
+  finish, then the closing text) with a registered tool, real fixture work stated
+  as such. The adapter suite is NOT a home for either (its fixture has no search
+  wiring and its provider is event-native). No new mechanism — the pins prove the
+  shipped one under the production composition.
 
 ## The unit's contract
 
 When the assistant is about to run a web search, she first says in one short line
 what she is about to look up; the line delivers before the search runs, the search
 runs, and the answer follows — all inside the one turn, threaded as today. Nothing
-else changes: no new code in the core, the adapter or the framework, no new tool,
+else changes: no new mechanism in the core, the adapter or the framework (the core
+change is teaching prose and its pins), no new tool,
 no budget change beyond the recorded announce-then-fail acceptance, no
 privacy-document change (the announce is assistant prose riding the existing
 conversation).
@@ -79,11 +91,12 @@ conversation).
 - **AC1** Workspace suite green in both answering modes; clippy, fmt, doc under
   denied warnings; vocabulary and secret scans clean; no new dependency.
 - **AC2** The announce sentence composes if and only if the search capability is
-  admitted — pinned beside the existing capability-gate pins, with the verbatim
-  prose pin moved.
+  admitted — a new contains-pin beside the existing capability-gate pins
+  (`teaching.rs:526+`); the existing contains-pins stay green untouched.
 - **AC3** A narration ahead of a search tool call delivers before the search's
-  result exists and the answer follows — pinned end to end with a search fixture
-  carrying a narration.
+  result exists and the answer follows — pinned in `spine/search.rs` with the
+  existing searching fixture shape (a narration on the tool script, the turn held
+  to observe the order).
 - **AC4** The production-wire composition is pinned: the SSE decoder's output for a
   text-then-tool-call round produces the narration-then-call ingestion sequence the
   event-native pins assume.
@@ -94,9 +107,9 @@ conversation).
 
 - Worktree `~/projects/halogenos-assistant-announce`, branch `unit/announce`, from
   `main` (`e4222a7`). Build's first step: `git rebase main`.
-- Sites: `core/src/teaching.rs` (the sentence + pins), `crates/core/tests` and
-  `crates/adapters/telegram/tests` (the two composition pins), `assistant/tests/
-  docs.rs` if the prompt pin lives there, `docs/decisions`.
+- Sites: `core/src/teaching.rs` (the sentence + its pin), `crates/core/tests/spine/
+  search.rs` and `spine/chat_completions.rs` (the two composition pins; the
+  loopback SSE server there grows the tool round), `docs/decisions`.
 - This is a SMALL unit with a predictable seat count; it may run in the small lane
   beside a big build.
 - The quality bar from the operator, verbatim scope for the reviewers: "The code
