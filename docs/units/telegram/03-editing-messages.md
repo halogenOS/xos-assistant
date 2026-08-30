@@ -618,3 +618,25 @@ No new dependency, no new platform vocabulary in the core.
   receipts for this unit; the implementer verifies against the tree and the build, not against
   the API again. The one claim deliberately NOT recorded as a fact is the folklore that the API
   refuses an unchanged edit: it is undocumented, and nothing may be built on it from here.
+
+## Build note, 2026-08-31 — the tree the build starts from
+
+Verified against the tree at the 0.4.0 line before building; the design above
+stands, with four adjustments that bind the implementer:
+
+1. The recognition/action split's STAMP half already exists, broader than this
+   doc prescribes: any recognized command is stamped (the command stamp in the
+   ingestion write, 2026-08-30), so an edited deletion command is already
+   silent with no debt. Build ONLY the mirror's revises-nothing gate; do not
+   build a second stamp path.
+2. The clause "the outbound consumer still discards the sent message" is no
+   longer writable — delivery receipts are recorded (unit 38). The self-edit
+   refusal itself stands (decision 0079); the criterion narrows to asserting
+   the four edit/delete/draft API methods stay absent from the adapter.
+3. Two rationale sentences above are stale, not wrong in effect: the
+   Continuation-edit rejection predates the fork mechanisms of decisions
+   0162/0163, and "helpful answering summons every group message" predates the
+   bot-sender exemption (0151-0154). The build's decision record notes both;
+   this doc is amended only by this dated note, never edited silently.
+4. Every line anchor above has drifted. Grep for the named symbols; never
+   trust a line number.
