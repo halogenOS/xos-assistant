@@ -111,8 +111,11 @@ established history is ever deleted by anything but erasure.)
   operator ordered the reset, and the old conversation still shows any
   unanswered message to a human reader; stated here so nobody calls it a
   burial. An answer or outbound item mid-flight at the swap resolves its
-  channel from the mapping at delivery time (`outbound.rs:8-10`,
-  `driver.rs:913-914`) and is dropped with a log — accepted openly: a session
+  channel from the mapping at delivery time and is dropped — TODAY silently
+  (`outbound.rs:336-341` and `:438-443` return Ok with no trace; the
+  driver's logged case is a different branch), so this unit ADDS the
+  warn-level log at exactly those two unmapped branches, and the drop is
+  accepted openly: a session
   the operator is resetting owes its in-flight products to the record, not to
   the chat. *Rejected:* the framework's `fork_continuation::NewThread` — it
   deep-copies the trailing user group into the fresh thread, and a wipe that
@@ -174,7 +177,11 @@ established history is ever deleted by anything but erasure.)
   because the exhausted marker is never in the kept set — the FORK carries no
   marker, so the fresh conversation cannot re-fire — and the mapped-only guard
   makes the swept SOURCE (now unmapped) ineligible however many late appends
-  wake its fold. An unmapped conversation is never auto-compacted. One
+  wake its fold. An unmapped conversation is never auto-compacted. The
+  signal-path compact takes the erasure fence SHARED exactly as an ingestion
+  does (`assembly.rs:393-401` names the interleaving class the fence exists
+  for; a non-ingestion writer forking, detaching and re-claiming holds it
+  the same way). One
   operation, two triggers: the command and the signal. The auto-compact
   answers nothing in chat (no command was invoked); a warn-level log records
   it — implemented but unpinned, the commands-menu precedent for log
@@ -182,9 +189,11 @@ established history is ever deleted by anything but erasure.)
   decision, recorded once; *rejected:* edge-triggering on the bus event alone —
   the lossy channel would drop exactly the incident it exists for.
 - **Both commands answer like rights commands, on their own window, 2026-08-30.**
-  Per-principal `ReplyWindow` with `grant_with`, budget-exempt, its own constants
+  ONE per-principal `ReplyWindow` instance shared by the family — /wipe and
+  /compact together, the privacy family's one-window-per-family precedent
+  (`assembly.rs:362`) — with `grant_with`, budget-exempt, its own constants
   equal to the privacy window's values (each bound carries its own constant — the
-  tree's rule). The reset is applied exactly with the granted reply; a failed
+  tree's rule; the principal key never moves at the swap, `window.rs:117-190`). The reset is applied exactly with the granted reply; a failed
   apply answers silence with the warn log, the rights precedent. The fixed lines,
   exact copy, stored as consts beside the catalogue and pinned byte for byte:
   - Wipe, applied: `Done. This group starts a fresh session; the old one stays on record.`
@@ -203,8 +212,10 @@ everyone else, and every direct chat, meets silence on both commands. The framew
 forced turn-end triggers the same compaction unattended. Nothing established is deleted anywhere:
 old conversations remain whole, readable, and erasure-reachable (the mapping
 claim's just-created race-loser is the recorded exception, as today), no privacy
-row moves, and an answer in flight at the moment of a reset is dropped with a
-log — the reset is the point, stated openly.
+row moves, and an answer in flight at the moment of a reset is dropped with
+the warn log this unit adds at the edge's unmapped branches — the reset is
+the point, stated openly. A moderation report pending delivery at a compact
+is lost under the tree's own recorded process-death precedent, accepted.
 
 ## Acceptance criteria
 
@@ -223,10 +234,15 @@ log — the reset is the point, stated openly.
 - **AC3 — /compact trims.** With a conversation holding tool traffic and more chat
   than the kept tail, a moderator's `/compact` maps the channel to a fork whose
   readable history is exactly the kept set (no tool-traffic block, at most
-  `COMPACT_KEPT_MESSAGES` chat rows plus their date markers including the
-  oldest kept row's own, the palette block, any undelivered report, stamps and
-  debts intact), answers its exact line; the source conversation keeps every block; a
+  `COMPACT_KEPT_MESSAGES` chat rows — quotes counted — plus their date
+  markers including the oldest kept row's own, the palette block, the newest
+  context notes, stamps and debts intact), answers its exact line; the source conversation keeps every block; a
   second `/compact` immediately after answers the nothing-to-cut line (pins).
+- **AC3b — the fork is born delivered.** The outbound edge seeds an unseen
+  conversation from its durable confirmed cursor: after a /compact, no kept
+  assistant answer re-sends and no disclosure line is written into any
+  junction-shared block (pins); a fresh conversation still seeds at zero
+  (pin: /wipe's conversation delivers its first answer normally).
 - **AC4 — the floor and the fence.** Below-floor and direct-chat invocations of
   both commands are stamped silent; the Moderator floor reads the delivered
   authority; a direct-chat `/privacy` still answers (the fence is not
@@ -250,4 +266,8 @@ log — the reset is the point, stated openly.
   bound, the auto-compact trigger.
 - The commands-menu unit's spec gains the dated note recording what this unit
   built of its design.
+- The operator-facing documents move with the unit, the repo's practice for a
+  command surface: the group-operator contract gains the two commands'
+  moderator sentences and the README's command mention stays true — reviewers
+  confirm no published sentence contradicts the unit.
 - The framework is consumed as it is: no framework change rides this unit.
