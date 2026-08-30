@@ -629,6 +629,7 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
     assert_eq!(
         names,
         vec![
+            assistant_core::tools::changelog::NAME.to_owned(),
             commit::NAME.to_owned(),
             assistant_core::tools::standing::NAME.to_owned(),
             assistant_core::tools::rights::NAME.to_owned(),
@@ -650,8 +651,9 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
 }
 
 /// A created conversation's palette names exactly the registered set — the
-/// three lookups plus the two always-registered tools, privacy and runtime
-/// facts — and a direct and a group conversation get the identical palette.
+/// three lookups plus the always-registered tools: the standing lookup,
+/// privacy, the react tool, runtime facts and the harness changelog — and
+/// a direct and a group conversation get the identical palette.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_created_conversation_names_exactly_the_registered_set_direct_and_group_alike() {
     let fixture = support::start_assistant(None).await;
@@ -696,6 +698,7 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
         assert_eq!(
             names,
             vec![
+                assistant_core::tools::changelog::NAME.to_owned(),
                 commit::NAME.to_owned(),
                 release::NAME.to_owned(),
                 assistant_core::tools::wiki::NAME.to_owned(),
@@ -704,7 +707,7 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
                 assistant_core::tools::mark::NAME.to_owned(),
                 assistant_core::tools::runtime::NAME.to_owned()
             ],
-            "the palette names the three lookups and the four always-registered tools"
+            "the palette names the three lookups and the five always-registered tools"
         );
         palettes.push(names);
     }

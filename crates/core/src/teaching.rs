@@ -204,8 +204,13 @@ pub fn composed_system_prompt(
 /// both of which state a model the deployment may have moved off. Unit 37
 /// (2026-08-30) routes the same way the questions about the host the
 /// software runs on and the software it is built from, which memory
-/// answers just as badly. The sentence composes in both modes and under
-/// every configuration, because the tool it names registers the same way.
+/// answers just as badly. Unit 47 (2026-08-30) routes the same way the
+/// question of what changed in the assistant itself, to the
+/// harness-changelog tool, with a sentence that keeps the assistant's own
+/// changes apart from halogenOS's releases — the question the group asks
+/// far more often, which stays with the release lookup. The sentences
+/// compose in both modes and under every configuration, because the tools
+/// they name register the same way.
 fn identity_section(name: &str) -> String {
     format!(
         "You are called {name}. When someone asks whether {name} is an AI, \
@@ -214,8 +219,16 @@ fn identity_section(name: &str) -> String {
          which version you are, how long you have been running, which \
          operating system or architecture you run on, or what you are built \
          on, call the {tool} tool and answer from what it returns — never \
-         from memory and never from what this conversation said earlier.",
-        tool = crate::tools::runtime::NAME
+         from memory and never from what this conversation said earlier. \
+         When someone asks what changed, what is new, or what was updated in \
+         you — the assistant itself — call the {changelog} tool and answer \
+         from what it returns, never from memory and never from what this \
+         conversation said earlier. That tool carries this assistant \
+         software's own changelog and nothing else: a question about a \
+         halogenOS release or about changes in halogenOS belongs to the \
+         release lookup, never to it.",
+        tool = crate::tools::runtime::NAME,
+        changelog = crate::tools::changelog::NAME
     )
 }
 
@@ -410,6 +423,40 @@ mod tests {
             addressed.contains("when a message addresses you"),
             "addressed mode teaches the summons shape"
         );
+    }
+
+    /// AC4 (unit 47): both modes' composed prompt routes the
+    /// what-changed-in-you question to the harness-changelog tool, under
+    /// every configuration, and the sentence keeps the two changelogs
+    /// apart — the assistant's own changes go to this tool, halogenOS
+    /// release questions stay with the release lookup. The tool registers
+    /// on nothing, so the sentence composes on nothing.
+    #[test]
+    fn both_modes_route_change_questions_to_the_changelog_tool() {
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            for moderation_handle in [false, true] {
+                for web_search in [false, true] {
+                    let capabilities = Capabilities {
+                        moderation_handle,
+                        web_search,
+                    };
+                    let prompt = composed_system_prompt("b", "n", mode, capabilities);
+                    assert!(
+                        prompt.contains(
+                            "When someone asks what changed, what is new, or what was \
+                             updated in you — the assistant itself — call the \
+                             harness_changelog tool and answer from what it returns, \
+                             never from memory and never from what this conversation \
+                             said earlier. That tool carries this assistant software's \
+                             own changelog and nothing else: a question about a \
+                             halogenOS release or about changes in halogenOS belongs \
+                             to the release lookup, never to it."
+                        ),
+                        "the {mode:?} teaching routes the question to the tool"
+                    );
+                }
+            }
+        }
     }
 
     /// AC6 (unit 32) and AC5 (unit 37): both modes' composed prompt routes

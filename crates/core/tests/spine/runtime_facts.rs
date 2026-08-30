@@ -27,7 +27,6 @@
 
 use std::time::Duration;
 
-use agent_ledger::Block;
 use agent_ledger::Store;
 use agent_ledger::store::ClockReading;
 use assistant_core::schema::store_config;
@@ -35,7 +34,9 @@ use assistant_core::tools::ToolSet;
 use assistant_core::tools::runtime;
 use assistant_core::{ChannelKind, ProtectionConfig};
 
-use crate::support::{self, ToolScript, field, inbound, tool_scripted_provider};
+use crate::support::{
+    self, ToolScript, field, inbound, only, palette_names, tool_scripted_provider,
+};
 
 /// The model id this suite assembles with: distinct from the fixture
 /// default, so a result restating the default would fail here.
@@ -45,24 +46,6 @@ const CONFIGURED_MODEL: &str = "vendor/model-under-test-9";
 /// configuration changed — what the framework still dispatches that
 /// conversation's turns on.
 const MODEL_BEFORE_THE_SWAP: &str = "vendor/model-before-the-swap";
-
-/// The stored palette names of the conversation's newest palette block.
-fn palette_names(blocks: &[Block]) -> Vec<String> {
-    let block = blocks
-        .iter()
-        .rev()
-        .find(|block| block.block_type == "tool_palette")
-        .expect("the conversation records a palette");
-    serde_json::from_str(&field(block, "tools")).expect("the stored list parses")
-}
-
-/// The conversation's one block of the given kind.
-fn only(blocks: &[Block], kind: &str) -> Block {
-    let mut found = blocks.iter().filter(|block| block.block_type == kind);
-    let block = found.next().unwrap_or_else(|| panic!("one {kind} block"));
-    assert!(found.next().is_none(), "exactly one {kind} block");
-    block.clone()
-}
 
 /// An ordinary member asks what the assistant runs on: the scripted model
 /// calls the tool, admission through the recorded palette admits the call

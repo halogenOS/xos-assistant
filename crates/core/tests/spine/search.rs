@@ -853,7 +853,7 @@ async fn an_announce_ahead_of_the_search_arrives_before_the_answer() {
 // ─── The palette pins across the units that share these files ────────────
 
 /// The palette pins in the neighbouring suites name the runtime-facts tool
-/// beside the search tool.
+/// and the harness-changelog tool beside the search tool.
 ///
 /// It is a cross-file pin because the palette is one recorded list and its
 /// pins live in two suites: a unit that adds a tool has to reach both, and
@@ -874,6 +874,12 @@ fn the_palette_pins_name_the_runtime_tool() {
             "{file} pins a palette that no longer names the runtime-facts tool: the \
              recorded set is the three lookups, privacy, runtime facts, and the search \
              tool where a key is configured"
+        );
+        assert!(
+            pins.contains("changelog::NAME"),
+            "{file} pins a palette that no longer names the harness-changelog tool: the \
+             recorded set is the three lookups, privacy, runtime facts, the harness \
+             changelog, and the search tool where a key is configured"
         );
     }
 }
