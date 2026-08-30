@@ -15,10 +15,10 @@ passes, the per-origin duplicate check, the zero rate-limit interaction (budgets
 count opened debts, not acts), and the quarantine on unproven platform behaviors
 (nothing merged may depend on direct-chat reactions or empty-array withdrawal).
 WHERE BOTH SPEAK, T6'S WORDING GOVERNS THE MECHANISM — except the decisions this
-unit explicitly supersedes below. T6 itself is not edited; its anchors (roughly
-ninety of them) predate units 31/36/37/38 and the implementer greps rather than
+unit explicitly supersedes below. T6 itself is not edited; its anchors (about 176 of
+them) predate units 31/36/37/38 and the implementer greps rather than
 trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
-`Assistant::replies` now `assembly.rs:1367-1372`; `consume_replies` now
+`Assistant::replies` now `assembly.rs:1367-1376`; `consume_replies` now
 `driver.rs:906-944`; `deliverable_of` now `outbound.rs:543-567`;
 `CONSUMED_UPDATE_TYPES` now `client.rs:174`).
 
@@ -47,18 +47,27 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   Both strings are pinned byte for byte. *Rejected:* a carve-out sentence beside
   the untouched rule — the composed prompt would contradict itself on a literal
   read, the exact collision 0148 documents.
-- **The conduct line that earns text replies moves to the mark, 2026-08-30.**
-  `prompts/30-conduct.md:94` ("a casual share earns a short reaction") today
-  teaches a short TEXT reply; after this unit the same sentence points at the
-  reaction tool, so the words that line used to spend become a reaction.
+- **The conduct line that earns text replies moves to the mark, with the copy
+  decided here, 2026-08-30.** The line today, verbatim: "Match your length to
+  the message's weight: a casual share earns a short reaction, a real question
+  earns a real answer, and restating someone's own words back at them adds
+  nothing." It becomes, verbatim and pinned:
+  `Match your response to the message's weight: a casual share earns an emoji reaction, not a written reply; a real question earns a real answer, and restating someone's own words back at them adds nothing.`
 - **The mark vocabulary is the full palette, on the operator's answer, 2026-08-30.**
   The operator's answer, verbatim: "I didn't say only a positive set. Give her the
   full palette." This supersedes three of T6's decisions at once: the closed core
   mark enum, its structurally-no-judging-variant shape, and the adapter's
-  byte-pinned glyph table. The mark tool takes the emoji itself as its one
-  parameter; the core records it verbatim as the MessageMark block's content,
-  exactly as it records answer text, and owns no emoji list — an emoji is content,
-  not platform vocabulary. Decision 0070 stands untouched: a reaction is
+  byte-pinned glyph table. The mark tool takes the emoji as its
+  vocabulary parameter beside the message id; the core records it verbatim as the
+  MessageMark block's content, exactly as it records answer text, and owns no
+  emoji list — an emoji is content, not platform vocabulary. T6's frozen-
+  vocabulary CHECK on the mark column dies with the enum; in its place the mark
+  table's CHECK bounds length alone (non-empty, at most 32 bytes), the schema
+  twin of the tool bound below. T6's target validation survives whole: a call
+  naming no id, an unknown origin, or the assistant's own message is refused
+  exactly as T6 pins it (her own messages carry no principal row, so the
+  surviving no-principal refusal catches them) — "bot messages are reactable"
+  means OTHER bots' messages, which carry principals like any member's. Decision 0070 stands untouched: a reaction is
   expression, not a moderation effect, and no human decision point moves. The
   in-repo teaching adds no vocabulary restriction; the persona's emoji rules are
   the taste line (see the launch notes for how it ships without a gap).
@@ -69,8 +78,11 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   the platform cannot carry is dropped by the adapter with a log line and the model
   is never told — the tool has already returned, and an act whose whole point is
   being cheap earns no delivery report. Stated as the accepted consequence.
-  *Rejected:* echoing delivery back into the conversation — a second write for a
-  cheap act, and T6's edge design has no return path from the send.
+  *Rejected:* echoing delivery back into the conversation, or recording the
+  mark's delivery at all — a return path EXISTS since unit 38 (the Reply arm
+  carries a delivery handle the adapter hands back), and the Mark arm omits it
+  deliberately: a cheap act earns no bookkeeping row. Stated so nobody completes
+  the symmetry.
 - **The adapter's membership rule: one canonical list, selector-blind matching, the
   platform's bytes on the wire, 2026-08-30.** The adapter pins the platform's
   documented reaction list (seventy-three entries) as escape sequences — never
@@ -87,21 +99,46 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   legal reactions would drop invisibly; *rejected:* sending the model's bytes — the
   platform's accepted form is documented per entry and the list is the one place
   that records it.
-- **The privacy documents move with the palette, and their sentences are decided
+- **The privacy documents move with the palette, and their content is decided
   here, 2026-08-30.** T6's AC14 pinned document content the palette falsifies (a
-  named single mark, a no-negative-marks DPIA rationale); this unit replaces it as
-  AC-E. The records of processing gain row D11 (main's section 5 ends at D10, the
-  join-notice names): the assistant's chosen reaction emoji, stored with the
-  marked message's id and time — model-authored content, referencing no member
-  data beyond the already-recorded message. The privacy policy's plain-language
-  list gains:
+  named single mark, a no-negative-marks DPIA rationale); this unit replaces its
+  PALETTE-FALSIFIED content and keeps its surviving obligations — the erasure
+  row, the retention clause, and the recipients statement T6's un-superseded
+  erasure decision mandates. Four sites. The records of processing gain
+  collection row D11 (main's section 5 ends at D10), carrying these facts in the
+  table's own voice: the emoji the assistant chose, the marked message's
+  reference, the marked member's internal identifier (the same datum D7 names
+  for reports — the mark table's principal column survives from T6), and the
+  time. The same document's erasure section gains the D11 row with these facts:
+  the marked person's erasure empties the mark's stored references to them; an
+  administrator's deletion of the marked message empties the record through the
+  mirror pass; the visible reaction on the platform is not withdrawn — the
+  stated residual. The retention fact rides where the document states retention:
+  the mark record lives exactly as long as the message record beside it. The
+  recipients statement: the chosen emoji travels to the platform with the send
+  and to nobody new. Table rows are pinned on their facts the way the document's
+  tests pin its claims; the two free-standing sentences below are pinned byte
+  for byte. The privacy policy's plain-language list gains:
   `The assistant may put an emoji reaction on a message; the emoji it chose is stored with that message's record.`
   The impact assessment's reactions passage replaces the no-negative-mark
   rationale with:
   `A reaction is expression, not enforcement: it changes nobody's standing, rights or access, and every moderation effect keeps its human decision point. The palette includes negative emojis; choosing one is a conduct matter governed by the deployed persona, with no data-protection effect beyond the stored choice itself.`
-  The DPIA's review trigger names reactions, so its review note is dated with this
-  unit. Exact placement follows each document's own structure; the sentences above
-  are the copy, pinned where each document's tests already pin its claims.
+  The DPIA's review trigger names reactions, so its review note is dated with
+  this unit.
+- **The two core-cleanliness checks are defined here, buildable against today's
+  tree, 2026-08-30.** T6 AC2's non-ASCII scan does not exist yet and, as T6 wrote
+  it, would fail on main (the search guard legitimately holds confusable
+  character literals, and fixtures hold Cyrillic and umlaut text). Decided: the
+  scan this unit builds reads PRODUCTION core source with test modules excluded;
+  its allowlist is enumerated in the check itself, each entry with the reason it
+  belongs (the four punctuation marks T6 named, plus the search guard's
+  confusable literals); and a deliberately-failing fixture proves the scan
+  bites. The second check greps production core source for emoji escape
+  sequences in the ranges U+1F000-U+1FAFF and U+2600-U+27BF plus U+FE0F — the
+  guard's format-control escapes lie outside them — and it too carries a failing
+  fixture. *Rejected:* T6's allowlist verbatim — it fails on the tree it merges
+  into; *rejected:* scanning fixtures — test text legitimately speaks other
+  scripts.
 - **The deployment persona gains one sentence about reactions, as deployment work,
   2026-08-30.** The persona's emoji rules (match, never a sign-off, no repeats)
   extend naturally to reactions; the persona is the deployment's file, so that
@@ -117,13 +154,13 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   too. Join messages aren't reactable at least i cant put a reaction on tg's system
   join message." So no exclusion clause exists anywhere: a bot's message may draw a
   mark like anyone's. A join notice's origin is a platform service message the
-  platform will not decorate (operator-observed); no structural refusal is built
-  for it — the carve-out already aims marks at messages that land, a join line is
-  not one, and if the model ever aims at a join origin anyway the platform's
-  refusal at the send is the same accepted, logged loss the edge records for every
-  undeliverable mark. *Rejected:* a tool-side refusal for join targets — a special
-  case for a call the platform already answers, on a behavior this repo records as
-  operator-observed rather than proven.
+  platform will not decorate (operator-observed); no NEW refusal is built for it —
+  the mark tool's surviving origin validation already declines a join origin,
+  because the aiming check reads chat messages and a join notice is its own
+  block kind, never among them. The platform fact is recorded as the operator's
+  observation; nothing depends on it. *Rejected:* a dedicated join-target
+  clause — the existing validation IS the refusal, and a second one would record
+  the same decision twice.
 
 ## Acceptance criteria
 
@@ -143,18 +180,19 @@ in its decisions, not its criteria, and is superseded by the trigger decision ab
 - **AC-C** The decision records land numbered from the highest shipped at merge,
   the trigger inversion, the sentence amendment (distinguishing 0148), and the
   palette supersession each recording the superseded rule with its date.
-- **AC-D** The mark tool's one parameter is the emoji; the core refuses empty and
-  over-32-byte arguments with the taught error (pins) and stores an accepted one
-  verbatim on the block (pin); the core holds no emoji list — pinned by a committed
-  check that greps `crates/core/src` for emoji-range escape sequences as well as
-  the surviving non-ASCII scan, so an escape-written list cannot hide; the
-  adapter's membership rule is pinned three ways: both heart byte forms map to the
-  one wire form, an out-of-list emoji is dropped without a platform call and
-  logged, and the sent bytes are the list's, not the model's.
-- **AC-E** The three privacy-document changes land with the sentences decided
-  above: the D11 row, the plain-language line, and the impact-assessment passage,
-  each pinned the way its document's existing claims are pinned, and the DPIA
-  review note is dated.
+- **AC-D** The mark tool takes the emoji as its vocabulary parameter beside the
+  message id (T6 AC5's target validation passing unchanged); the core refuses
+  empty and over-32-byte emoji arguments with the taught error (pins), stores an
+  accepted one verbatim on the block (pin), and the mark table's CHECK bounds
+  length (schema pin); the core holds no emoji list — enforced by the two
+  checks the cleanliness decision defines, each proven by its failing fixture;
+  the adapter's membership rule is pinned three ways: both heart byte forms map
+  to the one wire form, an out-of-list emoji is dropped without a platform call
+  and logged, and the sent bytes are the list's, not the model's.
+- **AC-E** The privacy-document changes land as the privacy decision states:
+  the D11 collection row, the D11 erasure row, the retention fact and the
+  recipients statement pinned on their facts; the plain-language line and the
+  impact-assessment passage pinned byte for byte; the DPIA review note dated.
 
 ## Notes for launch
 
