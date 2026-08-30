@@ -104,7 +104,10 @@ established history is ever deleted by anything but erasure.)
   pinned announcement) re-arrive because the command's outcome carries a
   CHANNEL-RESET directive beside its answer — the withdraw directive's exact
   precedent: the core decides, the adapter mechanically translates by forgetting
-  its once-per-process lookup memory for that channel (`driver.rs:685-690`), so
+  its once-per-process lookup memory for the channel — a named slot on
+  `IngestOutcome::Recorded` beside `deliver`, the adapter's new arm voiding
+  the memory exactly as the admission path already voids it (`driver.rs:671`;
+  the `:685-690` site is the skip CHECK, not the forget), so
   the channel's next contact re-runs the first-contact lookup and re-enriches
   the fresh conversation. No adapter decision is added, only a translation.
   Every debt the old conversation still owed is consciously cut with it — the
@@ -117,26 +120,40 @@ established history is ever deleted by anything but erasure.)
   warn-level log at exactly those two unmapped branches, and the drop is
   accepted openly: a session
   the operator is resetting owes its in-flight products to the record, not to
-  the chat. *Rejected:* the framework's `fork_continuation::NewThread` — it
+  the chat. The runtime may still spend one turn on a retired debt (nothing
+  marks the source retired to the scheduler); its answer lands in the dead
+  conversation and drops at the same logged branch — the retire machinery's
+  recorded leftover class, accepted. *Rejected:* the framework's `fork_continuation::NewThread` — it
   deep-copies the trailing user group into the fresh thread, and a wipe that
   carries the triggering text over is not "a brand new session"; *rejected:*
   deleting the old conversation — a retention change the privacy record forbids
-  without revision, and the tree's only conversation deletions are erasure's.
+  without revision; the only deletion of an ESTABLISHED conversation is
+  erasure's (the mapping claim's just-created race-loser is the recorded
+  exception).
 - **/compact forks the conversation and detaches everything but the kept tail,
   2026-08-30.** The retire machinery runs for the group's conversation with one
   addition: after the fork inherits the full history and takes the fresh prompt,
   every block of the PRE-FORK snapshot (the retire precedent's enumeration
-  basis, `assembly.rs:995,1023-1031` — never the post-insert list, so the fresh
+  basis — the `list_blocks` read at `assembly.rs:973` iterated by the detach loop at `:1038-1043`, never the post-insert list, so the fresh
   prompt is structurally exempt) is detached from the FORK except the kept set:
   the trailing chat-message blocks (member and assistant text rows, their stamps
   and debts riding) up to `COMPACT_KEPT_MESSAGES = 20` of them — the constant
   lives in `commands.rs` beside the catalogue and its copy, one home for both
   the sweep and the nothing-to-cut check — every date marker among them PLUS the
   marker immediately preceding the oldest kept row (the kept rows keep their own
-  day), the inherited `ToolPalette` block (configuration, not traffic — swept,
-  a fork whose first wake is a framework drive would run tool-less), and any
-  filed-but-undelivered report block (it delivers under the fork's mapping;
-  dropping it would lose a moderation report for good). TOOL TRAFFIC is defined
+  day), the inherited `ToolPalette` block — KEPT (configuration, not
+  traffic; without it a fork whose first wake is a framework drive would run
+  tool-less; when several palette blocks exist, the newest alone) — and the
+  NEWEST context-note block per observed fact (title, pinned announcement:
+  the group knowledge the model keeps with no re-enrichment round trip).
+  Report blocks are NOT kept: their deliveredness lives only in the outbound
+  edge's process memory, so the core cannot tell a delivered report from a
+  pending one — keeping all would re-deliver, which the edge's contract
+  refuses above all — and the pending-report loss is accepted under the
+  tree's own recorded process-death precedent, with eyes open: the exhausted
+  turn the auto-compact follows was looping, and its report is the least
+  trustworthy product it made. Quote blocks COUNT as chat rows, for the kept
+  tail and the nothing-to-cut bound alike. TOOL TRAFFIC is defined
   exactly: `ToolCall`, `ToolResult` and `ToolError` blocks. None survives a
   compact — no call, no result, no error:
   tool traffic is exactly the poison the command exists to cut, and the lawful
@@ -150,9 +167,25 @@ established history is ever deleted by anything but erasure.)
   cut with the context that poisoned it, stated here so nobody calls it a burial:
   the operator ordered the session reset, and the old conversation still shows the
   unanswered message to any human reader. In-flight answers at the
-  swap drop exactly as /wipe's do, accepted the same way. The channel-reset
-  directive fires here too: the fork's swept context notes re-arrive through
-  the same re-enrichment. The sweep's cost is stated: no bulk detach exists
+  swap drop exactly as /wipe's do, accepted the same way. /compact needs NO channel-reset directive on either
+  trigger: the kept context notes carry the group knowledge across, so the
+  signal path — which has no command outcome to ride a directive on — needs
+  no core-to-adapter transport at all; the reset directive is /wipe's alone. The OUTBOUND EDGE's seam is decided here, not left to the builder:
+  the edge seeds a conversation it has never seen at zero on the premise
+  that all its blocks postdate the edge (`outbound.rs:287-311`,
+  `or_insert(0)` at `:343`) — false for a fork, whose kept assistant
+  answers would re-send into the group and whose first-delivery disclosure
+  resolution would write into junction-SHARED blocks (`outbound.rs:379-385`;
+  the edit-through-a-fork `detach_block`'s own doc forbids,
+  `store/conversations.rs:347-351`). The repair makes the premise true: an
+  unseen conversation seeds from its DURABLE cursor — the position
+  `fork_conversation` already sets (`confirm_inherited_history`, the min of
+  the inherited boundary and the source's confirmed position; a fresh
+  conversation holds zero) — so inherited history is born delivered and
+  /wipe's fresh conversation is untouched. One narrow residual rides the
+  min, recorded in the open: an assistant answer delivered but not yet
+  confirmed at fork time sits above the seed and re-sends once —
+  milliseconds wide, accepted. The sweep's cost is stated: no bulk detach exists
   (`store/conversations.rs:338-358`, one round-trip per junction row), so the
   motivating thousand-row flood detaches row by row under the global stamp lock
   (`assembly.rs:376-386`) — a seconds-long, once-per-compact ingestion pause,
@@ -178,10 +211,23 @@ established history is ever deleted by anything but erasure.)
   marker, so the fresh conversation cannot re-fire — and the mapped-only guard
   makes the swept SOURCE (now unmapped) ineligible however many late appends
   wake its fold. An unmapped conversation is never auto-compacted. The
-  signal-path compact takes the erasure fence SHARED exactly as an ingestion
-  does (`assembly.rs:393-401` names the interleaving class the fence exists
-  for; a non-ingestion writer forking, detaching and re-claiming holds it
-  the same way). One
+  re-claim takes the WINNER CHECK `map_new_channel` already owns
+  (`assembly.rs:1820-1823`): a claim lost to a concurrent racer deletes the
+  just-created fork — junction rows alone, every block lives on in the
+  source — logs at warn, and the winner's state governs; no mapped-nowhere
+  phantom fork ever owes turns nothing can deliver. The
+  whole operation — check and act, both triggers — runs under
+  ONE hold: the global stamp lock the ingest path already holds plus the
+  erasure fence SHARED (`assembly.rs:376-386`; `:393-401` names the
+  interleaving class the fence exists for), and the marker-present AND
+  mapped checks are RE-READ inside that hold, so a wake that lost the race
+  finds the source unmapped and stands down; an in-process in-flight set
+  (one entry per conversation) keeps concurrent wakes from stacking behind
+  the lock only to re-fork in sequence. The straddler is stated: an
+  ingestion that resolved the old conversation before the lock and appends
+  after the swap lands its rows in the RETIRED conversation — its answer
+  drops at the unmapped branch with this unit's log, the retire machinery's
+  own leftover class, accepted. One
   operation, two triggers: the command and the signal. The auto-compact
   answers nothing in chat (no command was invoked); a warn-level log records
   it — implemented but unpinned, the commands-menu precedent for log
@@ -200,7 +246,9 @@ established history is ever deleted by anything but erasure.)
   - Compact, applied: `Done. This session was compacted: recent messages stay, old context is set aside.`
   - Compact, nothing to cut (the conversation already holds no tool-traffic
     blocks — the exact three kinds — and no more chat rows than the kept
-    bound): `This session is already compact. Nothing changed.`
+    bound, counting only rows OLDER than the invoking command row; the
+    signal path, having no command row, counts the whole readable set):
+    `This session is already compact. Nothing changed.`
   *Rejected:* sharing the privacy window instance — a flood of one family must not
   silence the other's rights commands.
 
@@ -246,7 +294,9 @@ is lost under the tree's own recorded process-death precedent, accepted.
 - **AC4 — the floor and the fence.** Below-floor and direct-chat invocations of
   both commands are stamped silent; the Moderator floor reads the delivered
   authority; a direct-chat `/privacy` still answers (the fence is not
-  catalogue-wide) (pins; the monotonicity check covers the new variants).
+  catalogue-wide) (pins; the monotonicity pin is NEW WORK this unit creates over
+  `Command::offered` — a higher standing is offered a superset, over all
+  variants and both channel kinds).
 - **AC5 — the auto-compact.** When a `tool_calls_exhausted` status lands in a
   MAPPED conversation, the app runs the same compact operation on it and
   answers nothing in chat; the fork carries no marker and the unmapped source
