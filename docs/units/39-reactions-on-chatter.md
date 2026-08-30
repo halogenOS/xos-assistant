@@ -46,12 +46,17 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   `The one exception is the emoji reaction: where you would otherwise end an empty turn but a message genuinely lands - a share, a milestone, a joke that landed - you may put one reaction on it instead. A reaction never rides with words on the same message, most messages deserve no reaction either, and silence stays the default.`
   Both strings are pinned byte for byte. The addressed arm stays unamended on
   purpose: in addressed mode unaddressed chatter opens no turn at all, so the
-  carve-out is a helpful-mode behavior the addressed arm's own sentence never
-  meets. *Rejected:* a carve-out sentence beside
+  CHATTER carve-out never meets that arm's sentence. The react teaching itself
+  composes in both modes (registration is unconditional, T6's one-predicate
+  rule), and in addressed mode its empty-turn clause legitimately covers an
+  ADDRESSED message that lands with nothing to say — a share aimed at her may
+  draw the reaction there too, which contradicts nothing the addressed arm
+  states. *Rejected:* a carve-out sentence beside
   the untouched rule — the composed prompt would contradict itself on a literal
   read, the exact collision 0148 documents.
 - **The conduct line that earns text replies moves to the mark, with the copy
-  decided here, 2026-08-30.** The line today, verbatim: "Match your length to
+  decided here, 2026-08-30.** The line lives in the embedder's conduct prompt
+  (prompts/30-conduct.md:94, wrapping to :96). Today, verbatim: "Match your length to
   the message's weight: a casual share earns a short reaction, a real question
   earns a real answer, and restating someone's own words back at them adds
   nothing." It becomes, verbatim and pinned:
@@ -66,10 +71,11 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   emoji list — an emoji is content, not platform vocabulary. T6's frozen-
   vocabulary CHECK on the mark column dies with the enum; in its place the mark
   table's CHECK bounds length alone (non-empty, at most 32 bytes), the schema
-  twin of the tool bound below. T6's target validation survives whole: a call
-  naming no id, an unknown origin, or the assistant's own message is refused
-  exactly as T6 pins it (her own messages carry no principal row, so the
-  surviving no-principal refusal catches them) — "bot messages are reactable"
+  twin of the tool bound below. T6's target validation survives with one collapse: a call
+  naming no id or an unknown origin is refused exactly as T6 pins it, and the
+  assistant's own message is caught by the no-principal refusal — her messages
+  carry no principal row — so T6's DISTINCT own-message decline text is
+  unreachable, is not built, and its pin dies with it — "bot messages are reactable"
   means OTHER bots' messages, which carry principals like any member's. The tool's model-facing name moves with the vocabulary: `mark_seen` no
   longer says what the tool does, so the tool is named `react`, its parameters
   the message id and the emoji — a model-facing string decided here, T6's
@@ -152,9 +158,10 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   the search guard's padding-separator literals — the guard's Cyrillic sits in
   its test module, which the scan already excludes); and a deliberately-failing fixture proves the scan
   bites. The second check greps production core source for emoji escape
-  sequences in the ranges U+1F000-U+1FAFF and U+2600-U+27BF plus U+FE0F — the
-  guard's format-control escapes lie outside them — and it too carries a failing
-  fixture. *Rejected:* T6's allowlist verbatim — it fails on the tree it merges
+  sequences in the ranges U+1F000-U+1FAFF and U+2600-U+27BF plus U+FE0F and
+  U+200D — the joiner is the one palette codepoint outside the ranges, and the
+  guard's format-control escapes still lie outside the whole set — and it too
+  carries a failing fixture. *Rejected:* T6's allowlist verbatim — it fails on the tree it merges
   into; *rejected:* scanning fixtures — test text legitimately speaks other
   scripts.
 - **The deployment persona gains one sentence about reactions, as deployment work,
@@ -188,7 +195,9 @@ no-judging-variant structure, the glyph table, or the single named mark's wire f
 is superseded (AC-D and AC-E replace them; AC4's block-append half survives and is
 re-pinned under AC-D, its request-shape pin re-created among AC-D's membership
 pins); T6's AC2 allowlist is superseded by the cleanliness decision's enumerated
-scan; T6's AC14 is replaced whole by AC-E. T6's trigger rule lives
+scan; T6's AC14 is replaced whole by AC-E; and T6's AC16 — the decision-file
+recording of the closed enum and the no-negative-mark shape as standing decisions
+— is replaced whole by AC-C, whose records supersede exactly those statements. T6's trigger rule lives
 in its decisions, not its criteria, and is superseded by the trigger decision above.
 
 - **AC-A** The amended silence sentence and the carve-out are pinned byte for byte
@@ -206,8 +215,10 @@ in its decisions, not its criteria, and is superseded by the trigger decision ab
   accepted one verbatim on the block (pin), and the mark table's CHECK bounds
   length (schema pin); the core holds no emoji list — enforced by the two
   checks the cleanliness decision defines, each proven by its failing fixture;
-  the adapter's membership rule is pinned five ways: both heart byte forms map
-  to the one wire form, each byte-ambiguous entry (the bare heart among them)
+  the adapter's membership rule is pinned five ways: the model's bare heart and
+  its selector-carrying form both map to the list's bare-heart entry (the
+  heart-on-fire entry stays distinct under its joiner), each byte-ambiguous
+  entry (the bare heart among them)
   has its list bytes asserted independently (the byte-hazard rule), the request
   shape is pinned (one send, a one-element emoji-typed reaction array — no
   custom-emoji parameter can be built), an out-of-list emoji is dropped without
