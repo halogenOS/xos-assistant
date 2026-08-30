@@ -105,9 +105,10 @@ unit, deliberately.
   in two halves that stand together. First: a bot sender's unsummoned message
   stamps `answer_due` false outright — no debt of its own, no carried tail, so the
   frontier (which owes a turn from the newest block alone) fires nothing. The
-  mechanism, named: the stamp composition stays pure — the one compose call site
-  (`assembly.rs:793-804`) passes no owing tail for an unsummoned bot message, and
-  `Stamp::compose` gains no sender input, so no other compose caller moves.
+  mechanism, named: the stamp composition stays pure — the one PRODUCTION compose call site
+  (`assembly.rs:793-804`; the four others are test fixtures) passes no owing
+  tail for an unsummoned bot message, and `Stamp::compose` gains no sender
+  input, so no other caller moves.
   Second: because today a live chat row with a false stamp means "settled" to the
   propagation walk, the false-stamped bot row would BURY the older debt — and the
   walk is ONE decision recorded at TWO sites by its own contract
@@ -116,8 +117,10 @@ unit, deliberately.
   (`kind.rs:918-955`). BOTH widen together: a live chat-message row whose stored
   stamp is false becomes transparent — the query gains the stamp predicate on
   the typed answer_due column as a third transparency dimension beside the kind
-  set and the erased shape, and the query's documented contract
-  (`kind.rs:892-905`) is updated to name it. Widening one site alone is a silent
+  set and the erased shape, DISJUNCTIVELY (a row is transparent when erased OR
+  false-stamped; a conjunctive rewrite would shrink the erased dimension for
+  true-stamped erased rows and regress decision 0086), and the query's
+  documented contract (`kind.rs:892-905`) is updated to name it. Widening one site alone is a silent
   no-op that still buries the debt. Safety, on the write-time invariant (the
   proof, both modes): every production chat-row append happens under the stamp
   lock with the owing tail read in the same critical section, so a stored false
@@ -146,7 +149,12 @@ unit, deliberately.
 - **Everything else decided before the summons stays exactly as built,
   2026-08-30.** The deletion mirror, identity resolution and recording are
   untouched by construction: they run before or independently of the summons
-  resolution. Stated so the reviewers hold the diff to it.
+  resolution. Stated so the reviewers hold the diff to it. The teaching text is
+  untouched too, on the operator's explicit shape (no prompt changes): the
+  helpful arm's "every message reaches you ... you decide whether to speak"
+  grows slightly loose for bot senders, whose messages reach the context but
+  never bring the model in — accepted and recorded here, a later teaching unit's
+  candidate, never this one's.
 
 ## Acceptance criteria
 
