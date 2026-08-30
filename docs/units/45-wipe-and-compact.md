@@ -54,8 +54,10 @@ with the state change applied exactly with the granted reply (`window.rs:117-197
 
 **The consumer hook slice 16 shipped.** `Status::TOOL_CALLS_EXHAUSTED`
 (`records.rs:49`) lands anchored on a turn five consecutive rate-limit refusals
-ended; the app's bus subscription already receives every `CoreEvent` including
-`BlocksChanged` (`streams.rs:114`), and no app code reads the key today.
+ended; the bus is a global broadcast any subscriber taps (the observer at
+`streams.rs:114` is the pattern; its match ignores `BlocksChanged`), so the
+auto-compact watcher is NEW WORK in that exact shape — a spawned task beside
+the observer — and no app code reads the key today.
 
 **Privacy.** Neither command erases personal data, stops collection, or adds a
 recipient; retention is "kept until erasure is requested" and P2 already covers
@@ -153,7 +155,12 @@ established history is ever deleted by anything but erasure.)
   tree's own recorded process-death precedent, with eyes open: the exhausted
   turn the auto-compact follows was looping, and its report is the least
   trustworthy product it made. Quote blocks COUNT as chat rows, for the kept
-  tail and the nothing-to-cut bound alike. TOOL TRAFFIC is defined
+  tail and the nothing-to-cut bound alike, and the invoking command row
+  counts INSIDE the kept bound (it is the newest chat row; only the
+  nothing-to-cut check reads past it). Join-notice and Delivered blocks
+  ride the cut side, ruled here: a reset conversation owes no memory of old
+  joins — the lawful record keeps them — and delivery records project
+  nothing. TOOL TRAFFIC is defined
   exactly: `ToolCall`, `ToolResult` and `ToolError` blocks. None survives a
   compact — no call, no result, no error:
   tool traffic is exactly the poison the command exists to cut, and the lawful
@@ -170,7 +177,10 @@ established history is ever deleted by anything but erasure.)
   swap drop exactly as /wipe's do, accepted the same way. /compact needs NO channel-reset directive on either
   trigger: the kept context notes carry the group knowledge across, so the
   signal path — which has no command outcome to ride a directive on — needs
-  no core-to-adapter transport at all; the reset directive is /wipe's alone. The OUTBOUND EDGE's seam is decided here, not left to the builder:
+  no core-to-adapter transport at all; the reset directive is /wipe's alone.
+  A conversation predating the first-contact notes carries none to keep —
+  its compacted fork stays note-less until the platform fact next changes
+  or the process restarts, accepted as self-limiting. The OUTBOUND EDGE's seam is decided here, not left to the builder:
   the edge seeds a conversation it has never seen at zero on the premise
   that all its blocks postdate the edge (`outbound.rs:287-311`,
   `or_insert(0)` at `:343`) — false for a fork, whose kept assistant
@@ -215,7 +225,9 @@ established history is ever deleted by anything but erasure.)
   (`assembly.rs:1820-1823`): a claim lost to a concurrent racer deletes the
   just-created fork — junction rows alone, every block lives on in the
   source — logs at warn, and the winner's state governs; no mapped-nowhere
-  phantom fork ever owes turns nothing can deliver. The
+  phantom fork ever owes turns nothing can deliver. A claim-lost COMMAND
+  still answers its done line — true of the surviving state, whichever
+  racer produced it. The
   whole operation — check and act, both triggers — runs under
   ONE hold: the global stamp lock the ingest path already holds plus the
   erasure fence SHARED (`assembly.rs:376-386`; `:393-401` names the
@@ -240,7 +252,11 @@ established history is ever deleted by anything but erasure.)
   (`assembly.rs:362`) — with `grant_with`, budget-exempt, its own constants
   equal to the privacy window's values (each bound carries its own constant — the
   tree's rule; the principal key never moves at the swap, `window.rs:117-190`). The reset is applied exactly with the granted reply; a failed
-  apply answers silence with the warn log, the rights precedent. The fixed lines,
+  apply answers silence with the warn log, the rights precedent — and the
+  silence never claims atomicity: the swap is separate store calls, so a
+  failure or crash midway can leave a half-swept, unmapped orphan fork
+  (harmless, never cleaned) or an unmapped channel that the adapter's
+  unacknowledged-update redelivery converges on the next attempt. The fixed lines,
   exact copy, stored as consts beside the catalogue and pinned byte for byte:
   - Wipe, applied: `Done. This group starts a fresh session; the old one stays on record.`
   - Compact, applied: `Done. This session was compacted: recent messages stay, old context is set aside.`
