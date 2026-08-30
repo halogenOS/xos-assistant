@@ -1713,3 +1713,231 @@ fn the_announce_units_decisions_are_recorded_and_the_line_is_taught() {
         "a deployment with no search key is taught no heads-up line"
     );
 }
+
+// ─── The reactions unit's pins (unit 39, AC-A, AC-B, AC-C, AC-E) ─────────
+
+/// AC-C: the unit's decision records land numbered from the highest
+/// shipped, each dated with the unit it was decided with, each recording
+/// the rule it supersedes and the alternatives it beat.
+#[test]
+fn the_reaction_units_decisions_are_recorded_with_what_they_supersede() {
+    for (record, superseded) in [
+        (
+            "0155-the-reaction-belongs-to-unaddressed-chatter.md",
+            "The design of 2026-08-25 taught the mark for messages speaking TO the assistant",
+        ),
+        (
+            "0156-the-silence-sentence-is-amended-for-the-reaction.md",
+            "Decision 0148, taken the day before with unit 40, refused to carve an \
+             exception into this sentence",
+        ),
+        (
+            "0157-the-emoji-is-content-and-the-list-is-the-adapters.md",
+            "The reaction design of 2026-08-25 gave the core a closed vocabulary",
+        ),
+    ] {
+        let content = repo_file(&format!("docs/decisions/{record}"));
+        assert!(
+            content.contains("Date: 2026-08-30, with unit 39."),
+            "{record} carries its date and the unit it was decided with"
+        );
+        assert!(
+            flattened(&content).contains(&flattened(superseded)),
+            "{record} records the rule it supersedes, with its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+}
+
+/// AC-A and AC-B: the copy this unit decided, in the two places it lives.
+/// The prompt's conduct line names the reaction and directs no short text
+/// reply at a casual share; the composed helpful prompt carries the
+/// amended silence sentence and its carve-out byte for byte, with the
+/// act-scoped sentence gone; and the react teaching's two bounds ride
+/// every composition, because the tool registers on nothing.
+#[test]
+fn the_reaction_copy_ships_in_the_prompt_and_the_composed_teaching() {
+    let prompt = flattened(&repo_prompt());
+    assert!(
+        prompt.contains(&flattened(
+            "Match your response to the message's weight: a casual share earns an emoji \
+             reaction, not a written reply; a real question earns a real answer, and \
+             restating someone's own words back at them adds nothing."
+        )),
+        "the conduct line names the reaction, pinned byte for byte"
+    );
+    assert!(
+        !prompt.contains("a casual share earns a short reaction"),
+        "no teaching sentence still directs a short text reply at a casual share"
+    );
+
+    let composed = assistant_core::composed_system_prompt(
+        &repo_prompt(),
+        "Probe",
+        assistant_core::AnsweringMode::Helpful,
+        assistant_core::Capabilities::default(),
+    );
+    assert!(
+        composed.contains(
+            "they get nothing from you in words: not an answer, not an acknowledgment, \
+             not a comment."
+        ),
+        "the composed prompt carries the amended silence sentence"
+    );
+    assert!(
+        composed.contains(
+            "The one exception is the emoji reaction: where you would otherwise end an \
+             empty turn but a message genuinely lands — a share, a milestone, a joke \
+             that landed — you may put one reaction on it instead. A reaction never \
+             rides with words on the same message, most messages deserve no reaction \
+             either, and silence stays the default."
+        ),
+        "the composed prompt carries the carve-out"
+    );
+    assert!(
+        !composed.contains("they get nothing from you, not an answer"),
+        "the act-scoped sentence is amended, not left standing beside its exception"
+    );
+    for mode in [
+        assistant_core::AnsweringMode::Helpful,
+        assistant_core::AnsweringMode::Addressed,
+    ] {
+        let composed = assistant_core::composed_system_prompt(
+            &repo_prompt(),
+            "Probe",
+            mode,
+            assistant_core::Capabilities::default(),
+        );
+        assert!(
+            composed.contains(assistant_core::REACT_TEACHING),
+            "the react teaching composes in {mode:?} mode, as the tool registers"
+        );
+        for bound in [
+            "Chatter that lands may draw one reaction instead of an empty turn",
+            "Words and a reaction never land on one message",
+        ] {
+            assert!(
+                composed.contains(bound),
+                "{mode:?}: the react teaching states its bound: {bound}"
+            );
+        }
+    }
+}
+
+/// AC-E: the privacy documents are true again in the same change. The two
+/// table rows are pinned on their facts, the retention fact and the
+/// recipients statement beside them; the plain-language line and the
+/// impact assessment's reactions passage are pinned byte for byte; and the
+/// DPIA's review note is dated with this unit.
+#[test]
+fn the_privacy_documents_carry_the_reaction_record_and_its_erasure() {
+    let records = flattened(&repo_file("docs/privacy/records-of-processing.md"));
+    for fact in [
+        "D11 | Reaction record (added 2026-08-30)",
+        "The emoji the assistant chose, the marked message's platform identifier, the \
+         marked person's internal identifier",
+        "the same datum D7 names for a report",
+        "at most once per marked message",
+        "The assistant collects nobody else's reactions",
+        "the platform sends reaction updates only to a chat administrator, and this \
+         assistant is deliberately not one",
+    ] {
+        assert!(
+            records.contains(&flattened(fact)),
+            "the collection row states: {fact}"
+        );
+    }
+    for fact in [
+        "The marked person's erasure empties the record's stored message reference",
+        "The row survives with the erasure-keyed internal identifier and the chosen emoji",
+        "An emptied reaction record states nothing to the model",
+        "An administrator's deletion of the marked message empties the reference too, \
+         through the same deletion mirror",
+        "The record lives exactly as long as the message record beside it",
+        "**The reaction already visible in the chat is not withdrawn**",
+    ] {
+        assert!(
+            records.contains(&flattened(fact)),
+            "the erasure row states: {fact}"
+        );
+    }
+    for fact in [
+        "the emoji the assistant chooses travels to the chat platform with the placement \
+         and to nobody new",
+        "the stored reaction record travels nowhere at all",
+    ] {
+        assert!(
+            records.contains(&flattened(fact)),
+            "the recipients statement states: {fact}"
+        );
+    }
+
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains(&flattened(
+            "The assistant may put an emoji reaction on a message; the emoji it chose is \
+             stored with that message's record."
+        )),
+        "the plain-language line is pinned byte for byte"
+    );
+    assert!(
+        policy.contains(&flattened(
+            "a reaction record for exactly as long as the message it sits on, its message \
+             reference emptied on the same deletion"
+        )),
+        "the retention paragraph covers the reaction record on the same terms"
+    );
+    assert!(
+        policy.contains(&flattened(
+            "a reaction the assistant already put on one of your messages stays visible in \
+             the chat"
+        )),
+        "the deletion paragraph names the residual to the people concerned"
+    );
+
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    assert!(
+        dpia.contains(&flattened(
+            "A reaction is expression, not enforcement: it changes nobody's standing, \
+             rights or access, and every moderation effect keeps its human decision point. \
+             The palette includes negative emojis; choosing one is a conduct matter \
+             governed by the deployed persona, with no data-protection effect beyond the \
+             stored choice itself."
+        )),
+        "the impact assessment's reactions passage is pinned byte for byte"
+    );
+    for fact in [
+        "## 15. Addendum, 2026-08-30: the assistant's own reaction",
+        "The reactions half of this trigger FIRED on 2026-08-30",
+        "The assistant collects nobody else's reactions, and cannot",
+        "the stored reaction record travels to no processor beyond the platform send itself",
+    ] {
+        assert!(
+            dpia.contains(&flattened(fact)),
+            "the impact assessment carries: {fact}"
+        );
+    }
+}
+
+/// The operator contract answers the question an operator will actually
+/// ask — why the assistant never notices anybody's reaction — without
+/// sending them to a design document for it.
+#[test]
+fn the_operator_contract_states_the_reaction_asymmetry() {
+    let contract = flattened(&repo_file("docs/reference/group-operator-contract.md"));
+    for fact in [
+        "## Reactions: the assistant places them and sees none",
+        "Placing a reaction needs no administrator right",
+        "The platform delivers reaction updates only to a bot that is an **administrator** \
+         of the chat",
+        "the assistant therefore subscribes to no reaction update at all",
+    ] {
+        assert!(
+            contract.contains(&flattened(fact)),
+            "the operator contract states: {fact}"
+        );
+    }
+}

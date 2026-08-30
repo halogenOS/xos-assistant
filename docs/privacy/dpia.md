@@ -648,7 +648,11 @@ Any one of these triggers a review, and none of them is optional:
   anything that would move inference outside the EU.
 - Any new path that sends message content off the machine, including a new tool, and any
   change to which identifiers travel with a request.
-- A change to what is collected: media, edits, reactions, membership events.
+- A change to what is collected: media, edits, reactions, membership events. The
+  reactions half of this trigger FIRED on 2026-08-30, when the assistant gained the
+  ability to place one; section 15 is the review it demanded. It stands unspent for
+  the receiving half — collecting anybody else's reactions is a separate change and
+  takes its own review.
 - Any change to the groups' readability. A group that becomes closed, approval-only or
   invite-only voids the Article 9(2)(e) claim recorded for self-posted content, because
   posting into it stops being publication to the public. Added 2026-08-23 with that claim.
@@ -874,3 +878,69 @@ its mitigations and its residual re-rating in sections 6 to 8. The overall judgm
 of section 8 stands: the residual risk is not high in the meaning of Article 36(1).
 Fetching a page is not part of this capability and remains a review trigger of its
 own.
+
+## 15. Addendum, 2026-08-30: the assistant's own reaction
+
+The review trigger "a change to what is collected: media, edits, **reactions**,
+membership events" fired with the reactions unit, and this addendum is the
+assessment it demands. This document is a draft amended in place, per its own
+status line.
+
+**The reaction, described.** Where a reply would add nothing — most often the
+off-topic chatter the assistant's silence rule already keeps it quiet about — the
+assistant may put one emoji on the message instead of writing anything. The model
+picks the message and the emoji; nothing is mechanical, and no rule anywhere says
+"react to every X". One message takes at most one reaction, ever, and a message the
+assistant answers in words takes none. The emoji comes from the platform's own
+published reaction set; a pick outside it is discarded before any call, and a
+placement the platform refuses is one log line with no retry and no message sent in
+its stead.
+
+**What is new for the people concerned.**
+
+- *One stored record per placed reaction.* It holds the emoji the assistant chose,
+  the marked message's platform identifier, the marked person's internal identifier
+  and the time — registered as D11 in the records of processing. The message
+  reference and the internal identifier are the personal part, and both are already
+  the categories D7 records for a report; the emoji is the assistant's own
+  expression and no data about anybody.
+- *No new recipient, and no new transfer.* The emoji travels to the chat platform
+  with the placement and to nobody else. It is not part of what is sent to the model
+  processor, the stored record travels nowhere, and section 3.5's list of places data
+  leaves the EEA is unchanged at four.
+- *An erasure residual, stated rather than hidden.* The marked person's erasure
+  empties the stored message reference, and the deletion mirror empties it when an
+  administrator deletes the marked message. The reaction already visible in the chat
+  is NOT withdrawn: doing so would need a network call from inside an operation that
+  is store-only by design and would rest on a platform behaviour this repository has
+  not proven. The residual is small and is named to the people concerned in the
+  public policy: the visible reaction is a fact about the assistant, on a message the
+  group and the platform already hold as their own, and it names nobody.
+
+**Two facts the palette does not change, restated because they carry weight.** The
+assistant collects nobody else's reactions, and cannot: the platform delivers
+reaction updates only to a chat administrator, and the operator contract keeps this
+assistant an ordinary member so its reports reach the moderation bot. The receiving
+half is therefore not built, not stubbed and not subscribed to, and no privacy notice
+describes collection that never happens. And the stored reaction record travels to no
+processor beyond the platform send itself.
+
+**Whether a reaction is a moderation effect.** It is not, and the reasoning is worth
+writing down because the emoji set includes unkind ones.
+
+**The assessment, in the words this unit pins.** A reaction is expression, not
+enforcement: it changes nobody's standing, rights or access, and every moderation effect
+keeps its human decision point. The palette includes negative emojis; choosing one is a
+conduct matter governed by the deployed persona, with no data-protection effect beyond the
+stored choice itself.
+
+Decision 0070 is untouched by this unit. The assistant still assesses and files; the
+group's human administrators still decide; nothing here warns, mutes, removes or bans
+anybody, and no decision point moved.
+
+**Judgment.** One further stored category, made of data the record already collects
+for a report, with no new recipient, no new transfer, no new model input, and an
+erasure residual smaller than the ones already accepted for a report's public reply.
+The overall judgment of section 8 stands: the residual risk is not high in the
+meaning of Article 36(1). Reading the group's reactions remains a review trigger of
+its own, and a product decision this assessment does not make.

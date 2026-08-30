@@ -1,12 +1,13 @@
-//! The outbound edge: a subscription that yields one adapter's replies, each
-//! bound to the channel key it belongs on.
+//! The outbound edge: a subscription that yields what the assistant puts
+//! on one adapter's channels — a reply of words, or a reaction to place —
+//! each bound to the channel key it belongs on.
 //!
 //! The framework's event subscription is the wake signal only. Events carry
 //! no answer text, so on a completed stream the edge re-reads the answer
 //! block from the ledger and maps the conversation back to its channel key.
 //! Each edge serves exactly one adapter and skips every other adapter's
 //! conversations, so two adapters run two edges and neither consumes the
-//! other's replies.
+//! other's items.
 //!
 //! # The delivery contract, stated honestly
 //!
@@ -106,6 +107,19 @@
 //! at-least-once; for a moderation nudge the safer direction is fewer
 //! reports, never more. A report whose target an erasure nulled is
 //! skipped as undeliverable.
+//!
+//! # The mark's placement (unit 39, 2026-08-30)
+//!
+//! A filed mark block yields the second arm of [`Outbound`]: the stored
+//! emoji and the marked message's origin, and nothing else — no thread, no
+//! disclosure, no delivery handle. It rides the same cursor, the same
+//! wakes and the same lag recovery as a reply, so everything the delivery
+//! contract above states holds for it word for word: a mark undelivered
+//! when the process dies is LOST, and under the tool's per-origin
+//! existence check that message then stays unmarked for good — accepted
+//! for an act whose whole point is being cheap. A mark whose target an
+//! erasure or the deletion mirror nulled is skipped as undeliverable,
+//! exactly as a report is.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -117,7 +131,9 @@ use tokio::sync::mpsc;
 use crate::disclosure::Disclosure;
 use crate::kind::{AssistantKind, FrameworkKind};
 use crate::mapping;
-use crate::message::{DeliveryHandle, OutboundReply, ReplyKind, ReplyThread};
+use crate::message::{
+    DeliveryHandle, Outbound, OutboundMark, OutboundReply, ReplyKind, ReplyThread,
+};
 use crate::tools::provenance;
 
 /// The one failure notice a failed turn yields, uniform across failure
@@ -199,29 +215,29 @@ pub(crate) async fn spawn_edge(
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
     adapter: String,
     disclosure: Arc<Disclosure>,
-) -> Result<mpsc::UnboundedReceiver<OutboundReply>, StoreError> {
+) -> Result<mpsc::UnboundedReceiver<Outbound>, StoreError> {
     let mut events = ctx.bus().subscribe();
     let mut cursors = seed_cursors(&ctx, &adapter).await?;
-    let (replies, receiver) = mpsc::unbounded_channel();
+    let (items, receiver) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         loop {
             let event = tokio::select! {
                 // A dropped receiver ends the task even while the bus idles;
                 // recv alone would park until the next event arrives.
-                () = replies.closed() => break,
+                () = items.closed() => break,
                 event = events.recv() => event,
             };
             match event {
                 Ok(CoreEvent::StreamDone {
                     conversation_id, ..
                 }) => {
-                    if let Err(error) = deliver_answers_and_reports(
+                    if let Err(error) = deliver_stored_items(
                         &ctx,
                         &adapter,
                         &disclosure,
                         conversation_id,
                         &mut cursors,
-                        &replies,
+                        &items,
                     )
                     .await
                     {
@@ -244,13 +260,13 @@ pub(crate) async fn spawn_edge(
                     error,
                     ..
                 }) => {
-                    if let Err(error) = deliver_answers_and_reports(
+                    if let Err(error) = deliver_stored_items(
                         &ctx,
                         &adapter,
                         &disclosure,
                         conversation_id,
                         &mut cursors,
-                        &replies,
+                        &items,
                     )
                     .await
                     {
@@ -263,7 +279,7 @@ pub(crate) async fn spawn_edge(
                             "the failed turn stays quiet in the chat"
                         );
                     } else if let Err(error) =
-                        deliver_notice(&ctx, &adapter, conversation_id, &replies).await
+                        deliver_notice(&ctx, &adapter, conversation_id, &items).await
                     {
                         tracing::error!(conversation_id, %error, "the failure notice did not deliver");
                     }
@@ -272,7 +288,7 @@ pub(crate) async fn spawn_edge(
                 Err(RecvError::Lagged(missed)) => {
                     tracing::warn!(missed, "outbound edge lagged; re-reading stored state");
                     if let Err(error) =
-                        recover_from_lag(&ctx, &adapter, &disclosure, &mut cursors, &replies).await
+                        recover_from_lag(&ctx, &adapter, &disclosure, &mut cursors, &items).await
                     {
                         tracing::error!(%error, "outbound lag recovery failed");
                     }
@@ -310,9 +326,10 @@ async fn seed_cursors(
     Ok(cursors)
 }
 
-/// Read the conversation's ledger and yield every undelivered answer and
-/// report block, in ledger order — which puts a turn's report ahead of its
-/// answer, because the tool filed before the answer finalized — bound to
+/// Read the conversation's ledger and yield every undelivered answer,
+/// report and mark block, in ledger order — which puts a turn's filed
+/// blocks ahead of its answer, because the tool filed before the answer
+/// finalized — bound to
 /// the conversation's channel key. A report whose target origin an erasure
 /// nulled is skipped as undeliverable and accounted delivered, so the
 /// re-reads stop meeting it. A conversation that is not mapped, or is
@@ -324,13 +341,13 @@ async fn seed_cursors(
 /// [`StoreError`] if a read fails or the store's actor has stopped. The send
 /// half never errors here: a dropped receiver ends the task at the loop
 /// instead.
-async fn deliver_answers_and_reports(
+async fn deliver_stored_items(
     ctx: &RuntimeContext<AssistantKind, CoreEvent>,
     adapter: &str,
     disclosure: &Disclosure,
     conversation_id: i64,
     cursors: &mut DeliveryCursors,
-    replies: &mpsc::UnboundedSender<OutboundReply>,
+    items: &mpsc::UnboundedSender<Outbound>,
 ) -> Result<(), StoreError> {
     let tx = ctx.store().tx();
     let Some(channel) = mapping::channel_for_conversation(&tx, conversation_id).await? else {
@@ -404,15 +421,29 @@ async fn deliver_answers_and_reports(
                     delivery: DeliveryHandle::in_conversation(conversation_id)
                         .quoting(quotable_block),
                 };
-                if replies.send(reply).is_err() {
+                if items.send(Outbound::Reply(reply)).is_err() {
                     return Ok(());
                 }
             }
-            Deliverable::Skipped => {
+            Deliverable::Mark {
+                emoji,
+                target_origin,
+            } => {
+                let mark = OutboundMark {
+                    channel: channel.clone(),
+                    emoji,
+                    target_origin,
+                };
+                if items.send(Outbound::Mark(mark)).is_err() {
+                    return Ok(());
+                }
+            }
+            Deliverable::Skipped { undeliverable } => {
                 tracing::debug!(
                     conversation_id,
                     block_id,
-                    "a targetless report is undeliverable; skipped"
+                    undeliverable,
+                    "a targetless block is undeliverable; skipped"
                 );
             }
         }
@@ -432,7 +463,7 @@ async fn deliver_notice(
     ctx: &RuntimeContext<AssistantKind, CoreEvent>,
     adapter: &str,
     conversation_id: i64,
-    replies: &mpsc::UnboundedSender<OutboundReply>,
+    items: &mpsc::UnboundedSender<Outbound>,
 ) -> Result<(), StoreError> {
     let tx = ctx.store().tx();
     let Some(channel) = mapping::channel_for_conversation(&tx, conversation_id).await? else {
@@ -441,7 +472,7 @@ async fn deliver_notice(
     if channel.adapter != adapter {
         return Ok(());
     }
-    let _ = replies.send(OutboundReply {
+    let _ = items.send(Outbound::Reply(OutboundReply {
         channel,
         text: FAILURE_NOTICE.into(),
         kind: ReplyKind::Notice,
@@ -450,7 +481,7 @@ async fn deliver_notice(
         // no quotable block: the notice is the core's fixed prose and is
         // never stored, so a reply to it lands quoteless.
         delivery: DeliveryHandle::in_conversation(conversation_id),
-    });
+    }));
     Ok(())
 }
 
@@ -466,20 +497,20 @@ async fn recover_from_lag(
     adapter: &str,
     disclosure: &Disclosure,
     cursors: &mut DeliveryCursors,
-    replies: &mpsc::UnboundedSender<OutboundReply>,
+    items: &mpsc::UnboundedSender<Outbound>,
 ) -> Result<(), StoreError> {
     let tx = ctx.store().tx();
     for record in mapping::all(&tx).await? {
         if record.adapter != adapter {
             continue;
         }
-        if let Err(error) = deliver_answers_and_reports(
+        if let Err(error) = deliver_stored_items(
             ctx,
             adapter,
             disclosure,
             record.conversation_id,
             cursors,
-            replies,
+            items,
         )
         .await
         {
@@ -518,10 +549,18 @@ enum Deliverable {
         threading: Threading,
         quotable_block: Option<i64>,
     },
-    /// A report gone undeliverable — its target origin nulled by the
-    /// reported person's erasure, or a row the store did not produce —
-    /// accounted delivered so the re-reads stop meeting it.
-    Skipped,
+    /// A reaction to place: the stored emoji and the message it goes on
+    /// (unit 39, 2026-08-30).
+    Mark {
+        emoji: String,
+        target_origin: String,
+    },
+    /// A block gone undeliverable — its target origin nulled by the named
+    /// person's erasure or by the deletion mirror, or a row the store did
+    /// not produce — accounted delivered so the re-reads stop meeting it.
+    /// The kind names itself, so one reading serves every target-bearing
+    /// kind and the log line still says which one was skipped.
+    Skipped { undeliverable: &'static str },
 }
 
 /// The delivery reading of one block, `None` for everything this edge does
@@ -560,7 +599,22 @@ fn deliverable_of(block: &Block) -> Option<Deliverable> {
                 threading: Threading::Onto(ReplyThread::OntoOnly(target)),
                 quotable_block: None,
             }),
-            _ => Some(Deliverable::Skipped),
+            _ => Some(Deliverable::Skipped {
+                undeliverable: crate::tools::report::REPORT_KIND,
+            }),
+        },
+        // The mark names its own target and nothing else: a reaction
+        // threads nowhere, carries no prose to introduce, and names no
+        // quotable block — a member replying to a reaction is replying to
+        // the message under it, which is theirs.
+        AssistantKind::MessageMark(mark) => match (mark.emoji, mark.target_origin) {
+            (Some(emoji), Some(target_origin)) => Some(Deliverable::Mark {
+                emoji,
+                target_origin,
+            }),
+            _ => Some(Deliverable::Skipped {
+                undeliverable: crate::tools::mark::MESSAGE_MARK_KIND,
+            }),
         },
         _ => None,
     }
@@ -669,6 +723,16 @@ mod tests {
     use crate::message::{ChannelKey, ChannelKind};
     use crate::schema::store_config;
 
+    /// One outbound item as the reply it must be. Every test in this
+    /// module drives prose, so a mark arriving here is a routing defect
+    /// and says so instead of being quietly unwrapped.
+    fn as_reply(item: Outbound) -> OutboundReply {
+        match item {
+            Outbound::Reply(reply) => reply,
+            Outbound::Mark(mark) => panic!("expected a reply on the edge, got a mark: {mark:?}"),
+        }
+    }
+
     /// A runtime context with no reactor and nothing registered: the edge
     /// under test is the only task, so every event on the bus is one this
     /// test put there.
@@ -710,7 +774,7 @@ mod tests {
             .expect("the mapping claims");
 
         let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
-        let mut replies = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
+        let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
             .await
             .expect("the edge opens");
 
@@ -733,10 +797,12 @@ mod tests {
             });
         }
 
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
-            .await
-            .expect("the lag recovery delivers before the deadline")
-            .expect("the edge outlives the test");
+        let reply = as_reply(
+            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
+                .await
+                .expect("the lag recovery delivers before the deadline")
+                .expect("the edge outlives the test"),
+        );
         assert_eq!(reply.channel, key);
         assert_eq!(reply.text, disclosure.disclosed("the owed answer"));
     }
@@ -838,7 +904,7 @@ mod tests {
         let ctx = quiet_ctx(store.clone());
         let (key, conversation) = mapped_conversation(&store, "dm-empty-first").await;
         let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
-        let mut replies = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
+        let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
             .await
             .expect("the edge opens");
 
@@ -855,10 +921,12 @@ mod tests {
         anchored_answer(&store, conversation, spoken, "the spoken answer").await;
         wake(&ctx, conversation);
 
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
-            .await
-            .expect("the spoken answer delivers before the deadline")
-            .expect("the edge outlives the test");
+        let reply = as_reply(
+            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
+                .await
+                .expect("the spoken answer delivers before the deadline")
+                .expect("the edge outlives the test"),
+        );
         assert_eq!(reply.channel, key);
         assert_eq!(
             reply.text,
@@ -867,7 +935,7 @@ mod tests {
              spoken answer behind it is the introduction"
         );
         assert!(
-            replies.try_recv().is_err(),
+            items.try_recv().is_err(),
             "exactly one reply: the empty answer never reached the channel"
         );
 
@@ -902,7 +970,7 @@ mod tests {
         let ctx = quiet_ctx(store.clone());
         let (_, conversation) = mapped_conversation(&store, "dm-empty-return").await;
         let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
-        let mut replies = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
+        let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
             .await
             .expect("the edge opens");
 
@@ -910,10 +978,12 @@ mod tests {
         let first = summoning_message(&store, conversation, true).await;
         anchored_answer(&store, conversation, first, "the first answer").await;
         wake(&ctx, conversation);
-        let introduced = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
-            .await
-            .expect("the first answer delivers before the deadline")
-            .expect("the edge outlives the test");
+        let introduced = as_reply(
+            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
+                .await
+                .expect("the first answer delivers before the deadline")
+                .expect("the edge outlives the test"),
+        );
         assert_eq!(introduced.text, disclosure.disclosed("the first answer"));
 
         // The silent turn, then a follow-up spoken one — both fully
@@ -926,17 +996,19 @@ mod tests {
         anchored_answer(&store, conversation, followed, "the follow-up answer").await;
         wake(&ctx, conversation);
 
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
-            .await
-            .expect("the follow-up delivers before the deadline")
-            .expect("the edge outlives the test");
+        let reply = as_reply(
+            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
+                .await
+                .expect("the follow-up delivers before the deadline")
+                .expect("the edge outlives the test"),
+        );
         assert_eq!(
             reply.text, "the follow-up answer",
             "the returning asker's empty answer produced no send, and the \
              follow-up arrives bare — the person was already introduced"
         );
         assert!(
-            replies.try_recv().is_err(),
+            items.try_recv().is_err(),
             "no empty message sits on the channel"
         );
     }
@@ -950,14 +1022,14 @@ mod tests {
         let ctx = quiet_ctx(store);
         let bus = Arc::clone(ctx.bus());
 
-        let replies = spawn_edge(
+        let items = spawn_edge(
             ctx,
             "quiet".into(),
             Arc::new(Disclosure::resolve(None, "Probe")),
         )
         .await
         .expect("the edge opens");
-        drop(replies);
+        drop(items);
 
         // The bus handle count proves the task's exit: the edge task owns
         // the one clone of the context, and its end releases it.

@@ -134,12 +134,45 @@ pub const SEARCH_TEACHING: &str = "You can also search the web with the search_w
      project lookups: a web result is never the source for a claim about \
      halogenOS, its features, its procedures or its builds.";
 
+/// The react teaching, verbatim (unit 39, 2026-08-30), composed
+/// unconditionally exactly as the react tool is admitted unconditionally —
+/// one predicate for both, and here the predicate is "always", so the two
+/// cannot drift. A reaction needs nothing but a chat, which is why it
+/// carries none of the report's conditions.
+///
+/// What it teaches is the trigger and the two bounds. The trigger is the
+/// chatter that LANDS where the silence default would otherwise end the
+/// turn empty: the reaction is what the assistant may put there instead of
+/// words. The bounds are that words and a reaction never land on one
+/// message — an answer already acknowledges it — and that one message
+/// takes one reaction, ever.
+///
+/// It composes in the addressed mode too, and legitimately: there the
+/// empty-turn clause covers an ADDRESSED message that lands with nothing
+/// to say, so a share aimed at the assistant may draw a reaction as well.
+/// The chatter carve-out that rides the helpful arm's silence sentence is
+/// a different sentence for a different case, and that arm is where it
+/// lives.
+///
+/// No emoji appears here, deliberately: which emoji a platform can place
+/// is a platform fact and lives in the adapter, and the core's own
+/// cleanliness scans would fail on a glyph in this file. Taste — which
+/// emoji suits which moment — is the deployed persona's, not the core's.
+pub const REACT_TEACHING: &str = "You can also put one emoji reaction on a message, with the \
+     react tool: name the message by the bracketed id shown ahead of it and give the emoji \
+     you choose. Chatter that lands may draw one reaction instead of an empty turn — a \
+     share, a milestone, a joke — and that is what the tool is for. Words and a reaction \
+     never land on one message: when you answer in words, the answer is the whole of it. \
+     Most messages deserve no reaction at all, one message takes at most one reaction \
+     ever, and silence stays the default.";
+
 /// The whole system prompt the assembly records: the embedder's prompt,
 /// then the name identity, then the answering teaching for the configured
-/// mode, then — each exactly when its own capability is there — the
-/// moderation teaching and the web search teaching. Public because the
-/// suites pin recorded prompts against exactly this composition instead of
-/// restating it.
+/// mode, then the react teaching — unconditional like the two before it —
+/// and then, each exactly when its own capability is there, the moderation
+/// teaching and the web search teaching. Public because the suites pin
+/// recorded prompts against exactly this composition instead of restating
+/// it.
 #[must_use]
 pub fn composed_system_prompt(
     base: &str,
@@ -148,7 +181,7 @@ pub fn composed_system_prompt(
     capabilities: Capabilities,
 ) -> String {
     let mut prompt = format!(
-        "{base}\n\n{identity}\n\n{teaching}",
+        "{base}\n\n{identity}\n\n{teaching}\n\n{REACT_TEACHING}",
         identity = identity_section(name),
         teaching = answering_section(answering),
     );
@@ -186,12 +219,51 @@ fn identity_section(name: &str) -> String {
     )
 }
 
+/// The hardened silence sentence, as unit 39 amended it (2026-08-30). It
+/// stood as "they get nothing from you, not an answer, not an
+/// acknowledgment, not a comment" — a rule about acts, which the reaction
+/// would have contradicted on a literal read. The amendment scopes it to
+/// WORDS, which is what it always meant and what it can keep meaning
+/// beside [`REACTION_CARVE_OUT`].
+///
+/// Decision 0148 refused to carve an exception into this sentence for the
+/// heads-up line, resolving that case by wording alone — it could, because
+/// the announce added no new ACT. This unit adds one, so the sentence
+/// itself changes. Pinned byte for byte: the copy is this unit's, and its
+/// two halves are constants so the composition cannot reword them.
+pub(crate) const SILENCE_IN_WORDS: &str =
+    "they get nothing from you in words: not an answer, not an acknowledgment, not a comment.";
+
+/// The carve-out that joins the amended sentence, in the helpful arm
+/// alone (unit 39, 2026-08-30). It rides HERE and not beside the rule as a
+/// separate paragraph, because the composed prompt would otherwise
+/// contradict itself on a literal read — the exact collision decision 0148
+/// documents.
+///
+/// The addressed arm is deliberately left unamended: there an unaddressed
+/// message opens no turn at all, so the CHATTER carve-out never meets that
+/// arm's sentence. What the addressed mode does get is
+/// [`REACT_TEACHING`], whose empty-turn clause covers the addressed
+/// message that lands with nothing to say.
+///
+/// Pinned byte for byte, its two dashes spelled as codepoints: the unit
+/// pins an em dash there, and an em dash pasted through an editor is one
+/// silent keystroke away from a hyphen or an en dash. The assertion below
+/// spells the glyph instead, so the two sides cannot drift together.
+pub(crate) const REACTION_CARVE_OUT: &str = "The one exception is the emoji reaction: where \
+     you would otherwise end an empty turn but a message genuinely lands \u{2014} a share, a \
+     milestone, a joke that landed \u{2014} you may put one reaction on it instead. A \
+     reaction never rides with words on the same message, most messages deserve no reaction \
+     either, and silence stays the default.";
+
 /// The answering teaching for one mode (rewritten by unit 16 and unit 22,
-/// extended by unit 21, 2026-08-24). Both modes teach the sourcing
+/// extended by unit 21, 2026-08-24; the silence sentence amended by unit
+/// 39, 2026-08-30). Both modes teach the sourcing
 /// discipline, the audience discipline and the end-empty silence — a turn
 /// with nothing to say ends with no text wherever it runs — and the
 /// helpful mode adds the silence-default judgment for messages that never
-/// addressed the assistant, while the addressed mode adds the follow-up
+/// addressed the assistant, with the reaction carve-out that judgment now
+/// carries, while the addressed mode adds the follow-up
 /// reach: an unaddressed reply never opens a turn there, so a clarifying
 /// question invites the member to reply to it.
 fn answering_section(answering: AnsweringMode) -> String {
@@ -203,8 +275,8 @@ fn answering_section(answering: AnsweringMode) -> String {
              messages that do not address you, and you decide whether to \
              speak. Silence is the strong default: most group messages are \
              members talking among themselves — often replying to each \
-             other in threads you cannot see — and they get nothing from \
-             you, not an answer, not an acknowledgment, not a comment. \
+             other in threads you cannot see — and {SILENCE_IN_WORDS} \
+             {REACTION_CARVE_OUT} \
              Speak only when a message addresses you — a mention, your \
              name, a reply to you — or asks a concrete question that \
              nobody else is answering and your lookups can settle. A \
@@ -626,6 +698,106 @@ mod tests {
                          {capabilities:?}: {fact}"
                     );
                 }
+            }
+        }
+    }
+
+    /// AC-A (unit 39): the amended silence sentence and the carve-out are
+    /// pinned BYTE FOR BYTE, both as constants and as they land in the
+    /// composed helpful prompt — the copy is the unit's, and a
+    /// re-wrapping that changed a space would fail here. The old
+    /// act-scoped sentence is asserted gone: leaving it beside the
+    /// carve-out is the literal self-contradiction decision 0148
+    /// documents.
+    #[test]
+    fn the_silence_sentence_is_amended_and_carries_the_carve_out() {
+        assert_eq!(
+            SILENCE_IN_WORDS,
+            "they get nothing from you in words: not an answer, not an acknowledgment, \
+             not a comment."
+        );
+        assert_eq!(
+            REACTION_CARVE_OUT,
+            "The one exception is the emoji reaction: where you would otherwise end an \
+             empty turn but a message genuinely lands — a share, a milestone, a joke \
+             that landed — you may put one reaction on it instead. A reaction never \
+             rides with words on the same message, most messages deserve no reaction \
+             either, and silence stays the default."
+        );
+        let helpful =
+            composed_system_prompt("b", "n", AnsweringMode::Helpful, Capabilities::default());
+        assert!(
+            helpful.contains(SILENCE_IN_WORDS),
+            "the helpful arm carries the amended sentence verbatim"
+        );
+        assert!(
+            helpful.contains(REACTION_CARVE_OUT),
+            "the carve-out joins it verbatim, in the same sentence's place"
+        );
+        assert!(
+            helpful.contains(&format!("{SILENCE_IN_WORDS} {REACTION_CARVE_OUT}")),
+            "the carve-out follows the sentence it excepts, with one space between"
+        );
+        assert!(
+            !helpful.contains("they get nothing from you, not an answer"),
+            "the act-scoped sentence is amended, not left standing beside its exception"
+        );
+        // The addressed arm is unamended on purpose: unaddressed chatter
+        // opens no turn there, so the chatter carve-out never meets it.
+        let addressed =
+            composed_system_prompt("b", "n", AnsweringMode::Addressed, Capabilities::default());
+        assert!(
+            !addressed.contains(SILENCE_IN_WORDS) && !addressed.contains(REACTION_CARVE_OUT),
+            "the addressed arm keeps its own silence rule untouched"
+        );
+    }
+
+    /// AC-A's tool half (unit 39): the react teaching composes
+    /// unconditionally — every mode, every configuration, exactly as the
+    /// tool registers — and states the two things the trigger needs: that
+    /// chatter which lands may draw one reaction instead of an empty turn,
+    /// and that words and a reaction never land on one message. It carries
+    /// no emoji of its own, which the core's cleanliness scans would fail
+    /// on anyway; taste is the deployed persona's.
+    #[test]
+    fn the_react_teaching_composes_everywhere_and_states_its_bounds() {
+        for fact in [
+            "with the react tool",
+            "name the message by the bracketed id shown ahead of it",
+            "Chatter that lands may draw one reaction instead of an empty turn",
+            "Words and a reaction never land on one message",
+            "one message takes at most one reaction ever",
+        ] {
+            assert!(
+                REACT_TEACHING.contains(fact),
+                "the react teaching carries: {fact}"
+            );
+        }
+        assert!(
+            !REACT_TEACHING.chars().any(|c| {
+                let point = c as u32;
+                (0x1F000..=0x1FAFF).contains(&point)
+                    || (0x2600..=0x27BF).contains(&point)
+                    || point == 0x200D
+                    || point == 0xFE0F
+            }),
+            "the react teaching names no emoji: which emoji a platform places is the \
+             adapter's fact, and the taste is the persona's"
+        );
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            for capabilities in [
+                Capabilities::default(),
+                moderating(),
+                searching(),
+                Capabilities {
+                    moderation_handle: true,
+                    web_search: true,
+                },
+            ] {
+                assert!(
+                    composed_system_prompt("b", "n", mode, capabilities).contains(REACT_TEACHING),
+                    "the react teaching composes in {mode:?} mode under {capabilities:?}"
+                );
             }
         }
     }

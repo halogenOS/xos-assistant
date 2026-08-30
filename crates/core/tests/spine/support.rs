@@ -20,7 +20,8 @@ use assistant_core::tools::ToolSet;
 use assistant_core::{
     Assistant, Authority, Budget, ChannelKey, ChannelKind, DeliveryHandle, DeliveryItem,
     InboundMessage, IngestReceipt, InvokedCommand, ModelBinding, Observation, ObserveOutcome,
-    ObservedFact, OperatorConfig, OutboundReply, ProtectionConfig, SenderIdentity,
+    ObservedFact, OperatorConfig, Outbound, OutboundMark, OutboundReply, ProtectionConfig,
+    SenderIdentity,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc};
@@ -612,6 +613,85 @@ pub fn tool_scripted_provider(
                             json: script.input.clone(),
                         }));
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                    let _ = response_tx.send(ProviderResponse::Done);
+                }
+            });
+            (request_tx, responses)
+        },
+    );
+    (provider, handle)
+}
+
+/// One call of a same-round batch: the registered tool and the input JSON
+/// it carries.
+#[derive(Clone)]
+pub struct RoundCall {
+    /// The registered tool name this call names.
+    pub tool: String,
+    /// The call's input JSON, non-empty by the batch's contract.
+    pub input: String,
+}
+
+/// Build a provider whose opening turn emits SEVERAL tool calls in ONE
+/// round — the shape the runner executes in parallel tasks, which is what
+/// every serialization claim about a scan-then-append pair has to survive.
+/// Every later request, which carries the answered calls, closes with
+/// [`CLOSING_ANSWER`].
+///
+/// The event order is the production one [`tool_scripted_provider`] states:
+/// the message end with the tool-use stop reason, then each call's
+/// lifecycle, then the trailing done.
+pub fn same_round_calls_provider(calls: Vec<RoundCall>) -> (Box<dyn ProviderModule>, ScriptHandle) {
+    let handle = ScriptHandle::fresh();
+    let observed = handle.clone();
+    let provider = provider_stub(
+        "Same-round caller",
+        "calls several tools in one round",
+        move || {
+            let (request_tx, mut requests) = mpsc::unbounded_channel();
+            let (response_tx, responses) = mpsc::unbounded_channel();
+            let turns = Arc::clone(&observed.turns);
+            let calls = calls.clone();
+            tokio::spawn(async move {
+                while let Some(request) = requests.recv().await {
+                    let ProviderRequest::Stream { messages, .. } = request else {
+                        continue;
+                    };
+                    turns.fetch_add(1, Ordering::SeqCst);
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
+                    if messages.iter().any(carries_tool_result) {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: CLOSING_ANSWER.into(),
+                        }));
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: StopReason::EndTurn,
+                            }));
+                    } else {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: StopReason::ToolUse,
+                            }));
+                        for (index, call) in calls.iter().enumerate() {
+                            let _ = response_tx.send(ProviderResponse::Event(
+                                StreamEvent::ToolUseStart {
+                                    id: format!("call-{index}"),
+                                    name: call.tool.clone(),
+                                },
+                            ));
+                            let _ = response_tx.send(ProviderResponse::Event(
+                                StreamEvent::ToolUseInputDelta {
+                                    json: call.input.clone(),
+                                },
+                            ));
+                            let _ =
+                                response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                        }
+                    }
                     let _ = response_tx.send(ProviderResponse::Done);
                 }
             });
@@ -1352,7 +1432,7 @@ pub fn registry_of(provider: Box<dyn ProviderModule>) -> Arc<ProviderRegistry> {
 }
 
 /// The adapter name every test channel lives on — the name a test hands
-/// [`Assistant::replies`] to take the edge that serves these channels.
+/// [`Assistant::outbound`] to take the edge that serves these channels.
 pub const ADAPTER: &str = "test-adapter";
 
 /// One addressed inbound message, member authority, built from a channel and
@@ -1672,12 +1752,32 @@ pub fn field(block: &Block, name: &str) -> String {
     block.fields[name].as_str().unwrap_or_default().to_owned()
 }
 
-/// Await the next outbound reply, or name the stall.
-pub async fn recv_reply(replies: &mut mpsc::UnboundedReceiver<OutboundReply>) -> OutboundReply {
-    tokio::time::timeout(DEADLINE, replies.recv())
+/// Await the next item on the outbound edge, or name the stall.
+pub async fn recv_outbound(outbound: &mut mpsc::UnboundedReceiver<Outbound>) -> Outbound {
+    tokio::time::timeout(DEADLINE, outbound.recv())
         .await
-        .expect("a reply arrives before the deadline")
+        .expect("an outbound item arrives before the deadline")
         .expect("the outbound edge outlives the test")
+}
+
+/// Await the next outbound item as the REPLY it must be, or name the
+/// stall. The edge carries two arms since unit 39, and a suite awaiting
+/// words says so: a reaction arriving where prose was owed is a routing
+/// defect, and it fails here instead of being quietly unwrapped.
+pub async fn recv_reply(outbound: &mut mpsc::UnboundedReceiver<Outbound>) -> OutboundReply {
+    match recv_outbound(outbound).await {
+        Outbound::Reply(reply) => reply,
+        Outbound::Mark(mark) => panic!("expected a reply on the edge, got a reaction: {mark:?}"),
+    }
+}
+
+/// Await the next outbound item as the REACTION it must be, or name the
+/// stall — the mirror of [`recv_reply`].
+pub async fn recv_mark(outbound: &mut mpsc::UnboundedReceiver<Outbound>) -> OutboundMark {
+    match recv_outbound(outbound).await {
+        Outbound::Mark(mark) => mark,
+        Outbound::Reply(reply) => panic!("expected a reaction on the edge, got a reply: {reply:?}"),
+    }
 }
 
 /// The stored text of a committed answer block.

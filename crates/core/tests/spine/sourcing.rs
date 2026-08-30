@@ -96,7 +96,7 @@ async fn an_unaddressed_turn_ending_empty_delivers_nothing_and_introduces_nobody
     let fixture = helpful_fixture().await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-empty-silent").await;
@@ -146,7 +146,7 @@ async fn an_addressed_dont_know_is_delivered_as_ordinary_text() {
     let fixture = helpful_fixture().await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-dont-know").await;
@@ -200,7 +200,7 @@ async fn in_addressed_mode_the_dont_know_delivers_the_same_way() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-dont-know-addressed").await;
@@ -265,7 +265,7 @@ async fn a_lookup_that_does_not_answer_closes_with_the_plain_dont_know() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-miss-lookup").await;

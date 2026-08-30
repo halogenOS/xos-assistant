@@ -62,7 +62,7 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     // Subscribed BEFORE the ingest so the whole event order is observed.
@@ -131,7 +131,8 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
-        | AssistantKind::Delivered(_) => {
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => {
             panic!("the stored row resolved through the delegate")
         }
     }
@@ -167,7 +168,7 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
 async fn assert_no_title_derivation(
     fixture: &support::Fixture,
     conv: i64,
-    replies: &mut tokio::sync::mpsc::UnboundedReceiver<assistant_core::OutboundReply>,
+    replies: &mut tokio::sync::mpsc::UnboundedReceiver<assistant_core::Outbound>,
 ) {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert_eq!(
@@ -225,7 +226,7 @@ async fn two_channels_stay_two_conversations() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
 
@@ -354,7 +355,7 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
     let fixture = support::start_assistant(Some(hold.clone())).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = support::authorized_group(&fixture.assistant, "room-9").await;
@@ -472,7 +473,7 @@ fn a_restarted_process_answers_a_known_channel() {
         let fixture = support::start_assistant_on(store, None).await;
         let mut replies = fixture
             .assistant
-            .replies(support::ADAPTER)
+            .outbound(support::ADAPTER)
             .await
             .expect("the outbound edge opens");
         support::ingest_recorded(
@@ -492,7 +493,7 @@ fn a_restarted_process_answers_a_known_channel() {
         let fixture = support::start_assistant_on(store, None).await;
         let mut replies = fixture
             .assistant
-            .replies(support::ADAPTER)
+            .outbound(support::ADAPTER)
             .await
             .expect("the outbound edge reopens");
         support::ingest_recorded(

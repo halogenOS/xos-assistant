@@ -30,6 +30,7 @@ use crate::message::Authority;
 pub(crate) mod admission;
 pub mod commit;
 pub(crate) mod lookup;
+pub mod mark;
 pub mod palette;
 pub(crate) mod provenance;
 pub mod release;

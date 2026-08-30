@@ -28,6 +28,12 @@
 //!    share names no reported person at all, by design, so that last pass
 //!    cannot reach it: the target-keyed pass above is what nulls its
 //!    filed target, from the same collection of the person's own origins.
+//!    Last in the step, every mark block naming the principal as the
+//!    marked person loses its target origin too (unit 39, 2026-08-30), so
+//!    an unplaced reaction is skipped by the edge; one pass suffices there
+//!    because a mark's stored principal is always the marked message's own
+//!    author. The reaction already visible in the chat is not withdrawn —
+//!    the residual is stated in the records of processing.
 //! 2. The principal's direct conversations are removed entirely — a
 //!    two-party chat that lost its human is metadata that still identifies
 //!    the person. Each one is unmapped through the mapping module first,
@@ -329,6 +335,15 @@ pub(crate) async fn execute(
     // the pass above reaches a report by WHICH record it points at, the
     // only reach a filing that names several people has.
     crate::tools::report::erase_reported_origin(&tx, plan.principal_id).await?;
+    // The mark table's person-keyed pass (unit 39, 2026-08-30): every
+    // reaction naming the person as the marked one loses its target
+    // origin, so the reaction goes unplaceable and the edge skips it. One
+    // pass reaches every mark, unlike the report's two — a mark's stored
+    // principal IS the author of the marked message, never a third
+    // party's, so no filing escapes this key. The chosen emoji stays: it
+    // records what the ASSISTANT expressed and names nobody, exactly as
+    // the report's line does.
+    crate::tools::mark::erase_marked_origin(&tx, plan.principal_id).await?;
 
     for &conversation_id in &plan.direct_conversations {
         mapping::delete_by_conversation(&tx, conversation_id).await?;

@@ -187,6 +187,19 @@ is configured, works in groups only, and takes no arguments — the member's rep
 is what names the reported message. The platform-side setup it needs is recorded
 in the group operator's reference document.
 
+The react tool puts one emoji reaction on a message where a reply would add nothing
+— the off-topic chatter the silence default already keeps the assistant quiet about.
+The model names the message by its shown id and picks the emoji; the core records
+that choice verbatim, bounded at 32 bytes, and holds no emoji list of its own, while
+the adapter maps the pick onto its platform's own reaction set and drops a pick
+outside it. The tool registers everywhere — a reaction needs nothing but a chat. A
+message takes at most one reaction for as long as that reaction is recorded, and an
+erasure that empties the record leaves no shadow, so a later turn may react to that
+message afresh; the rule that words and a reaction never land together is taught to
+the model rather than enforced, since the answer is written after the tool returns.
+The assistant reads nobody else's reactions: the platform delivers those only to a
+chat administrator, which the assistant deliberately is not.
+
 The protection table sets the two answering budgets: how many messages one sender is
 answered per window (counted across every chat, direct and group alike) and how many
 messages one chat is answered per window. The table and each of its fields may be

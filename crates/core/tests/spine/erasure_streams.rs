@@ -95,7 +95,7 @@ async fn an_idle_erasure_pays_no_wait() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = channel("dm-idle");

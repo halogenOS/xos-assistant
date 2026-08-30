@@ -120,6 +120,34 @@ filing settles it; until then, treat the report path as unproven in
 production and verify the moderation bot's reaction after the first real
 report.
 
+## Reactions: the assistant places them and sees none
+
+Added 2026-08-30, with the reactions unit. The assistant can put one emoji
+reaction on a message where a reply would add nothing — mostly the
+off-topic chatter its silence rule already keeps it quiet about. Placing a
+reaction needs no administrator right, so nothing about your setup changes
+for it.
+
+It cannot see anybody else's reactions, and this is deliberate. The
+platform delivers reaction updates only to a bot that is an
+**administrator** of the chat, and the report setup above requires the
+assistant to stay an ordinary member so its reports reach the moderation
+bot. The two requirements are in direct conflict, the moderation path wins,
+and the assistant therefore subscribes to no reaction update at all: no
+member's reaction is ever received, decoded or stored. If a reaction on a
+message matters to you, the assistant is not the thing that will notice it.
+
+Two consequences worth stating so nobody hunts for a setting:
+
+- A group can restrict which reactions are allowed, and a member can have
+  the reaction permission switched off. Where either applies to the
+  assistant, its placement is simply refused and dropped — one log line, no
+  retry, and never a text message in its stead.
+- A reaction the assistant placed stays where it is when the person who
+  wrote the message asks for erasure. The stored record of it is emptied;
+  the visible reaction is a fact about the assistant, on a message the
+  group and the platform hold as their own, and it names nobody.
+
 ## Follow-ups in addressed answering
 
 Added 2026-08-24, with the audience-differentiation unit. When the

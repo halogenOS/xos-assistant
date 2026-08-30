@@ -62,7 +62,7 @@ async fn an_administrators_reply_deletion_nulls_exactly_the_target_row() {
     let fixture = support::start_assistant(None).await;
     let assistant = &fixture.assistant;
     let mut replies = assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(assistant, "room-mirror").await;
@@ -416,7 +416,7 @@ async fn the_mirror_inside_an_absorption_window_leaves_the_turn_untouched() {
     let fixture = support::start_assistant(Some(std::sync::Arc::clone(&hold))).await;
     let assistant = &fixture.assistant;
     let mut replies = assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(assistant, "room-absorb").await;

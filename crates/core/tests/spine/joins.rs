@@ -758,7 +758,7 @@ async fn a_windowed_join_is_reported_against_its_event() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = support::authorized_group(&fixture.assistant, "room-join-report").await;
@@ -897,7 +897,7 @@ async fn a_windowed_join_changes_neither_the_disclosure_nor_the_threading() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = support::authorized_group(&fixture.assistant, "room-join-threading").await;

@@ -33,13 +33,19 @@
 //! duplicate. Distinct violations in a busy hour are never throttled; the
 //! same message is reported at most once, however many turns re-assess it.
 //! The runner executes same-round calls in parallel tasks, so the
-//! scan-then-append pair runs under the tool's own filing lock: of two
-//! calls naming one origin, the second scans only after the first's block
-//! landed, and the dedup declines it. The append holds the erasure
-//! fence, so a report cannot re-materialize an origin an erasure just
-//! nulled; the reported message's principal id is stored precisely so
-//! erasure can reach the block, through the crate-private
-//! `erase_reported_origin` pass the erasure operation composes. Since
+//! scan-then-append pair runs under the shared filing door — the
+//! crate-private `filing` module, which states its whole contract and the
+//! lock order every holder obeys: of two calls naming one origin, the
+//! second scans only after the first's block landed, and the dedup
+//! declines it. The
+//! same door orders this filing against the deletion mirror's nulls, which
+//! the erasure fence cannot — both take the fence for READING. The fence
+//! is held across the filing for the reach it does have: the person-wide
+//! erasure takes it exclusively, so a report cannot re-materialize an
+//! origin THAT operation just nulled. The reported message's principal id
+//! is stored precisely so erasure can reach the block, through the
+//! crate-private `erase_reported_origin` pass the erasure operation
+//! composes. Since
 //! unit 36 a filing may name a join event several people share and so
 //! store no reported principal at all, which is why erasure reaches this
 //! kind a second way — by the filed target, from the erased person's own
@@ -56,6 +62,7 @@ use agent_ledger::{
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
+use crate::filing::FilingDoor;
 use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{Authority, ChannelKind};
@@ -504,29 +511,32 @@ pub(crate) struct ReportTool {
     /// `@` stripped by the configuration layer.
     handle: String,
     /// The erasure fence, held shared across the resolution and the append
-    /// so a report cannot re-materialize an origin an erasure just nulled.
-    /// Taken as the bare shared lock, not as the assembly's own alias for
-    /// it — a leaf tool names nothing in the module that registers it.
+    /// so a report cannot re-materialize an origin the person-wide erasure
+    /// just nulled — that operation takes the fence exclusively. Taken as
+    /// the bare shared lock, not as the assembly's own alias for it — a
+    /// leaf tool names nothing in the module that registers it.
     fence: Arc<RwLock<()>>,
-    /// The filing lock: one scan-then-append at a time. The erasure fence
-    /// is SHARED between filings — it excludes erasure, not a sibling
-    /// call — and the runner executes same-round calls in parallel tasks,
-    /// so without this lock two calls naming one origin both scan before
-    /// either appends and the per-origin dedup double-files.
-    filing: tokio::sync::Mutex<()>,
+    /// The shared filing door: one scan-then-append at a time, across
+    /// every writer that files against a message origin — the sibling
+    /// report call, the react tool, and the deletion mirror. Its whole
+    /// contract, the lock order included, is stated in the crate-private
+    /// `filing` module.
+    door: FilingDoor,
 }
 
 impl ReportTool {
-    pub(crate) fn new(handle: impl Into<String>, fence: Arc<RwLock<()>>) -> Self {
+    pub(crate) fn new(handle: impl Into<String>, fence: Arc<RwLock<()>>, door: FilingDoor) -> Self {
         Self {
             handle: handle.into(),
             fence,
-            filing: tokio::sync::Mutex::new(()),
+            door,
         }
     }
 
-    /// The whole filing, under the erasure fence. `Err` carries the tool
-    /// error the runner records and the model reads. The order of the
+    /// The whole filing, under the erasure fence and the filing door, in
+    /// that order — the one the door's module states and every holder of
+    /// both obeys. `Err` carries the tool error the runner records and the
+    /// model reads. The order of the
     /// checks is the order of the claims: the conversation can carry a
     /// report at all; the named origin is one the model is assessing this
     /// turn; the named message resolves to a recorded person who is not
@@ -536,8 +546,8 @@ impl ReportTool {
         ctx: &ToolContext<'_, CoreEvent>,
         origin: &str,
     ) -> Result<&'static str, String> {
-        let _one_filing_at_a_time = self.filing.lock().await;
         let _no_erasure_mid_filing = self.fence.read().await;
+        let _one_filing_at_a_time = self.door.lock().await;
         let conversation_id = ctx.agency.conversation_id;
         let tx = ctx.agency.store.tx();
         // Group conversations only: the moderation bot and the admins its
@@ -1029,7 +1039,12 @@ mod tests {
     /// would deny the join case [`resolve_reportable`] admits.
     #[test]
     fn the_definition_teaches_the_id_the_bound_and_the_decision() {
-        let definition = ReportTool::new("moderation_bot", Arc::new(RwLock::new(()))).definition();
+        let definition = ReportTool::new(
+            "moderation_bot",
+            Arc::new(RwLock::new(())),
+            crate::filing::door(),
+        )
+        .definition();
         assert_eq!(definition.name, NAME);
         for fact in [
             "by its id",

@@ -45,7 +45,7 @@ async fn every_created_conversation_carries_the_configured_reasoning_level() {
     let fixture = start_assistant_reasoning(ReasoningLevel::Medium).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
 

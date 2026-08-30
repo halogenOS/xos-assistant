@@ -29,6 +29,7 @@ use crate::acknowledgment;
 use crate::composing;
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
+use crate::filing::{self, FilingDoor};
 use crate::join::JoinNotice;
 use crate::kind::{
     self, AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ChatMessage, NEVER_ANSWERABLE,
@@ -36,12 +37,13 @@ use crate::kind::{
 use crate::message::{
     Authority, ChannelKey, ChannelKind, ComposingUpdate, DeliveryHandle, DeliveryItem,
     InboundMessage, IngestOutcome, IngestReceipt, JoinedMember, Observation, ObserveOutcome,
-    ObservedDelivery, ObservedFact, OutboundReply,
+    ObservedDelivery, ObservedFact, Outbound,
 };
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::quoting;
 use crate::streams::StreamObserver;
+use crate::tools::mark::{self, MarkTool};
 use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
 use crate::tools::runtime::RuntimeFacts;
@@ -54,9 +56,12 @@ use crate::window::{
 use crate::{authorization, delivery, identity, join, mapping, mirror, outbound, privacy, streams};
 
 /// The erasure fence, as the shared handle the report tool receives at its
-/// construction: ingestions and the tool's filing hold it shared, an
-/// erasure holds it exclusively, so a report cannot re-materialize an
-/// origin an erasure just nulled.
+/// construction: ingestions and the tool's filing hold it shared, the
+/// person-wide erasure holds it exclusively, so a report cannot
+/// re-materialize an origin THAT operation just nulled. What it does not
+/// order is two shared holders against each other — a filing against the
+/// deletion mirror, which runs inside an ingestion — and that is what the
+/// filing door beside it is for ([`crate::filing`]).
 pub(crate) type ErasureFence = Arc<RwLock<()>>;
 
 /// The kinds the owing-tail walk reads through (widened 2026-08-23 from
@@ -80,6 +85,12 @@ pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
     // failure notice records its own delivery AT THE TAIL, and an opaque
     // tail there would bury the standing question behind it.
     delivery::DELIVERED_KIND,
+    // The message mark (unit 39, 2026-08-30): a reaction is placed
+    // precisely on turns that answer nothing, so its block is the ledger
+    // tail more often than a report's is. Without this entry a member's
+    // unanswered question behind a run of reactions would stop owing its
+    // turn.
+    mark::MESSAGE_MARK_KIND,
 ];
 
 /// The most conversations the palette-reconciliation memory holds. Past
@@ -399,6 +410,13 @@ pub struct Assistant {
     /// Shared as a handle (2026-08-23) because the report tool holds it
     /// across its resolution and its append, under the same reasoning.
     erasure_fence: ErasureFence,
+    /// Orders the deletion mirror's nulls against the tools that file a
+    /// block naming a message origin — the same door those tools take
+    /// around their own scan-then-append, because the fence cannot order
+    /// them: the mirror runs under this path's SHARED fence hold and a
+    /// filing takes the fence shared too. The whole contract, and the lock
+    /// order this path obeys, are on [`crate::filing`].
+    filing_door: FilingDoor,
 }
 
 /// What the assembly itself adds to the embedder's tool set: the shared
@@ -412,6 +430,7 @@ struct AssembledTools {
     pending_deletions: Arc<PendingDeletions>,
     privacy_replies: Arc<ReplyWindow>,
     erasure_fence: ErasureFence,
+    filing_door: FilingDoor,
 }
 
 /// Add the assembly's own tools to the embedder's set, in one place: each
@@ -423,7 +442,11 @@ struct AssembledTools {
 /// - The REPORT tool needs a moderation handle AND helpful answering (unit
 ///   15): the report line goes nowhere without a handle, and only helpful
 ///   answering shows the model every message it would judge. The erasure
-///   fence is injected here, so the tool never reaches into the assembly.
+///   fence is injected here, so the tool never reaches into the assembly,
+///   and the filing door beside it — the two tools that file against a
+///   message origin take the SAME door, which is what orders a report and
+///   a reaction naming one message against each other and against the
+///   deletion mirror ([`crate::filing`]).
 /// - The WEB SEARCH needs a configured key and nothing else (unit 27). It
 ///   owns its own per-person budget and its own cache, so nothing but the
 ///   configuration is handed to it.
@@ -436,6 +459,14 @@ struct AssembledTools {
 ///   — whether the person claiming authority holds it — is asked wherever
 ///   the assistant runs. It reads person data, so it takes the erasure
 ///   fence here, exactly as the report and privacy tools do.
+/// - The REACT tool joins unconditionally as well (unit 39): a reaction
+///   needs nothing but a chat. It sits here and NOT under the report's
+///   moderation predicate, which is about a capability that needs a
+///   moderation bot to receive it — inheriting that condition would tie a
+///   cosmetic acknowledgement to a moderation deployment for no reason
+///   anyone could state, and would remove it from the addressed mode. It
+///   writes a block naming a person, so it takes the erasure fence too,
+///   and the filing door it shares with the report.
 fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
     let AssembledTools {
         moderation_handle,
@@ -444,13 +475,14 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
         pending_deletions,
         privacy_replies,
         erasure_fence,
+        filing_door,
     } = assembled;
     if let Some(handle) = moderation_handle
         && crate::teaching::moderation_taught(true, answering)
     {
         tools.admit(
             report::REQUIRED_AUTHORITY,
-            ReportTool::new(handle, Arc::clone(&erasure_fence)),
+            ReportTool::new(handle, Arc::clone(&erasure_fence), Arc::clone(&filing_door)),
         );
     }
     if let Some(search) = web_search {
@@ -462,6 +494,10 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
     tools.admit(
         crate::tools::standing::REQUIRED_AUTHORITY,
         StandingLookup::new(Arc::clone(&erasure_fence)),
+    );
+    tools.admit(
+        mark::REQUIRED_AUTHORITY,
+        MarkTool::new(Arc::clone(&erasure_fence), filing_door),
     );
     tools.admit(
         crate::tools::rights::REQUIRED_AUTHORITY,
@@ -535,6 +571,7 @@ impl Assistant {
             });
         }
         let erasure_fence: ErasureFence = Arc::new(RwLock::new(()));
+        let filing_door = filing::door();
         let privacy_replies = Arc::new(ReplyWindow::new(PRIVACY_REPLY_WINDOW, PRIVACY_REPLY_CAP));
         let pending_deletions = Arc::new(PendingDeletions::new());
         let mut tools = tools;
@@ -547,6 +584,7 @@ impl Assistant {
                 pending_deletions: Arc::clone(&pending_deletions),
                 privacy_replies: Arc::clone(&privacy_replies),
                 erasure_fence: Arc::clone(&erasure_fence),
+                filing_door: Arc::clone(&filing_door),
             },
         );
         // The runtime-facts tool joins unconditionally too (unit 32): it
@@ -603,6 +641,7 @@ impl Assistant {
             palette_reconciled: Mutex::new(HashSet::new()),
             stamp_lock: Mutex::new(()),
             erasure_fence,
+            filing_door,
         })
     }
 
@@ -775,8 +814,10 @@ impl Assistant {
         // purpose: an administrator's reply carrying the moderation bot's
         // own deletion command nulls the named row here, inline under this
         // ingestion's erasure-fence read hold — one row's nulls, not the
-        // person-wide operation, so no spawn is needed and no deadlock
-        // shape exists — and the stamp below is then decided against the
+        // person-wide operation, so no spawn is needed — and behind the
+        // filing door the pass takes for itself, in the order the door's
+        // module fixes: fence first, door second, exactly as a filing tool
+        // takes them, so no cycle exists. The stamp below is then decided against the
         // post-mirror tail: a debt the deleted message itself owed dies
         // with its text, exactly as the shared owes-answer reading already
         // cancels an erased debt, while a debt the deleted row merely
@@ -1351,23 +1392,29 @@ impl Assistant {
         Ok(())
     }
 
-    /// The outbound edge for one adapter: a subscription yielding the
-    /// assistant's replies on that adapter's channels, each bound to its
-    /// channel key. Each adapter takes one edge under its own name and never
-    /// sees another adapter's replies. Answers already stored when the
-    /// subscription is taken are history and stay off it; every answer
-    /// stored afterwards is delivered at least once, re-read from the ledger
-    /// — the outbound module's doc states the exact delivery contract,
-    /// including the failure notice's at-most-once nature.
+    /// The outbound edge for one adapter: a subscription yielding what the
+    /// assistant puts on that adapter's channels — words, and since unit
+    /// 39 a reaction — each bound to its channel key. Each adapter takes
+    /// one edge under its own name and never sees another adapter's
+    /// items. Anything already stored when the subscription is taken is
+    /// history and stays off it; everything stored afterwards is delivered
+    /// at least once, re-read from the ledger — the outbound module's doc
+    /// states the exact delivery contract, including the failure notice's
+    /// at-most-once nature and the mark's accepted losses.
+    ///
+    /// Named for what it yields: [`Outbound`], whose arms are a reply of
+    /// words and a reaction. It was `replies` while words were the only
+    /// arm; a name that promised replies and handed out reactions would
+    /// leave every reader to discover the second arm from the type.
     ///
     /// # Errors
     ///
     /// [`CoreError::Store`] if reading the stored state that marks the
     /// history boundary fails.
-    pub async fn replies(
+    pub async fn outbound(
         &self,
         adapter: &str,
-    ) -> Result<mpsc::UnboundedReceiver<OutboundReply>, CoreError> {
+    ) -> Result<mpsc::UnboundedReceiver<Outbound>, CoreError> {
         Ok(outbound::spawn_edge(
             self.ctx.clone(),
             adapter.to_owned(),
@@ -1383,7 +1430,7 @@ impl Assistant {
     /// cue with no history, no persistence and no failure path: the
     /// composing module states the exact contract, its lag answer
     /// included. Each adapter takes one edge under its own name, beside
-    /// its [`Self::replies`] edge.
+    /// its [`Self::outbound`] edge.
     pub fn composing(&self, adapter: &str) -> mpsc::UnboundedReceiver<ComposingUpdate> {
         composing::spawn_edge(self.ctx.clone(), adapter.to_owned())
     }
@@ -1543,26 +1590,38 @@ impl Assistant {
     /// the event, not one joiner's part of it. The passes over the held
     /// copies of that id follow exactly when either was present — a target
     /// the store never held leaves the command a full no-op — and they
-    /// reach every holder: a replier's stored reply target, and a filed
-    /// report's stored target, which threads onto the very record that just
-    /// went away and would otherwise keep the deleted id in a row no later
+    /// reach every holder: a replier's stored reply target, a filed
+    /// report's stored target, and a placed mark's stored target (unit 39,
+    /// 2026-08-30), each of which points at the very record that just went
+    /// away and would otherwise keep the deleted id in a row no later
     /// erasure joins on. The composition decides the order and the
     /// condition; each kind owns only its own table's write.
+    ///
+    /// The whole pass runs behind the filing door, which is the only thing
+    /// that orders it against a tool filing a fresh copy of the same id:
+    /// this path holds the erasure fence for READING and so does a filing,
+    /// so the fence orders nothing between the two. Behind the door a
+    /// filing either scans after these nulls — and finds no such message
+    /// among the turn's own — or appends before them and is nulled here
+    /// with the rest.
     async fn mirror_named_deletion(
         &self,
         tx: &StoreTx,
         conversation_id: i64,
         target: &str,
     ) -> Result<(), CoreError> {
+        let _one_filing_at_a_time = self.filing_door.lock().await;
         let message_rows = kind::erase_message_named(tx, conversation_id, target).await?;
         let join_rows = join::erase_event_named(tx, conversation_id, target).await?;
-        let (reply_references, report_targets) = if message_rows > 0 || join_rows > 0 {
+        let (reply_references, report_targets, mark_targets) = if message_rows > 0 || join_rows > 0
+        {
             (
                 kind::erase_reply_references_naming(tx, conversation_id, target).await?,
                 report::erase_report_references_naming(tx, conversation_id, target).await?,
+                mark::erase_mark_references_naming(tx, conversation_id, target).await?,
             )
         } else {
-            (0, 0)
+            (0, 0, 0)
         };
         tracing::info!(
             conversation_id,
@@ -1570,6 +1629,7 @@ impl Assistant {
             join_rows,
             reply_references,
             report_targets,
+            mark_targets,
             "the deletion mirror ran over an administrator's reply command"
         );
         Ok(())
@@ -1969,7 +2029,8 @@ impl Assistant {
                 | AssistantKind::ContextNote(_)
                 | AssistantKind::JoinNotice(_)
                 | AssistantKind::Report(_)
-                | AssistantKind::Delivered(_),
+                | AssistantKind::Delivered(_)
+                | AssistantKind::MessageMark(_),
             )
             | None => None,
         })

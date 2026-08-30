@@ -358,6 +358,12 @@ pub enum ObservedFact {
 /// differently without reading the text. The core still supplies the exact
 /// wording for both, because wording is behavior and behavior stays out of
 /// adapters.
+///
+/// This is what a deterministic call returns SYNCHRONOUSLY on its receipt.
+/// What the asynchronous replies channel yields from a model turn is
+/// [`Outbound`], a separate type: merging the two would put a return value
+/// and a channel element in one enum whose arms are unreachable from half
+/// its call sites.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryItem {
     /// The rules acknowledgment: a rules note was appended — every real
@@ -597,6 +603,45 @@ impl ReplyThread {
     pub fn plain_when_refused(&self) -> bool {
         matches!(self, Self::OntoOrPlainly(_))
     }
+}
+
+/// One item on the assistant's outbound edge (unit 39, 2026-08-30). The
+/// edge carried prose alone until a reaction joined it, and the two are
+/// separate arms rather than a reply with an empty text and a glyph
+/// smuggled beside it: every consumer of [`OutboundReply`] would otherwise
+/// have to remember that one kind means "do not send this text".
+///
+/// Not to be confused with [`DeliveryItem`], which stays its own type: a
+/// delivery item is what a deterministic call returns SYNCHRONOUSLY on its
+/// receipt, while this is what the asynchronous replies channel yields
+/// from a model turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outbound {
+    /// Words to send: an answer, the failure notice, or a filed report's
+    /// line.
+    Reply(OutboundReply),
+    /// One emoji to put on a message. It carries no delivery handle: a
+    /// reaction is the cheap act, and a cheap act earns no bookkeeping row
+    /// (unit 39). Nothing completes that symmetry.
+    Mark(OutboundMark),
+}
+
+/// One reaction on its way out of the core, bound to the channel it
+/// belongs on and the message it sits on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboundMark {
+    /// The channel the marked message is on.
+    pub channel: ChannelKey,
+    /// The emoji the model chose, exactly as it was stored. What the
+    /// platform can actually place is the adapter's fact: a pick outside
+    /// its set is dropped there, with a log line and no report back.
+    pub emoji: String,
+    /// The message the reaction goes on. A plain `String` because an item
+    /// on the edge always names its target: a mark whose stored origin an
+    /// erasure or the deletion mirror nulled is skipped at the edge and
+    /// never reaches an adapter, so no adapter has to decide what an item
+    /// with no target means.
+    pub target_origin: String,
 }
 
 /// One reply on its way out of the core, bound to the channel it answers.

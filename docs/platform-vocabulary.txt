@@ -8,10 +8,15 @@
 # prose that merely embeds a term inside a longer word does not.
 #
 # Maintaining it:
-#   - Each adapter adds its platform's name and its SDK crate names when the
-#     adapter is written; this file is the one adapters grow.
+#   - Each adapter adds its platform's name, its SDK crate names, and the
+#     method and type names of its platform API when the adapter is
+#     written; this file is the one adapters grow.
 #   - A term is one word of letters and digits, exactly as the scan splits
-#     source lines.
+#     source lines. A platform method or type name is one such word once
+#     its separators are gone, which is why the API names below carry
+#     none.
+#   - Ordinary English words stay out, however platform-flavoured they
+#     sound: the list holds platform and SDK identifiers only.
 #
 # Blank lines and lines beginning with # are ignored by the check.
 
@@ -22,3 +27,13 @@ tgbot
 grammers
 matrix
 ruma
+
+# Platform API method and type names (added with the reactions unit): the
+# placing method the adapter calls, the platform's own name for the emoji
+# reaction shape — which the adapter writes as raw JSON, an object with a
+# type and an emoji field, rather than as a type of its own — and the two
+# update types the assistant deliberately does not subscribe to.
+setmessagereaction
+reactiontypeemoji
+messagereactionupdated
+messagereactioncountupdated

@@ -54,6 +54,20 @@ const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_mins(1);
 /// the refresh loop keeps its cadence.
 const CHAT_ACTION_WAIT_CEILING: Duration = crate::driver::TYPING_REFRESH;
 
+/// The reaction's own rate-limit wait ceiling: none at all (unit 39,
+/// 2026-08-30). The platform always states a wait and the fallback is a
+/// second, so every stated wait exceeds this and the call fails at once.
+///
+/// Two reasons, and both would pick zero on their own. The outbound
+/// consumer is sequential, so a reaction honouring the send's ceiling
+/// could park every later answer behind a cosmetic call for up to two
+/// minutes — the tree already refused that for the other cosmetic call,
+/// giving the typing action its own ceiling. And a reaction has no value
+/// late: it says the assistant read this, and arriving minutes after the
+/// conversation moved on it is noise. Zero is the honest ceiling, not a
+/// tuned number.
+const REACTION_WAIT_CEILING: Duration = Duration::ZERO;
+
 /// The HTTP status the platform rate-limits with.
 const TOO_MANY_REQUESTS: u16 = 429;
 
@@ -171,6 +185,16 @@ pub(crate) struct SendError {
 /// absent selection inherits whatever an earlier setting left on the token,
 /// so the selection is stated instead of assumed. Messages and their edits,
 /// and the assistant's own membership updates.
+///
+/// Neither reaction update type is here, and neither is an oversight (unit
+/// 39, 2026-08-30). The platform delivers both only to a bot that is an
+/// ADMINISTRATOR of the chat, and the operator contract requires this
+/// assistant to stay an ordinary member so its reports reach the
+/// moderation bot. Subscribing anyway would add two decode paths that
+/// never execute, with a privacy notice attached to collection that never
+/// happens. The assistant therefore places reactions and reads nobody
+/// else's; the operator contract records the same fact where an operator
+/// will look for it.
 pub(crate) const CONSUMED_UPDATE_TYPES: [&str; 3] = ["message", "edited_message", "my_chat_member"];
 
 /// One update, decoded into the minimal model this adapter reads. Unknown
@@ -649,6 +673,42 @@ impl BotClient {
             .request("sendChatAction", &body, Some(CHAT_ACTION_WAIT_CEILING))
             .await?;
         let _shown: serde_json::Value = self.decode(response).await?;
+        Ok(())
+    }
+
+    /// Put one emoji on one message — what the core's mark arm maps to
+    /// (unit 39, 2026-08-30). The emoji arrives already resolved to a
+    /// member of the platform's own reaction list, so this method decides
+    /// nothing about which token is legal; it writes the request.
+    ///
+    /// The request shape is the whole of what a bot may set: a
+    /// one-element array of one emoji-typed reaction. No custom-emoji
+    /// parameter is built here and none can be — the platform allows one
+    /// only conditionally and a bot may not use paid reactions at all, so
+    /// the shape simply has no place for either.
+    ///
+    /// A failure is the caller's to log and drop: a group that restricted
+    /// its reactions, a permission switched off, a service message that
+    /// cannot be decorated, a deleted target. Nothing retries, and nothing
+    /// falls back to a text message — the whole point of the reaction is
+    /// that it costs no message. The ceiling is [`REACTION_WAIT_CEILING`],
+    /// so a flood-controlled reaction is dropped at once rather than
+    /// parking the answers queued behind it.
+    pub(crate) async fn set_message_reaction(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        emoji: &str,
+    ) -> Result<(), ClientError> {
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reaction": [{ "type": "emoji", "emoji": emoji }],
+        });
+        let response = self
+            .request("setMessageReaction", &body, Some(REACTION_WAIT_CEILING))
+            .await?;
+        let _placed: serde_json::Value = self.decode(response).await?;
         Ok(())
     }
 

@@ -130,7 +130,7 @@ async fn the_framework_dates_the_ledger_once_per_day_ahead_of_the_message() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
 

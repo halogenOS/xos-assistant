@@ -72,7 +72,7 @@ async fn one_send_records_a_receipt_per_message_and_shows_the_model_nothing() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = channel("dm-delivery-record");
@@ -141,7 +141,7 @@ async fn a_receipt_at_the_tail_buries_no_standing_debt() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = channel("dm-delivery-debt");

@@ -81,7 +81,7 @@ async fn a_direct_message_under_off_touches_nothing_and_groups_are_served() {
     let fixture = start_assistant_direct_off().await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
 
@@ -167,7 +167,7 @@ async fn the_default_serves_direct_chats_unchanged() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let dm = channel("dm-default");

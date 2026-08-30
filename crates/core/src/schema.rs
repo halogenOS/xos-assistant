@@ -499,6 +499,59 @@ pub static DELIVERY_ORIGIN_INDEX: LazyLock<String> =
 pub static DELIVERY_KEY_INDEX: LazyLock<String> =
     LazyLock::new(|| format!("idx_{}_delivery", crate::delivery::DELIVERED_TABLE));
 
+/// The message mark's content table — an appended migration step of the
+/// reactions unit (unit 39, 2026-08-30), per decision 0026's discipline.
+/// The table shape is the mark kind's descriptor contract: the block
+/// header row is the ledger entry, this row carries the marked message's
+/// origin, the marked person and the chosen emoji. The target origin is
+/// nullable for erasure's two reaches into it — the marked person's own
+/// erasure and the deletion mirror — while the principal is NOT NULL,
+/// because a mark nobody is recorded for is a record erasure could never
+/// reach.
+///
+/// The emoji column carries the schema twin of the tool's own bound: NOT
+/// NULL, and constrained non-empty and at most [`MARK_EMOJI_BYTE_LIMIT`]
+/// BYTES.
+/// The cast to a blob is what makes the count bytes and not characters —
+/// `length` over text counts characters, and a per-character bound would
+/// be a different rule with the same spelling. No frozen vocabulary list:
+/// the column holds content, not a closed vocabulary, so nothing here
+/// quotes an enum and no later widening step is owed.
+static MESSAGE_MARK_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {table} (
+            block_id   INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {target}   TEXT,
+            {marked}   INTEGER NOT NULL,
+            {emoji}    TEXT NOT NULL
+                CHECK (length(CAST({emoji} AS BLOB)) \
+                       BETWEEN 1 AND {MARK_EMOJI_BYTE_LIMIT})
+        );
+        CREATE INDEX {origin_index} ON {table}({target});",
+        table = crate::tools::mark::MESSAGE_MARK_TABLE,
+        target = crate::tools::mark::COLUMN_TARGET_ORIGIN,
+        marked = crate::tools::mark::COLUMN_MARKED_PRINCIPAL_ID,
+        emoji = crate::tools::mark::COLUMN_EMOJI,
+        origin_index = MESSAGE_MARK_ORIGIN_INDEX.as_str(),
+    )
+});
+
+/// The emoji bound as the migration froze it, quoted from the tool's own
+/// constant at the moment this step shipped. An applied step's generated
+/// SQL must stay byte-identical, so the step names a frozen number and the
+/// pin below is what fails loudly if the tool's bound ever moves — the
+/// reminder that a widened bound is a NEW appended step recreating the
+/// table, exactly as a widened vocabulary is.
+const MARK_EMOJI_BYTE_LIMIT: usize = 32;
+
+/// The message mark's origin-keyed index, named once: the appended step
+/// creates it and the suite's schema pins read it back under this name.
+/// The deletion mirror's null is a per-conversation lookup by the marked
+/// origin over a table that grows with every reaction the assistant ever
+/// placed.
+pub static MESSAGE_MARK_ORIGIN_INDEX: LazyLock<String> =
+    LazyLock::new(|| format!("idx_{}_origin", crate::tools::mark::MESSAGE_MARK_TABLE));
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -526,6 +579,7 @@ pub fn store_config() -> StoreConfig {
                 JOIN_NOTICE_MIGRATION.as_str(),
                 REPORTED_NULLABLE_MIGRATION.as_str(),
                 DELIVERY_MIGRATION.as_str(),
+                MESSAGE_MARK_MIGRATION.as_str(),
             ],
         }],
     }
@@ -557,6 +611,21 @@ mod tests {
         assert_eq!(
             live, SHIPPED_AUTHORITIES,
             "the authority vocabulary grew; append a widening step with its own frozen list"
+        );
+    }
+
+    /// The mark's frozen byte bound against the tool's live one: while
+    /// they coincide, a fresh store and an upgraded one bound the column
+    /// identically. The moment the tool's bound moves, this fails — the
+    /// reminder that a widened bound needs its own appended step, because
+    /// a column CHECK cannot be altered in place.
+    #[test]
+    fn the_frozen_mark_bound_matches_the_tools_live_bound() {
+        assert_eq!(
+            MARK_EMOJI_BYTE_LIMIT,
+            crate::tools::mark::EMOJI_BYTE_LIMIT,
+            "the emoji bound moved; append a step recreating the table under its own \
+             frozen bound"
         );
     }
 
