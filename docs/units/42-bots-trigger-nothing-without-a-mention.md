@@ -53,7 +53,7 @@ observation of the assistant's own entry (`translate.rs:253`), and the join
 report's per-joiner identity (`joined_member`, `translate.rs:315`). The identity's
 two-field shape is a recorded decision (0077) restated by the pin
 `a_sender_translates_to_the_external_id_and_the_username_alone`
-(`translate.rs:958-977`) and the `message.rs:63-71` doc — both move with this
+(`translate.rs:960-978`) and the `message.rs:63-71` doc — both move with this
 unit, deliberately.
 
 ## Decisions taken with this unit
@@ -69,8 +69,10 @@ unit, deliberately.
   erasure change — it is a property of the account read fresh off every update,
   platform-neutral (every platform this assistant will meet marks automated
   accounts or leaves the flag false). This widens decision 0077's two-field identity, said openly: the
-  exact-two-fields pin becomes a three-fact assertion and the identity doc names
-  the third field; the unit's decision record carries the dated widening.
+  exact-two-fields pin becomes a three-fact assertion, the identity doc names
+  the third field, and 0077's own record gains a dated amendment section (the
+  unit-36 pattern) so its "the external id and the username alone" sentence
+  stops contradicting the tree; the unit's decision record carries the widening.
   *Rejected:* a field on the message — the fact belongs to the account, not to one
   message of it; *rejected:* persisting it on message rows — nothing reads it
   after the stamp, and a stored copy would only drift from the account's current
@@ -102,17 +104,30 @@ unit, deliberately.
   tail owes would open the forbidden turn with someone else's stale debt. Decided,
   in two halves that stand together. First: a bot sender's unsummoned message
   stamps `answer_due` false outright — no debt of its own, no carried tail, so the
-  frontier (which owes a turn from the newest block alone) fires nothing. Second:
-  because today a live chat row with a false stamp means "settled" to the
-  propagation walk — `owing_tail_debt` reads through only its read-through kinds
-  and stops at live chat rows (`assembly.rs:68-82, 1892-1913`) — the false-stamped
-  bot row would BURY the older debt. So the walk widens: a live chat-message row
-  whose stored stamp is false is read THROUGH, not stopped at. This is safe for
-  every existing row, provably: in helpful mode every live row summons or carries
-  (true); in addressed mode a false row exists only where nothing older owes
-  (anything owed would have been carried onto it), so reading through it reaches a
-  settled tail and answers exactly as stopping did — pinned as an addressed-mode
-  outcome-equality test beside the new behavior. The owed tail therefore stays
+  frontier (which owes a turn from the newest block alone) fires nothing. The
+  mechanism, named: the stamp composition stays pure — the one compose call site
+  (`assembly.rs:793-804`) passes no owing tail for an unsummoned bot message, and
+  `Stamp::compose` gains no sender input, so no other compose caller moves.
+  Second: because today a live chat row with a false stamp means "settled" to the
+  propagation walk, the false-stamped bot row would BURY the older debt — and the
+  walk is ONE decision recorded at TWO sites by its own contract
+  (`kind.rs:872-878`): the tail condition (`assembly.rs:1892-1913`, read-through
+  kinds at `:68-83`) and the SQL query `newest_block_id_past_erased`
+  (`kind.rs:918-955`). BOTH widen together: a live chat-message row whose stored
+  stamp is false becomes transparent — the query gains the stamp predicate on
+  the typed answer_due column as a third transparency dimension beside the kind
+  set and the erased shape, and the query's documented contract
+  (`kind.rs:892-905`) is updated to name it. Widening one site alone is a silent
+  no-op that still buries the debt. Safety, on the write-time invariant (the
+  proof, both modes): every production chat-row append happens under the stamp
+  lock with the owing tail read in the same critical section, so a stored false
+  stamp CERTIFIES nothing older owed at its write — anything owed would have
+  forced the tail half true (limited rows included: a command above an owed tail
+  carries it). The ledger is append-only and stamps never newly owe
+  retroactively, so reading through a false row reaches the same settled
+  frontier stopping at it did — pinned as an outcome-equality test on the shape
+  that actually exists today, a command's limited false row above a settled
+  tail, in both answering modes. The owed tail therefore stays
   owed across any run of unsummoned bot messages, and the next message that may
   carry it (any non-bot message, or a bot message with the mention) opens the turn
   with the debt intact. *Rejected:* letting the tail ride on bot messages — it is
@@ -120,8 +135,22 @@ unit, deliberately.
   storing the bot fact on the row so the walk can name bot rows — a stored copy
   that drifts, for a distinction the stamp already encodes; *rejected:* answering
   the owed debt eagerly on a timer — a mechanism this unit has no order for.
-- **Everything decided before the summons stays exactly as built, 2026-08-30.** The
-  deletion mirror, command recognition, identity resolution and recording are
+- **An unmentioned bot's recognized commands are refused silently; the mirror
+  alone stays sender-blind, 2026-08-30.** Command recognition and the delivery
+  match run regardless of summoning, so without a ruling a bot's `/privacy`
+  would still draw the fixed notice — a delivered answer IS the bot triggering
+  the assistant, which the operator's rule forbids at all. Decided: a recognized
+  family command from a bot sender without the mention keeps its command stamp
+  (no model turn, exactly as today) but applies no state change and delivers no
+  answer; data-protection rights belong to persons, and a bot exercising
+  `/privacyout` is not a case this assistant serves. The deletion mirror is
+  deliberately exempt: it answers nothing and performs bookkeeping the group's
+  lawful record depends on, and the moderation bot is its main author.
+  *Rejected:* answering bots' commands as today — it contradicts "at all";
+  *rejected:* skipping recognition for bots — the stamp must stay so the command
+  text opens no model turn.
+- **Everything else decided before the summons stays exactly as built,
+  2026-08-30.** The deletion mirror, identity resolution and recording are
   untouched by construction: they run before or independently of the summons
   resolution. Stated so the reviewers hold the diff to it.
 
@@ -147,11 +176,15 @@ unit, deliberately.
   the restart-pin construction), a bot's plain message opens no turn and stamps
   false; the next human message opens the turn with the owed debt intact — the
   walk having read through the bot row (pin constructing the whole sequence). The
-  addressed-mode outcome-equality pin rides beside it: a false human row above a
-  settled tail answers identically before and after the walk widening.
+  outcome-equality pin rides beside it, on the false-row shape production
+  actually writes: a command's limited false row above a settled tail answers
+  identically before and after the walk widening, in both answering modes.
 - **AC4 — the mirror is untouched.** The moderation bot's `/del` mirrors exactly as
   before (existing pins pass); a `/del` carrying the assistant's mention still
   mirrors and takes its command stamp (pin).
+- **AC4b — bot commands answer nothing.** A bot sender's unmentioned `/privacy`
+  is stamped, delivers no answer and changes no state; the same command from a
+  human answers as today (pins on both).
 - **AC5 — nobody else moves behaviorally.** Mechanical fixture edits filling the
   new field are expected wherever a `SenderIdentity`, `User` or `Joiner` is
   constructed, and the exact-two-fields pin becomes the three-fact assertion the
