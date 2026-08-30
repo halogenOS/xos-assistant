@@ -91,6 +91,7 @@ mod tests {
             sender: SenderIdentity {
                 external_id: "admin-1".into(),
                 username: None,
+                bot: false,
             },
             authority: Some(Authority::Admin),
             addressed: false,

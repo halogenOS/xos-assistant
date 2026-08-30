@@ -606,6 +606,7 @@ pub async fn authorize_group(assistant: &Assistant, chat_id: i64) {
                 by: Some(SenderIdentity {
                     external_id: OPERATOR_ID.to_string(),
                     username: None,
+                    bot: false,
                 }),
             },
         })

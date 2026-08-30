@@ -17,38 +17,11 @@ use assistant_core::kind::{AssistantKind, ChatMessage, ERASED_MARKER, LimitedBy}
 use assistant_core::mirror::DELETION_COMMAND;
 use assistant_core::schema::store_config;
 use assistant_core::{
-    Authority, ChannelKey, ChannelKind, DeliveryItem, DirectChats, InboundMessage, IngestOutcome,
+    Authority, ChannelKind, DeliveryItem, DirectChats, InboundMessage, IngestOutcome,
     ProtectionConfig, ReplyTarget, privacy,
 };
 
 use crate::support;
-
-/// One unaddressed group reply carrying the deletion command — the
-/// triggering shape, aimed at the given stored origin.
-fn del_reply(
-    channel: &ChannelKey,
-    sender: &str,
-    authority: Authority,
-    target: &str,
-) -> InboundMessage {
-    let mut message = support::inbound_as(
-        channel,
-        ChannelKind::Group,
-        sender,
-        authority,
-        DELETION_COMMAND,
-    );
-    message.addressed = false;
-    support::with_command(
-        support::with_reply(
-            message,
-            ReplyTarget::Message {
-                origin: target.into(),
-            },
-        ),
-        DELETION_COMMAND,
-    )
-}
 
 /// The recorded chat messages of one ledger, in order.
 fn chat_messages(blocks: &[Block]) -> Vec<ChatMessage> {
@@ -131,7 +104,7 @@ async fn an_administrators_reply_deletion_nulls_exactly_the_target_row() {
         "the five personal columns stand before the mirror — the delta below is provable"
     );
 
-    let mut command = del_reply(&room, "root-ext", Authority::Admin, "target-1");
+    let mut command = support::deletion_reply(&room, "root-ext", Authority::Admin, "target-1");
     command = support::with_origin(command, "del-1");
     ingest_silent(&fixture, command).await;
 
@@ -248,7 +221,7 @@ async fn the_silent_no_ops_leave_the_standing_state_alone() {
     // A member's deletion command mirrors nothing and records ordinarily.
     ingest_silent(
         &fixture,
-        del_reply(&room, "peer-ext", Authority::Member, "target-a"),
+        support::deletion_reply(&room, "peer-ext", Authority::Member, "target-a"),
     )
     .await;
     // An administrator's command without a reply names nothing.
@@ -286,7 +259,7 @@ async fn the_silent_no_ops_leave_the_standing_state_alone() {
     // An administrator's command naming a target the store never held.
     ingest_silent(
         &fixture,
-        del_reply(&room, "root-ext", Authority::Admin, "never-recorded"),
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "never-recorded"),
     )
     .await;
 
@@ -332,7 +305,7 @@ async fn the_silent_no_ops_leave_the_standing_state_alone() {
     // idempotent no-op: still erased, nothing else moved.
     ingest_silent(
         &fixture,
-        del_reply(&room, "root-ext", Authority::Admin, "target-a"),
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "target-a"),
     )
     .await;
     let erased_once = chat_messages(
@@ -346,7 +319,7 @@ async fn the_silent_no_ops_leave_the_standing_state_alone() {
 
     ingest_silent(
         &fixture,
-        del_reply(&room, "root-ext", Authority::Admin, "target-a"),
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "target-a"),
     )
     .await;
     let erased_twice = chat_messages(
@@ -368,6 +341,70 @@ async fn the_silent_no_ops_leave_the_standing_state_alone() {
             "an already-erased target mirrors nothing, idempotently"
         );
     }
+}
+
+/// Unit 42's AC4 (2026-08-30): a deletion command that ALSO addresses the
+/// assistant — an administrator who typed the mention into the same
+/// message — mirrors exactly as the unmentioned one does and takes the
+/// same command stamp, silently. The mirror is decided before the summons
+/// resolution and the command family limits the row whatever addressed
+/// it, so the mention changes the stored addressing fact and nothing else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mentioning_deletion_command_still_mirrors_under_the_command_stamp() {
+    let fixture = support::start_assistant(None).await;
+    let assistant = &fixture.assistant;
+    let room = support::authorized_group(assistant, "room-mention-del").await;
+
+    let receipt = support::ingest_recorded(
+        assistant,
+        support::with_origin(
+            support::inbound_unaddressed(
+                &room,
+                ChannelKind::Group,
+                "casey-ext",
+                "an offending line",
+            ),
+            "target-mention",
+        ),
+    )
+    .await;
+
+    let mut command =
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "target-mention");
+    command.addressed = true;
+    ingest_silent(&fixture, command).await;
+
+    let messages = chat_messages(
+        &fixture
+            .store
+            .list_blocks(receipt.conversation_id)
+            .await
+            .expect("the ledger reads after the mirror"),
+    );
+    assert_eq!(messages.len(), 2, "the target row and the command row");
+    assert_eq!(
+        messages[0].text, None,
+        "the mention did not spare the target"
+    );
+    assert_eq!(
+        messages[1].limited,
+        Some(LimitedBy::Command),
+        "the command stamp holds: an addressed command is still a command"
+    );
+    assert_eq!(messages[1].answer_due, Some(false));
+    assert_eq!(
+        messages[1].addressed,
+        Some(true),
+        "the summons fact is recorded as it was; only the answer machinery stays out"
+    );
+    assert_eq!(
+        fixture
+            .script
+            .turns
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the mentioning deletion command opened no turn"
+    );
 }
 
 /// AC4: the mirror inside a turn's absorption window does not disturb the
@@ -402,7 +439,7 @@ async fn the_mirror_inside_an_absorption_window_leaves_the_turn_untouched() {
     // The stream is provably open; the mirror runs inside the window.
     ingest_silent(
         &fixture,
-        del_reply(&room, "root-ext", Authority::Admin, "absorb-target"),
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "absorb-target"),
     )
     .await;
     let mid_turn = chat_messages(
@@ -474,7 +511,7 @@ async fn a_deleted_messages_debt_dies_while_a_carried_debt_propagates() {
     .await;
     ingest_silent(
         &fixture,
-        del_reply(&room, "root-ext", Authority::Admin, "debt-target"),
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "debt-target"),
     )
     .await;
     support::ingest_recorded(
@@ -537,7 +574,7 @@ async fn a_deleted_messages_debt_dies_while_a_carried_debt_propagates() {
     .await;
     ingest_silent(
         &fixture,
-        del_reply(&carried, "root-ext", Authority::Admin, "keep-1"),
+        support::deletion_reply(&carried, "root-ext", Authority::Admin, "keep-1"),
     )
     .await;
     let carried_rows = chat_messages(
@@ -600,7 +637,7 @@ async fn the_mirror_scrubs_the_reply_references_naming_the_deleted_message() {
     .await;
     let admin = support::ingest_recorded(
         assistant,
-        del_reply(&room, "root-ext", Authority::Admin, "scrub-target"),
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "scrub-target"),
     )
     .await;
     let conversation = author.conversation_id;
@@ -717,7 +754,7 @@ async fn deleting_the_carrying_tail_keeps_a_third_partys_debt_alive() {
     .await;
     ingest_silent(
         &fixture,
-        del_reply(&room, "root-ext", Authority::Admin, "carrier-1"),
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "carrier-1"),
     )
     .await;
     support::ingest_recorded(
@@ -797,7 +834,7 @@ async fn the_suppression_drop_precedes_the_mirror() {
 
     assert_eq!(
         assistant
-            .ingest(del_reply(
+            .ingest(support::deletion_reply(
                 &room,
                 "root-ext",
                 Authority::Admin,
@@ -861,7 +898,7 @@ async fn the_direct_channel_admission_precedes_the_mirror() {
     )
     .await;
 
-    let mut command = del_reply(
+    let mut command = support::deletion_reply(
         &support::channel("dm-admin"),
         "root-ext",
         Authority::Admin,

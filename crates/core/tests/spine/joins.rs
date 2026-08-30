@@ -35,6 +35,7 @@ fn joiner(external_id: &str, handle: Option<&str>, name: &str) -> JoinedMember {
         identity: SenderIdentity {
             external_id: external_id.into(),
             username: handle.map(Into::into),
+            bot: false,
         },
         name: name.into(),
     }

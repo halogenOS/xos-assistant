@@ -69,12 +69,43 @@ impl ChannelKind {
 /// never reaches a block. The display name is not carried at all (decision
 /// 0077): nothing consumed it, so the adapter stops translating it and the
 /// core stores what it needs and nothing it does not.
+///
+/// Three facts cross the boundary, not two (2026-08-30, widening 0077): the
+/// automation fact below joined the pair. It is the one field here that is
+/// stored NOWHERE — read fresh off every update, consumed while the message
+/// is decided, and never written to a row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SenderIdentity {
     /// The sender's opaque external id on the adapter's platform.
     pub external_id: String,
     /// The sender's username, where the platform has one.
     pub username: Option<String>,
+    /// Whether the account that sent the message is automated instead of a
+    /// person — the platform's own fact about the account, translated by
+    /// the adapter (2026-08-30). It is a property of the ACCOUNT, not of
+    /// one message of it, so it rides the identity and not the message; a
+    /// platform that marks nothing leaves it false, which is exactly what
+    /// "no automated account is known here" means.
+    ///
+    /// On a message's sender, three readings consume it, all of them at
+    /// the moment the message is decided: the adapter narrows an automated
+    /// sender's addressing to the deliberate mention, the core's summons
+    /// resolution never summons such a sender by mode, and the core's
+    /// stamp write withholds the owing tail from an unsummoned automated
+    /// sender's row so no bot carries somebody else's debt into a turn
+    /// (decisions 0152, 0153, 0154).
+    ///
+    /// On a join notice's joiner the fact is carried and read by nothing:
+    /// a joiner is not a sender, so no addressing and no summons is decided
+    /// for them. It rides anyway, because this is the one identity a
+    /// joiner crosses the boundary with and the honest value of an
+    /// account's own flag is the platform's, never a per-site `false`
+    /// invented to fill the field (decision 0151 fills all three building
+    /// sites from their own account's flag).
+    ///
+    /// It reaches no column, no migration and no erasure pass — a stored
+    /// copy would only drift from the account's current state.
+    pub bot: bool,
 }
 
 /// The sender's standing in the channel, resolved live by the adapter at

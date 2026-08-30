@@ -342,6 +342,7 @@ async fn a_reply_to_a_message_the_ledger_does_not_hold_lands_quoteless() {
                     identity: SenderIdentity {
                         external_id: "J".into(),
                         username: Some("jo".into()),
+                        bot: false,
                     },
                     name: "Jo".into(),
                 }],

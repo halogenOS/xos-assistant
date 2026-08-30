@@ -30,11 +30,18 @@
 //!   behind that marker still owes — the walk reads through the marker,
 //!   through the rest of a turn's machinery, through a dead turn's own
 //!   narration and reasoning, and through every kind it does not name,
-//!   and ends only at what answered or never owed: a completed answer,
-//!   or a chat message owing nothing. The end is the exception and the
-//!   read-through is the default, because the fold is a minimum: a chain
-//!   cut short can only read higher ([`chain_step`] carries the verified
-//!   escalation that pinned this).
+//!   and ends only at what ANSWERED: a completed answer, or a chat row
+//!   the store never produced. A chat row owing nothing does not end it
+//!   (2026-08-30): the row shapes the owing-tail walk reads through are
+//!   read through here too, from that walk's own recording of them
+//!   ([`ChatMessage::transparent_to_the_walk`]) — an unsummoned bot's
+//!   row is stamped false ABOVE a live debt by rule, so ending on it
+//!   would cut this chain off in front of the debt's own origin. The end
+//!   is the exception and the read-through is the default, because the
+//!   fold is a minimum: a chain cut short never reads the origin set —
+//!   it reads HIGHER while a taker survives the cut ([`chain_step`]
+//!   carries the verified escalation that pinned this), and the
+//!   [`FLOOR`] once the cut leaves no taker at all.
 //! - a chat message recorded between the anchor and the call joins the
 //!   fold only when it opened a debt of its own — the same predicate —
 //!   and contributes its sender's stored authority. The turn answers an
@@ -139,10 +146,11 @@ pub(crate) fn co_summoners(ledger: &[Block], call_block_id: i64) -> Vec<ChatMess
 ///
 /// The filtering is the caller's, and the two callers filter differently:
 /// [`co_summoners`] keeps the chat messages that took a debt of their own,
-/// [`assessed_joins`] keeps the join notices. Every chat message the chain
-/// yields carries an answer-due stamp — a message owing nothing IS the end
-/// of the chain — so the debt predicate over the walk's blocks is the same
-/// set [`ChainStep::Votes`] names.
+/// [`assessed_joins`] keeps the join notices. A chat message the chain
+/// yields either carries an answer-due stamp or is one the owing-tail walk
+/// reads through — and a row owing nothing took no debt of its own, so the
+/// debt predicate over the walk's blocks still selects exactly the set
+/// [`ChainStep::Votes`] names.
 fn windowed(ledger: &[Block], call_block_id: i64) -> Vec<&Block> {
     let Some(call) = ledger.iter().find(|block| block.id == call_block_id) else {
         return Vec::new();
@@ -236,11 +244,12 @@ pub(crate) fn sole_principal(ledger: &[Block], call_block_id: i64) -> Option<i64
 /// origin set — the own-debt-takers in the chain of answer-due chat
 /// messages ending at the anchor, the block at `anchor_index` (0043,
 /// refined 2026-08-22; marker-aware 2026-08-23). The chain ends at the
-/// first block backwards that answered a debt or never owed one — a
-/// completed answer, or a chat message owing nothing — because behind
-/// that point nothing contributed to summoning this turn. What lies
+/// first block backwards that ANSWERED a debt — a completed answer —
+/// because behind that point nothing contributed to summoning this turn.
+/// What lies
 /// BETWEEN chain members without ending the chain is what answered
-/// nothing: a dead turn's leavings, the machinery of the rounds, and any
+/// nothing: a dead turn's leavings, the machinery of the rounds, a chat
+/// row the owing-tail walk itself reads through, and any
 /// kind the walk does not name, each read through by [`chain_step`]. A
 /// propagator inside the chain extends
 /// it and votes nothing; a chain with no taker — the non-message frontier
@@ -289,10 +298,12 @@ enum ChainStep {
 
 /// Classify one block for the backward walk (0043, marker-aware
 /// 2026-08-23; the edge inverted the same day, after the verified
-/// escalation). An answer-due chat message is the chain itself — a taker
-/// votes, a propagator extends. The chain ends ONLY at what answered a
-/// debt or never owed one: a completed answer — a text no turn-closure
-/// marker disowns — or a chat message owing nothing. EVERYTHING else
+/// escalation; the transparent row shapes joined 2026-08-30). An
+/// answer-due chat message is the chain itself — a taker votes, a
+/// propagator extends. The chain ends ONLY at what ANSWERED a debt: a
+/// completed answer — a text no turn-closure marker disowns — or, as the
+/// unreadable edge, a chat row carrying no stamp at all, which the store
+/// does not produce. EVERYTHING else
 /// extends silently: a turn's machinery, a dead turn's narration and its
 /// reasoning, and every kind this walk does not name — anchored on a
 /// disowned turn or a live one, anchored at all or not. Extending is the
@@ -302,7 +313,9 @@ enum ChainStep {
 /// kinds to the end, and a dead turn's thinking block, an ordinary
 /// reasoning-model product, cut the owed member out of the fold and read
 /// the next turn as admin — while reading one block further can only add
-/// a voter to a minimum, the over-declining direction 0043 accepts.
+/// a voter to a minimum, the over-declining direction 0043 accepts. Where
+/// a cut leaves NO taker behind it the fold is the [`FLOOR`] instead, the
+/// same direction by a shorter road.
 // The report arm restates the catch-all on purpose — the explicitness is
 // the point, stated in the arm's own comment.
 #[allow(clippy::match_same_arms)]
@@ -315,6 +328,24 @@ fn chain_step(block: &Block, ledger: &[Block]) -> ChainStep {
                 ChainStep::Extends
             }
         }
+        // The owing-tail walk's row-shape reading, read here as its third
+        // home (2026-08-30, unit 42): a row THAT walk reads through is a
+        // row this one reads through, and the predicate lives on the kind
+        // so the homes cannot drift. An unsummoned bot's row is stamped
+        // false above a live debt by rule and certifies nothing, so ending
+        // on it would cut this chain off in front of the debt's own origin
+        // and fold a turn the origin summoned down to the FLOOR — with the
+        // origin's text riding in the dispatched request, and the origin's
+        // row missing from every window question of [`windowed`]. The other
+        // transparent shapes — an erased row, a false-stamped row whose
+        // stamp certifies a settled frontier — answered nothing either, and
+        // what DID answer them is the framework's own text below.
+        AssistantKind::ChatMessage(message) if message.transparent_to_the_walk() => {
+            ChainStep::Extends
+        }
+        // What is left is a chat row with no stamp at all — a row the store
+        // did not produce. The unreadable edge ends the chain, one more
+        // absence folded to the refusing side.
         AssistantKind::ChatMessage(_) => ChainStep::Ends,
         AssistantKind::Core(FrameworkKind(BlockKind::Text(_))) if !turn_died(block, ledger) => {
             ChainStep::Ends
@@ -662,13 +693,15 @@ mod tests {
         assert_eq!(turn_reading(&ledger, 5), Authority::Admin);
     }
 
-    /// The chain is contiguous: a resting line between an old taker and
-    /// the anchor ends the walk, so the old taker — an author whose debt
-    /// this turn does not carry — stays outside the origin set. And a
-    /// chain that holds no taker at all reads the floor: a debt with no
+    /// A resting line no longer breaks the chain (2026-08-30, unit 42):
+    /// its false stamp is the shape the owing-tail walk reads through, so
+    /// this walk reads through it as well and the owed member behind it
+    /// still votes. What keeps an old taker out of a later turn's origin
+    /// set is what ANSWERED them — the pin below this one. And a chain
+    /// that holds no taker at all still reads the floor: a debt with no
     /// readable origin admits nothing above member.
     #[test]
-    fn the_chain_breaks_at_a_message_owing_nothing_and_a_takerless_chain_reads_the_floor() {
+    fn a_resting_line_is_read_through_and_a_takerless_chain_reads_the_floor() {
         let ledger = vec![
             chat_block(1, Authority::Member, true, None),
             chat_block(2, Authority::Moderator, false, None),
@@ -677,8 +710,8 @@ mod tests {
         ];
         assert_eq!(
             turn_reading(&ledger, 5),
-            Authority::Admin,
-            "the resting line at 2 ends the chain before the member at 1"
+            Authority::Member,
+            "the resting line at 2 is transparent: the member owed at 1 votes"
         );
 
         let orphan = vec![
@@ -689,6 +722,44 @@ mod tests {
             turn_reading(&orphan, 5),
             FLOOR,
             "a chain of pure propagators holds no origin to read"
+        );
+    }
+
+    /// The degradation the third walk home closes (2026-08-30, unit 42),
+    /// in the sequence production writes it: an admin's ask whose turn
+    /// never ran still owes; an unmentioned bot's row lands on top of it,
+    /// stamped false by rule and certifying nothing; an unaddressed
+    /// member's line then carries the admin's debt through and anchors the
+    /// turn. The carrier votes nothing, so a walk ending on the bot's row
+    /// would hold no taker at all and fold to the floor — with the admin's
+    /// ask in the dispatched request and the admin's row missing from
+    /// every window question. Read through, the origin set is the admin's.
+    #[test]
+    fn an_admins_debt_reaches_the_turn_across_an_unmentioned_bots_row() {
+        let ledger = vec![
+            chat_block(1, Authority::Admin, true, None),
+            chat_block(2, Authority::Member, false, None),
+            chat_block(3, Authority::Member, false, Some(admin_tail())),
+            call_block(5, Some(3)),
+        ];
+        assert_eq!(
+            <ChatMessage as agent_ledger::LeafKind>::parse(&ledger[1]).answer_due,
+            Some(false),
+            "the premise: the unmentioned bot's row is stamped false above a live debt"
+        );
+        assert_eq!(
+            turn_reading(&ledger, 5),
+            Authority::Admin,
+            "the debt's origin reaches the turn, and the gate does not degrade to the floor"
+        );
+        let origins: Vec<Option<Authority>> = co_summoners(&ledger, 5)
+            .into_iter()
+            .map(|message| message.authority)
+            .collect();
+        assert_eq!(
+            origins,
+            vec![Some(Authority::Admin)],
+            "and the origin row is in the window every co-summoner question reads"
         );
     }
 

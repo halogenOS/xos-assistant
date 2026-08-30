@@ -10,6 +10,9 @@
 //! registry), audience (the clarifying question's ordinary delivery and
 //! the two-turn disambiguation),
 //! addressing (the answer-due stamp, the notice, re-engagement),
+//! bots (an automated sender summoned by address alone, its message
+//! carrying no owing tail, and the debt waiting behind it for a carrier
+//! entitled to it),
 //! protection (the budgets, the limited stamp, the debt authority),
 //! reasoning (the configured effort level on every created conversation
 //! and on the provider's requests),
@@ -57,6 +60,7 @@ mod acknowledgment;
 mod addressing;
 mod assembly;
 mod audience;
+mod bots;
 #[cfg(feature = "chat_completions")]
 mod chat_completions;
 mod date_marker;

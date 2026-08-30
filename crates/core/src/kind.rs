@@ -519,6 +519,56 @@ impl ChatMessage {
         self.text.is_none()
     }
 
+    /// Whether the owing-tail walk reads THROUGH this row instead of
+    /// settling on it — the row-shape half of the walk's one decision. The
+    /// second half is the query this module runs to skip a whole
+    /// transparent run
+    /// (`newest_block_id_past_transparent`), whose SQL spells exactly
+    /// this disjunction over the stored columns; the two are written
+    /// beside each other so neither can drift.
+    ///
+    /// A third home reads this same predicate and does not spell it again:
+    /// the anchor gate's debt-chain walk
+    /// (`crate::tools::provenance`, decision 0043), which extends across a
+    /// row this predicate affirms instead of ending its chain there
+    /// (2026-08-30). The two walks ask different questions — one hands a
+    /// debt to the next write, the other reads a debt's origins for tool
+    /// admission — but a row that answered nothing answers nothing for
+    /// either, and a gate that stopped on an unsummoned bot's row would
+    /// fold the debt origin's own turn to the floor.
+    ///
+    /// Two shapes are transparent, disjunctively. An erased row
+    /// (decision 0086): someone's deletion empties one ask, never the
+    /// standing question behind it. A row whose stamp is false
+    /// (2026-08-30): it owes nothing itself, and reading on past it loses
+    /// nothing — for two different reasons, one per class of row a false
+    /// stamp is written on. This is where that argument is made; the three
+    /// reading sites carry the widening, not a second telling of why.
+    ///
+    /// A row whose stamp was composed against a READ owing tail — every
+    /// production append but the one below, a command's limited row
+    /// included — took that stamp under the entry point's lock with the
+    /// tail read in the same critical section, so anything older owed would
+    /// have made the stamp true. Such a row's falseness CERTIFIES a settled
+    /// frontier behind it, and reading through reaches the same frontier
+    /// stopping at it already named.
+    ///
+    /// The one row composed against no tail at all is an unsummoned bot's
+    /// message, which must trigger nothing: `Assistant::owed_tail`
+    /// withholds the tail there and the row is stamped false by rule,
+    /// without any read (decision 0154). That row certifies NOTHING — it is
+    /// deliberately written false above a live debt — and this widened walk
+    /// is the whole of its safety: reading through it is exactly what
+    /// leaves the debt owed for the next message entitled to carry it.
+    ///
+    /// The disjunction is essential: a true-stamped erased row is
+    /// transparent by the erased half alone, and narrowing either half to
+    /// the other's condition would bury a live debt behind it.
+    #[must_use]
+    pub fn transparent_to_the_walk(&self) -> bool {
+        self.erased() || self.answer_due == Some(false)
+    }
+
     /// The authority of the debt an owing tail hands the next message — the
     /// stored debt authority, with the pre-migration fold: a row written
     /// before the protection migration carries NULL there while every
@@ -872,7 +922,7 @@ pub(crate) async fn erase_reply_targets_naming(
 /// Both facts belong to their kinds, hold for every reader there will ever
 /// be, and are independent of any caller's kind list. This is the whole of
 /// that decision, recorded once and read by exactly two sites, so the two
-/// can never drift apart: [`newest_block_id_past_erased`] below, which
+/// can never drift apart: [`newest_block_id_past_transparent`] below, which
 /// excludes these rows in SQL for every caller, and the tail condition in
 /// `Assistant::owing_tail_debt`, which treats such a tail as transparent
 /// and reads behind it. It is deliberately NOT folded into
@@ -890,19 +940,22 @@ pub(crate) static NEVER_ANSWERABLE: LazyLock<Vec<&'static str>> = LazyLock::new(
 });
 
 /// The newest block of one conversation that can settle the owing-tail
-/// walk: outside the caller's read-through kinds, and past every erased
-/// chat row (2026-08-23, the deletion mirror; decision 0086). Erasure
-/// nulls a chat row's text but leaves its kind and its place, so a kind
-/// list alone cannot skip it — and a live debt a third party's row still
-/// owes behind an erased run must reach the next message's stamp instead
-/// of dying with someone else's deletion. One bounded query answers the
-/// whole run; a row-by-row walk would stretch with the run's length into a
-/// conversation hydration on ingestion's hot path. The query lives on the
-/// kind because only the kind knows an erased row's shape; the
-/// framework-table names it joins carry the deliberate coupling decision
-/// 0032 records, and the placeholder list is built from the slice, so a
-/// widened kind set is a data change at the caller. An empty slice reads
-/// past erased rows and date markers.
+/// walk: outside the caller's read-through kinds, and past every chat row
+/// [`ChatMessage::transparent_to_the_walk`] affirms — the erased ones
+/// (2026-08-23, the deletion mirror; decision 0086) and the false-stamped
+/// ones (2026-08-30), disjunctively, exactly as that predicate reads them.
+/// Erasure nulls a chat row's text but leaves its kind and its place, and
+/// a false stamp leaves no mark on the kind at all, so a kind list alone
+/// can skip neither — and a live debt a third party's row still owes
+/// behind such a run must reach the next message's stamp instead of dying
+/// with someone else's deletion or under a bot's passing remark. One
+/// bounded query answers the whole run; a row-by-row walk would stretch
+/// with the run's length into a conversation hydration on ingestion's hot
+/// path. The query lives on the kind because only the kind knows those
+/// shapes; the framework-table names it joins carry the deliberate
+/// coupling decision 0032 records, and the placeholder list is built from
+/// the slice, so a widened kind set is a data change at the caller. An
+/// empty slice reads past transparent chat rows and date markers.
 ///
 /// The caller's list is not the whole exclusion: every read also skips the
 /// framework's date records, per [`NEVER_ANSWERABLE`] above — the one
@@ -915,7 +968,7 @@ pub(crate) static NEVER_ANSWERABLE: LazyLock<Vec<&'static str>> = LazyLock::new(
 /// # Errors
 ///
 /// [`StoreError`] if the query fails or the store's actor has stopped.
-pub(crate) async fn newest_block_id_past_erased(
+pub(crate) async fn newest_block_id_past_transparent(
     tx: &StoreTx,
     conversation_id: i64,
     read_through: &'static [&'static str],
@@ -942,7 +995,8 @@ pub(crate) async fn newest_block_id_past_erased(
                      AND NOT EXISTS (\
                        SELECT 1 FROM {CHAT_MESSAGE_TABLE} m \
                        WHERE m.block_id = cb.block_id \
-                       AND m.{COLUMN_TEXT} IS NULL\
+                       AND (m.{COLUMN_TEXT} IS NULL \
+                            OR m.{COLUMN_ANSWER_DUE} = 0)\
                      ) \
                      ORDER BY cb.id DESC LIMIT 1"
                 ),
@@ -1616,50 +1670,36 @@ mod tests {
         );
     }
 
-    /// A tail that is a run of read-through kinds and erased chat rows
-    /// answers the block behind the whole run in one query; an empty kind
-    /// list still reads past erased rows and date markers, and an empty
-    /// conversation answers nothing.
-    #[tokio::test]
-    async fn the_read_answers_past_kind_runs_and_erased_rows_alike() {
-        let store =
-            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
-        let conversation = store
-            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
-            .await
-            .expect("a conversation row");
-        let tx = store.tx();
-        assert_eq!(
-            newest_block_id_past_erased(&tx, conversation, &[CONTEXT_NOTE_KIND])
-                .await
-                .expect("the empty read runs"),
-            None,
-            "an empty conversation holds nothing to answer"
-        );
-
-        let behind = store
-            .insert_text_block(conversation, Role::User, "the block behind".into())
-            .await
-            .expect("the text block appends");
+    /// One chat row of the transparent run the read below is asked about,
+    /// at the given text, origin and summons — every other fact a fixed
+    /// well-formed value, since the read judges the text and the stamp
+    /// alone.
+    async fn append_chat_row(
+        store: &Store,
+        conversation: i64,
+        text: &str,
+        origin: &str,
+        summoned: bool,
+    ) {
         store
             .append_consumer_block(
                 conversation,
                 Some(Role::User),
                 CHAT_MESSAGE_KIND,
                 ChatMessage::stored_fields(
-                    "soon deleted",
+                    text,
                     RecordedSender {
                         principal_id: 7,
                         authority: Authority::Member,
                         speaker: None,
                     },
-                    Some("gone-1"),
+                    Some(origin),
                     None,
                     "2026-08-23T00:00:00Z",
                     Stamp::compose(
                         Summons {
-                            summoned: false,
-                            literal_addressed: false,
+                            summoned,
+                            literal_addressed: summoned,
                         },
                         Authority::Member,
                         None,
@@ -1670,10 +1710,67 @@ mod tests {
             )
             .await
             .expect("the chat row appends");
+    }
+
+    /// A tail that is a run of read-through kinds, false-stamped chat rows
+    /// and erased chat rows answers the block behind the whole run in one
+    /// query; an empty kind list still reads past transparent rows and
+    /// date markers, and an empty conversation answers nothing.
+    ///
+    /// The two transparency shapes are pinned one at a time and in
+    /// isolation, because the SQL spells them disjunctively and either
+    /// condition alone would satisfy a mixed run: the live false-stamped
+    /// row carries its text, and the erased row above it carries a TRUE
+    /// stamp, so neither row is transparent by the other's half.
+    #[tokio::test]
+    async fn the_read_answers_past_kind_runs_false_stamps_and_erased_rows_alike() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let tx = store.tx();
+        assert_eq!(
+            newest_block_id_past_transparent(&tx, conversation, &[CONTEXT_NOTE_KIND])
+                .await
+                .expect("the empty read runs"),
+            None,
+            "an empty conversation holds nothing to answer"
+        );
+
+        let behind = store
+            .insert_text_block(conversation, Role::User, "the block behind".into())
+            .await
+            .expect("the text block appends");
+        append_chat_row(
+            &store,
+            conversation,
+            "an unsummoned line, its text intact",
+            "live-false",
+            false,
+        )
+        .await;
+        assert_eq!(
+            newest_block_id_past_transparent(&tx, conversation, &[])
+                .await
+                .expect("the false-stamped read runs"),
+            Some(behind),
+            "a live row whose stamp is false is transparent on its own"
+        );
+
+        append_chat_row(&store, conversation, "soon deleted", "gone-1", true).await;
         let target_rows = erase_message_named(&tx, conversation, "gone-1")
             .await
             .expect("the mirror pass runs");
         assert_eq!(target_rows, 1, "the named row is erased");
+        assert_eq!(
+            newest_block_id_past_transparent(&tx, conversation, &[])
+                .await
+                .expect("the erased read runs"),
+            Some(behind),
+            "an erased row is transparent though its own stamp reads true (decision 0086)"
+        );
         store
             .append_consumer_block(
                 conversation,
@@ -1686,19 +1783,19 @@ mod tests {
             .expect("the note appends");
 
         assert_eq!(
-            newest_block_id_past_erased(&tx, conversation, &[CONTEXT_NOTE_KIND])
+            newest_block_id_past_transparent(&tx, conversation, &[CONTEXT_NOTE_KIND])
                 .await
                 .expect("the read-through runs"),
             Some(behind),
-            "the note and the erased row are one transparent run"
+            "the note, the erased row and the false-stamped row are one transparent run"
         );
-        let newest = newest_block_id_past_erased(&tx, conversation, &[])
+        let newest = newest_block_id_past_transparent(&tx, conversation, &[])
             .await
             .expect("the plain read runs")
             .expect("the conversation has an answerable block");
         assert!(
             newest > behind,
-            "an empty kind list reads past erased rows and date markers: the note answers"
+            "an empty kind list reads past transparent rows and date markers: the note answers"
         );
     }
 }

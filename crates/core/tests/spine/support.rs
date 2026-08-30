@@ -1123,6 +1123,7 @@ pub fn added_by(channel: &ChannelKey, external_id: &str) -> Observation {
             by: Some(SenderIdentity {
                 external_id: external_id.into(),
                 username: None,
+                bot: false,
             }),
         },
     }
@@ -1381,6 +1382,7 @@ pub fn inbound_as(
         sender: SenderIdentity {
             external_id: sender_external_id.into(),
             username: None,
+            bot: false,
         },
         authority: Some(authority),
         addressed: true,
@@ -1410,6 +1412,45 @@ pub fn with_command(mut message: InboundMessage, command: &str) -> InboundMessag
 pub fn with_username(mut message: InboundMessage, username: &str) -> InboundMessage {
     message.sender.username = Some(username.into());
     message
+}
+
+/// The same message, from a BOT account — the platform's own fact about
+/// the sending account, translated by the adapter onto the identity
+/// (2026-08-30). The suite's default sender is a person, so a test that
+/// wants the automated sender says so here.
+pub fn from_a_bot(mut message: InboundMessage) -> InboundMessage {
+    message.sender.bot = true;
+    message
+}
+
+/// One unaddressed group reply carrying the moderation bot's deletion
+/// command, aimed at the given stored origin — the shape that triggers the
+/// mirror (unit 13). Shared, because two suites drive an erasure through
+/// it: the mirror's own, and the walk pins that need an erased row in the
+/// middle of a ledger.
+pub fn deletion_reply(
+    channel: &ChannelKey,
+    sender: &str,
+    authority: Authority,
+    target: &str,
+) -> InboundMessage {
+    let mut message = inbound_as(
+        channel,
+        ChannelKind::Group,
+        sender,
+        authority,
+        assistant_core::mirror::DELETION_COMMAND,
+    );
+    message.addressed = false;
+    with_command(
+        with_reply(
+            message,
+            assistant_core::ReplyTarget::Message {
+                origin: target.into(),
+            },
+        ),
+        assistant_core::mirror::DELETION_COMMAND,
+    )
 }
 
 /// The same message, replying to the given target — the translated reply
