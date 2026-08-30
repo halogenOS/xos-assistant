@@ -45,12 +45,16 @@ bot's message appended while the tail owes would open the exact turn the operato
 forbade. This unit decides that case below.
 
 **The wire structs do not decode the bot fact today.** The adapter's own serde
-types `User` (`client.rs:360-363`) and `Joiner` (`client.rs:247-253`) carry id and
-username only and skip unknown keys; the platform sends `is_bot` on both. There are
-THREE production sites building a `SenderIdentity`: the message path
-(`translate.rs:222`), the membership observation of the assistant's own entry
-(`translate.rs:253`), and the join report's per-joiner identity
-(`joined_member`, `translate.rs:315`).
+types `User` (`client.rs:360-363`, id and username only) and `Joiner`
+(`client.rs:247-256`, plus the name fields) skip unknown keys and neither decodes
+`is_bot`; the platform sends it on both. There are THREE production sites building
+a `SenderIdentity`: the message path (`translate.rs:222`), the membership
+observation of the assistant's own entry (`translate.rs:253`), and the join
+report's per-joiner identity (`joined_member`, `translate.rs:315`). The identity's
+two-field shape is a recorded decision (0077) restated by the pin
+`a_sender_translates_to_the_external_id_and_the_username_alone`
+(`translate.rs:958-977`) and the `message.rs:63-71` doc — both move with this
+unit, deliberately.
 
 ## Decisions taken with this unit
 
@@ -64,10 +68,13 @@ THREE production sites building a `SenderIdentity`: the message path
   core's summons resolution and STORED NOWHERE: no schema column, no migration, no
   erasure change — it is a property of the account read fresh off every update,
   platform-neutral (every platform this assistant will meet marks automated
-  accounts or leaves the flag false). *Rejected:* a field on the message — the
-  fact belongs to the account, not to one message of it; *rejected:* persisting it
-  — nothing reads it after the stamp, and a stored copy would only drift from the
-  account's current state.
+  accounts or leaves the flag false). This widens decision 0077's two-field identity, said openly: the
+  exact-two-fields pin becomes a three-fact assertion and the identity doc names
+  the third field; the unit's decision record carries the dated widening.
+  *Rejected:* a field on the message — the fact belongs to the account, not to one
+  message of it; *rejected:* persisting it on message rows — nothing reads it
+  after the stamp, and a stored copy would only drift from the account's current
+  state.
 - **For a bot sender, only an @mention addresses the assistant, 2026-08-30.** In the
   adapter, where the platform's addressing forms are translated: a bot sender's
   group message is addressed if and only if `mentions_bot` holds — a reply to the
@@ -88,17 +95,31 @@ THREE production sites building a `SenderIdentity`: the message path
   *Rejected:* filtering bot messages out of ingestion — the model must keep seeing
   them (the deletion mirror and the group's visible history depend on it), they must
   merely trigger nothing.
-- **An unsummoned bot message never carries the owing tail, 2026-08-30.** A turn
-  also opens when a new message CARRIES an earlier unanswered debt
-  (`answer_due` = own debt OR the owing tail, `kind.rs:342`), so without this rule
-  a bot's plain message appended while the tail owes would open the forbidden turn
-  with someone else's stale debt. Decided: for a bot sender's unsummoned message,
-  `answer_due` is false outright — it neither takes debt nor carries the tail. The
-  owed tail is NOT lost: it stays owed, and the next message that may carry it (any
-  non-bot message, or a bot message with the mention) opens the turn with the debt
-  intact. *Rejected:* letting the tail ride on bot messages — it is exactly "a bot
-  triggers this bot" wearing another message's debt; *rejected:* answering the owed
-  debt eagerly on a timer — a mechanism this unit has no order for.
+- **An unsummoned bot message never carries the owing tail, and the tail walk
+  reads through it, 2026-08-30.** A turn also opens when a new message CARRIES an
+  earlier unanswered debt (`answer_due` = own debt OR the owing tail,
+  `kind.rs:342`), so without a rule here a bot's plain message appended while the
+  tail owes would open the forbidden turn with someone else's stale debt. Decided,
+  in two halves that stand together. First: a bot sender's unsummoned message
+  stamps `answer_due` false outright — no debt of its own, no carried tail, so the
+  frontier (which owes a turn from the newest block alone) fires nothing. Second:
+  because today a live chat row with a false stamp means "settled" to the
+  propagation walk — `owing_tail_debt` reads through only its read-through kinds
+  and stops at live chat rows (`assembly.rs:68-82, 1892-1913`) — the false-stamped
+  bot row would BURY the older debt. So the walk widens: a live chat-message row
+  whose stored stamp is false is read THROUGH, not stopped at. This is safe for
+  every existing row, provably: in helpful mode every live row summons or carries
+  (true); in addressed mode a false row exists only where nothing older owes
+  (anything owed would have been carried onto it), so reading through it reaches a
+  settled tail and answers exactly as stopping did — pinned as an addressed-mode
+  outcome-equality test beside the new behavior. The owed tail therefore stays
+  owed across any run of unsummoned bot messages, and the next message that may
+  carry it (any non-bot message, or a bot message with the mention) opens the turn
+  with the debt intact. *Rejected:* letting the tail ride on bot messages — it is
+  exactly "a bot triggers this bot" wearing another message's debt; *rejected:*
+  storing the bot fact on the row so the walk can name bot rows — a stored copy
+  that drifts, for a distinction the stamp already encodes; *rejected:* answering
+  the owed debt eagerly on a timer — a mechanism this unit has no order for.
 - **Everything decided before the summons stays exactly as built, 2026-08-30.** The
   deletion mirror, command recognition, identity resolution and recording are
   untouched by construction: they run before or independently of the summons
@@ -122,14 +143,19 @@ THREE production sites building a `SenderIdentity`: the message path
   excluded from both budget counts; the same message carrying the @mention summons
   a turn (pins on both).
 - **AC3b — the tail waits for a legitimate carrier.** With a conversation's tail
-  owing (a summoned human message whose turn produced nothing), a bot's plain
-  message opens no turn and the tail stays owed; the next human message opens the
-  turn with the owed debt intact (pin constructing the whole sequence).
+  owing (a summoned human message whose turn NEVER RAN — nothing durable appended,
+  the restart-pin construction), a bot's plain message opens no turn and stamps
+  false; the next human message opens the turn with the owed debt intact — the
+  walk having read through the bot row (pin constructing the whole sequence). The
+  addressed-mode outcome-equality pin rides beside it: a false human row above a
+  settled tail answers identically before and after the walk widening.
 - **AC4 — the mirror is untouched.** The moderation bot's `/del` mirrors exactly as
   before (existing pins pass); a `/del` carrying the assistant's mention still
   mirrors and takes its command stamp (pin).
 - **AC5 — nobody else moves behaviorally.** Mechanical fixture edits filling the
-  new field are expected wherever a `SenderIdentity` is constructed; beyond them,
+  new field are expected wherever a `SenderIdentity`, `User` or `Joiner` is
+  constructed, and the exact-two-fields pin becomes the three-fact assertion the
+  wire decision names; beyond them,
   the existing summons, addressing, budget and teaching pins pass with no
   behavioral change.
 - **AC6 — the checks.** fmt, clippy with warnings denied, the full suite, the doc
@@ -140,6 +166,7 @@ THREE production sites building a `SenderIdentity`: the message path
 - Worktree `~/projects/halogenos-assistant-service`, branch `unit/service-quiet`,
   from `main` (`9ecd0b1`). The build's first step: `git rebase main`.
 - Decision records number from the highest shipped at merge; expected records: the
-  wire bot fact, the mention-only addressing for bots, the no-mode-summons rule.
+  wire bot fact (widening 0077), the mention-only addressing for bots, the
+  no-mode-summons rule, and the tail rule with the walk widening.
 - Deploy-relevant: the live assistant welcomed a joiner today; this unit rides the
   next deploy the operator approves.
