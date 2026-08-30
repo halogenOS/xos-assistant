@@ -43,7 +43,7 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   not an acknowledgment, not a comment", becomes:
   `they get nothing from you in words: not an answer, not an acknowledgment, not a comment.`
   And the carve-out joins it, verbatim:
-  `The one exception is the emoji reaction: where you would otherwise end an empty turn but a message genuinely lands - a share, a milestone, a joke that landed - you may put one reaction on it instead. A reaction never rides with words on the same message, most messages deserve no reaction either, and silence stays the default.`
+  `The one exception is the emoji reaction: where you would otherwise end an empty turn but a message genuinely lands — a share, a milestone, a joke that landed — you may put one reaction on it instead. A reaction never rides with words on the same message, most messages deserve no reaction either, and silence stays the default.`
   Both strings are pinned byte for byte. The addressed arm stays unamended on
   purpose: in addressed mode unaddressed chatter opens no turn at all, so the
   CHATTER carve-out never meets that arm's sentence. The react teaching itself
