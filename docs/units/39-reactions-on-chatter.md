@@ -112,13 +112,18 @@ trusts them (worked examples: `OutboundReply` now `message.rs:573-599`;
   undelivered at process death is lost (the edge's cursor discipline), and under
   the per-origin existence check that message stays permanently unmarked —
   accepted for an act whose whole point is being cheap.
-- **OPEN — held for the operator: whether a reaction may target a bot's message or
-  a join notice.** The bot-trigger rule (unit 42) stops bots from opening her
-  turns, but a mark placed during someone else's turn could still land on a bot's
-  message or a join line. The carve-out copy above is final except for this: if
-  the operator excludes them, one clause joins the carve-out sentence and the tool
-  refuses those targets structurally. NOTHING in this unit builds either way until
-  the answer is recorded here.
+- **Bot messages are reactable; join notices are not reactable on the platform,
+  on the operator's answer, 2026-08-30.** Verbatim: "She can react to bot messages
+  too. Join messages aren't reactable at least i cant put a reaction on tg's system
+  join message." So no exclusion clause exists anywhere: a bot's message may draw a
+  mark like anyone's. A join notice's origin is a platform service message the
+  platform will not decorate (operator-observed); no structural refusal is built
+  for it — the carve-out already aims marks at messages that land, a join line is
+  not one, and if the model ever aims at a join origin anyway the platform's
+  refusal at the send is the same accepted, logged loss the edge records for every
+  undeliverable mark. *Rejected:* a tool-side refusal for join targets — a special
+  case for a call the platform already answers, on a behavior this repo records as
+  operator-observed rather than proven.
 
 ## Acceptance criteria
 
@@ -157,8 +162,8 @@ in its decisions, not its criteria, and is superseded by the trigger decision ab
   from `main` (`e4222a7`). First step of the build: `git rebase main`.
 - The build's implementer reads T6 in full alongside this doc; anchors are grepped,
   never trusted.
-- BLOCKED ON THE OPEN DECISION above; the build does not launch until the operator
-  answers and the answer is folded here.
+- Every decision is settled; the build launches after one more unbriefed round
+  clears this revision.
 - The persona sentence is committed to the deployment repository before the deploy
   that ships this unit, so the palette and its taste line go live together; the
   push itself waits on the operator's deploy approval as always.
