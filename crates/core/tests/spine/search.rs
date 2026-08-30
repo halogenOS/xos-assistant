@@ -34,6 +34,19 @@ const SEARCH_TURN: [&str; 6] = [
     "text",
 ];
 
+/// The same turn announced first (unit 40): the heads-up line finalizes as
+/// its own text block ahead of the call, so one turn writes two texts with
+/// the call and its result between them.
+const ANNOUNCED_SEARCH_TURN: [&str; 7] = [
+    "system_prompt",
+    "tool_palette",
+    "chat_message",
+    "text",
+    "tool_call",
+    "tool_result",
+    "text",
+];
+
 /// The same turn where the call was refused or failed.
 const DECLINED_TURN: [&str; 6] = [
     "system_prompt",
@@ -747,27 +760,108 @@ async fn no_recorded_block_carries_a_fragment_of_the_key() {
     assert!(!reply.text.contains("FAKE-SEARCH"));
 }
 
-// ─── The trace of two blocked findings ───────────────────────────────────
+/// AC3 (unit 40): the operator's example shape, by its two deterministic
+/// facts. The LEDGER order — the announce text stands before the call
+/// block, which stands before the result — is read from the settled shape,
+/// and it holds because the message end that finalizes the narration
+/// precedes the drained tool lifecycle on every wire. The CHAT order — the
+/// announce reply arrives before the answer reply — is read from two
+/// receives on the one outbound edge, and the disclosure line tells them
+/// apart: the announce is this person's first delivery and carries the
+/// introduction, the closing answer behind it arrives bare.
+///
+/// What is NOT pinned, deliberately: that the announce was delivered
+/// before the search's result existed. Asserting that would race the
+/// outbound edge against the vendor's stub over two bus subscribers, and a
+/// flaky pin proves less than no pin. The two facts here bracket the same
+/// claim — announce, then search, then answer — without a stopwatch.
+///
+/// The announce text is a fixture string, not product copy: the live model
+/// words its own line from the teaching.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_announce_ahead_of_the_search_arrives_before_the_answer() {
+    const ANNOUNCE: &str = "Let me look up what a kernel is.";
+    let vendor = LookupServer::start(LookupAnswer::Json(200, vendor_page())).await;
+    let (provider, script) = tool_scripted_provider(
+        ToolScript {
+            tool: search::NAME.into(),
+            input: ask("linux kernel"),
+            narration: Some(ANNOUNCE.into()),
+        },
+        None,
+    );
+    let store = agent_ledger::Store::in_memory_with(assistant_core::schema::store_config())
+        .expect("an in-memory store opens");
+    let fixture = support::start_assistant_searching(
+        store,
+        provider,
+        script,
+        assistant_core::tools::ToolSet::new(),
+        vendor.base(),
+    )
+    .await;
+    let mut replies = fixture
+        .assistant
+        .replies(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
 
-/// The unit's two BLOCKED review findings of 2026-08-29, left in the tree
-/// as their own executable trace because neither is a fix inside the unit.
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
+            &channel("dm-search-announced"),
+            ChannelKind::Direct,
+            "42",
+            "what is a kernel?",
+        ),
+    )
+    .await;
+
+    // The chat's arrival order: the introduced announce, then the bare
+    // answer, on the one edge that delivers both.
+    let introduced = support::disclosed(ANNOUNCE);
+    let announced = recv_reply(&mut replies).await;
+    assert_eq!(
+        announced.text, introduced,
+        "the announce is the first thing the chat receives"
+    );
+    let answered = recv_reply(&mut replies).await;
+    assert_eq!(
+        answered.text, CLOSING_ANSWER,
+        "the answer follows it, bare — the introduction rode the announce"
+    );
+
+    // The ledger's order: the announce, the call, its result, the answer.
+    let blocks = settle_shape(
+        &fixture.store,
+        receipt.conversation_id,
+        "the announced search turn",
+        &ANNOUNCED_SEARCH_TURN,
+    )
+    .await;
+    assert_eq!(field(&blocks[3], "content"), introduced);
+    assert_eq!(field(&blocks[4], "name"), search::NAME);
+    assert_eq!(field(&blocks[5], "content"), rendered_page());
+    assert_eq!(field(&blocks[6], "content"), CLOSING_ANSWER);
+    assert_eq!(
+        vendor.requests().len(),
+        1,
+        "the announced turn ran the one search it announced"
+    );
+}
+
+// ─── The palette pins across the units that share these files ────────────
+
+/// The palette pins in the neighbouring suites name the runtime-facts tool
+/// beside the search tool.
 ///
-/// This branch was cut before main merged the runtime-facts tool and the
-/// clock unit that followed it, and it rewrites the very files those units
-/// touch: the palette pins in `tools.rs` and `report.rs`, the identity
-/// section in `teaching.rs`, the assembly configuration. A diff against
-/// main therefore reads their shipped work as deletions, and a merge that
-/// took this branch's side would drop a merged unit. The same sequencing
-/// question is why the implementation sits uncommitted here. Rebasing and
-/// committing are the orchestrator's; the fix pass holds git read-only and
-/// leaves the tree dirty, so it records the disagreement instead.
-///
-/// The trace is executable rather than a comment: once the rebase lands and
-/// the pins name the runtime tool beside the search tool, this passes and
-/// the ignore comes off. Until then it fails, which is the disagreement
-/// stated in the one place a reviewer cannot miss it.
+/// It is a cross-file pin because the palette is one recorded list and its
+/// pins live in two suites: a unit that adds a tool has to reach both, and
+/// a search unit rewriting `tools.rs` from a base that predates another
+/// unit's tool would silently drop it from the recorded set. This is the
+/// cheap check that the drop did not happen.
 #[test]
-fn the_palette_pins_name_the_runtime_tool_once_the_rebase_lands() {
+fn the_palette_pins_name_the_runtime_tool() {
     for (file, pins) in [
         ("crates/core/tests/spine/tools.rs", include_str!("tools.rs")),
         (
@@ -777,9 +871,9 @@ fn the_palette_pins_name_the_runtime_tool_once_the_rebase_lands() {
     ] {
         assert!(
             pins.contains("runtime::NAME"),
-            "{file} pins a palette this branch rewrote from a base that predates the \
-             runtime-facts tool: after the rebase the pinned set is the three lookups, \
-             privacy, runtime facts, and the search tool where a key is configured"
+            "{file} pins a palette that no longer names the runtime-facts tool: the \
+             recorded set is the three lookups, privacy, runtime facts, and the search \
+             tool where a key is configured"
         );
     }
 }

@@ -97,17 +97,36 @@ pub const MODERATION_TEACHING: &str = "You also assess each group message agains
 
 /// The web search teaching, verbatim (unit 27, 2026-08-29), composed
 /// exactly when the search tool is admitted — one predicate for both, so
-/// the prompt never teaches a tool the palette does not carry. Three
-/// things: a snippet is a hint and an answer built on one says where it
-/// came from; a snippet that does not contain the claim is a miss, exactly
-/// as the sourcing rule already says of a lookup; and the carve-out that
-/// makes registering a web tool safe at all — project facts still come only
-/// from the project lookups. Without that last sentence, the sourcing
-/// rule's "your lookup tools are the only source of substantive claims"
-/// would silently authorise a random web page to back a claim about the
-/// project.
+/// the prompt never teaches a tool the palette does not carry. Four
+/// things: the heads-up line ahead of the call (unit 40, 2026-08-30); a
+/// snippet is a hint and an answer built on one says where it came from; a
+/// snippet that does not contain the claim is a miss, exactly as the
+/// sourcing rule already says of a lookup; and the carve-out that makes
+/// registering a web tool safe at all — project facts still come only from
+/// the project lookups. Without that last sentence, the sourcing rule's
+/// "your lookup tools are the only source of substantive claims" would
+/// silently authorise a random web page to back a claim about the project.
+///
+/// The heads-up line rides HERE, inside the gated teaching, because the
+/// search is the slow work: it is the one tool that reaches the open web,
+/// and the composing cue goes dark while a call runs, so the line is the
+/// only sign of life in that window. Nothing mechanizes it — a round's
+/// text ahead of a tool call already finalizes as its own committed answer
+/// and delivers, so the behavior is taught prose and therefore
+/// probabilistic, never a guarantee the mechanism enforces. Its wording
+/// carries its own bounds so it cannot decay into filler: one line, what
+/// is being looked up, never a placeholder, never the member's words read
+/// back. The last clause settles it against the silence teaching, whose
+/// end-your-turn-with-no-text rule governs a turn with nothing to say —
+/// an announcing turn has a search to run.
 pub const SEARCH_TEACHING: &str = "You can also search the web with the search_web tool, for questions about \
-     the world and not about the project. A result's snippet is a hint, \
+     the world and not about the project. Before you run a search, say in \
+     one short line what you are about to look up, then run the search, then \
+     answer: one line and no more, stating the thing you are going to look \
+     for — never a placeholder standing in for an answer, and never a \
+     restatement of the words the member just wrote. Ending a turn with no \
+     text is for a turn with nothing to say; a turn with a search to run has \
+     something to say. A result's snippet is a hint, \
      not a source: when you answer from one, say where it came from and name \
      the page. A snippet that does not contain the claim is a miss, exactly \
      as an unanswering lookup is — say you don't know instead of filling the \
@@ -568,6 +587,46 @@ mod tests {
                 SEARCH_TEACHING.contains(fact),
                 "the search teaching carries: {fact}"
             );
+        }
+    }
+
+    /// AC2 (unit 40): the heads-up line before slow work rides the search
+    /// teaching and nothing else — it composes exactly when the search
+    /// capability is admitted, in either answering mode, and no
+    /// configuration without a key carries a word of it. Its wording is
+    /// pinned on the four facts the wording decision fixed, because each
+    /// one is what keeps the line from decaying into the filler the
+    /// conduct prose and the silence teaching forbid: one line, what is
+    /// being looked up, no placeholder, no restating — plus the clause
+    /// that settles it against the end-your-turn-with-no-text rule.
+    #[test]
+    fn the_announce_line_rides_the_search_teaching_and_only_there() {
+        for fact in [
+            "Before you run a search, say in one short line what you are \
+             about to look up, then run the search, then answer",
+            "one line and no more",
+            "stating the thing you are going to look for",
+            "never a placeholder standing in for an answer",
+            "never a restatement of the words the member just wrote",
+            "a turn with a search to run has something to say",
+        ] {
+            assert!(
+                SEARCH_TEACHING.contains(fact),
+                "the search teaching carries: {fact}"
+            );
+            for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+                assert!(
+                    composed_system_prompt("b", "n", mode, searching()).contains(fact),
+                    "a configured key composes it in {mode:?} mode: {fact}"
+                );
+                for capabilities in [Capabilities::default(), moderating()] {
+                    assert!(
+                        !composed_system_prompt("b", "n", mode, capabilities).contains(fact),
+                        "no key teaches no announce in {mode:?} mode under \
+                         {capabilities:?}: {fact}"
+                    );
+                }
+            }
         }
     }
 
