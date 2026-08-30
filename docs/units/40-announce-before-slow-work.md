@@ -83,7 +83,7 @@ what she is about to look up; the line delivers before the search runs, the sear
 runs, and the answer follows — all inside the one turn, threaded as today. Nothing
 else changes: no new mechanism in the core, the adapter or the framework (the core
 change is teaching prose and its pins), no new tool,
-no budget change beyond the recorded announce-then-fail acceptance, no
+no budget change (the announce is budget-inert; the decision records why), no
 privacy-document change (the announce is assistant prose riding the existing
 conversation).
 
@@ -101,7 +101,10 @@ conversation).
   in `spine/search.rs` with the existing searching fixture shape: the LEDGER order
   (the narration text block precedes the tool call, which precedes the tool
   result, via the settle-shape read) and the CHAT arrival order (the narration
-  reply is received before the answer reply, via two reply receives). Together
+  reply is received before the answer reply, via two reply receives — the
+  narration, as the conversation's first delivery, carries the first-interaction
+  disclosure line and the closing answer arrives bare, which is what tells the
+  two apart). Together
   they prove announce → search → answer; a wall-clock delivered-before-the-result-
   existed assertion is NOT pinned — it would race two bus subscribers and flake —
   and this criterion says so rather than asking for it.
@@ -110,7 +113,10 @@ conversation).
   then the closing text) drives the real provider module over the loopback server
   with the RUNTIME-FACTS tool registered — the no-network tool, so no second
   vendor server enters the wire test — and the consumer-visible ledger shows the
-  narration-then-call-then-answer composition.
+  narration-then-call-then-answer composition. The module is feature-gated
+  (`chat_completions`); the gate command is the workspace-wide suite AC1 already
+  prescribes, and a per-crate iteration needs `--features chat_completions` —
+  stated so the pin is never silently absent.
 - **AC5** The decision records land numbered from the highest shipped, dated, with
   rejected alternatives.
 
@@ -120,7 +126,10 @@ conversation).
   `main` (`e4222a7`). Build's first step: `git rebase main`.
 - Sites: `core/src/teaching.rs` (the sentence + its pin), `crates/core/tests/spine/
   search.rs` and `spine/chat_completions.rs` (the two composition pins; the
-  loopback SSE server there grows the tool round), `docs/decisions`.
+  loopback SSE server there grows the tool round), `docs/decisions`. In passing:
+  `spine/search.rs:752-768` carries a stale trace comment from the runtime-facts
+  rebase era (it claims uncommitted work that has long merged) — the unit edits
+  that file anyway and cleans the comment.
 - This is a SMALL unit with a predictable seat count; it may run in the small lane
   beside a big build.
 - The quality bar from the operator, verbatim scope for the reviewers: "The code
