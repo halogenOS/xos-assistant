@@ -56,12 +56,13 @@ unit extends (`teaching.rs:98-99`, pins at :526-572).
   member's words — and explicitly at most one line. The sentence is worded to dodge
   a literal reading against "end your turn without writing any text": that rule
   governs a turn with NOTHING to say; an announcing turn has a search to run.
-- **A turn that announces and then fails has spent its debt, accepted,
-  2026-08-30.** The counted-debt read spends a debt on any non-empty anchored
-  answer text; an announce is one. Where a silent failed turn leaves the debt
-  standing, an announced failed turn does not — acceptable, because the member SAW
-  the attempt and the failure notice, which is more honest than a silently
-  re-owed turn. Stated so the reviewer finds it decided.
+- **The announce changes nothing about the budgets, verified, 2026-08-30.** An
+  earlier reading claimed an announced-then-failed turn spends its debt where a
+  silent failed one does not; checked against the counted-debt mechanism and its
+  pins, no such delta exists — a failed turn's counting is identical with or
+  without a preceding announce, and only a COMPLETED silent turn's empty answer is
+  excluded. The announce is budget-inert. Stated so nobody re-derives the false
+  contrast.
 - **Two pins close the composition gap, both in the core spine suite,
   2026-08-30.** Every existing narration DELIVERY pin scripts the event-native
   shape while production speaks SSE (one search fixture does carry a narration —
@@ -92,14 +93,24 @@ conversation).
   denied warnings; vocabulary and secret scans clean; no new dependency.
 - **AC2** The announce sentence composes if and only if the search capability is
   admitted — a new contains-pin beside the existing capability-gate pins
-  (`teaching.rs:526+`); the existing contains-pins stay green untouched.
-- **AC3** A narration ahead of a search tool call delivers before the search's
-  result exists and the answer follows — pinned in `spine/search.rs` with the
-  existing searching fixture shape (a narration on the tool script, the turn held
-  to observe the order).
-- **AC4** The production-wire composition is pinned: the SSE decoder's output for a
-  text-then-tool-call round produces the narration-then-call ingestion sequence the
-  event-native pins assume.
+  (`teaching.rs:526+`), and the pin names the facts the wording decision lists
+  (one line, what is being looked up, no placeholder, no restating), the way the
+  search teaching's own facts are pinned; the existing contains-pins stay green
+  untouched.
+- **AC3** The operator's example shape is pinned by its two deterministic facts,
+  in `spine/search.rs` with the existing searching fixture shape: the LEDGER order
+  (the narration text block precedes the tool call, which precedes the tool
+  result, via the settle-shape read) and the CHAT arrival order (the narration
+  reply is received before the answer reply, via two reply receives). Together
+  they prove announce → search → answer; a wall-clock delivered-before-the-result-
+  existed assertion is NOT pinned — it would race two bus subscribers and flake —
+  and this criterion says so rather than asking for it.
+- **AC4** The production-wire composition is pinned in `spine/chat_completions.rs`:
+  a two-round SSE script (text deltas, tool-call fragments, a tool_calls finish,
+  then the closing text) drives the real provider module over the loopback server
+  with the RUNTIME-FACTS tool registered — the no-network tool, so no second
+  vendor server enters the wire test — and the consumer-visible ledger shows the
+  narration-then-call-then-answer composition.
 - **AC5** The decision records land numbered from the highest shipped, dated, with
   rejected alternatives.
 
