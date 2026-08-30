@@ -66,9 +66,10 @@ pub const COLUMN_ORIGIN: &str = "origin";
 pub const COLUMN_DELIVERY: &str = "delivery";
 
 /// The stored block a reply to this delivered message quotes — the
-/// assistant's own answer block, whose text is what the channel saw
-/// (decision 0079 writes the disclosure line into the stored block before
-/// the send, so stored text equals sent text). Nullable, and NULL is the
+/// assistant's own answer block, holding the model's own words under the
+/// same disclosure line the channel read (decision 0079 writes that line
+/// into the stored block before the send; the send itself cuts only a
+/// leaked reasoning prefix, decision 0168). Nullable, and NULL is the
 /// ordinary case for everything that is not an answer.
 pub const COLUMN_ANSWER_BLOCK: &str = "answer_block";
 

@@ -20,9 +20,16 @@
 //!
 //! The line is stored, not added at delivery (decision 0079): before an
 //! answer's first delivery, the edge writes the line into the stored answer
-//! block itself, idempotently, and delivers the stored text — so the ledger
-//! carries exactly what the channel saw, and the model reads in its own
-//! history that this person was already introduced. The framework owns the
+//! block itself, idempotently, and the same line opens the text that goes
+//! out — so the model reads in its own history that this person was already
+//! introduced, and the introduction the channel received is the one the
+//! ledger records. The stored answer and the delivered one are the same
+//! prose under the same line, differing only where the send cut a leaked
+//! reasoning prefix (unit 43): the resolution answers which opening the
+//! answer takes, never with prose, and the edge composes the line over the
+//! cut text — so a re-delivered answer that already carries the line goes
+//! out lined again, with the trace gone and the introduction kept. The
+//! framework owns the
 //! finalize transaction, so the consumer's prepend rides the edge's first
 //! read of the finalized block: the earliest consumer-owned moment, ahead
 //! of every delivery. The prepend is mechanical — the model neither writes
@@ -55,6 +62,21 @@ use crate::tools::provenance;
 #[must_use]
 pub fn composed_disclosure_line(name: &str) -> String {
     format!("Hi, I'm {name}, an AI system, made to assist members of the community.")
+}
+
+/// Which opening one answer goes out under, and the whole of what the
+/// resolution answers ([`Disclosure::introduction_for`]). The value carries
+/// no prose: the caller composes the text it opens, so the introduction is
+/// resolved in one place and the wire text is built in one other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Introduction {
+    /// The line and a blank line open the answer: someone it speaks to is
+    /// new, or the stored block already carries the line from an earlier
+    /// delivery.
+    Lined,
+    /// The answer opens with its own first word: everyone it speaks to was
+    /// introduced by an earlier answer.
+    Bare,
 }
 
 /// The first-interaction disclosure as one resolved value: the line the
@@ -95,39 +117,66 @@ impl Disclosure {
         format!("{prefix}{answer}", prefix = self.prefix)
     }
 
-    /// The deliverable text of one undelivered answer block, with the
-    /// introduction resolved: when any summoning person of the answer was
+    /// One answer's own prose: the stored content without the line an
+    /// earlier delivery may already have written into it.
+    ///
+    /// The send's cut runs on this and never on the stored content whole
+    /// (unit 43), so a leaked reasoning prefix inside the prose cannot take
+    /// the introduction away with it, and [`Self::disclosed`] composes the
+    /// one line back in front of whatever the cut left.
+    /// The prefix test here and the one in [`Self::introduction_for`] are
+    /// ONE decision — a block opening with the line counts as lined — kept
+    /// textually adjacent on purpose; change both or neither. Stripping and
+    /// re-adding the same prefix is byte-identity, so a model answer that
+    /// happens to open with the exact line is delivered as written, never
+    /// rewritten.
+    #[must_use]
+    pub(crate) fn prose_of<'a>(&self, content: &'a str) -> &'a str {
+        content.strip_prefix(&self.prefix).unwrap_or(content)
+    }
+
+    /// The introduction one undelivered answer block goes out under, with
+    /// the receipt resolved: when any summoning person of the answer was
     /// never introduced, the line is written into the stored block first —
     /// one idempotent statement — and the loaded vector's copy is updated
     /// with it, so a second undelivered answer in the same pass reads the
-    /// receipt. The returned text is the stored text either way; delivery
-    /// and ledger cannot disagree.
+    /// receipt. A block that already opens with the line was resolved by an
+    /// earlier delivery and is lined again: at-least-once delivery repeats
+    /// the introduction that block carries, and never drops it.
+    ///
+    /// No text crosses this seam's SIGNATURE in either direction — the
+    /// wire text is composed by the caller, in exactly one place, so the
+    /// resolution cannot be handed a text that skipped the cut. Text does
+    /// cross via persistence, deliberately: a first introduction writes the
+    /// lined content into the stored block ([`Self::store_line`]), which is
+    /// how a later re-delivery finds the line already in place.
     ///
     /// # Errors
     ///
     /// [`StoreError`] if a read or the prepend write fails.
-    pub(crate) async fn deliverable_answer(
+    pub(crate) async fn introduction_for(
         &self,
         store: &Store,
         conversation_id: i64,
         ledger: &mut [Block],
         index: usize,
-    ) -> Result<String, StoreError> {
+    ) -> Result<Introduction, StoreError> {
         let content = answer_content(&ledger[index]);
         if content.starts_with(&self.prefix) {
-            return Ok(content);
+            return Ok(Introduction::Lined);
         }
         let answer_id = ledger[index].id;
         if !self
             .first_answer_to_someone(store, conversation_id, ledger, answer_id)
             .await?
         {
-            return Ok(content);
+            return Ok(Introduction::Bare);
         }
         self.store_line(&store.tx(), answer_id).await?;
-        let stored = self.disclosed(&content);
-        ledger[index].fields.insert("content".into(), json!(stored));
-        Ok(stored)
+        ledger[index]
+            .fields
+            .insert("content".into(), json!(self.disclosed(&content)));
+        Ok(Introduction::Lined)
     }
 
     /// Whether this answer is the first to any of its summoning people: the
@@ -317,13 +366,17 @@ mod tests {
             .expect("the ledger reads");
         let index = ledger.len() - 1;
 
-        let delivered = disclosure
-            .deliverable_answer(&store, conversation, &mut ledger, index)
+        let introduction = disclosure
+            .introduction_for(&store, conversation, &mut ledger, index)
             .await
             .expect("the resolution reads");
-        assert_eq!(delivered, disclosure.disclosed("an answer"));
+        assert_eq!(
+            introduction,
+            Introduction::Lined,
+            "an answer whose summoners cannot be read is introduced"
+        );
 
-        // The stored block carries the same text the delivery got.
+        // The stored block carries the line over the model's own words.
         let stored = store
             .list_blocks(conversation)
             .await
@@ -331,19 +384,54 @@ mod tests {
         assert_eq!(
             stored[index].fields["content"],
             json!(disclosure.disclosed("an answer")),
-            "the ledger carries what the channel saw"
+            "the ledger carries the introduction the channel received"
         );
 
-        // The repeated resolution reads the receipt and changes nothing.
+        // The repeated resolution reads the receipt: the same introduction
+        // again — a re-delivery repeats the line the block carries — and no
+        // second line in the store.
         let mut reread = stored;
         let again = disclosure
-            .deliverable_answer(&store, conversation, &mut reread, index)
+            .introduction_for(&store, conversation, &mut reread, index)
             .await
             .expect("the repeated resolution reads");
         assert_eq!(
             again,
-            disclosure.disclosed("an answer"),
+            Introduction::Lined,
+            "a lined block is delivered lined again"
+        );
+        let twice = store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger re-reads");
+        assert_eq!(
+            twice[index].fields["content"],
+            json!(disclosure.disclosed("an answer")),
             "one line, never two"
+        );
+    }
+
+    /// The prose the line opens, told apart from the line itself: a stored
+    /// block already carrying the prefix yields the answer under it, and
+    /// everything else yields itself. This is what the send's cut reads
+    /// (unit 43), so the line can never be what a cut takes away.
+    #[test]
+    fn the_prose_is_the_content_under_a_carried_line() {
+        let disclosure = Disclosure::resolve(None, "Probe");
+        assert_eq!(
+            disclosure.prose_of(&disclosure.disclosed("the answer")),
+            "the answer",
+            "a lined block's prose is what stands under the line"
+        );
+        assert_eq!(
+            disclosure.prose_of("the answer"),
+            "the answer",
+            "an unlined block is its own prose"
+        );
+        assert_eq!(
+            disclosure.prose_of(&format!("Look: {}", disclosure.line())),
+            format!("Look: {}", disclosure.line()),
+            "the line quoted inside an answer is prose, not a carried line"
         );
     }
 }
