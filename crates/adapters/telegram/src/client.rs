@@ -253,6 +253,12 @@ pub(crate) struct Joiner {
     pub first_name: Option<String>,
     /// The joiner's last name, where they set one.
     pub last_name: Option<String>,
+    /// Whether the joining account is a bot, decoded exactly as
+    /// [`User::is_bot`] is: the platform states it on both, and absent
+    /// decodes as false. A joiner's identity carries their OWN flag —
+    /// a bot walking in is a bot.
+    #[serde(default)]
+    pub is_bot: bool,
 }
 
 /// A pinned message, reduced to its date discriminator and its text. The
@@ -352,14 +358,21 @@ pub(crate) struct Chat {
     pub kind: String,
 }
 
-/// A sending person's identity fields — the two the translation carries
-/// (decision 0077): the id and the username. The platform's name fields are
-/// not decoded at all, so a display name never enters the process as a
-/// typed value; the decoder skips them like any other unknown key.
+/// A sending person's identity fields — the three the translation carries:
+/// the id, the username (decision 0077), and the platform's own bot flag
+/// (2026-08-30). The platform's name fields are not decoded at all, so a
+/// display name never enters the process as a typed value; the decoder skips
+/// them like any other unknown key.
 #[derive(Debug, Deserialize)]
 pub(crate) struct User {
     pub id: i64,
     pub username: Option<String>,
+    /// Whether the account is a bot, as the platform states it on every
+    /// sender object. Absent decodes as false, which is the wire's own
+    /// meaning — the flag is the platform's assertion that an account is
+    /// automated, and nothing else asserts it.
+    #[serde(default)]
+    pub is_bot: bool,
 }
 
 /// The bot's own identity, from `getMe`: what mention and reply-to-self
@@ -947,5 +960,65 @@ mod tests {
         let textless = decode(serde_json::json!({ "position": 4, "is_manual": true }));
         let textless = textless.quote.expect("the quoted part still decodes");
         assert_eq!(textless.text, None, "no text, and no refused batch");
+    }
+
+    /// The bot flag decodes off the platform's own payload (2026-08-30), on
+    /// the sender of a message and on a joiner alike: the platform states
+    /// it on every account object, and an absent flag reads false — the
+    /// wire's own meaning, since only the platform asserts that an account
+    /// is automated.
+    #[test]
+    fn the_bot_flag_decodes_on_a_sender_and_on_a_joiner() {
+        let update: Update = serde_json::from_value(serde_json::json!({
+            "update_id": 42,
+            "message": {
+                "message_id": 1042,
+                "date": 1_700_000_000,
+                "chat": { "id": -100, "type": "supergroup" },
+                "from": {
+                    "id": 9,
+                    "is_bot": true,
+                    "first_name": "Moderation",
+                    "username": "rose_bot"
+                },
+                "text": "solve the captcha to stay",
+                "new_chat_members": [
+                    { "id": 11, "is_bot": false, "first_name": "Ada" },
+                    { "id": 12, "is_bot": true, "first_name": "Helper" }
+                ]
+            }
+        }))
+        .expect("the platform's bot-sent payload decodes");
+
+        let message = update.message.expect("the update carries a message");
+        let from = message.from.expect("the sender decodes");
+        assert!(from.is_bot, "the sender's own flag decodes");
+        let joiners = message.new_chat_members.expect("the joiner list decodes");
+        assert_eq!(
+            joiners
+                .iter()
+                .map(|joiner| joiner.is_bot)
+                .collect::<Vec<_>>(),
+            vec![false, true],
+            "each joiner carries its own flag"
+        );
+
+        let plain: Incoming = serde_json::from_value(serde_json::json!({
+            "message_id": 1043,
+            "date": 1_700_000_000,
+            "chat": { "id": -100, "type": "supergroup" },
+            "from": { "id": 7, "first_name": "Person 7" },
+            "text": "a member's message",
+            "new_chat_members": [{ "id": 13, "first_name": "Grace" }]
+        }))
+        .expect("a payload without the flag decodes");
+        assert!(
+            !plain.from.expect("the sender decodes").is_bot,
+            "an absent flag reads false on a sender"
+        );
+        assert!(
+            !plain.new_chat_members.expect("the joiner list decodes")[0].is_bot,
+            "an absent flag reads false on a joiner"
+        );
     }
 }

@@ -106,7 +106,10 @@ pub(crate) struct Pending {
     /// resolved here: a direct chat always does; a group message does when
     /// it mentions the bot's username, replies to one of the bot's own
     /// messages, or names the assistant by its validated wake trigger
-    /// (unit 14). The core receives only this neutral fact.
+    /// (unit 14). A group message from a BOT account narrows to the first
+    /// form alone (2026-08-30): only the mention addresses, because a
+    /// reply and a name are shapes another bot produces without meaning
+    /// anything by them. The core receives only this neutral fact.
     pub addressed: bool,
     /// What the message replies to, translated beside the addressed flag
     /// (2026-08-23): the replied-to message's id as the opaque origin, or
@@ -203,9 +206,14 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity, wake: Option<&str>) -
     let Some(sent_at) = DateTime::from_timestamp(message.date, 0) else {
         return Translation::Skip(Skip::BadTimestamp);
     };
-    let addressed = match channel_kind {
-        ChannelKind::Direct => true,
-        ChannelKind::Group => {
+    let addressed = match (channel_kind, from.is_bot) {
+        (ChannelKind::Direct, _) => true,
+        // A bot sender's one addressing form is the mention (2026-08-30):
+        // the deliberate act a bot cannot perform by accident. A bot
+        // replying to the assistant, or speaking its wake name, addresses
+        // nothing — both are shapes a moderation bot produces on its own.
+        (ChannelKind::Group, true) => mentions_bot(text, me),
+        (ChannelKind::Group, false) => {
             mentions_bot(text, me)
                 || replies_to_bot(message, me)
                 || wake.is_some_and(|trigger| names_bot(text, trigger))
@@ -222,6 +230,7 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity, wake: Option<&str>) -
         sender: SenderIdentity {
             external_id: from.id.to_string(),
             username: from.username.clone(),
+            bot: from.is_bot,
         },
         sender_id: from.id,
         text: text.to_owned(),
@@ -253,6 +262,7 @@ fn translate_membership(member: &MemberUpdate) -> Translation {
             by: member.from.as_ref().map(|from| SenderIdentity {
                 external_id: from.id.to_string(),
                 username: from.username.clone(),
+                bot: from.is_bot,
             }),
         },
     })
@@ -315,6 +325,7 @@ fn joined_member(joiner: &Joiner) -> JoinedMember {
         identity: SenderIdentity {
             external_id: joiner.id.to_string(),
             username: joiner.username.clone(),
+            bot: joiner.is_bot,
         },
         name,
     }
@@ -736,10 +747,15 @@ mod tests {
                 from: Some(User {
                     id: 7,
                     username: None,
+                    is_bot: false,
                 }),
                 text: Some(text.into()),
                 reply_to_message: replied_author.map(|id| RepliedTo {
-                    from: Some(User { id, username: None }),
+                    from: Some(User {
+                        id,
+                        username: None,
+                        is_bot: false,
+                    }),
                     message_id: Some(19),
                 }),
                 ..bare_incoming()
@@ -747,6 +763,21 @@ mod tests {
             edited_message: None,
             my_chat_member: None,
         }
+    }
+
+    /// The same update with its sender marked automated — the platform's
+    /// own bot flag on the sending account, which is the only thing that
+    /// distinguishes the bot cases below from the member cases above.
+    fn sent_by_a_bot(mut update: Update) -> Update {
+        update
+            .message
+            .as_mut()
+            .expect("the fixture carries a message")
+            .from
+            .as_mut()
+            .expect("the fixture carries a sender")
+            .is_bot = true;
+        update
     }
 
     /// A direct chat is always addressed: the whole conversation is with
@@ -757,6 +788,7 @@ mod tests {
             recorded(&update_with_sender(User {
                 id: 5,
                 username: None,
+                is_bot: false,
             }))
             .addressed
         );
@@ -792,6 +824,54 @@ mod tests {
     fn group_addressing_reads_the_replied_author() {
         assert!(recorded(&group_update("thanks!", Some(4242))).addressed);
         assert!(!recorded(&group_update("thanks!", Some(9))).addressed);
+    }
+
+    /// A BOT sender's addressing narrows to the mention alone
+    /// (2026-08-30): the @mention addresses, in any casing and in the
+    /// command form; a bot's reply to one of the assistant's own messages
+    /// does not, and neither does a bot speaking the wake name. The member
+    /// cases above are the same fixtures without the flag, so the whole
+    /// delta is the sending account.
+    #[test]
+    fn a_bot_sender_is_addressed_by_the_mention_alone() {
+        let wake = wake_trigger("Xenia").expect("a clean name forms a trigger");
+        let addressed =
+            |update: Update| recorded_waked(&sent_by_a_bot(update), Some(&wake)).addressed;
+
+        assert!(
+            addressed(group_update("hey @helper_bot, a captcha expired", None)),
+            "the mention is the one deliberate act a bot cannot perform by accident"
+        );
+        assert!(addressed(group_update("/help@Helper_Bot", None)));
+        assert!(
+            !addressed(group_update("thanks!", Some(4242))),
+            "a bot replying to the assistant addresses nothing"
+        );
+        assert!(
+            !addressed(group_update("Xenia, a member joined", None)),
+            "a bot speaking the wake name addresses nothing"
+        );
+        assert!(!addressed(group_update("a captcha expired", None)));
+
+        // The same three shapes from a member still address, so the
+        // narrowing is the bot flag's and nothing else's.
+        assert!(recorded_waked(&group_update("thanks!", Some(4242)), Some(&wake)).addressed);
+        assert!(recorded_waked(&group_update("Xenia, hello", None), Some(&wake)).addressed);
+    }
+
+    /// A direct message from a bot stays addressed: a direct channel is
+    /// addressed by definition, the narrowing is a group rule, and the
+    /// platform delivers no bot-to-bot private message anyway.
+    #[test]
+    fn a_direct_message_from_a_bot_is_still_addressed() {
+        assert!(
+            recorded(&sent_by_a_bot(update_with_sender(User {
+                id: 5,
+                username: None,
+                is_bot: true,
+            })))
+            .addressed
+        );
     }
 
     /// The recorded message under the given wake trigger, for the name
@@ -957,23 +1037,42 @@ mod tests {
         assert_eq!(quoting(None), None, "a plain reply quotes no part");
     }
 
-    /// The identity crossing the boundary is the external id and the
-    /// username, nothing more (decision 0077): the platform's name fields
-    /// are not translated at all, so a display name cannot even reach the
-    /// core to be discarded there.
+    /// The identity crossing the boundary is the external id, the username
+    /// and the account's bot fact, nothing more (decision 0077, widened
+    /// 2026-08-30): the platform's name fields are not translated at all,
+    /// so a display name cannot even reach the core to be discarded there,
+    /// and the third fact is the account's own — read off the update,
+    /// stored nowhere.
     #[test]
-    fn a_sender_translates_to_the_external_id_and_the_username_alone() {
+    fn a_sender_translates_to_the_external_id_the_username_and_the_bot_fact() {
         let pending = recorded(&update_with_sender(User {
             id: 5,
             username: Some("ada".into()),
+            is_bot: false,
         }));
         assert_eq!(
             pending.sender,
             SenderIdentity {
                 external_id: "5".into(),
                 username: Some("ada".into()),
+                bot: false,
             },
-            "the whole identity is the id and the handle — no name fields"
+            "the whole identity is the id, the handle and the bot fact — no name fields"
+        );
+
+        let automated = recorded(&update_with_sender(User {
+            id: 8,
+            username: Some("rose".into()),
+            is_bot: true,
+        }));
+        assert_eq!(
+            automated.sender,
+            SenderIdentity {
+                external_id: "8".into(),
+                username: Some("rose".into()),
+                bot: true,
+            },
+            "a bot sender delivers the fact as the platform stated it"
         );
     }
 
@@ -983,6 +1082,7 @@ mod tests {
         let pending = recorded(&update_with_sender(User {
             id: 6,
             username: None,
+            is_bot: false,
         }));
         assert_eq!(pending.sender.username, None);
         assert_eq!(pending.sender.external_id, "6");
@@ -1005,6 +1105,7 @@ mod tests {
                 from: Some(User {
                     id: 77,
                     username: None,
+                    is_bot: false,
                 }),
                 old_chat_member: old,
                 new_chat_member: new,
@@ -1342,13 +1443,15 @@ mod tests {
             username: username.map(Into::into),
             first_name: first.map(Into::into),
             last_name: last.map(Into::into),
+            is_bot: false,
         }
     }
 
     /// The joiners and the event a join note translates to: the name is the
     /// platform's own composition — first name, then last name where one
-    /// exists — the identity is the id and the handle, and every joiner of
-    /// the note carries the service message's own id as the shared origin.
+    /// exists — the identity is the id, the handle and the joiner's OWN bot
+    /// fact, and every joiner of the note carries the service message's own
+    /// id as the shared origin.
     #[test]
     fn a_group_join_translates_to_the_joiners_the_platform_showed() {
         let fact = observed_fact(&join(
@@ -1376,6 +1479,7 @@ mod tests {
                     identity: SenderIdentity {
                         external_id: "11".into(),
                         username: Some("ada".into()),
+                        bot: false,
                     },
                     name: "Ada Lovelace".into(),
                 },
@@ -1383,6 +1487,7 @@ mod tests {
                     identity: SenderIdentity {
                         external_id: "12".into(),
                         username: None,
+                        bot: false,
                     },
                     name: "Grace".into(),
                 },
@@ -1390,11 +1495,39 @@ mod tests {
                     identity: SenderIdentity {
                         external_id: "13".into(),
                         username: Some("bo".into()),
+                        bot: false,
                     },
                     name: String::new(),
                 },
             ],
             "a joiner without a first name carries the empty name, never an invented one"
+        );
+    }
+
+    /// A joining bot's identity carries the JOINER's own flag, not the
+    /// note's: the fact belongs to the account that walked in.
+    #[test]
+    fn a_joining_bot_carries_its_own_flag() {
+        let fact = observed_fact(&join(
+            "supergroup",
+            vec![
+                Joiner {
+                    is_bot: true,
+                    ..wire_joiner(21, Some("rose"), Some("Rose"), None)
+                },
+                wire_joiner(22, Some("ada"), Some("Ada"), None),
+            ],
+        ));
+        let ObservedFact::MembersJoined { joiners, .. } = fact else {
+            panic!("a join translates to the joined fact");
+        };
+        assert_eq!(
+            joiners
+                .iter()
+                .map(|joiner| joiner.identity.bot)
+                .collect::<Vec<_>>(),
+            vec![true, false],
+            "each joiner's identity states that joiner's own bot fact"
         );
     }
 

@@ -790,8 +790,8 @@ impl Assistant {
             self.mirror_named_deletion(&tx, conversation_id, target)
                 .await?;
         }
-        let owing_tail = self.owing_tail_debt(conversation_id).await?;
         let summons = self.resolved_summons(&message);
+        let owing_tail = self.stamp_tail(conversation_id, &message, summons).await?;
         let limited = if family.is_some() || mirrored.is_some() {
             Some(kind::LimitedBy::Command)
         } else if summons.summoned {
@@ -1583,11 +1583,46 @@ impl Assistant {
     /// stamp for the outbound answer threading alone. Everything past this
     /// resolution — the budget consultation, the stamp, the unlatch, and
     /// every later reader of the stored summons — is mode-free.
+    ///
+    /// A BOT sender is summoned if and only if it addressed the assistant
+    /// (2026-08-30): the mode's clause is for people. An automated account
+    /// says a great deal without meaning any of it — a captcha prompt, a
+    /// join announcement — and none of it is an ask, so the mode that
+    /// evaluates every message evaluates none of theirs. Their messages
+    /// are recorded and projected exactly as before: what changes is that
+    /// they trigger nothing.
     fn resolved_summons(&self, message: &InboundMessage) -> kind::Summons {
+        let summoned_by_mode = self.answering == AnsweringMode::Helpful && !message.sender.bot;
         kind::Summons {
-            summoned: message.addressed || self.answering == AnsweringMode::Helpful,
+            summoned: message.addressed || summoned_by_mode,
             literal_addressed: message.addressed,
         }
+    }
+
+    /// The owing tail this write's stamp is composed against, read under
+    /// the stamp lock: the conversation's own owing tail
+    /// ([`Self::owing_tail_debt`]) for every message a turn may open for,
+    /// and nothing at all for an unsummoned bot message (2026-08-30).
+    ///
+    /// The stamp composes `answer_due` as own debt OR the owing tail, so a
+    /// bot's plain message appended while the tail owes would open a turn
+    /// on someone else's unanswered ask — a bot triggering the assistant
+    /// through a message it never addressed. Withholding the tail here
+    /// stamps that row false outright, and the debt behind it stays owed:
+    /// the walk reads through a false-stamped live row
+    /// ([`kind::newest_block_id_past_erased`] and the tail condition
+    /// above), so the next message that may carry the debt — anyone's, or
+    /// a bot's with the mention — opens the turn with it intact.
+    async fn stamp_tail(
+        &self,
+        conversation_id: i64,
+        message: &InboundMessage,
+        summons: kind::Summons,
+    ) -> Result<Option<kind::TailDebt>, CoreError> {
+        if message.sender.bot && !summons.summoned {
+            return Ok(None);
+        }
+        self.owing_tail_debt(conversation_id).await
     }
 
     /// The under-lock suppression re-read (2026-08-23): whether the
@@ -1864,8 +1899,17 @@ impl Assistant {
     /// independent path at an arbitrary moment, so a debt behind a run of
     /// them still owes and must propagate through to the next message's
     /// stamp. Erased chat rows are transparent the same way (2026-08-23,
-    /// the deletion mirror): they share the live rows' kind, so the kind's
-    /// own query skips them by shape instead. A framework date record is
+    /// the deletion mirror), and so are live chat rows whose stored stamp
+    /// is false (2026-08-30) — both readings live on the kind's own
+    /// [`ChatMessage::transparent_to_the_walk`], because both are shapes,
+    /// not kinds, and the kind's query skips them for every caller. Why a
+    /// false-stamped row is safe to read through is argued once there,
+    /// split by the two classes of row it covers: the rows whose stamp was
+    /// composed against the tail this read hands back, which certify the
+    /// frontier behind them, and the one row composed against no tail at
+    /// all — an unsummoned bot's ([`Self::stamp_tail`]), which certifies
+    /// nothing and whose buried debt this widening exists to preserve.
+    /// A framework date record is
     /// transparent under a rule of its own, [`kind::NEVER_ANSWERABLE`]: it
     /// is the calendar, not a voice, and it can stand anywhere the walk looks
     /// — interposed above the owing message it rides in front of, or, on
@@ -1893,7 +1937,7 @@ impl Assistant {
             || NEVER_ANSWERABLE.contains(&tail.block_type.as_str())
             || matches!(
                 AssistantKind::from_block(&tail),
-                AssistantKind::ChatMessage(message) if message.erased()
+                AssistantKind::ChatMessage(message) if message.transparent_to_the_walk()
             );
         let tail = if transparent {
             match kind::newest_block_id_past_erased(&store.tx(), conversation_id, DEBT_READ_THROUGH)

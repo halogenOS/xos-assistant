@@ -91,6 +91,7 @@ mod tests {
         let adder = |external_id: &str| SenderIdentity {
             external_id: external_id.into(),
             username: None,
+            bot: false,
         };
         assert!(operator_admits(Some("op-1"), Some(&adder("op-1"))));
         assert!(

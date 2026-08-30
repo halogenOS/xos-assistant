@@ -235,6 +235,7 @@ mod tests {
         SenderIdentity {
             external_id: external_id.into(),
             username: username.map(Into::into),
+            bot: false,
         }
     }
 

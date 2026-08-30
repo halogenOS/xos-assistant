@@ -370,6 +370,69 @@ async fn the_silent_no_ops_leave_the_standing_state_alone() {
     }
 }
 
+/// Unit 42's AC4 (2026-08-30): a deletion command that ALSO addresses the
+/// assistant — an administrator who typed the mention into the same
+/// message — mirrors exactly as the unmentioned one does and takes the
+/// same command stamp, silently. The mirror is decided before the summons
+/// resolution and the command family limits the row whatever addressed
+/// it, so the mention changes the stored addressing fact and nothing else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mentioning_deletion_command_still_mirrors_under_the_command_stamp() {
+    let fixture = support::start_assistant(None).await;
+    let assistant = &fixture.assistant;
+    let room = support::authorized_group(assistant, "room-mention-del").await;
+
+    let receipt = support::ingest_recorded(
+        assistant,
+        support::with_origin(
+            support::inbound_unaddressed(
+                &room,
+                ChannelKind::Group,
+                "casey-ext",
+                "an offending line",
+            ),
+            "target-mention",
+        ),
+    )
+    .await;
+
+    let mut command = del_reply(&room, "root-ext", Authority::Admin, "target-mention");
+    command.addressed = true;
+    ingest_silent(&fixture, command).await;
+
+    let messages = chat_messages(
+        &fixture
+            .store
+            .list_blocks(receipt.conversation_id)
+            .await
+            .expect("the ledger reads after the mirror"),
+    );
+    assert_eq!(messages.len(), 2, "the target row and the command row");
+    assert_eq!(
+        messages[0].text, None,
+        "the mention did not spare the target"
+    );
+    assert_eq!(
+        messages[1].limited,
+        Some(LimitedBy::Command),
+        "the command stamp holds: an addressed command is still a command"
+    );
+    assert_eq!(messages[1].answer_due, Some(false));
+    assert_eq!(
+        messages[1].addressed,
+        Some(true),
+        "the summons fact is recorded as it was; only the answer machinery stays out"
+    );
+    assert_eq!(
+        fixture
+            .script
+            .turns
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the mentioning deletion command opened no turn"
+    );
+}
+
 /// AC4: the mirror inside a turn's absorption window does not disturb the
 /// turn — the held turn's answer arrives exactly as scripted while the
 /// target row is provably nulled mid-turn, and exactly one turn ran.

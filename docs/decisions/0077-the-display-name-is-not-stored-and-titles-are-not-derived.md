@@ -86,6 +86,23 @@ and its corrected boundary sentences, the policy's identity and deletion
 wording, and the two assessments' identity claims — so no published sentence
 claims a display name is never stored or never sent.
 
+## Amended 2026-08-30 — the crossing identity carries three facts
+
+Unit 42 adds one field to the crossing identity, and this decision is not reopened by it.
+The sentence above that says the boundary carries "the external id and the username alone"
+was true of the two-field shape; the shape is now three, and decision 0151 records why.
+
+What this decision removed stays removed. The display name is still not decoded from a
+message, still not stored on the identity row, and still not sent anywhere; the amendment
+of 2026-08-29 above is the only place a shown name is held, on the join event that carried
+it.
+
+What unit 42 adds is not personal data held about a person. It is the platform's own
+statement that an account is automated, read fresh off every update and stored NOWHERE: no
+column, no migration, no erasure pass, no privacy document sentence. It exists for the
+length of one message's handling, where the adapter narrows an automated sender's
+addressing and the core declines to summon one by mode, and then it is gone.
+
 ## Rejected alternatives
 
 - **Keeping the dead column.** A stored personal attribute nobody reads is
@@ -95,6 +112,10 @@ claims a display name is never stored or never sent.
   shown once at a join is a fact about that event; hanging it on the identity
   row would make it a standing attribute of the person, refreshed and kept —
   exactly the processing this decision removed.
+- **Keeping the crossing identity at two fields and inferring the third (2026-08-30).**
+  The candidates were a handle-shape heuristic and a per-message flag: the first invents a
+  fact the platform already states, the second hangs an account's property on one of its
+  messages.
 - **Nulling the column instead of dropping it.** The null-and-retire path
   exists for machinery that cannot drop a column; this store's SQLite drops
   columns, and a retired-but-present column invites the next writer to
