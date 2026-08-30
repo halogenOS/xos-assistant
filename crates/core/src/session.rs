@@ -37,9 +37,7 @@
 //! carrying a thousand-call flood therefore holds the stamp lock for one
 //! commit, not a thousand.
 
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
 
 use agent_ledger::agency::Status;
 use agent_ledger::providers::ReasoningLevel;
@@ -66,21 +64,6 @@ use crate::tools::palette::{TOOL_PALETTE_KIND, ToolPalette};
 const STATUS_TABLE: &str = "block_status";
 /// The status row's machine-key column.
 const STATUS_COLUMN: &str = "status";
-
-/// How long the unattended compaction stands down on a channel it has just
-/// compacted.
-///
-/// The signal is level-read from durable state on every block change, so
-/// without a bound a channel that keeps landing forced turn ends would be
-/// forked again and again, each fork a session the group never asked for.
-/// Thirty minutes is long enough that a second firing is a fresh incident
-/// rather than the same one still settling, and short enough that a session
-/// which really has gone bad is healed within the hour.
-///
-/// The bound is the UNATTENDED path's alone. A moderator typing `/compact`
-/// is a person asking, bounded by their own per-person reply window, and is
-/// never stood down by this.
-pub(crate) const UNATTENDED_COMPACT_COOLDOWN: Duration = Duration::from_mins(30);
 
 /// What one compact came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,10 +153,6 @@ pub(crate) struct Sessions {
     /// the same reason: it forks and re-points while an erasure would be
     /// walking the very conversations it moves.
     erasure_fence: ErasureFence,
-    /// When the unattended compaction last ran on a channel, for the
-    /// [`UNATTENDED_COMPACT_COOLDOWN`] stand-down. Swept on every read, so
-    /// it holds only channels still inside a live cooldown.
-    unattended_at: Mutex<HashMap<ChannelKey, Instant>>,
     /// The reset claim race's test seam, run between a reset's mapping
     /// delete and its claim — exactly the window a concurrent racer takes
     /// the channel in. Unset in production.
@@ -198,7 +177,6 @@ impl Sessions {
             palette,
             stamp_lock,
             erasure_fence,
-            unattended_at: Mutex::new(HashMap::new()),
             reset_claim_pause: OnceLock::new(),
         }
     }
@@ -482,14 +460,10 @@ impl Sessions {
     /// ingestion lock that often would stall the chat. It is read again
     /// under the holds, which is what makes a lost race stand down instead
     /// of forking a conversation the winner already replaced.
-    ///
-    /// The channel's cooldown is read on the same cheap pass: the trigger
-    /// is a standing fact in durable state, so a channel that keeps landing
-    /// forced turn ends would otherwise be forked on every wake.
     async fn auto_compact(&self, conversation_id: i64) {
-        let channel = match self.auto_compact_target(conversation_id).await {
+        match self.auto_compact_target(conversation_id).await {
             Ok(None) => return,
-            Ok(Some((channel, _))) => channel,
+            Ok(Some(_)) => {}
             Err(error) => {
                 tracing::warn!(
                     conversation_id,
@@ -498,20 +472,9 @@ impl Sessions {
                 );
                 return;
             }
-        };
-        if !self.cooldown_admits(&channel).await {
-            tracing::debug!(
-                conversation_id,
-                "this channel was compacted unattended inside the cooldown; standing down"
-            );
-            return;
         }
         match self.auto_compact_behind_the_holds(conversation_id).await {
             Ok(Some(outcome)) => {
-                self.unattended_at
-                    .lock()
-                    .await
-                    .insert(channel, Instant::now());
                 tracing::warn!(
                     conversation_id,
                     ?outcome,
@@ -528,21 +491,6 @@ impl Sessions {
                 "the unattended compact failed; the session stands and the next change retries"
             ),
         }
-    }
-
-    /// Whether the unattended compaction may run on this channel now: it
-    /// may, unless it ran on the same channel inside
-    /// [`UNATTENDED_COMPACT_COOLDOWN`]. Expired entries are swept here, so
-    /// the map holds only live cooldowns.
-    ///
-    /// The stand-down is in-memory on purpose, like the other bounds here: a
-    /// restart forgives at most one cooldown, and the mapped-only guard
-    /// already keeps a swept source from ever firing again.
-    async fn cooldown_admits(&self, channel: &ChannelKey) -> bool {
-        let mut unattended_at = self.unattended_at.lock().await;
-        let now = Instant::now();
-        unattended_at.retain(|_, at| now.duration_since(*at) < UNATTENDED_COMPACT_COOLDOWN);
-        !unattended_at.contains_key(channel)
     }
 
     /// The unattended compact's acting half, behind the two holds, with the

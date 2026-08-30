@@ -45,13 +45,12 @@ finds its conversation unmapped and stands down. A cheap read outside the holds 
 whether to queue at all: the wake arrives on every block change in every conversation, and
 taking the ingestion lock that often would stall the chat.
 
-The bound on the unattended path is a per-CHANNEL COOLDOWN of thirty minutes, read on that
-same cheap pass. Wakes never overlap — the watcher is one task awaiting each run — so there
-is nothing to keep from stacking; what needs bounding is REPETITION, because the trigger is a
-standing fact in durable state and a channel that keeps landing forced turn ends would
-otherwise be forked again on every block change. A wake inside the cooldown stands down with
-a debug line. The bound is the unattended path's alone: a moderator typing `/compact` is a
-person asking, and their own per-person reply window bounds that.
+The unattended path carries no repetition bound, by the operator's ruling (2026-08-30): a
+channel that keeps landing forced turn ends is compacted again on the next standing trigger.
+Wakes never overlap — the watcher is one task awaiting each run — and the eligibility
+re-read keeps a swept source from ever firing twice; what remains unbounded is repetition
+across the fork chain, and the operator declined a cooldown on it. The command path stays
+bounded by its own per-person reply window.
 
 The re-claim takes the winner check the first-contact path already owns. A claim lost to a
 concurrent racer deletes the just-created fork — junction rows alone, every block living on
@@ -70,10 +69,12 @@ lands in the surviving session — pinned by the racing test.
 
 - **A second, differently shaped automatic compaction.** One decision, recorded once; two
   shapes would drift the moment either was tuned.
-- **An in-flight set keyed by conversation, in place of the cooldown.** It would guard
-  against concurrent wakes on one conversation, and there are none: the watcher awaits each
-  run before reading the next event, so the set could never refuse an entry. Machinery for a
-  concurrency that cannot happen reads as a bound while bounding nothing.
+- **An in-flight set keyed by conversation.** It would guard against concurrent wakes on
+  one conversation, and there are none: the watcher awaits each run before reading the next
+  event, so the set could never refuse an entry. Machinery for a concurrency that cannot
+  happen reads as a bound while bounding nothing.
+- **A per-channel cooldown on the unattended path.** Proposed as the repetition bound and
+  ruled out by the operator (2026-08-30): the healing runs whenever its trigger stands.
 - **Edge-triggering on the bus event alone.** The channel is lossy by design, and the event
   it would drop is the incident this exists for.
 - **Answering the group when it fires.** Nobody asked, and a line explaining a maintenance
