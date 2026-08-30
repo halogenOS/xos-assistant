@@ -25,8 +25,14 @@ message's sender, the acting principal of the assistant's own entry into a group
 joiner of a join notice, where the flag is that joiner's.
 
 The fact is stored NOWHERE. No column, no migration, no erasure pass, no privacy document
-change: it is read fresh off every update, consumed by the two readings unit 42 decides —
-the adapter's addressing and the core's summons resolution — and dropped. It is
+change: it is read fresh off every update, consumed while the message it arrived with is
+decided, and dropped. Three readings consume it, all on a message's own sender: the
+adapter's addressing (0152), the core's summons resolution (0153), and the core's stamp
+write, which withholds the owing tail from an unsummoned bot's row (0154). On a join
+notice's joiner nothing reads it — a joiner is not a sender, so neither addressing nor a
+summons is decided for them — and it rides there anyway because the joiner crosses the
+boundary with the same identity a sender does, whose fields are filled from the account's
+own flag rather than from a per-site `false` invented to fill them. It is
 platform-neutral by construction: every platform this assistant will meet either marks
 automated accounts or leaves the flag false, which is what "no automated account is known
 here" means.
@@ -47,3 +53,8 @@ contradicts the tree.
   data held for nothing.
 - **Deriving it from the username's shape.** Handle conventions are a naming habit, not a
   fact; the platform already states the fact.
+- **Dropping the fact on the joiner path, where nothing reads it.** It would buy one unread
+  boolean at the price of either a second identity type for one concept, or a `false`
+  written into the shared type where the platform said true — a general mechanism made to
+  carry a per-site falsehood, which is the smear the identity exists to avoid. The absence
+  of a reader is recorded instead, on the field and above.

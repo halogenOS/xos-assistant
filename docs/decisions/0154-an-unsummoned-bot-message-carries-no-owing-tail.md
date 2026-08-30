@@ -22,9 +22,17 @@ composition itself stays pure and gains no sender input, so no other caller move
 
 Second: the owing-tail walk reads through a live chat row whose stored stamp is false.
 Without this, the false-stamped bot row would BURY the older debt, since a false stamp
-means "settled" to the walk. The walk is one decision recorded at two places by its own
-contract — the tail condition and the query that skips a whole transparent run — and both
-widen together, because widening one alone is a silent no-op that still buries the debt.
+means "settled" to the walk. Which rows a walk reads through is ONE decision with three
+homes in the tree, and all three widen together: the tail condition that judges the tail
+row, the query that skips the whole transparent run behind it, and the anchor gate's
+debt-chain walk of decision 0043, which reads a debt's ORIGINS backwards for tool
+admission. The first two are the owing-tail walk itself, where widening one alone is a
+silent no-op that still buries the debt. The third is a different question over the same
+row shapes: a gate that ended its chain on the bot's row would cut the chain off in front
+of the true origin, fold that turn's admission to the floor with the origin's own words
+inside the dispatched request, and drop the origin's row out of the window the answer
+threading, the report tool's target validation and the sole-principal reading all share.
+The row-shape predicate is written once, on the kind, and the three homes read it.
 The query gains the stamp condition on the typed answer-due column as a third transparency
 dimension beside the kind set and the erased shape, DISJUNCTIVELY: a row is transparent
 when it is erased OR false-stamped. A conjunctive rewrite would shrink the erased dimension
@@ -60,4 +68,11 @@ with it intact.
 - **Widening only the tail condition, or only the query.** Either alone leaves the debt
   buried by the other: the condition decides the tail row, the query decides everything
   behind it.
+- **Leaving the anchor gate's walk on the old row rule.** A row shape read through by one
+  walk and settled on by another is one decision recorded twice, and the second copy was
+  already wrong: the gate would read the floor for a turn an admin's unanswered ask
+  summoned.
+- **Teaching the gate's walk to name bot rows itself.** Same stored copy the alternative
+  above rejects, and the gate needs no such name: the shape the stamp already encodes is
+  exactly what it must read through.
 - **Answering the owed debt on a timer instead.** A mechanism this unit has no order for.

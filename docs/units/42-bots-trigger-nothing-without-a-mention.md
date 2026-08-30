@@ -1,12 +1,12 @@
 # Unit 42 — a bot triggers nothing without a mention
 
-Date: 2026-08-30. The operator's instruction, verbatim, after the assistant welcomed a
-joiner in the live group when the moderation bot's captcha prompt drew a turn: "The bot
-shouldnt react like this. Not when rose announces and not on join messages. The joins
-are for moderation only." — and, deciding the fix's shape after two other options were
-offered: "Neither just implement that bots can't trigger this bot at all unless they
-@mention our bot." So: exactly one rule, in code — a message from a bot account never
-opens a turn for the assistant, unless that message @mentions the assistant.
+Date: 2026-08-30. In a live group, the moderation bot's captcha prompt drew a turn
+and the assistant answered over it. The operator ruled the fix's shape after two
+other options were offered, and rejected both: no prompt change and no narrower
+carve-out — one rule, in code. A message from a bot account never
+opens a turn for the assistant, unless that message @mentions the assistant, the
+one deliberate act another bot cannot perform by accident; and join notices stay
+what they already are, moderation input, never chatter to react to.
 
 ## Grounding
 
@@ -111,10 +111,12 @@ unit, deliberately.
   input, so no other caller moves.
   Second: because today a live chat row with a false stamp means "settled" to the
   propagation walk, the false-stamped bot row would BURY the older debt — and the
-  walk is ONE decision recorded at TWO sites by its own contract
-  (`kind.rs:872-878`): the tail condition (`assembly.rs:1892-1913`, read-through
-  kinds at `:68-83`) and the SQL query `newest_block_id_past_erased`
-  (`kind.rs:918-955`). BOTH widen together: a live chat-message row whose stored
+  walk is one decision with THREE homes (a fourth spelling is forbidden by its
+  own contract, `kind.rs:872-878`): the tail condition (`assembly.rs:1892-1913`,
+  read-through kinds at `:68-83`), the SQL query
+  `newest_block_id_past_transparent` (`kind.rs:918-955`), and the anchor-gate
+  chain walk (`tools/provenance.rs`, decision 0043), which the build found
+  deciding the same row shape and widened with the rest. ALL widen together: a live chat-message row whose stored
   stamp is false becomes transparent — the query gains the stamp predicate on
   the typed answer_due column as a third transparency dimension beside the kind
   set and the erased shape, DISJUNCTIVELY (a row is transparent when erased OR
@@ -140,9 +142,10 @@ unit, deliberately.
   the owed debt eagerly on a timer — a mechanism this unit has no order for.
 - **Programmatic commands stay answerable by anyone, the operator's reading,
   2026-08-30.** A recognized command is handled deterministically — no model, no
-  turn, no request — so a bot invoking one is not the model being triggered, and
-  the operator confirmed that reading when a stricter ruling was floated ("But
-  isnt /privacy a programmatic command?"). Command recognition, the fixed
+  turn, no request — so a bot invoking one is not the model being triggered; a
+  stricter ruling that would have silenced commands for bot senders was floated
+  and the operator rejected it, pointing at exactly this distinction.
+  Command recognition, the fixed
   answers and the mirror all stay exactly as built for every sender; the notice's
   own channel window already bounds any flood of it. The fence of this unit is
   MODEL turns alone.
@@ -198,10 +201,6 @@ unit, deliberately.
 
 ## Notes for launch
 
-- Worktree `~/projects/halogenos-assistant-service`, branch `unit/service-quiet`,
-  from `main` (`9ecd0b1`). The build's first step: `git rebase main`.
 - Decision records number from the highest shipped at merge; expected records: the
   wire bot fact (widening 0077), the mention-only addressing for bots, the
   no-mode-summons rule, and the tail rule with the walk widening.
-- Deploy-relevant: the live assistant welcomed a joiner today; this unit rides the
-  next deploy the operator approves.

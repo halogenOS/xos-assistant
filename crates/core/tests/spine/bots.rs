@@ -232,6 +232,225 @@ async fn the_owed_tail_survives_a_bots_message_and_the_next_member_carries_it() 
     );
 }
 
+/// `AC3b` across a RUN: the debt survives several unsummoned bot rows, not
+/// just one, because the query behind the tail condition skips the whole
+/// transparent run in one read. The admin's ask is the origin, so the
+/// authority that reaches the carrier is the admin's own — a debt
+/// re-opened anywhere in the run would read member instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_run_of_bot_rows_leaves_the_admins_debt_owed_for_the_next_member() {
+    let (assistant, store) = withholding_assistant().await;
+    let room = support::authorized_group(&assistant, "room-bot-run").await;
+
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound_as(
+            &room,
+            ChannelKind::Group,
+            "root-ext",
+            Authority::Admin,
+            "the administrator's never-answered ask",
+        ),
+    )
+    .await;
+    for line in [
+        "solve the captcha to stay in the group",
+        "welcome, please read the rules",
+        "the captcha expired",
+    ] {
+        support::ingest_recorded(
+            &assistant,
+            from_a_bot(inbound_unaddressed(
+                &room,
+                ChannelKind::Group,
+                "moderation-bot",
+                line,
+            )),
+        )
+        .await;
+    }
+    // The carrier speaks at the administrator's own standing, so the
+    // minimum rule folds nothing away and the debt's own authority is
+    // readable on the row that carried it.
+    let mut aside = inbound_as(
+        &room,
+        ChannelKind::Group,
+        "root-ext",
+        Authority::Admin,
+        "an aside after the run",
+    );
+    aside.addressed = false;
+    support::ingest_recorded(&assistant, aside).await;
+
+    let blocks = store
+        .list_blocks(receipt.conversation_id)
+        .await
+        .expect("the ledger reads");
+    let rows = message_rows(&blocks);
+    assert_eq!(rows.len(), 5);
+    assert_eq!(rows[0].fields["answer_due"], json!(true));
+    for row in &rows[1..4] {
+        assert_eq!(
+            row.fields["answer_due"],
+            json!(false),
+            "every row of the run stamps false, each read behind the last"
+        );
+        assert!(row.fields.get("debt_authority").is_none());
+    }
+    assert_eq!(
+        rows[4].fields["answer_due"],
+        json!(true),
+        "the whole run is transparent: the debt is still owed behind it"
+    );
+    assert_eq!(
+        rows[4].fields["debt_authority"],
+        json!("admin"),
+        "and it arrives at the standing the administrator opened it with"
+    );
+}
+
+/// `AC3b` for the carrier the rule deliberately allows: a bot that MENTIONS
+/// the assistant is summoned, so its stamp is composed against the owing
+/// tail like anyone's and it carries the older debt into its own turn. The
+/// carried authority is the minimum of the debt's and the sender's, so an
+/// admin-standing bot carrying a member's debt reads member — the proof
+/// that what it carries is the member's debt and not a fresh one of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_mentioned_bots_own_message_carries_the_owed_debt() {
+    let (assistant, store) = withholding_assistant().await;
+    let room = support::authorized_group(&assistant, "room-bot-carrier").await;
+
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(&room, ChannelKind::Group, "42", "the never-answered ask"),
+    )
+    .await;
+    support::ingest_recorded(
+        &assistant,
+        from_a_bot(inbound_unaddressed(
+            &room,
+            ChannelKind::Group,
+            "moderation-bot",
+            "solve the captcha to stay in the group",
+        )),
+    )
+    .await;
+    support::ingest_recorded(
+        &assistant,
+        from_a_bot(inbound_as(
+            &room,
+            ChannelKind::Group,
+            "moderation-bot",
+            Authority::Admin,
+            "@assistant the captcha service is down",
+        )),
+    )
+    .await;
+
+    let blocks = store
+        .list_blocks(receipt.conversation_id)
+        .await
+        .expect("the ledger reads");
+    let rows = message_rows(&blocks);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[1].fields["answer_due"], json!(false));
+    assert_eq!(
+        rows[2].fields["addressed"],
+        json!(true),
+        "the mention summons the bot's message"
+    );
+    assert_eq!(rows[2].fields["answer_due"], json!(true));
+    assert_eq!(
+        rows[2].fields["debt_authority"],
+        json!("member"),
+        "the member's debt rode through, folded against the sender's own standing"
+    );
+}
+
+/// The mixed transparent run, in the order production writes one: an
+/// erased row and an unsummoned bot's row between a live debt and the row
+/// stamped above them. The administrator's deletion command is that row —
+/// its own debt is refused by the command stamp, so its answer-due can
+/// only be the debt read from behind the run, and the authority proves
+/// WHOSE: the member's, not the deleting administrator's. A run that
+/// settled on either transparent shape would stamp it false and bury an
+/// ask nobody answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_erased_row_and_a_bot_row_are_one_transparent_run_above_a_live_debt() {
+    let (assistant, store) = withholding_assistant().await;
+    let room = support::authorized_group(&assistant, "room-bot-mixed").await;
+
+    let receipt = support::ingest_recorded(
+        &assistant,
+        inbound(
+            &room,
+            ChannelKind::Group,
+            "casey-ext",
+            "the member's never-answered ask",
+        ),
+    )
+    .await;
+    support::ingest_recorded(
+        &assistant,
+        support::with_origin(
+            inbound_unaddressed(&room, ChannelKind::Group, "peer-ext", "a line soon deleted"),
+            "gone-2",
+        ),
+    )
+    .await;
+    support::ingest_recorded(
+        &assistant,
+        from_a_bot(inbound_unaddressed(
+            &room,
+            ChannelKind::Group,
+            "moderation-bot",
+            "solve the captcha to stay in the group",
+        )),
+    )
+    .await;
+    support::ingest_recorded(
+        &assistant,
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "gone-2"),
+    )
+    .await;
+
+    let blocks = store
+        .list_blocks(receipt.conversation_id)
+        .await
+        .expect("the ledger reads");
+    let rows = message_rows(&blocks);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].fields["answer_due"], json!(true));
+    assert!(
+        rows[1]
+            .fields
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+            .is_none(),
+        "the deleted row is erased: transparent by its nulled text, whatever its stamp"
+    );
+    assert_eq!(
+        rows[2].fields["answer_due"],
+        json!(false),
+        "the bot's row is transparent by its false stamp, its text intact"
+    );
+    assert_eq!(
+        rows[3].fields["limited"],
+        json!("command"),
+        "the deletion command's own debt is refused"
+    );
+    assert_eq!(
+        rows[3].fields["answer_due"],
+        json!(true),
+        "so its answer-due is the debt read from behind the mixed run"
+    );
+    assert_eq!(
+        rows[3].fields["debt_authority"],
+        json!("member"),
+        "the member's debt, not the deleting administrator's standing"
+    );
+}
+
 /// `AC3b`'s other half — the outcome equality the walk widening rests on, on
 /// the false-row shape production actually writes: a command's limited
 /// false row above a SETTLED tail. Reading through it reaches the same

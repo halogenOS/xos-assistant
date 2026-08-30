@@ -1423,6 +1423,36 @@ pub fn from_a_bot(mut message: InboundMessage) -> InboundMessage {
     message
 }
 
+/// One unaddressed group reply carrying the moderation bot's deletion
+/// command, aimed at the given stored origin — the shape that triggers the
+/// mirror (unit 13). Shared, because two suites drive an erasure through
+/// it: the mirror's own, and the walk pins that need an erased row in the
+/// middle of a ledger.
+pub fn deletion_reply(
+    channel: &ChannelKey,
+    sender: &str,
+    authority: Authority,
+    target: &str,
+) -> InboundMessage {
+    let mut message = inbound_as(
+        channel,
+        ChannelKind::Group,
+        sender,
+        authority,
+        assistant_core::mirror::DELETION_COMMAND,
+    );
+    message.addressed = false;
+    with_command(
+        with_reply(
+            message,
+            assistant_core::ReplyTarget::Message {
+                origin: target.into(),
+            },
+        ),
+        assistant_core::mirror::DELETION_COMMAND,
+    )
+}
+
 /// The same message, replying to the given target — the translated reply
 /// fact the adapter delivers beside the addressed flag.
 pub fn with_reply(
