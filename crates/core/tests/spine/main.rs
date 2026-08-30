@@ -15,7 +15,8 @@
 //! entitled to it),
 //! protection (the budgets, the limited stamp, the debt authority),
 //! reasoning (the configured effort level on every created conversation
-//! and on the provider's requests),
+//! and on the provider's requests, and the leaked trace the send cuts out
+//! of an answer),
 //! delivery (the delivery receipt: what one send records, the model
 //! reading nothing of it, a receipt at the tail burying no debt, and the
 //! reply-target column staying NULL),
