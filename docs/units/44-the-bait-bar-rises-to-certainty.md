@@ -16,7 +16,8 @@ and you report the join on sight". The message half of the same teaching already
 carries a threshold sentence ("Report only clear violations: do not report
 borderline calls…", `teaching.rs:81-83`); the join half carries none, and the live
 model filled the gap with a smell test. The teaching is pinned as verbatim facts at
-`teaching.rs:662-676` (the join-rule fact list) and composed under
+`teaching.rs:668-677` (the join-rule fact array; its doc comment sits at
+`:662-665`) and composed under
 `moderation_taught` (`teaching.rs:50,155-157`). This unit is one sentence-level
 teaching change plus its pins and the two doc comments that restate the rule;
 no mechanism moves.
@@ -29,10 +30,13 @@ no mechanism moves.
   The rest of the teaching is byte-identical. The threshold mirrors the message
   half's clear-violations-only rule, so the two halves of the teaching now carry
   the same evidentiary bar. The two doc comments that restate the trigger move
-  with it — the const's module doc ("a shown name that is itself promotional
-  bait is the violation before the account has spoken", `teaching.rs:66-73`)
-  and the fact-pin test's doc (`teaching.rs:662-665`) both gain the
-  unmistakably-obvious wording, so the shipped rustdoc never contradicts the
+  with it, each to an exact replacement — the const's module doc sentence
+  (`teaching.rs:66-73`, today "a shown name that is itself promotional
+  bait is the violation before the account has spoken") becomes
+  `a shown name that is itself unmistakably promotional bait — obvious at a glance to anyone — is the violation before the account has spoken`,
+  and the fact-pin test's doc (`teaching.rs:662-665`) says
+  `unmistakably promotional bait` wherever it says `promotional bait` today —
+  so the shipped rustdoc never contradicts the
   teaching it documents (the unit-40 convention). No document outside the
   teaching moves: the raised bar narrows what is REPORTED, not what is
   processed, so decision 0070's amendment, the D10 purpose text, the privacy
@@ -45,10 +49,13 @@ no mechanism moves.
 ## Acceptance criteria
 
 - **AC1** The amended span is pinned byte for byte; of the seven join fact pins
-  (`teaching.rs:669-677`), exactly the one asserting the old bar (line 671) is
-  rewritten to the new sentence and the other six plus the composed
-  report-on-sight check (`teaching.rs:683-687`) pass unchanged; the two doc
-  comments carry the new wording; no other teaching text changes (the composed
+  (`teaching.rs:669-676`), exactly the one asserting the old bar (line 671,
+  today `a joiner's shown name is itself promotional bait`) is rewritten to
+  `a joiner's shown name is itself unmistakably promotional bait` and the
+  other six plus the composed
+  report-on-sight check (`teaching.rs:683-688`) pass unchanged; the two doc
+  comments carry the exact replacements the decision quotes; no other teaching
+  text changes (the composed
   prompt diff is exactly the amended span).
 - **AC2** The checks pass: fmt, clippy with warnings denied, the full suite, the
   doc build, exit codes read bare.
