@@ -37,6 +37,16 @@ pub const BUILDS_REPOSITORY: &str = "builds";
 /// short bounds instead of waiting production ones.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The tool's own rate window, bound at the assembly: this many calls may
+/// run in any trailing [`WINDOW_SECONDS`], and the next is refused with
+/// the framework's per-tool rate-limit text. The numbers are the
+/// operator's (2026-08-30), set after a session ground this lookup in a
+/// loop at a pace the conversation-wide window never noticed.
+pub const WINDOW_CALLS: usize = 6;
+
+/// The trailing span [`WINDOW_CALLS`] is counted over, in seconds.
+pub const WINDOW_SECONDS: i64 = 60;
+
 /// The authority this tool requires — the bar the admission wrapper's
 /// provenance gate compares each call's reading against (decision 0043).
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
@@ -187,6 +197,15 @@ fn decode(answer: &Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The operator's numbers, pinned where they are defined: six calls in
+    /// any trailing sixty seconds (decision 0169). A drift here is a
+    /// different pacing decision and must be one on purpose.
+    #[test]
+    fn the_rate_window_is_the_operators_six_per_sixty() {
+        assert_eq!(WINDOW_CALLS, 6);
+        assert_eq!(WINDOW_SECONDS, 60);
+    }
 
     #[test]
     fn the_decode_produces_the_compact_result() {

@@ -638,6 +638,23 @@ impl Assistant {
         let ctx: RuntimeContext<AssistantKind, CoreEvent> =
             RuntimeContext::new(store, bus, providers, Arc::new(registry))
                 .without_title_derivation();
+        // The release lookup's own rate window (the operator's numbers,
+        // decision 0169): bound here, before the context is shared, and
+        // only when the embedder's set registered the tool — the builder
+        // refuses a name nothing registered, and a test assembly with no
+        // lookups is not misconfigured.
+        let ctx = if palette
+            .iter()
+            .any(|tool| tool == crate::tools::release::NAME)
+        {
+            ctx.with_tool_window(
+                crate::tools::release::NAME,
+                crate::tools::release::WINDOW_CALLS,
+                crate::tools::release::WINDOW_SECONDS,
+            )
+        } else {
+            ctx
+        };
         let streams = streams::spawn_observer(ctx.bus());
         // The two holds are handed to the sessions and kept there: every
         // path in this assembly takes them back through it, so neither has
