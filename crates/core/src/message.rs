@@ -469,6 +469,25 @@ pub enum ObserveOutcome {
     Withdraw,
 }
 
+/// What the write did to the channel's session, and therefore what the
+/// adapter must forget about the channel (unit 45, 2026-08-30).
+///
+/// The core decides; the adapter translates mechanically, exactly as it does
+/// with the withdraw directive. Anything an adapter derived from an earlier
+/// contact with this channel — a once-per-process enrichment above all — was
+/// derived for a session that no longer exists, so the channel's next
+/// contact starts over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChannelReset {
+    /// The channel keeps the session it had; there is nothing to forget.
+    #[default]
+    Kept,
+    /// The channel's session was replaced with an empty one. Whatever the
+    /// adapter remembers about this channel from an earlier contact no
+    /// longer describes the conversation it now speaks into.
+    Replaced,
+}
+
 /// What one ingestion call comes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IngestOutcome {
@@ -476,9 +495,12 @@ pub enum IngestOutcome {
     Recorded {
         /// The ids the write resolved on the way in.
         receipt: IngestReceipt,
-        /// The item the adapter delivers on the channel — the privacy
+        /// The item the adapter delivers on the channel — a recognized
         /// command's answer. `None` says nothing.
         deliver: Option<DeliveryItem>,
+        /// What the write did to the channel's session. Anything but
+        /// [`ChannelReset::Kept`] is a directive the adapter carries out.
+        reset: ChannelReset,
     },
     /// Refused fail-closed: the channel is a group the operator never
     /// admitted. Nothing touched the ledger; the adapter performs the

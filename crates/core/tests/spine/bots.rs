@@ -547,7 +547,10 @@ async fn notice_answer(
         .ingest(message)
         .await
         .expect("the command ingests");
-    let IngestOutcome::Recorded { deliver, receipt } = outcome else {
+    let IngestOutcome::Recorded {
+        deliver, receipt, ..
+    } = outcome
+    else {
         panic!("the command is recorded");
     };
     (deliver, receipt)

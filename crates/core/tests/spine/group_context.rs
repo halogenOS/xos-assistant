@@ -839,7 +839,10 @@ async fn the_privacy_command_answers_the_configured_address_without_a_turn() {
         ))
         .await
         .expect("the command ingests");
-    let IngestOutcome::Recorded { receipt, deliver } = outcome else {
+    let IngestOutcome::Recorded {
+        receipt, deliver, ..
+    } = outcome
+    else {
         panic!("the command is recorded, not refused");
     };
     assert_eq!(
@@ -938,7 +941,10 @@ async fn an_unconfigured_address_answers_the_not_published_line_and_a_foreign_su
         ))
         .await
         .expect("the foreign-suffix message ingests");
-    let IngestOutcome::Recorded { receipt, deliver } = foreign else {
+    let IngestOutcome::Recorded {
+        receipt, deliver, ..
+    } = foreign
+    else {
         panic!("the foreign-suffix message is recorded");
     };
     assert_eq!(

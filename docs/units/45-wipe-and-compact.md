@@ -1,15 +1,13 @@
 # Unit 45 — /wipe and /compact, the session reset commands
 
-Date: 2026-08-30. The operator's order, verbatim (2026-08-30, working copy — de-quoted
-at landing): "I also need two more slash commands /wipe – creates a brand new session
-/compact – compacts the current session", with "Direct chats arent allowed for these
-bots at the moment" fencing the audience, and the earlier design for the runaway case:
-"Also once the model hits 5 rate limit errors in consecutively, force a turn end, and
-trigger a compaction. The session has likely corrupted beyond the point of recovery at
-this point, and the model will only do garbage otherwise." The live motivation: a
-production conversation still carries a thousand-call tool flood from an old incident,
-and the model keeps continuing that pattern; the framework's forced turn-end (slice 16)
-ships its `tool_calls_exhausted` status key for exactly this consumer hook.
+Date: 2026-08-30. The operator ordered two more slash commands — /wipe creates a brand
+new session, /compact compacts the current one — with direct chats fenced out of both,
+and the runaway design decided earlier: five consecutive rate-limit refusals force a
+turn end and trigger a compaction, because a session that far gone has likely corrupted
+beyond recovery and the model will only continue the garbage. The motivation: a
+conversation can come to carry a thousand-call tool flood from one incident, and a
+model reading it keeps continuing the pattern; the framework's forced turn-end
+(slice 16) ships its `tool_calls_exhausted` status key for exactly this consumer hook.
 
 ## Grounding
 
@@ -182,24 +180,30 @@ established history is ever deleted by anything but erasure.)
   its compacted fork stays note-less until the platform fact next changes
   or the process restarts, accepted as self-limiting. The OUTBOUND EDGE's seam is decided here, not left to the builder:
   the edge seeds a conversation it has never seen at zero on the premise
-  that all its blocks postdate the edge (`outbound.rs:287-311`,
-  `or_insert(0)` at `:343`) — false for a fork, whose kept assistant
+  that all its blocks postdate the edge (`outbound.rs`'s `seed_cursors` and
+  the vacant-cursor insert in `deliver_stored_items`) — false for a fork,
+  whose kept assistant
   answers would re-send into the group and whose first-delivery disclosure
-  resolution would write into junction-SHARED blocks (`outbound.rs:379-385`;
-  the edit-through-a-fork `detach_block`'s own doc forbids,
-  `store/conversations.rs:347-351`). The repair makes the premise true: an
-  unseen conversation seeds from its DURABLE cursor — the position
-  `fork_conversation` already sets (`confirm_inherited_history`, the min of
-  the inherited boundary and the source's confirmed position; a fresh
-  conversation holds zero) — so inherited history is born delivered and
-  /wipe's fresh conversation is untouched. One narrow residual rides the
-  min, recorded in the open: an assistant answer delivered but not yet
-  confirmed at fork time sits above the seed and re-sends once —
-  milliseconds wide, accepted. The sweep's cost is stated: no bulk detach exists
-  (`store/conversations.rs:338-358`, one round-trip per junction row), so the
-  motivating thousand-row flood detaches row by row under the global stamp lock
-  (`assembly.rs:376-386`) — a seconds-long, once-per-compact ingestion pause,
-  accepted; the command exists for exactly the conversations where it costs.
+  resolution would write into junction-SHARED blocks (the disclosure
+  resolution inside the reply arm; the edit-through-a-fork `detach_block`'s
+  own doc forbids, `store/conversations.rs:347-351`). The repair makes the
+  premise true: an unseen conversation seeds at its INHERITED BOUNDARY —
+  the newest of its blocks that another conversation also holds, or zero
+  when it holds none. A junction row is what makes a block part of a
+  conversation, so a block two conversations hold is one this conversation
+  was forked with, and since ids ascend along junction order the partition
+  is exact: inherited history is born delivered, and /wipe's fresh
+  conversation, which shares nothing with anybody, is untouched. The
+  framework's durable ratchet cursor is deliberately NOT the seed, though
+  at the instant of the fork it holds exactly this value
+  (`confirm_inherited_history`, the min of the inherited boundary and the
+  source's confirmed position): it is the frontier of what the model has
+  been driven through, it advances with every turn, and by the time a
+  completed stream wakes this edge it stands past the very answer the wake
+  is about — reading it there would swallow that answer. The sweep's cost is one store round trip: the
+  framework's bulk door (`Store::detach_blocks`, slice 19) detaches the whole
+  set in one transaction, so the motivating thousand-row flood costs one
+  commit under the stamp lock, not a row-by-row pause.
   *Rejected:* a summary block — the
   framework has no summarization capability and inventing model-written summaries
   of member messages is new personal-data processing this unit refuses to smuggle
@@ -303,10 +307,11 @@ is lost under the tree's own recorded process-death precedent, accepted.
   context notes, stamps and debts intact), answers its exact line; the source conversation keeps every block; a
   second `/compact` immediately after answers the nothing-to-cut line (pins).
 - **AC3b — the fork is born delivered.** The outbound edge seeds an unseen
-  conversation from its durable confirmed cursor: after a /compact, no kept
+  conversation at its inherited boundary: after a /compact, no kept
   assistant answer re-sends and no disclosure line is written into any
-  junction-shared block (pins); a fresh conversation still seeds at zero
-  (pin: /wipe's conversation delivers its first answer normally).
+  junction-shared block (pins); a conversation that inherited nothing still
+  seeds at zero (pin: /wipe's conversation delivers its first answer
+  normally).
 - **AC4 — the floor and the fence.** Below-floor and direct-chat invocations of
   both commands are stamped silent; the Moderator floor reads the delivered
   authority; a direct-chat `/privacy` still answers (the fence is not

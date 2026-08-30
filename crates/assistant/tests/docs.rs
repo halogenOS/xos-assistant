@@ -1941,3 +1941,108 @@ fn the_operator_contract_states_the_reaction_asymmetry() {
         );
     }
 }
+
+/// Unit 45's decisions are recorded, each dated and carrying the
+/// alternatives it beat.
+#[test]
+fn the_session_reset_units_decisions_are_recorded() {
+    for record in [
+        "docs/decisions/0160-the-command-catalogue-arrives-minimally.md",
+        "docs/decisions/0161-the-session-resets-are-a-groups-moderator-commands.md",
+        "docs/decisions/0162-a-wipe-claims-a-brand-new-conversation.md",
+        "docs/decisions/0163-a-compact-forks-and-keeps-the-recent-tail.md",
+        "docs/decisions/0164-an-unseen-conversation-seeds-at-its-inherited-boundary.md",
+        "docs/decisions/0165-the-unattended-compaction-rides-the-frameworks-own-signal.md",
+        "docs/decisions/0166-the-resets-answer-on-their-own-per-person-window.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-30, with unit 45."),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+}
+
+/// The operator contract states the two session commands in the terms a
+/// moderator meets them in: who may use them where, the exact lines they
+/// answer, what a reset costs, and that the assistant may compact a broken
+/// session by itself. The fixed lines are read from the core's own
+/// constants, so a copy edit that does not reach the contract fails here.
+#[test]
+fn the_operator_contract_states_the_session_commands() {
+    let contract = flattened(&repo_file("docs/reference/group-operator-contract.md"));
+    for fact in [
+        "## The session commands: `/wipe` and `/compact`",
+        "Both are group commands: in a direct chat they answer nothing, and so does \
+         either of them from an ordinary member",
+        "**Nothing is deleted.**",
+        "**Anything the assistant was still about to say is dropped.**",
+        "**The assistant may compact a session by itself.**",
+    ] {
+        assert!(
+            contract.contains(&flattened(fact)),
+            "the operator contract states: {fact}"
+        );
+    }
+    for line in [
+        assistant_core::commands::WIPE_DONE,
+        assistant_core::commands::COMPACT_DONE,
+        assistant_core::commands::COMPACT_ALREADY,
+    ] {
+        assert!(
+            contract.contains(&flattened(line)),
+            "the operator contract quotes the answer verbatim: {line}"
+        );
+    }
+    // The number a moderator reads is the kept bound itself, spelled out:
+    // moving the constant without moving the sentence fails here rather
+    // than leaving the contract quietly wrong.
+    let kept = spelled(assistant_core::commands::COMPACT_KEPT_MESSAGES);
+    assert!(
+        contract.contains(&flattened(&format!(
+            "the last {kept} lines of conversation"
+        ))),
+        "the operator contract states the kept bound as {kept}"
+    );
+}
+
+/// The English word for a small number, so a document's prose can be
+/// checked against a constant instead of against itself. A value outside
+/// the table is a deliberate change to the bound and gets its word here.
+fn spelled(number: usize) -> String {
+    match number {
+        10 => "ten",
+        15 => "fifteen",
+        20 => "twenty",
+        25 => "twenty-five",
+        30 => "thirty",
+        other => panic!("the kept bound moved to {other}; spell it here and in the contract"),
+    }
+    .to_owned()
+}
+
+/// The commands-menu design records what unit 45 built of it, so its own
+/// implementer starts from the tree instead of the whole design.
+///
+/// Only the durable facts are pinned: that the note is there, and what it
+/// says was already built. The note's list of what remains is a status
+/// line that the commands-menu unit will shorten as it builds, and pinning
+/// prose that is meant to change would make an honest edit fail a test.
+#[test]
+fn the_commands_menu_design_records_what_was_already_built() {
+    let spec = flattened(&repo_file("docs/units/telegram/15-commands-menu.md"));
+    for fact in [
+        "**Note, 2026-08-30: part of this design is built.**",
+        "Unit 45 (the session-reset commands) adopted the catalogue's core half and \
+         shipped it",
+    ] {
+        assert!(
+            spec.contains(&flattened(fact)),
+            "the design records: {fact}"
+        );
+    }
+}

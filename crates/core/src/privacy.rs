@@ -33,6 +33,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use crate::commands::Command;
 use crate::message::InvokedCommand;
 use crate::outbound::{PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED};
 
@@ -87,19 +88,29 @@ pub enum RightsCommand {
     OptIn,
 }
 
-/// The family member a message invokes, if any: the reported command
-/// matched against the five exact spellings. Invoking a command is
-/// addressing by form, so the answers never consult the stored addressed
-/// fact, and every member works unaddressed in groups.
+/// The family member a message invokes, if any — a projection of the
+/// catalogue's one recognition (unit 45, 2026-08-30), so a spelling this
+/// family accepts and a spelling the catalogue accepts cannot drift apart.
+/// Invoking a command is addressing by form, so the answers never consult
+/// the stored addressed fact, and every member works unaddressed in groups.
 #[must_use]
 pub fn family_command(command: Option<&InvokedCommand>) -> Option<PrivacyCommand> {
-    match command?.name() {
-        PRIVACY_COMMAND => Some(PrivacyCommand::Notice),
-        OPT_OUT_COMMAND => Some(PrivacyCommand::SelfService(RightsCommand::OptOut)),
-        DELETE_COMMAND => Some(PrivacyCommand::SelfService(RightsCommand::Delete)),
-        CONFIRM_COMMAND => Some(PrivacyCommand::SelfService(RightsCommand::Confirm)),
-        OPT_IN_COMMAND => Some(PrivacyCommand::SelfService(RightsCommand::OptIn)),
-        _ => None,
+    family_of(crate::commands::recognized(command)?)
+}
+
+/// Which member of this family a recognized command is, if any. The one
+/// place the catalogue's variants and this family's split are related, read
+/// by the entry point too so one recognition serves both.
+pub(crate) fn family_of(command: Command) -> Option<PrivacyCommand> {
+    match command {
+        Command::Privacy => Some(PrivacyCommand::Notice),
+        Command::PrivacyOut => Some(PrivacyCommand::SelfService(RightsCommand::OptOut)),
+        Command::PrivacyDelete => Some(PrivacyCommand::SelfService(RightsCommand::Delete)),
+        Command::ConfirmDelete => Some(PrivacyCommand::SelfService(RightsCommand::Confirm)),
+        Command::PrivacyIn => Some(PrivacyCommand::SelfService(RightsCommand::OptIn)),
+        // The session resets are the catalogue's other family; nothing
+        // about them is a data right.
+        Command::Wipe | Command::Compact => None,
     }
 }
 
@@ -247,10 +258,21 @@ mod tests {
         }
         assert_eq!(
             family_command(Some(&InvokedCommand::new("/PrivacyOut"))),
+            Some(PrivacyCommand::SelfService(RightsCommand::OptOut)),
+            "recognition folds ASCII case, so an autocapitalising keyboard \
+             still reaches the right (unit 45, 2026-08-30)"
+        );
+        assert_eq!(
+            family_command(Some(&InvokedCommand::new("/privacyoutside"))),
             None,
-            "the spelling is exact"
+            "a longer word carrying the token is a different command"
         );
         assert_eq!(family_command(Some(&InvokedCommand::new("/help"))), None);
+        assert_eq!(
+            family_command(Some(&InvokedCommand::new(crate::commands::WIPE_COMMAND))),
+            None,
+            "the session resets are recognized, and are no part of this family"
+        );
         assert_eq!(
             family_command(None),
             None,

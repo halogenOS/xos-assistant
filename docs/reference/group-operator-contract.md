@@ -197,3 +197,40 @@ window the rules acknowledgment uses; repeats inside the window are read
 and left unanswered. The platform additionally offers a bot-level privacy policy
 field in its bot management surface; filling it is deployment wiring, kept
 in the deployment notes, and does not replace the command.
+
+## The session commands: `/wipe` and `/compact`
+
+Added 2026-08-30. A moderator or an administrator of the group resets what
+the assistant is reading, with one of two commands. Both are group
+commands: in a direct chat they answer nothing, and so does either of them
+from an ordinary member — the assistant stays silent instead of announcing
+a command that person cannot use. Neither needs a mention, and neither is
+answered by the model.
+
+`/wipe` starts the group over. The assistant speaks into an empty session
+from that moment: it has forgotten the conversation, and the next message
+is the first one it reads. It answers `Done. This group starts a fresh
+session; the old one stays on record.` The group's title and its pinned
+rules come back by themselves on the next message, without anyone
+re-pinning anything.
+
+`/compact` trims instead. The recent messages stay — the last twenty
+lines of conversation, with their day — along with the group's title and
+rules; everything older, and every trace of the assistant's tool work, is
+set aside. It answers `Done. This session was compacted: recent messages
+stay, old context is set aside.`, or `This session is already compact.
+Nothing changed.` when there was nothing to trim.
+
+Three things are true of both, and are the reason to reach for them:
+
+- **Nothing is deleted.** The earlier conversation stays on record whole,
+  exactly as it was, and a member's deletion request still reaches it. What
+  changes is only what the assistant reads.
+- **Anything the assistant was still about to say is dropped.** A reset
+  cuts the answer it was working on and any unanswered question behind it.
+  That is the point of a reset, and it is why the commands are worth
+  reaching for rather than habitual.
+- **The assistant may compact a session by itself.** When a turn ends
+  because the assistant kept trying the same failing tool call, the same
+  trim runs unattended and nothing is said in the chat. That is a recovery
+  from a session that had gone bad, not a message worth reading.
