@@ -154,6 +154,9 @@ Added 2026-08-24, with the audience-differentiation unit. When the
 `answering` key is `addressed`, the assistant reads only messages that
 address it: a mention, a reply to one of its messages, its name, or a
 direct chat. A plain follow-up that does none of these is never seen.
+For a BOT sender the rule is narrower in both answering modes: only an
+explicit mention addresses the assistant — another bot's reply or
+name-drop never summons it (added 2026-08-30, with the bot-mention unit).
 This matters when the assistant asks a clarifying question — for example,
 whether a member wants to use a feature on their device or build it into
 a ROM — because the member's disambiguating reply must address the

@@ -179,10 +179,11 @@ Each person draws at most five searches per ten minutes, since every call is a p
 request, and the same query within the window is answered from memory. Facts about
 halogenOS itself still come only from the project lookups.
 
-The report tool files a spam report with the group's moderation bot when a member
-replies to an offending message and asks: the fixed `/report@<handle>` line goes
-out as a threaded reply to the reported message, before the assistant's answer, at
-most once per group per report window. It registers only when `moderation_handle`
+The report tool files a spam report with the group's moderation bot on the
+assistant's own moderation read: when the group's pinned rules are clearly and
+unmistakably violated — never on a borderline call — the fixed
+`/report@<handle>` line goes out as a threaded reply to the violating message,
+at most once per group per report window. It registers only when `moderation_handle`
 is configured, works in groups only, and takes no arguments — the member's reply
 is what names the reported message. The platform-side setup it needs is recorded
 in the group operator's reference document.
@@ -252,7 +253,11 @@ sentinel, which the process swallows: nothing reaches the chat, the turn is
 closed, and no answer-window slot is spent, since the window bounds what the
 assistant says. A rate-limited member's message opens no turn at all, so a flood
 still costs nothing. Under `answering = "addressed"` only a mention, a reply to
-the assistant, its name, or a direct chat summons a turn. The name (decision
+the assistant, its name, or a direct chat summons a turn. A message from a
+BOT account is narrower still, in every mode: only an explicit mention
+summons the assistant — a bot's reply or name-drop never does, an
+unmentioned bot message owes no answer, and nothing ever waits behind one
+(decisions 0151-0154). The name (decision
 0089) defaults to the platform display name read once at startup, feeds the
 prompt's identity and the disclosure line's default, and — as one whole word,
 case-insensitively — wakes the assistant in groups; a name that cannot form a
