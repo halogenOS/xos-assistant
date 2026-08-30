@@ -194,7 +194,7 @@ async fn a_reply_reaches_the_model_quoted_above_its_own_words() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-quote-e2e").await;
@@ -241,7 +241,7 @@ async fn a_manual_excerpt_narrows_and_a_drifted_one_quotes_the_whole_message() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-quote-narrow").await;
@@ -499,7 +499,7 @@ async fn a_reply_to_the_assistant_quotes_her_words_and_still_wakes_her() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-quote-assistant").await;
@@ -575,7 +575,7 @@ async fn a_manual_excerpt_of_her_message_narrows_and_a_drifted_one_quotes_it_who
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-narrow").await;
@@ -646,7 +646,7 @@ async fn a_reply_to_a_later_chunk_quotes_her_whole_answer() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-chunks").await;
@@ -710,7 +710,7 @@ async fn a_reply_to_an_unresolvable_message_of_hers_lands_quoteless() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-quoteless").await;
@@ -800,7 +800,7 @@ async fn a_reply_to_the_failure_notice_lands_quoteless() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-notice").await;
@@ -853,7 +853,7 @@ async fn the_crash_shape_over_her_block_asks_nothing_and_settles_nothing() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-crash").await;
@@ -968,7 +968,7 @@ async fn a_quoted_reply_still_takes_its_turn_in_both_answering_modes() {
                 .await;
         let mut replies = fixture
             .assistant
-            .replies(support::ADAPTER)
+            .outbound(support::ADAPTER)
             .await
             .expect("the outbound edge opens");
         let room = support::authorized_group(&fixture.assistant, "room-quote-answering").await;

@@ -213,7 +213,7 @@ async fn the_envelope_renders_the_short_page_the_vendor_answered() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
 
@@ -296,7 +296,7 @@ async fn declined_turn(answer: LookupAnswer, input: String, channel_id: &str) ->
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let receipt = support::ingest_recorded(
@@ -401,7 +401,7 @@ async fn an_empty_page_is_answered_and_not_failed() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let receipt = support::ingest_recorded(
@@ -453,7 +453,7 @@ async fn an_unreachable_vendor_teaches_its_own_result() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let receipt = support::ingest_recorded(
@@ -559,7 +559,7 @@ async fn a_turn_holding_two_people_declines_the_spend() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-search-two-people").await;
@@ -633,7 +633,7 @@ async fn a_configured_key_admits_and_teaches_and_no_key_does_neither() {
     .await;
     let mut replies = searching
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let receipt = support::ingest_recorded(
@@ -672,7 +672,7 @@ async fn a_configured_key_admits_and_teaches_and_no_key_does_neither() {
     let plain = support::start_assistant(None).await;
     let mut plain_replies = plain
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let plain_receipt = support::ingest_recorded(
@@ -729,7 +729,7 @@ async fn no_recorded_block_carries_a_fragment_of_the_key() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let receipt = support::ingest_recorded(
@@ -802,7 +802,7 @@ async fn an_announce_ahead_of_the_search_arrives_before_the_answer() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
 

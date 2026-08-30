@@ -31,7 +31,7 @@ use crate::support::{
 };
 
 /// The outbound edge a fixture's replies arrive on.
-type Replies = mpsc::UnboundedReceiver<assistant_core::OutboundReply>;
+type Replies = mpsc::UnboundedReceiver<assistant_core::Outbound>;
 
 /// The fixed line every report in this suite files, under the suite's
 /// configured handle.
@@ -77,7 +77,7 @@ async fn report_fixture_on(
             .await;
     let replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     (fixture, replies)
@@ -1786,9 +1786,9 @@ fn fresh_handle() -> ScriptHandle {
 }
 
 /// The full registered set of a moderating deployment, sorted as the
-/// palette records it: the three production lookups, the three
-/// always-registered tools — the standing lookup, privacy and runtime
-/// facts — and the report tool.
+/// palette records it: the three production lookups, the four
+/// always-registered tools — the standing lookup, privacy, the react tool
+/// and runtime facts — and the report tool.
 fn reporting_palette() -> Vec<String> {
     vec![
         "lookup_commit".into(),
@@ -1796,6 +1796,7 @@ fn reporting_palette() -> Vec<String> {
         "lookup_wiki".into(),
         assistant_core::tools::standing::NAME.into(),
         assistant_core::tools::rights::NAME.into(),
+        assistant_core::tools::mark::NAME.into(),
         report::NAME.into(),
         assistant_core::tools::runtime::NAME.into(),
     ]
@@ -1966,7 +1967,7 @@ async fn a_pre_unit_palette_gains_the_report_tool_and_files_on_first_activity() 
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     support::authorize(&fixture.assistant, &key).await;
@@ -2086,9 +2087,10 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
                 "lookup_wiki".to_owned(),
                 assistant_core::tools::standing::NAME.to_owned(),
                 assistant_core::tools::rights::NAME.to_owned(),
+                assistant_core::tools::mark::NAME.to_owned(),
                 assistant_core::tools::runtime::NAME.to_owned()
             ],
-            "the report tool is removed; the lookups and the unconfigured tools stand"
+            "the report tool is removed; the lookups and the unconditional tools stand"
         );
 
         let fresh = support::ingest_recorded(

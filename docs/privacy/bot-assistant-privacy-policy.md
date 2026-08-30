@@ -31,6 +31,11 @@ after a person reviews it. The assistant also reads group messages that do not a
 to offer help when it can answer a question — on the same basis and under the same limits
 as everything else here (added 2026-08-23).
 
+The assistant may put an emoji reaction on a message; the emoji it chose is stored with
+that message's record. Added 2026-08-30. It is what the assistant does instead of writing
+a reply nobody needed, it changes nothing about you or your standing in the group, and it
+cannot see the reactions anybody else puts on anything.
+
 _Purpose:_ answering questions in the groups, reading the conversation for
 context, limiting how much the assistant answers per person and per chat, and reporting a
 message that breaks the group's pinned rules to the group's moderation bot (changed
@@ -131,7 +136,9 @@ schedule would delete everyone's history to reach the part one person wanted gon
 identity data and circumstances as long as the message; the pinned rules while the
 assistant serves the group, each replaced by the next; answer counters until they fall
 out of their window; a report with its message reference emptied when the reported person is
-deleted; lookup records with no time limit. Deleting a message in your chat app does not
+deleted; a reaction record for exactly as long as the message it sits on, its message
+reference emptied on the same deletion (added 2026-08-30); lookup records with no time
+limit. Deleting a message in your chat app does not
 reach us, and neither your leaving a group nor the assistant leaving it deletes anything:
 ask, and it goes. One exception: when the group's administrators delete a message through
 the moderation bot's reply command, that message is removed from our store as well. Only
@@ -143,6 +150,12 @@ We delete on request the text of every message you wrote, its send time and repl
 your identity data, and — added 2026-08-29 — the join announcement we recorded for you,
 with the name and handle it showed. What remains in a
 group is an empty placeholder holding a position in the conversation.
+
+One thing we do not take back, and we say so rather than let you find out: a reaction the
+assistant already put on one of your messages stays visible in the chat. The record of it
+is emptied like everything else. The reaction itself is a fact about the assistant, on a
+message the group and the platform hold as their own, and it names nobody (added
+2026-08-30).
 
 Some things stay. The assistant's own answers stay, and one can carry your handle and repeat
 what you asked. On your message rows the store's internal number, the arrival time and your

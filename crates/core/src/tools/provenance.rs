@@ -100,7 +100,8 @@ pub fn turn_reading(ledger: &[Block], call_block_id: i64) -> Authority {
             | AssistantKind::ContextNote(_)
             | AssistantKind::JoinNotice(_)
             | AssistantKind::Report(_)
-            | AssistantKind::Delivered(_) => None,
+            | AssistantKind::Delivered(_)
+            | AssistantKind::MessageMark(_) => None,
         });
     fold(origin, span)
 }
@@ -357,6 +358,14 @@ fn chain_step(block: &Block, ledger: &[Block]) -> ChainStep {
         // naming it here keeps that judgment visible beside the rule
         // instead of buried in the catch-all.
         AssistantKind::Report(_) => ChainStep::Extends,
+        // The mark block extends explicitly for the report's own reason
+        // (unit 39, 2026-08-30): the kind is written INTO a live turn's
+        // window by the react tool itself, so its classification decides
+        // admission on the very turn that wrote it — a reaction can never
+        // answer a debt, and it stands at the tail more often than a
+        // report does, being placed precisely on turns that answer
+        // nothing.
+        AssistantKind::MessageMark(_) => ChainStep::Extends,
         _ => ChainStep::Extends,
     }
 }
@@ -906,6 +915,36 @@ mod tests {
                 "the {kind} block in the dead turn's window breaks the chain"
             );
         }
+    }
+
+    /// AC6's fourth site for the reaction (unit 39, 2026-08-30): a mark
+    /// block in the chain is READ THROUGH, so the debt's own origin still
+    /// votes. The kind is written into a live turn's window by the react
+    /// tool, so its classification decides admission on the very turn that
+    /// wrote it — and a chain that ended on it would fold an admin's owed
+    /// ask down to the floor with that ask's own words inside the
+    /// dispatched request.
+    ///
+    /// The pin holds whether or not the catch-all exists: what it asserts
+    /// is the reading, and the arm above names the variant so the judgment
+    /// stays visible beside the rule instead of buried in the default.
+    #[test]
+    fn a_reaction_in_the_chain_is_read_through() {
+        let mark = bare_block(2, crate::tools::mark::MESSAGE_MARK_KIND, Some(1));
+        assert!(
+            matches!(chain_step(&mark, &[]), ChainStep::Extends),
+            "a reaction answered no debt, so the chain continues silently"
+        );
+        let ledger = vec![
+            chat_block(1, Authority::Admin, true, None),
+            mark,
+            call_block(5, Some(1)),
+        ];
+        assert_eq!(
+            turn_reading(&ledger, 5),
+            Authority::Admin,
+            "the reaction between the summons and the call cuts nobody out of the fold"
+        );
     }
 
     /// A frontier that is not a chat message contributes the floor itself

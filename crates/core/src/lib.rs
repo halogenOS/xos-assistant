@@ -13,8 +13,10 @@
 //! Every public item has exactly one path. The message vocabulary, the
 //! assembly and the error type live at the crate root:
 //!
-//! - [`InboundMessage`] and [`OutboundReply`] with their parts — the core's
-//!   own vocabulary, which adapters translate into and out of.
+//! - [`InboundMessage`] and [`Outbound`] with their parts — the core's
+//!   own vocabulary, which adapters translate into and out of. What the
+//!   outbound edge yields is [`Outbound`]: an [`OutboundReply`] of words,
+//!   or an [`OutboundMark`] of one emoji to put on a message.
 //! - [`Assistant`] — the assembly: runtime wiring, the ingestion entry point
 //!   (answering with an [`IngestOutcome`], its stamp bounded by the
 //!   [`ProtectionConfig`] budgets and its group admission checked against
@@ -45,7 +47,8 @@
 //!   programmatic confirm.
 //! - [`schema`] — the store configuration and the domain tables; identity
 //!   lives apart from the ledger so erasure never touches a block.
-//! - [`tools`] — the project lookups, the web search behind its own
+//! - [`tools`] — the project lookups, the react tool putting one emoji on
+//!   a message, the web search behind its own
 //!   configured key, the palette kind that gates their admission, the
 //!   provenance reading the anchor gate takes, and the admission wrapper
 //!   enforcing both; the assembly takes its [`tools::ToolSet`] and
@@ -63,6 +66,7 @@ pub mod delivery;
 mod disclosure;
 mod erasure;
 mod error;
+mod filing;
 mod identity;
 pub mod join;
 pub mod kind;
@@ -96,14 +100,15 @@ pub use error::{CoreError, FailureKind};
 pub use message::{
     Authority, ChannelKey, ChannelKind, ComposingState, ComposingUpdate, DeliveryHandle,
     DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand, JoinedMember,
-    Observation, ObserveOutcome, ObservedDelivery, ObservedFact, OutboundReply, QuotedExcerpt,
-    ReplyKind, ReplyTarget, ReplyThread, SenderIdentity,
+    Observation, ObserveOutcome, ObservedDelivery, ObservedFact, Outbound, OutboundMark,
+    OutboundReply, QuotedExcerpt, ReplyKind, ReplyTarget, ReplyThread, SenderIdentity,
 };
 pub use outbound::{
     FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
 };
 pub use teaching::{
-    Capabilities, MODERATION_TEACHING, SEARCH_TEACHING, composed_system_prompt, moderation_taught,
+    Capabilities, MODERATION_TEACHING, REACT_TEACHING, SEARCH_TEACHING, composed_system_prompt,
+    moderation_taught,
 };
 pub use window::{
     ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, SEARCH_BUDGET_CAP,

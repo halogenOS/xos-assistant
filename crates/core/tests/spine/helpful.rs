@@ -41,7 +41,7 @@ async fn an_unaddressed_group_question_is_answered_with_the_line() {
     let fixture = helpful_fixture(assistant_core::ProtectionConfig::default()).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-helpful").await;
@@ -86,7 +86,7 @@ async fn a_silent_turn_speaks_nothing_and_spends_no_window_slot() {
     let fixture = helpful_fixture(support::budgets(Some((1, 600)), None)).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-silent").await;
@@ -190,7 +190,7 @@ async fn the_cue_stays_dark_for_a_silent_turn_and_lights_for_a_spoken_one() {
     let mut composing = fixture.assistant.composing(support::ADAPTER);
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-cue").await;
@@ -248,7 +248,7 @@ async fn a_rate_limited_members_message_opens_no_turn() {
     let fixture = helpful_fixture(support::budgets(Some((1, 600)), None)).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-limited").await;
@@ -299,7 +299,7 @@ async fn an_answer_with_real_text_is_never_swallowed() {
     let fixture = helpful_fixture(assistant_core::ProtectionConfig::default()).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-prose").await;
@@ -357,7 +357,7 @@ async fn an_absorbed_question_and_the_intervening_answer_reach_the_model() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-absorbed-helpful").await;

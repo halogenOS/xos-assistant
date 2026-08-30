@@ -70,7 +70,8 @@ use std::time::{Duration, Instant};
 
 use assistant_core::{
     Assistant, ChannelKind, ComposingState, ComposingUpdate, DeliveryHandle, FailureKind,
-    InboundMessage, IngestOutcome, Observation, ObserveOutcome, ObservedFact, OutboundReply,
+    InboundMessage, IngestOutcome, Observation, ObserveOutcome, ObservedFact, Outbound,
+    OutboundMark, OutboundReply,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -283,7 +284,7 @@ pub(crate) async fn run(
     announce_bound: Option<crate::BoundListener>,
     assistant: Arc<Assistant>,
 ) -> Result<(), AdapterError> {
-    let replies = assistant.replies(ADAPTER_NAME).await?;
+    let outbound = assistant.outbound(ADAPTER_NAME).await?;
     let composing = assistant.composing(ADAPTER_NAME);
     let client = Arc::new(BotClient::new(
         &config.api_root,
@@ -317,7 +318,7 @@ pub(crate) async fn run(
     .await?;
     tokio::select! {
         () = feeder => {}
-        () = consume_replies(replies, &client, &typing, &assistant) => {}
+        () = consume_outbound(outbound, &client, &typing, &assistant) => {}
         () = consume_composing(composing, &client, &typing) => {}
     }
     Ok(())
@@ -893,53 +894,115 @@ async fn consume_composing(
     }
 }
 
-/// Send each reply from the edge to its chat, sequentially — threaded as
-/// the core's reply thread states, decoded through the same naming rule
-/// the inbound side stored the origin under, recovery included: whether a
-/// refused thread re-sends the text plainly is the core's statement, not
-/// this consumer's reading of what kind of reply it holds. A send that
-/// spends its bounded rate-limit retry — or fails outright — is logged and
-/// dropped, and the consumer moves on to the next reply. The chat's typing
-/// refresher, if one still runs, is stopped ahead of the send: the answer
-/// ends the composing it announced, even when the core's stop transition
-/// was lost to the lossy cue.
-async fn consume_replies(
-    mut replies: UnboundedReceiver<OutboundReply>,
+/// Perform each item the core's outbound edge yields, sequentially and in
+/// the order it yielded them: words are sent, a reaction is placed. The
+/// two arms are the core's own statement of which is which; this consumer
+/// reads no text and judges nothing.
+async fn consume_outbound(
+    mut outbound: UnboundedReceiver<Outbound>,
     client: &BotClient,
     typing: &TypingRefreshers,
     assistant: &Assistant,
 ) {
-    while let Some(reply) = replies.recv().await {
-        let Some(chat_id) = translate::chat_id_of(&reply.channel) else {
-            tracing::error!("an outbound channel key names no chat; reply dropped");
-            continue;
-        };
-        typing.stop(chat_id);
-        let thread = translate::send_thread(reply.reply_target.as_ref());
-        if let Err(failure) = send_recording(
-            client,
-            assistant,
-            chat_id,
-            &reply.text,
-            thread,
-            reply.delivery,
-        )
-        .await
-        {
-            // Two different outcomes, per decision 0019: nothing reached the
-            // chat, or earlier chunks did and the tail was dropped with the
-            // failing one — the log must state which one happened.
-            if failure.delivered.is_empty() {
-                tracing::warn!(chat_id, error = %failure.error, "the send failed; reply dropped");
-            } else {
-                tracing::warn!(
-                    chat_id,
-                    delivered_chunks = failure.delivered.len(),
-                    error = %failure.error,
-                    "a chunk failed; reply cut short after the delivered chunks"
-                );
-            }
+    while let Some(item) = outbound.recv().await {
+        match item {
+            Outbound::Reply(reply) => send_reply(client, assistant, typing, reply).await,
+            Outbound::Mark(mark) => place_reaction(client, &mark).await,
         }
+    }
+}
+
+/// Send one reply's words to its chat — threaded as the core's reply
+/// thread states, decoded through the same naming rule the inbound side
+/// stored the origin under, recovery included: whether a refused thread
+/// re-sends the text plainly is the core's statement, not this consumer's
+/// reading of what kind of reply it holds. A send that spends its bounded
+/// rate-limit retry — or fails outright — is logged and dropped, and the
+/// consumer moves on to the next item. The chat's typing refresher, if one
+/// still runs, is stopped ahead of the send: the answer ends the composing
+/// it announced, even when the core's stop transition was lost to the
+/// lossy cue.
+async fn send_reply(
+    client: &BotClient,
+    assistant: &Assistant,
+    typing: &TypingRefreshers,
+    reply: OutboundReply,
+) {
+    let Some(chat_id) = translate::chat_id_of(&reply.channel) else {
+        tracing::error!("an outbound channel key names no chat; reply dropped");
+        return;
+    };
+    typing.stop(chat_id);
+    let thread = translate::send_thread(reply.reply_target.as_ref());
+    if let Err(failure) = send_recording(
+        client,
+        assistant,
+        chat_id,
+        &reply.text,
+        thread,
+        reply.delivery,
+    )
+    .await
+    {
+        // Two different outcomes, per decision 0019: nothing reached the
+        // chat, or earlier chunks did and the tail was dropped with the
+        // failing one — the log must state which one happened.
+        if failure.delivered.is_empty() {
+            tracing::warn!(chat_id, error = %failure.error, "the send failed; reply dropped");
+        } else {
+            tracing::warn!(
+                chat_id,
+                delivered_chunks = failure.delivered.len(),
+                error = %failure.error,
+                "a chunk failed; reply cut short after the delivered chunks"
+            );
+        }
+    }
+}
+
+/// Put one reaction on its message (unit 39, 2026-08-30). Three ways it
+/// can end without a platform call, each logged and dropped: a channel key
+/// naming no chat, a target this adapter did not mint, and — the one the
+/// membership rule exists for — an emoji outside the platform's own
+/// reaction set, which the platform would silently discard. The bytes that
+/// go out are the LIST'S, never the model's.
+///
+/// The typing refresher is deliberately NOT stopped here. An answer is the
+/// visible end of the composing it announced; a reaction is not. In the
+/// ordinary path the two edges terminate on the same event and the
+/// difference is invisible; the one reachable case is an outbound lag,
+/// where a reaction recovered from an earlier turn arrives while a LATER
+/// turn is composing, and stopping the cue there would extinguish an
+/// indicator that later turn is still earning.
+///
+/// A failure is one warning line and nothing else: no retry, and above all
+/// no text fallback — the whole point of a reaction is that it costs no
+/// message, and a fallback would spend one at the worst possible moment.
+async fn place_reaction(client: &BotClient, mark: &OutboundMark) {
+    let Some(chat_id) = translate::chat_id_of(&mark.channel) else {
+        tracing::error!("an outbound channel key names no chat; reaction dropped");
+        return;
+    };
+    let Some(message_id) = translate::message_id_of(&mark.target_origin) else {
+        tracing::warn!(
+            chat_id,
+            "a reaction names a target this adapter did not mint; dropped"
+        );
+        return;
+    };
+    let Some(placeable) = translate::placeable_reaction(&mark.emoji) else {
+        tracing::warn!(
+            chat_id,
+            message_id,
+            "the chosen emoji is not one the platform places; the reaction is dropped"
+        );
+        return;
+    };
+    if let Err(error) = client
+        .set_message_reaction(chat_id, message_id, placeable)
+        .await
+    {
+        tracing::warn!(chat_id, message_id, %error, "the reaction did not place; dropped");
     }
 }
 
@@ -979,6 +1042,55 @@ async fn send_recording(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The mark arm leaves the chat's typing refresher alone (T6 AC7): a
+    /// refresher runs for the very chat the reaction lands in, the whole
+    /// placement runs against it, and it is still registered afterwards.
+    /// The stop at the end is the non-vacuity: the same registry, asked the
+    /// same way, answers false the moment something does stop it — which is
+    /// what the reply arm does, watched at the wire by the composing suite.
+    ///
+    /// The pin is on the arm's collaborators, and that is the regression it
+    /// exists for: the placement takes the client and the mark and nothing
+    /// else, so a refactor that handed it the registry could not leave this
+    /// test compiling — passing the registry in is the only way to keep it
+    /// building, and then the assertion below fails. The wire behaviour of
+    /// this same arm — one `setMessageReaction`, no message, no retry —
+    /// belongs to the adapter's reaction suite, which drives it end to end.
+    ///
+    /// The client's root is not a URL, so neither the placement nor the
+    /// refresher's action reaches any wire: both fail where they stand,
+    /// which is exactly the path this pin is about — the refresher survives
+    /// a placement that failed, too.
+    #[tokio::test]
+    async fn placing_a_reaction_leaves_the_chats_typing_refresher_running() {
+        let sleep: Sleep = Arc::new(|_| Box::pin(async {}));
+        let client = Arc::new(BotClient::new("not a root", "token", sleep));
+        let typing = TypingRefreshers::default();
+        let chat = 41_652;
+        typing.begin(&client, chat);
+
+        place_reaction(
+            &client,
+            &OutboundMark {
+                channel: translate::channel_key(chat),
+                emoji: "\u{1F44D}".to_owned(),
+                target_origin: translate::origin_of(7),
+            },
+        )
+        .await;
+
+        assert!(
+            typing.running.lock().unwrap().contains_key(&chat),
+            "a reaction is not the visible end of the composing a turn announced, so \
+             placing one must leave the chat's refresher running"
+        );
+        typing.stop(chat);
+        assert!(
+            !typing.running.lock().unwrap().contains_key(&chat),
+            "the registry answers false once something does stop the refresher"
+        );
+    }
 
     /// The refresher's self-bound, with every stop withheld: no transition,
     /// no answer, no drop — the exact shape of the orphan a lost stop once

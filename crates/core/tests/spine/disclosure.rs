@@ -49,7 +49,7 @@ async fn the_first_answer_carries_the_line_and_the_second_does_not() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = channel("dm-disclosure");
@@ -111,7 +111,7 @@ async fn a_second_new_person_in_the_same_conversation_gets_their_own_line() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-two-people").await;
@@ -175,7 +175,7 @@ async fn an_absorbed_new_co_summoner_draws_the_line_and_counts_as_introduced() {
     let fixture = support::start_assistant(Some(hold.clone())).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-absorbed").await;
@@ -262,7 +262,7 @@ async fn a_person_returning_after_deletion_gets_the_line_again() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-return").await;
@@ -347,7 +347,7 @@ async fn deterministic_replies_carry_no_disclosure() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-fixed-lines").await;

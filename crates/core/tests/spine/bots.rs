@@ -78,7 +78,7 @@ async fn a_bots_plain_messages_open_no_turn_and_spend_no_budget() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-bot-quiet").await;
@@ -467,7 +467,7 @@ async fn a_commands_false_row_above_a_settled_tail_carries_no_debt_either_way() 
                 .await;
         let mut replies = fixture
             .assistant
-            .replies(support::ADAPTER)
+            .outbound(support::ADAPTER)
             .await
             .expect("the outbound edge opens");
         let room = support::authorized_group(&fixture.assistant, "room-settled").await;

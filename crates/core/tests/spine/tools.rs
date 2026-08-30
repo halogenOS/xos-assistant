@@ -95,7 +95,7 @@ impl ToolHandler<CoreEvent> for ProbeTool {
 }
 
 /// The outbound edge a fixture's replies arrive on.
-type Replies = tokio::sync::mpsc::UnboundedReceiver<assistant_core::OutboundReply>;
+type Replies = tokio::sync::mpsc::UnboundedReceiver<assistant_core::Outbound>;
 
 /// One assembled tool fixture: the assistant over the tool-scripted
 /// provider and the given set, under the default budgets, plus the
@@ -146,7 +146,7 @@ async fn assemble(
     let fixture = support::start_assistant_full(store, provider, handle, tools, protection).await;
     let replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     (fixture, replies)
@@ -632,6 +632,7 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
             commit::NAME.to_owned(),
             assistant_core::tools::standing::NAME.to_owned(),
             assistant_core::tools::rights::NAME.to_owned(),
+            assistant_core::tools::mark::NAME.to_owned(),
             assistant_core::tools::runtime::NAME.to_owned()
         ],
         "the appended palette names the registered set, the unconfigured tools included"
@@ -656,7 +657,7 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
 
@@ -700,9 +701,10 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
                 assistant_core::tools::wiki::NAME.to_owned(),
                 assistant_core::tools::standing::NAME.to_owned(),
                 assistant_core::tools::rights::NAME.to_owned(),
+                assistant_core::tools::mark::NAME.to_owned(),
                 assistant_core::tools::runtime::NAME.to_owned()
             ],
-            "the palette names the three lookups and the three always-registered tools"
+            "the palette names the three lookups and the four always-registered tools"
         );
         palettes.push(names);
     }
@@ -1575,7 +1577,7 @@ async fn await_streaming_tail(store: &Store, conversation_id: i64) {
 /// carries the person's disclosure line, so the closing text may arrive
 /// bare or introduced.
 async fn recv_closing(
-    replies: &mut tokio::sync::mpsc::UnboundedReceiver<assistant_core::OutboundReply>,
+    replies: &mut tokio::sync::mpsc::UnboundedReceiver<assistant_core::Outbound>,
 ) {
     while !recv_reply(replies).await.text.ends_with(CLOSING_ANSWER) {}
 }

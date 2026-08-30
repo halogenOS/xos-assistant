@@ -268,7 +268,7 @@ async fn a_standing_flag_drops_the_persons_messages_with_no_write() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-suppression").await;
@@ -458,7 +458,7 @@ async fn an_opted_out_persons_commands_answer_frozen_and_unblock_reopens() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-frozen").await;
@@ -1163,7 +1163,7 @@ async fn a_budget_silenced_sender_still_draws_the_rights_answer() {
             .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-budget-rights").await;
@@ -1326,7 +1326,8 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
                 "ALTER TABLE principals DROP COLUMN opted_out;
                  ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
                  DROP TABLE block_join_notice;
-                 DROP TABLE block_delivered;",
+                 DROP TABLE block_delivered;
+                 DROP TABLE block_message_mark;",
             )?;
             let refused = conn.execute("UPDATE principals SET opted_out = 1", []);
             assert!(
@@ -1346,7 +1347,7 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
         .expect("the version-twelve store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        17,
+        18,
         "the appended steps advanced the domain's version"
     );
     assert_eq!(

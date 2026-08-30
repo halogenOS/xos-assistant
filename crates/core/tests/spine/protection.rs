@@ -206,6 +206,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                  DROP TABLE {report};
                  DROP TABLE {join};
                  DROP TABLE {delivered};
+                 DROP TABLE {marks};
                  DROP TABLE group_authorizations;
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';",
                 index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
@@ -214,6 +215,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                 report = assistant_core::tools::report::REPORT_TABLE,
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
+                marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
             ))?;
             Ok(())
         })
@@ -255,7 +257,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        17,
+        18,
         "the appended steps advanced the domain's version"
     );
 
@@ -323,7 +325,7 @@ async fn the_principal_budget_refuses_the_next_debt_and_the_window_releases_it()
         support::start_assistant_configured(store, None, budgets(Some((2, 600)), None)).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = channel("dm-principal-budget");
@@ -397,7 +399,7 @@ async fn the_channel_budget_spares_other_channels_and_the_direct_chat() {
             .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-channel-budget").await;
@@ -521,7 +523,7 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
     .await
     .expect("the assembly starts");
     let mut replies = assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&assistant, "room-propagated").await;

@@ -31,6 +31,9 @@
 //! its transparency on both walks, its reach into the report path and its
 //! erasure by person and by event),
 //! projection (role alternation under erasure),
+//! reactions (the react tool: the filed mark block, the outbound edge's
+//! second arm, the aiming and duplicate declines, the read-through that
+//! keeps a question owed behind a reaction, and both nulling paths),
 //! quotes (a reply landing as a quote of the message it replies to: what
 //! reaches the model, what quotes nothing, the erasure on either side,
 //! the crash shape's debt and the refresh fork's parity),
@@ -79,6 +82,7 @@ mod privacy_rights;
 mod projection;
 mod protection;
 mod quotes;
+mod reactions;
 mod reasoning;
 mod report;
 mod runtime_facts;

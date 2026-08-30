@@ -17,7 +17,7 @@ use crate::support::{
 };
 
 /// The outbound edge a fixture's replies arrive on.
-type Replies = tokio::sync::mpsc::UnboundedReceiver<assistant_core::OutboundReply>;
+type Replies = tokio::sync::mpsc::UnboundedReceiver<assistant_core::Outbound>;
 
 /// A running assistant under the given answering mode, with the outbound
 /// edge open and a held stream, so a test can absorb messages into one
@@ -32,7 +32,7 @@ async fn threading_fixture(
             .await;
     let replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     (fixture, replies)

@@ -159,7 +159,7 @@ async fn a_really_erased_group_ledger_projects_alternating() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = support::authorized_group(&fixture.assistant, "room-alternation").await;

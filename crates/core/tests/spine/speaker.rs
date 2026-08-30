@@ -67,7 +67,8 @@ fn parsed(block: &Block) -> ChatMessage {
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
-        | AssistantKind::Delivered(_) => panic!("the chat row resolved through the delegate"),
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => panic!("the chat row resolved through the delegate"),
     }
 }
 
@@ -186,7 +187,7 @@ async fn a_merged_turn_renders_each_speaker_on_its_own_line() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = support::authorized_group(&fixture.assistant, "room-speaker-merge").await;
@@ -251,7 +252,7 @@ async fn the_handle_reaches_the_model_and_the_assistants_answer_stays_bare() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = support::authorized_group(&fixture.assistant, "room-speaker-e2e").await;
@@ -338,7 +339,7 @@ async fn erasure_nulls_the_speaker_and_the_handle_returns_with_the_person() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = support::authorized_group(&fixture.assistant, "room-speaker-erasure").await;
@@ -418,7 +419,8 @@ async fn erasure_nulls_the_speaker_and_the_handle_returns_with_the_person() {
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
-        | AssistantKind::Delivered(_) => panic!("the stored row resolved through the delegate"),
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => panic!("the stored row resolved through the delegate"),
     }
     let requests = fixture.script.seen.lock().unwrap();
     assert!(
@@ -540,9 +542,11 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
                  DROP TABLE {join};
-                 DROP TABLE {delivered};",
+                 DROP TABLE {delivered};
+                 DROP TABLE {marks};",
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
+                marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
             ))?;
             let refused = conn.execute(
                 &format!("UPDATE {CHAT_MESSAGE_TABLE} SET speaker = 'ada'"),
@@ -565,7 +569,7 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         .expect("the version-ten store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        17,
+        18,
         "the appended steps advanced the domain's version to the newest"
     );
     let blocks = support::consumer_view(
@@ -593,7 +597,8 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
-        | AssistantKind::Delivered(_) => panic!("the upgraded row resolved through the delegate"),
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => panic!("the upgraded row resolved through the delegate"),
     }
 
     // The upgraded store serves the write path: the first post-upgrade

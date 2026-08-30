@@ -24,7 +24,7 @@ async fn an_unaddressed_message_rests_and_joins_the_next_context() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = support::authorized_group(&fixture.assistant, "room-rest").await;
@@ -87,7 +87,7 @@ async fn the_system_prompt_is_recorded_and_projected() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = channel("dm-prompt");
@@ -139,7 +139,7 @@ async fn a_failed_turn_yields_one_notice_and_the_next_addressed_message_reengage
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = channel("dm-failure");
@@ -196,7 +196,7 @@ async fn a_payment_class_failure_stays_quiet_and_a_plain_failure_still_speaks() 
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let mut events = fixture.bus.subscribe();
@@ -406,7 +406,7 @@ async fn a_paid_debt_does_not_propagate() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = support::authorized_group(&fixture.assistant, "room-paid").await;

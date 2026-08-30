@@ -96,6 +96,13 @@ struct ServerState {
     /// the fixture for the failed-typing-action pin. Unset, actions
     /// succeed plainly.
     failing_chat_actions: Mutex<bool>,
+    /// The scripted rate-limit refusals every `setMessageReaction` draws,
+    /// consumed in order; calls past the script succeed.
+    reaction_scripts: Mutex<VecDeque<RateLimited>>,
+    /// Whether every `setMessageReaction` answers a scripted refusal — the
+    /// fixture for a group that restricted its reactions, a permission
+    /// switched off, or a target the platform will not decorate.
+    failing_reactions: Mutex<bool>,
     /// The answer every `sendMessage` carrying reply parameters is served,
     /// as a status and a description. Unset, a threaded send is served
     /// like any other.
@@ -323,6 +330,32 @@ impl BotApiServer {
             .expect("the threading refusal locks") = Some((status, description.to_owned()));
     }
 
+    /// Script the next `times` reaction placements to answer the
+    /// rate-limit reply with the stated wait; placements past the script
+    /// succeed. More entries than the adapter can consume is deliberate:
+    /// the pin is that exactly ONE call happens, so the script must be
+    /// unable to run out.
+    pub fn script_rate_limited_reactions(&self, retry_after: u64, times: usize) {
+        let mut scripts = self
+            .state
+            .reaction_scripts
+            .lock()
+            .expect("the reaction scripts lock");
+        for _ in 0..times {
+            scripts.push_back(RateLimited { retry_after });
+        }
+    }
+
+    /// Script every `setMessageReaction` from here on to answer a
+    /// refusal — the platform declining to place the reaction at all.
+    pub fn fail_reactions(&self) {
+        *self
+            .state
+            .failing_reactions
+            .lock()
+            .expect("the reaction refusal locks") = true;
+    }
+
     /// Script every `sendChatAction` from here on to answer a server
     /// failure.
     pub fn fail_chat_actions(&self) {
@@ -495,6 +528,32 @@ fn send_answer(state: &Arc<ServerState>, body: &Value) -> (u16, Value) {
     }
 }
 
+/// Answer one reaction placement from the scripts: the rate-limit script
+/// first, then the standing refusal, then plain success. The rate-limit
+/// entry is consumed whether or not the adapter comes back, which is what
+/// lets the caller pin that it does NOT come back.
+fn reaction_answer(state: &Arc<ServerState>) -> (u16, Value) {
+    let limited = state
+        .reaction_scripts
+        .lock()
+        .expect("the reaction scripts lock")
+        .pop_front();
+    if let Some(refusal) = limited {
+        return rate_limit_answer(&refusal);
+    }
+    if *state
+        .failing_reactions
+        .lock()
+        .expect("the reaction refusal locks")
+    {
+        return (
+            400,
+            json!({ "ok": false, "description": "Bad Request: REACTIONS_TOO_MANY" }),
+        );
+    }
+    (200, json!({ "ok": true, "result": true }))
+}
+
 /// Answer one request from the script, recording it first.
 async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16, Value) {
     state
@@ -536,6 +595,7 @@ async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16
             }
         }
         "sendMessage" => send_answer(state, &body),
+        "setMessageReaction" => reaction_answer(state),
         "getChat" => chat_info_answer(state, &body),
         "sendChatAction" => {
             if *state

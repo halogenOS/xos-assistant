@@ -450,6 +450,81 @@ pub(crate) fn message_id_of(origin: &str) -> Option<i64> {
     origin.parse().ok()
 }
 
+/// The variation selector the platform's own reaction list omits and every
+/// text editor and chat client silently adds. Matching removes it from
+/// both sides, so a model's selector-carrying pick and its bare form reach
+/// the same entry (unit 39, 2026-08-30).
+const VARIATION_SELECTOR: char = '\u{FE0F}';
+
+/// The platform's own reaction set, seventy-three entries, as ESCAPE
+/// SEQUENCES and never as pasted glyphs (unit 39, 2026-08-30). A pasted
+/// literal is what silently gains or loses a variation selector on its way
+/// through an editor, and a selector-polluted entry would be sent as bytes
+/// the platform does not know while looking right in every diff.
+///
+/// The derivation rule, since the platform states no wire form in prose:
+/// each entry is the form the platform's own page carries as that entry's
+/// image alt text, taken as-is — the bare heart, the selector-less pen and
+/// snowman, the joined sequences with their joiner and nothing else.
+/// Whether those exact bytes are accepted at the wire is this unit's third
+/// recorded unproven platform inference; the drop below and the platform's
+/// own refusal contain the failure, and the drop's log line is the
+/// observation channel that would correct an entry.
+///
+/// The list is the ADAPTER'S, not the core's: which tokens a platform can
+/// place is a platform fact. The core records whatever emoji its model
+/// chose, as content, and knows nothing about this array.
+/// The grid layout is deliberate and rustfmt is told to leave it: one
+/// entry per line would run to seventy-three lines and make a transposed
+/// or dropped entry harder to see, not easier.
+#[rustfmt::skip]
+pub(crate) const PLACEABLE_REACTIONS: [&str; 73] = [
+    "\u{2764}", "\u{1F44D}", "\u{1F44E}", "\u{1F525}", "\u{1F970}",
+    "\u{1F44F}", "\u{1F601}", "\u{1F914}", "\u{1F92F}", "\u{1F631}",
+    "\u{1F92C}", "\u{1F622}", "\u{1F389}", "\u{1F929}", "\u{1F92E}",
+    "\u{1F4A9}", "\u{1F64F}", "\u{1F44C}", "\u{1F54A}", "\u{1F921}",
+    "\u{1F971}", "\u{1F974}", "\u{1F60D}", "\u{1F433}",
+    "\u{2764}\u{200D}\u{1F525}", "\u{1F31A}", "\u{1F32D}", "\u{1F4AF}",
+    "\u{1F923}", "\u{26A1}", "\u{1F34C}", "\u{1F3C6}", "\u{1F494}",
+    "\u{1F928}", "\u{1F610}", "\u{1F353}", "\u{1F37E}", "\u{1F48B}",
+    "\u{1F595}", "\u{1F608}", "\u{1F634}", "\u{1F62D}", "\u{1F913}",
+    "\u{1F47B}", "\u{1F468}\u{200D}\u{1F4BB}", "\u{1F440}", "\u{1F383}",
+    "\u{1F648}", "\u{1F607}", "\u{1F628}", "\u{1F91D}", "\u{270D}",
+    "\u{1F917}", "\u{1FAE1}", "\u{1F385}", "\u{1F384}", "\u{2603}",
+    "\u{1F485}", "\u{1F92A}", "\u{1F5FF}", "\u{1F192}", "\u{1F498}",
+    "\u{1F649}", "\u{1F984}", "\u{1F618}", "\u{1F48A}", "\u{1F64A}",
+    "\u{1F60E}", "\u{1F47E}", "\u{1F937}\u{200D}\u{2642}", "\u{1F937}",
+    "\u{1F937}\u{200D}\u{2640}", "\u{1F621}",
+];
+
+/// The list entry one chosen emoji places as, `None` for a pick outside
+/// the platform's set (unit 39, 2026-08-30).
+///
+/// Matching is SELECTOR-BLIND: every variation selector is removed from
+/// both sides before the compare, because the platform's list carries none
+/// while a model's pick routinely does, and exact byte equality against a
+/// pasted list would drop legal reactions invisibly. It answers the
+/// LIST'S bytes and never the caller's, so what goes on the wire is always
+/// the form the platform published — a selector the caller carried never
+/// travels.
+///
+/// A joined sequence stays distinct from its parts under the same rule:
+/// the joiner is not a selector, so the heart-on-fire entry never collapses
+/// onto the bare heart.
+pub(crate) fn placeable_reaction(chosen: &str) -> Option<&'static str> {
+    let wanted = selector_blind(chosen);
+    PLACEABLE_REACTIONS
+        .iter()
+        .copied()
+        .find(|entry| selector_blind(entry) == wanted)
+}
+
+/// One emoji with every variation selector removed — the view both sides
+/// of the membership compare are read through.
+fn selector_blind(emoji: &str) -> String {
+    emoji.chars().filter(|c| *c != VARIATION_SELECTOR).collect()
+}
+
 /// The core's reply thread in the platform's terms: the origin decoded
 /// through [`message_id_of`], carrying the recovery the core stated for a
 /// refused threaded send. A reply the core threads nowhere, and an origin
@@ -1634,6 +1709,141 @@ mod tests {
                 translate(&update, &bot(), None),
                 Translation::Skip(Skip::MembershipServiceNote)
             ));
+        }
+    }
+
+    // ─── The reaction list and its membership rule (unit 39) ────────────
+
+    /// The WHOLE list, asserted: seventy-three entries, each one's bytes,
+    /// and the count itself — the unit's AC-D, which requires exactly this
+    /// entry-by-entry pin so a dropped, transposed or selector-polluted
+    /// entry fails a test instead of surfacing as an invisible drop in a
+    /// live group.
+    ///
+    /// What the grid below is, stated plainly so nobody reads more into a
+    /// green run than it holds: a SECOND TRANSCRIPTION of the same source
+    /// the constant was transcribed from, by the same hand, in the same
+    /// change. It catches a later edit to the constant — a reordering, a
+    /// deletion, a selector creeping in — which is what a regression pin is
+    /// for. It cannot catch a mis-reading of the platform's page, because
+    /// both sides would carry that mis-reading; the drop log named in the
+    /// unit's unproven-inference ledger is the channel that corrects THAT,
+    /// and no assertion in this file can stand in for it.
+    ///
+    /// The order is the page's own: the bare heart, the selector-less pen
+    /// and snowman, the joined heart-on-fire, technologist and shrugs.
+    #[test]
+    fn the_whole_reaction_list_is_pinned_entry_by_entry() {
+        // Laid out as the constant is, and skipped by rustfmt for the
+        // same reason: the two grids are compared by eye as well as by
+        // the loop below.
+        #[rustfmt::skip]
+        const EXPECTED: [&str; 73] = [
+            "\u{2764}", "\u{1F44D}", "\u{1F44E}", "\u{1F525}", "\u{1F970}",
+            "\u{1F44F}", "\u{1F601}", "\u{1F914}", "\u{1F92F}", "\u{1F631}",
+            "\u{1F92C}", "\u{1F622}", "\u{1F389}", "\u{1F929}", "\u{1F92E}",
+            "\u{1F4A9}", "\u{1F64F}", "\u{1F44C}", "\u{1F54A}", "\u{1F921}",
+            "\u{1F971}", "\u{1F974}", "\u{1F60D}", "\u{1F433}",
+            "\u{2764}\u{200D}\u{1F525}", "\u{1F31A}", "\u{1F32D}", "\u{1F4AF}",
+            "\u{1F923}", "\u{26A1}", "\u{1F34C}", "\u{1F3C6}", "\u{1F494}",
+            "\u{1F928}", "\u{1F610}", "\u{1F353}", "\u{1F37E}", "\u{1F48B}",
+            "\u{1F595}", "\u{1F608}", "\u{1F634}", "\u{1F62D}", "\u{1F913}",
+            "\u{1F47B}", "\u{1F468}\u{200D}\u{1F4BB}", "\u{1F440}", "\u{1F383}",
+            "\u{1F648}", "\u{1F607}", "\u{1F628}", "\u{1F91D}", "\u{270D}",
+            "\u{1F917}", "\u{1FAE1}", "\u{1F385}", "\u{1F384}", "\u{2603}",
+            "\u{1F485}", "\u{1F92A}", "\u{1F5FF}", "\u{1F192}", "\u{1F498}",
+            "\u{1F649}", "\u{1F984}", "\u{1F618}", "\u{1F48A}", "\u{1F64A}",
+            "\u{1F60E}", "\u{1F47E}", "\u{1F937}\u{200D}\u{2642}", "\u{1F937}",
+            "\u{1F937}\u{200D}\u{2640}", "\u{1F621}",
+        ];
+        assert_eq!(
+            PLACEABLE_REACTIONS.len(),
+            73,
+            "the platform publishes seventy-three reactions; the count is pinned so a \
+             dropped entry cannot pass as a shorter list"
+        );
+        for (position, (entry, want)) in PLACEABLE_REACTIONS.iter().zip(EXPECTED).enumerate() {
+            assert_eq!(
+                *entry, want,
+                "entry {position} of the reaction list carries the platform's own bytes"
+            );
+        }
+
+        // Two structural facts the entry-by-entry compare cannot state on
+        // its own: no entry carries a variation selector — the list is the
+        // page's selector-less form, and a polluted entry would go out as
+        // bytes the platform does not know — and no entry repeats, which a
+        // transposition into a duplicate would otherwise hide.
+        assert!(
+            PLACEABLE_REACTIONS
+                .iter()
+                .all(|entry| !entry.contains(VARIATION_SELECTOR)),
+            "no list entry carries a variation selector"
+        );
+        let mut distinct: Vec<&str> = PLACEABLE_REACTIONS.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 73, "every entry is distinct");
+    }
+
+    /// The membership rule, five ways. Selector-blind: the model's bare
+    /// heart and its selector-carrying form both reach the list's
+    /// bare-heart entry. Distinct under the joiner: the heart-on-fire
+    /// stays its own entry, selector or not, and never collapses onto the
+    /// heart. The list's bytes on the wire: a selector-carrying pick
+    /// answers the list's selector-less entry, never the caller's string.
+    /// Outside the set: no match at all, which is what makes the adapter
+    /// drop the reaction before any platform call.
+    #[test]
+    fn the_membership_rule_is_selector_blind_and_answers_the_lists_bytes() {
+        let heart = "\u{2764}";
+        assert_eq!(
+            placeable_reaction(heart),
+            Some(heart),
+            "the bare form matches"
+        );
+        let with_selector = "\u{2764}\u{FE0F}";
+        assert_eq!(
+            placeable_reaction(with_selector),
+            Some(heart),
+            "the selector-carrying form reaches the same entry"
+        );
+        assert_ne!(
+            placeable_reaction(with_selector),
+            Some(with_selector),
+            "the LIST's bytes go out, never the model's: the selector never travels"
+        );
+
+        let on_fire = "\u{2764}\u{200D}\u{1F525}";
+        assert_eq!(
+            placeable_reaction("\u{2764}\u{FE0F}\u{200D}\u{1F525}"),
+            Some(on_fire),
+            "the joined entry stays distinct: the joiner is not a selector"
+        );
+        assert_ne!(
+            placeable_reaction(on_fire),
+            Some(heart),
+            "the heart-on-fire never collapses onto the bare heart"
+        );
+
+        for outside in ["\u{1F643}", "not an emoji", "", "\u{FE0F}"] {
+            assert_eq!(
+                placeable_reaction(outside),
+                None,
+                "a pick outside the platform's set places nothing: {outside:?}"
+            );
+        }
+
+        // Every entry finds itself, bare and selector-carrying alike —
+        // the whole list read through the rule, not one sample of it.
+        for entry in PLACEABLE_REACTIONS {
+            assert_eq!(placeable_reaction(entry), Some(entry));
+            let padded = format!("{entry}{VARIATION_SELECTOR}");
+            assert_eq!(
+                placeable_reaction(&padded),
+                Some(entry),
+                "a selector-padded pick answers the list's own bytes"
+            );
         }
     }
 }

@@ -64,7 +64,8 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
-        | AssistantKind::Delivered(_) => {
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => {
             panic!("the assistant's kind resolved through the delegate")
         }
     }
@@ -81,7 +82,7 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         "a framework kind resolves through the delegate, untouched"
     );
 
-    assert_eq!(AssistantKind::DESCRIPTORS.len(), 6);
+    assert_eq!(AssistantKind::DESCRIPTORS.len(), 7);
     assert_eq!(AssistantKind::DESCRIPTORS[0].table, CHAT_MESSAGE_TABLE);
     assert_eq!(
         AssistantKind::DESCRIPTORS[1].table,
@@ -102,6 +103,11 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
     assert_eq!(
         AssistantKind::DESCRIPTORS[5].table,
         assistant_core::delivery::DELIVERED_TABLE
+    );
+    assert_eq!(
+        AssistantKind::DESCRIPTORS[6].table,
+        assistant_core::tools::mark::MESSAGE_MARK_TABLE,
+        "the newest kind's descriptor is last, as its migration step is"
     );
     agent_ledger::agency::check_descriptor_durability::<AssistantKind>(AssistantKind::DESCRIPTORS)
         .expect("durable() and the descriptor's ephemerality are one fact");
@@ -142,7 +148,8 @@ fn resting_and_erased_messages_summon_no_turn() {
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
-        | AssistantKind::Delivered(_) => {
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => {
             panic!("the resting row resolved through the delegate")
         }
     }
@@ -186,7 +193,8 @@ fn resting_and_erased_messages_summon_no_turn() {
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
-        | AssistantKind::Delivered(_) => {
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => {
             panic!("the erased row resolved through the delegate")
         }
     }
@@ -267,7 +275,8 @@ async fn a_file_backed_store_reopens_and_loads_the_stored_kind() {
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
-        | AssistantKind::Delivered(_) => {
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => {
             panic!("the reopened row resolved through the delegate")
         }
     }
@@ -299,6 +308,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
                  ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
                  DROP TABLE block_join_notice;
                  DROP TABLE block_delivered;
+                 DROP TABLE block_message_mark;
                  INSERT INTO principals (adapter, external_id, display_name, username)
                      VALUES ('test-adapter', '42', 'Ada Lovelace', 'ada');",
             )?;
@@ -315,7 +325,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
         .expect("the version-eleven store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        17,
+        18,
         "the appended steps advanced the domain's version"
     );
     let (columns, row): (Vec<String>, (String, String, Option<String>)) =
@@ -380,7 +390,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             Store::open_with(db.path(), store_config()).expect("the configured store opens");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            17,
+            18,
             "the domain's recorded version is the shipped step count"
         );
         // One recorded summoned message, then the rewind: drop exactly the
@@ -415,9 +425,11 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             conn.execute_batch(&format!(
                 "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
                  DROP TABLE {join};
-                 DROP TABLE {delivered};",
+                 DROP TABLE {delivered};
+                 DROP TABLE {marks};",
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
+                marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
             ))?;
             Ok(())
         })
@@ -432,7 +444,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         .expect("the version-thirteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        17,
+        18,
         "the appended step advanced the domain's version"
     );
     let blocks = support::consumer_view(
@@ -458,7 +470,8 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
-        | AssistantKind::Delivered(_) => {
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => {
             panic!("the upgraded row resolved through the delegate")
         }
     }
@@ -482,7 +495,7 @@ async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() 
         .expect("the version-fourteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        17,
+        18,
         "the appended steps advanced the domain's version"
     );
 
@@ -554,7 +567,8 @@ async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() 
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::ChatMessage(_)
-        | AssistantKind::Delivered(_) => {
+        | AssistantKind::Delivered(_)
+        | AssistantKind::MessageMark(_) => {
             panic!("the upgraded report row resolved as another kind")
         }
     }
@@ -624,6 +638,7 @@ async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
         conn.execute_batch(&format!(
             "DROP TABLE {join};
              DROP TABLE {delivered};
+             DROP TABLE {marks};
              CREATE TABLE {report}_v14 (
                  block_id   INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
                  {target}   TEXT,
@@ -636,6 +651,7 @@ async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
              ALTER TABLE {report}_v14 RENAME TO {report};",
             join = assistant_core::join::JOIN_NOTICE_TABLE,
             delivered = assistant_core::delivery::DELIVERED_TABLE,
+            marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
             report = assistant_core::tools::report::REPORT_TABLE,
             target = assistant_core::tools::report::COLUMN_TARGET_ORIGIN,
             reported = assistant_core::tools::report::COLUMN_REPORTED_PRINCIPAL_ID,
@@ -675,8 +691,10 @@ async fn a_version_sixteen_store_upgrades_through_the_delivery_step() {
             .expect("a conversation row");
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
-                "DROP TABLE {table};",
-                table = assistant_core::delivery::DELIVERED_TABLE
+                "DROP TABLE {table};
+                 DROP TABLE {marks};",
+                table = assistant_core::delivery::DELIVERED_TABLE,
+                marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
             ))?;
             Ok(())
         })
@@ -691,7 +709,7 @@ async fn a_version_sixteen_store_upgrades_through_the_delivery_step() {
         .expect("the version-sixteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        17,
+        18,
         "the appended step advanced the domain's version"
     );
 
@@ -767,4 +785,69 @@ async fn table_indexes(
         Ok(names)
     })
     .await
+}
+
+/// AC-D's schema half (unit 39): the mark table's own CHECK is the twin of
+/// the tool's byte bound, and it bounds BYTES rather than characters — the
+/// distinction that matters, since every emoji worth storing costs several
+/// bytes per character. The bound is pinned on both sides: an emoji at
+/// thirty-two bytes stores, one past it is refused by the store itself,
+/// and an empty one is refused too.
+///
+/// The store, not the tool, is what this proves. The tool refuses the same
+/// shapes ahead of the append with a taught error; this is the row that
+/// could never exist even if some later writer forgot to ask.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mark_tables_check_bounds_the_stored_emoji_in_bytes() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let conversation = store
+        .create_conversation(
+            "scripted-1".into(),
+            "script-model".into(),
+            "Script Model".into(),
+            support::VENDOR.into(),
+        )
+        .await
+        .expect("a conversation row");
+
+    let append = |emoji: String| {
+        store.append_consumer_block(
+            conversation,
+            None,
+            assistant_core::tools::mark::MESSAGE_MARK_KIND,
+            assistant_core::tools::mark::MessageMark::stored_fields("origin-1", 7, &emoji),
+            None,
+        )
+    };
+
+    let limit = assistant_core::tools::mark::EMOJI_BYTE_LIMIT;
+    // A four-byte emoji repeated to exactly the bound: eight characters,
+    // thirty-two bytes. A character-counting CHECK would admit four times
+    // as many, so this shape is what tells the two readings apart.
+    let at_the_bound = "\u{1F389}".repeat(limit / 4);
+    assert_eq!(at_the_bound.len(), limit);
+    append(at_the_bound)
+        .await
+        .expect("an emoji at the bound stores");
+
+    for refused in [String::new(), "a".repeat(limit + 1)] {
+        let outcome = append(refused.clone()).await;
+        assert!(
+            outcome.is_err(),
+            "the stored CHECK refuses an emoji of {} bytes",
+            refused.len()
+        );
+    }
+    // The character-versus-byte reading, stated as its own claim: nine of
+    // the same four-byte emoji is thirty-six bytes and nine characters,
+    // so a character-counting CHECK would take it and this one must not.
+    let past_in_bytes_only = "\u{1F389}".repeat(limit / 4 + 1);
+    assert!(
+        past_in_bytes_only.chars().count() < limit && past_in_bytes_only.len() > limit,
+        "the probe is past the bound in bytes and inside it in characters"
+    );
+    assert!(
+        append(past_in_bytes_only).await.is_err(),
+        "the CHECK counts bytes, not characters"
+    );
 }

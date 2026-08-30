@@ -262,7 +262,7 @@ async fn an_observation_disagreeing_with_the_mapped_channel_kind_is_refused() {
     recv_reply(
         &mut fixture
             .assistant
-            .replies(support::ADAPTER)
+            .outbound(support::ADAPTER)
             .await
             .expect("the outbound edge opens"),
     )
@@ -317,6 +317,10 @@ const V5_CHAT_MESSAGE_DDL: &str = "
 /// membership observation — and the widening step rebuilds the GENUINE
 /// version-five table, proven two-kind before the reopen, into the widened
 /// shape that accepts the command stamp.
+// The story is one store's whole upgrade path, written straight through:
+// the rewind, the reopen, and the reads that prove each appended step
+// landed. Splitting it would scatter the sequence the test IS.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
     let db = support::TempDb::new("v5-upgrade");
@@ -353,6 +357,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
                  DROP TABLE {report};
                  DROP TABLE {join};
                  DROP TABLE {delivered};
+                 DROP TABLE {marks};
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
                  {V5_CHAT_MESSAGE_DDL}",
@@ -360,6 +365,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
                 report = assistant_core::tools::report::REPORT_TABLE,
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
+                marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
             ))?;
             // Non-vacuity: the rebuilt table really is the two-kind
             // version-five shape — the command stamp the widening step
@@ -388,7 +394,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             .expect("the version-five store reopens under the shipped configuration");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            17,
+            18,
             "the appended steps advanced the domain's version"
         );
         let fixture = support::start_assistant_on(store.clone(), None).await;
@@ -457,7 +463,7 @@ async fn a_rules_change_appends_on_delta_acknowledges_each_delta_and_projects_in
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = channel("group-rules");
@@ -819,7 +825,7 @@ async fn the_privacy_command_answers_the_configured_address_without_a_turn() {
     .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let mut events = fixture.bus.subscribe();
@@ -1027,7 +1033,7 @@ async fn an_exhausted_answer_window_records_the_command_and_answers_with_silence
             .await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let key = channel("group-exhausted");

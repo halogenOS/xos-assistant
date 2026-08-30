@@ -228,7 +228,7 @@ async fn the_chat_completions_module_answers_over_the_loopback_wire_and_stores_n
         let store = Store::open_with(db.path(), store_config()).expect("the store opens");
         let assistant = start_over_the_module(&store, &base).await;
         let mut replies = assistant
-            .replies(support::ADAPTER)
+            .outbound(support::ADAPTER)
             .await
             .expect("the outbound edge opens");
         support::ingest_recorded(
@@ -300,7 +300,7 @@ async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accept
 
     let assistant = start_over_the_module(&store, &base).await;
     let mut replies = assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     support::authorize(&assistant, &key).await;
@@ -426,7 +426,7 @@ async fn an_announced_tool_round_composes_over_the_production_wire() {
 
     let assistant = start_over_the_module(&store, &base).await;
     let mut replies = assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let receipt = support::ingest_recorded(

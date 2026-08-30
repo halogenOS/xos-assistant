@@ -55,7 +55,7 @@ async fn an_ambiguous_question_draws_the_clarifying_question_delivered_whole() {
     let fixture = helpful_fixture().await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-ambiguous").await;
@@ -111,7 +111,7 @@ async fn a_clear_question_is_answered_directly_not_interrogated() {
     let fixture = helpful_fixture().await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-clear").await;
@@ -148,7 +148,7 @@ async fn the_disambiguation_is_a_normal_two_turn_exchange() {
     let fixture = helpful_fixture().await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-two-turns").await;
@@ -230,7 +230,7 @@ async fn a_clarifying_question_raises_the_typing_cue() {
     let mut composing = fixture.assistant.composing(support::ADAPTER);
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-clarify-cue").await;
@@ -274,7 +274,7 @@ async fn a_first_clarifying_question_carries_the_disclosure_line() {
     let fixture = helpful_fixture().await;
     let mut replies = fixture
         .assistant
-        .replies(support::ADAPTER)
+        .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
     let room = support::authorized_group(&fixture.assistant, "room-first-question").await;
