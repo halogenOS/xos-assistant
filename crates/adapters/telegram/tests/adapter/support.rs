@@ -547,6 +547,7 @@ async fn assemble(
                 vendor: VENDOR.into(),
                 model: "script-model".into(),
                 model_display_name: "Script Model".into(),
+                context_window: None,
             },
             system_prompt: "You are the adapter suite's scripted assistant fixture.".into(),
             answering,

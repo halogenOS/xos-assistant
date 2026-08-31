@@ -493,6 +493,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         vendor,
         model: configuration.model.clone(),
         model_display_name: configuration.model.clone(),
+        context_window: configuration.context_window,
     };
     let mut providers = ProviderRegistry::new();
     providers.register(Box::new(provider));

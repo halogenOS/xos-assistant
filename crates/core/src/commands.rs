@@ -53,8 +53,8 @@ use crate::privacy::{
 /// starts a new one, exactly as a newly admitted group does.
 pub const WIPE_COMMAND: &str = "/wipe";
 
-/// The session compact: the group's conversation forks, the recent messages
-/// come along and everything older is set aside.
+/// The session compact: the first half of the group's conversation is
+/// summarized and the rest of it comes along verbatim.
 pub const COMPACT_COMMAND: &str = "/compact";
 
 /// The least standing the two session resets accept. The deletion mirror
@@ -63,14 +63,6 @@ pub const COMPACT_COMMAND: &str = "/compact";
 /// owner to admin and its administrators to moderator), and resetting a
 /// context is the lighter act of the two.
 pub const RESET_FLOOR: Authority = Authority::Moderator;
-
-/// How many chat rows a compact keeps: the trailing twenty, counting the
-/// member and assistant rows and the stored quotes alike. Enough that the
-/// running conversation survives the cut, small enough that a flood cannot
-/// ride across it. One home for both readers — the sweep that decides what
-/// the fork keeps, and the nothing-to-cut check that decides whether the
-/// operation runs at all.
-pub const COMPACT_KEPT_MESSAGES: usize = 20;
 
 // ─── The fixed lines, exact copy per the unit spec (2026-08-30) ──────────
 
@@ -83,8 +75,9 @@ pub const WIPE_DONE: &str = "Done. This group starts a fresh session; the old on
 pub const COMPACT_DONE: &str =
     "Done. This session was compacted: recent messages stay, old context is set aside.";
 
-/// What `/compact` answers when there was nothing to cut: no tool traffic
-/// stored, and no more chat rows than the kept bound.
+/// What `/compact` answers when the session does not split: a ledger too
+/// short to have two halves, or one whose whole history is a single message
+/// group. Nothing is summarized and nothing moves.
 pub const COMPACT_ALREADY: &str = "This session is already compact. Nothing changed.";
 
 /// One command this assistant answers.
@@ -108,8 +101,8 @@ pub enum Command {
     PrivacyIn,
     /// `/wipe` — the group's session starts over, empty.
     Wipe,
-    /// `/compact` — the group's session keeps its recent messages and sets
-    /// the rest aside.
+    /// `/compact` — the group's session keeps its recent messages and
+    /// carries a summary of the rest.
     Compact,
 }
 
@@ -366,13 +359,34 @@ mod tests {
         );
     }
 
-    /// The two reset tokens, pinned to the spec's spellings, and the kept
-    /// bound pinned to its stated number.
+    /// The `/compact` line still describes the tail-keep decision 0163
+    /// shipped, under which the older half simply left the model's view. The
+    /// mechanism decision 0185 replaced it with SUMMARIZES that half and
+    /// carries the summary into the thread the group keeps talking in — which
+    /// is what the doc comment on [`COMPACT_COMMAND`] above and the operator
+    /// contract's own `/compact` paragraph already say, while the line quoted
+    /// beside them does not.
+    ///
+    /// Ignored on purpose, and this is the whole disagreement: the
+    /// replacement sentence is user-facing product copy, which a fix pass
+    /// does not get to write. It is recorded here so the gap lives in the
+    /// tree rather than only in a review, and it is unignored in the same
+    /// change that lands the new line and moves the byte pin above.
     #[test]
-    fn the_reset_tokens_and_the_kept_bound_are_the_spec_values() {
+    #[ignore = "the replacement line is a copy decision, not a fix; the body states it"]
+    fn the_compact_line_says_the_older_half_is_summarized() {
+        assert!(
+            COMPACT_DONE.contains("summar"),
+            "the answer says what became of the older half: it was summarized \
+             and the summary came along"
+        );
+    }
+
+    /// The two reset tokens and the floor, pinned to the spec's values.
+    #[test]
+    fn the_reset_tokens_and_the_floor_are_the_spec_values() {
         assert_eq!(WIPE_COMMAND, "/wipe");
         assert_eq!(COMPACT_COMMAND, "/compact");
-        assert_eq!(COMPACT_KEPT_MESSAGES, 20);
         assert_eq!(RESET_FLOOR, Authority::Moderator);
     }
 }

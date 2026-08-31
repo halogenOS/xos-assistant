@@ -217,7 +217,7 @@ async fn a_stream_that_never_settles_fails_the_erasure_loudly_deleting_nothing()
         .await
         .expect_err("the unsettled stream must fail the erasure loudly");
     assert!(
-        matches!(failure, CoreError::ErasureUnsettled { conversation_id } if conversation_id == conv),
+        matches!(failure, CoreError::StreamUnsettled { conversation_id } if conversation_id == conv),
         "the failure names the unsettled conversation; got {failure:?}"
     );
 

@@ -199,6 +199,7 @@ async fn start_over_the_module(store: &Store, base: &str) -> Assistant {
                 vendor,
                 model: "test-vendor/test-model".into(),
                 model_display_name: "Test Model".into(),
+                context_window: None,
             },
             system_prompt: support::SYSTEM_PROMPT.into(),
             answering: support::FIXTURE_ANSWERING,

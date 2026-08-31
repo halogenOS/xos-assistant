@@ -63,14 +63,16 @@
 //! execute trust the plan — without it an ingestion could record a new
 //! message or map a new direct channel for the person between the steps.
 
+use agent_ledger::agency::{AncestorReference, LeafKind};
 use agent_ledger::store::{StoreTx, domain_run};
-use agent_ledger::{FromBlock, Store, StoreError};
+use agent_ledger::{Block, FromBlock, Store, StoreError};
 
 use crate::identity;
 use crate::join;
 use crate::kind::{self, AssistantKind};
 use crate::mapping;
 use crate::message::ChannelKind;
+use crate::session::{StrippedHop, StrippedLineage};
 
 /// Where one kind records a person under a platform id — what the
 /// target-keyed reply pass joins against to find the copies OTHER people's
@@ -355,6 +357,168 @@ pub(crate) async fn execute(
     Ok(ErasureOutcome::Erased {
         deleted_conversations: plan.direct_conversations,
     })
+}
+
+/// Every compacted lineage this principal's words reach, and what each
+/// conversation in it must lose — the scrub's whole reading (unit 48,
+/// 2026-08-31), taken once before anything is written.
+///
+/// A compacted thread is recognized by the block it opens with: the
+/// framework's ancestor reference, whose column names the conversation the
+/// thread continues. The digest sitting behind that reference was written
+/// from the ancestor's first half, so a principal with blocks in the
+/// ancestor is a principal whose words could be in the prose — and a
+/// principal with blocks in the thread itself has words the clone must drop
+/// even though no digest was written from them.
+///
+/// The reference chain is walked to its ROOT, never one hop. A thread that
+/// has been compacted twice continues a thread that continues a
+/// conversation, and the digest each hop carries was written from the half
+/// below it — a half that HOLDS the digest below. So a digest two
+/// generations up is prose written from prose written from the erased
+/// person's words, and a one-hop reading would find nothing to scrub in
+/// either of the two newest conversations while exactly that prose kept
+/// serving. Nothing forbids the second compaction: `/compact` is a command,
+/// and the threshold door re-arms on the successor.
+///
+/// Only MAPPED conversations start a walk: a thread nothing serves has no
+/// channel to hand on and no reader to protect, and its own erasure is the
+/// nulling every other conversation gets. Bounded by the number of mapped
+/// channels times the depth of their ancestries.
+///
+/// # Errors
+///
+/// [`StoreError`] if a read fails or the store's actor has stopped.
+pub(crate) async fn compacted_lineages(
+    store: &Store,
+    principal_id: i64,
+) -> Result<Vec<StrippedLineage>, StoreError> {
+    let mut found = Vec::new();
+    for record in mapping::all(&store.tx()).await? {
+        if let Some(lineage) = lineage_of(store, record.conversation_id, principal_id).await? {
+            found.push(lineage);
+        }
+    }
+    Ok(found)
+}
+
+/// One serving thread's whole compacted ancestry, oldest conversation
+/// first, or `None` when it has none or when the principal's words reach no
+/// part of it.
+///
+/// The walk stops at a conversation that continues nothing — the root — and
+/// it also stops at a reference whose conversation no longer reads, which is
+/// a chain broken below that point: there is no history left to regenerate
+/// that hop's digest FROM, so it becomes the root and every digest above it
+/// is still rewritten. Conversation ids are reissued after a deletion, so a
+/// reference could in principle point back into the chain; the walked set is
+/// what keeps that from looping.
+async fn lineage_of(
+    store: &Store,
+    serving: i64,
+    principal_id: i64,
+) -> Result<Option<StrippedLineage>, StoreError> {
+    let mut hops = Vec::new();
+    let mut walked = std::collections::HashSet::from([serving]);
+    let mut current = serving;
+    let mut blocks = store.list_blocks(current).await?;
+    while let Some(opening) = own_opening(&blocks) {
+        let ancestor_blocks = store.list_blocks(opening.ancestor).await?;
+        if ancestor_blocks.is_empty() || !walked.insert(opening.ancestor) {
+            tracing::warn!(
+                conversation_id = current,
+                ancestor = opening.ancestor,
+                "a compacted thread's ancestry ends at a conversation that no longer reads; \
+                 its own digest stands and every digest above it is regenerated"
+            );
+            break;
+        }
+        hops.push(StrippedHop {
+            conversation: current,
+            opening_ends: opening.opening_ends,
+            stripped: blocks_of(&blocks, principal_id),
+        });
+        current = opening.ancestor;
+        blocks = ancestor_blocks;
+    }
+    // Read newest first, so the first hop walked IS the serving thread; the
+    // rest are handed over oldest first, because the scrub rebuilds from the
+    // root upward, each hop's digest written from the clone below it.
+    let mut walked_up = hops.into_iter();
+    let Some(serving_hop) = walked_up.next() else {
+        return Ok(None);
+    };
+    let mut below: Vec<StrippedHop> = walked_up.collect();
+    below.reverse();
+    let in_root = blocks_of(&blocks, principal_id);
+    if in_root.is_empty()
+        && serving_hop.stripped.is_empty()
+        && below.iter().all(|hop| hop.stripped.is_empty())
+    {
+        return Ok(None);
+    }
+    Ok(Some(StrippedLineage {
+        root: current,
+        in_root,
+        below,
+        serving: serving_hop,
+    }))
+}
+
+/// Where one thread's own opening is: the conversation its ancestor
+/// reference names, and the block that opening ends at.
+struct ThreadOpening {
+    /// The conversation this thread continues.
+    ancestor: i64,
+    /// The digest behind the reference — the last block of the thread's own
+    /// opening. Everything past it is inherited history.
+    opening_ends: i64,
+}
+
+/// The thread's OWN ancestor reference, read by BLOCK ID rather than by
+/// ledger position.
+///
+/// A compaction's appends are the newest blocks it writes while the rows it
+/// inherits are older, so a thread's own opening carries the HIGHEST ids in
+/// its ledger and sits at the FRONT of it — ids descend at that seam. Ledger
+/// order therefore cannot pick the reference out: a reference that rode
+/// across inside an inherited half would be the last one in ledger order and
+/// still not this thread's. The greatest id is the thread's own, which is the
+/// same reading the forced-turn-end door takes of the same block.
+///
+/// `None` is a conversation that continues nothing — the root of a lineage,
+/// or a conversation that was never compacted.
+fn own_opening(blocks: &[Block]) -> Option<ThreadOpening> {
+    let opening = blocks
+        .iter()
+        .filter(|block| AncestorReference::KINDS.contains(&block.block_type.as_str()))
+        .max_by_key(|block| block.id)?;
+    let opening_ends = blocks
+        .iter()
+        .skip_while(|block| block.id != opening.id)
+        .nth(1)
+        .map(|block| block.id)?;
+    Some(ThreadOpening {
+        ancestor: AncestorReference::parse(opening).conversation_id,
+        opening_ends,
+    })
+}
+
+/// The blocks in one ledger that record this principal — the two kinds that
+/// name a person, read through their own parses rather than a column list
+/// here. Erasure nulls what those blocks SAY; the scrub drops the blocks
+/// themselves from a clone, so what a regenerated digest is written from
+/// holds no trace of them at all.
+fn blocks_of(blocks: &[Block], principal_id: i64) -> Vec<i64> {
+    blocks
+        .iter()
+        .filter(|block| match AssistantKind::from_block(block) {
+            AssistantKind::ChatMessage(message) => message.principal_id == Some(principal_id),
+            AssistantKind::JoinNotice(join) => join.principal_id == Some(principal_id),
+            _ => false,
+        })
+        .map(|block| block.id)
+        .collect()
 }
 
 /// The direct conversations that carry this principal's messages, read from

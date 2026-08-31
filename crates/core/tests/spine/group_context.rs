@@ -1729,7 +1729,7 @@ async fn an_observation_racing_an_erasure_respects_the_fence() {
 
     let failure = erasure.await.expect("the erasure task finishes");
     assert!(
-        matches!(failure, CoreError::ErasureUnsettled { .. }),
+        matches!(failure, CoreError::StreamUnsettled { .. }),
         "the erasure failed loudly at the bound; got {failure:?}"
     );
     let outcome = observation.await.expect("the observation completes");

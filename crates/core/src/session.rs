@@ -1,58 +1,102 @@
 //! The channel's session: what a new conversation is created with, and how a
 //! channel's session is replaced.
 //!
-//! A channel maps to exactly one conversation, and three things create or
+//! A channel maps to exactly one conversation, and four things create or
 //! replace that mapping: a channel's first contact, the two session-reset
-//! commands, and the unattended compact the framework's forced turn end
-//! triggers. All of them need the same four configured values — the model
+//! commands, and the unattended compaction.
+//! All of them need the same four configured values — the model
 //! binding, the reasoning level, the composed system prompt and the tool
 //! palette — so those live here, once, and the assembly reads them through
 //! this type instead of keeping a second copy.
 //!
+//! # What a compaction is
+//!
+//! One mechanism, reached through three doors — `/compact`, the framework's
+//! forced turn end, and the context thresholds — and it is the same
+//! mechanism every time:
+//!
+//! 1. The ledger is cut in half by the framework's own deterministic rule
+//!    ([`Store::compaction_cut`]), which never splits a message group and
+//!    never splits a tool lifecycle.
+//! 2. The first half is forked into a TEMPORARY conversation carrying an
+//!    empty tool palette and, last, the compaction instructions — the append
+//!    that summons its one turn.
+//! 3. That turn's answer is the summary. The temporary conversation is
+//!    retired junction-only the moment it is read; its two own blocks are all
+//!    that is left for the collector, and every block of the first half lives
+//!    on in the source.
+//! 4. Whatever turn the source still had open is settled, so the ledger
+//!    about to be copied has stopped moving.
+//! 5. A new thread opens with the current prompt, a block naming the
+//!    conversation it continues, the summary, and then the second half of the
+//!    source's ledger verbatim.
+//! 6. The channel is re-pointed at the new thread through the claim's own
+//!    winner check, and the thread is served like any other.
+//!
 //! # Nothing is deleted
 //!
 //! Both resets leave the old conversation whole. A wipe stops pointing the
-//! channel at it; a compact forks it and detaches from the FORK what the
-//! fork does not keep, which removes a membership and never a block. The old
+//! channel at it; a compaction shares its blocks with the thread that
+//! succeeds it and leaves the source itself unmapped and intact. The old
 //! conversation stays readable, exportable and reachable by erasure, and
 //! because every one of its blocks is still referenced by it, the orphan
-//! collector cannot reach any of them. The one conversation ever deleted
-//! here is a just-created one that lost its mapping claim, before anything
-//! referenced it — the same exception the first-contact path has always had.
+//! collector cannot reach any of them. The conversations ever deleted here
+//! are a just-created one the channel never took — it lost its mapping claim,
+//! or the swap that would have handed it over failed, and either way nothing
+//! referenced it, the same exception the first-contact path has always had —
+//! and a compaction's temporary conversation, junction-only, once its answer
+//! has been read.
+//!
+//! That is one rule and not a habit: a thread this module opens is MAPPED or
+//! RETIRED before the call that built it returns. A thread left in neither
+//! state would be a latched conversation carrying a fresh digest that no
+//! sweep and no channel ever reaches again.
 //!
 //! # What orders a reset against everything else
 //!
-//! A reset reads a ledger, writes a fork and re-points a mapping, and an
-//! ingestion interleaved between those steps would record into the
-//! conversation the channel is leaving. So both triggers run under the same
+//! A reset reads a ledger, writes a conversation and re-points a mapping, and
+//! an ingestion interleaved between those steps would record into the
+//! conversation the channel is leaving. So the swap runs under the same
 //! two holds the ingestion path takes, in the same order: the erasure fence
-//! shared first, the global stamp lock second. The command path is already
-//! inside an ingestion and holds both; the unattended path takes them
-//! itself and re-reads its conditions once it has them, so a wake that lost
-//! the race finds its conversation unmapped and stands down.
+//! shared first, the global stamp lock second.
 //!
-//! The cost is stated rather than hidden, and it is bounded: the sweep hands
-//! the whole detach list to the framework's bulk door, which removes every
-//! junction row in ONE round trip and one transaction. A conversation
-//! carrying a thousand-call flood therefore holds the stamp lock for one
-//! commit, not a thousand.
+//! A compaction's CAPTURE runs outside both, deliberately. It drives a model
+//! turn, and holding the one ingestion lock across a model call would stall
+//! every conversation this process serves for that call's whole latency —
+//! the rules acknowledgment's own recorded reasoning. The holds are taken
+//! for the swap alone, and the mapping is re-read inside them: a capture
+//! whose channel moved on while the summary was being written stands down
+//! rather than re-pointing a channel that is somewhere else now.
+//!
+//! The holds order the swap against INGESTION and say nothing about a model
+//! turn already in flight, so the source's own stream is SETTLED inside them
+//! before its history is copied — the same interrupt-and-confirm the erasure
+//! runs ahead of its deletions. A turn left running lands its answer in a
+//! conversation the swap has just unmapped, which the outbound edge delivers
+//! nothing from, and the streaming tail it had already written rides across
+//! into the successor only to be cascaded away when the source finalizes.
 
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
-use agent_ledger::agency::Status;
+use agent_ledger::agency::{AncestorReference, LeafKind, Status, Text};
 use agent_ledger::providers::ReasoningLevel;
-use agent_ledger::store::{ModelOverride, StoreError, StoreTx, domain_run};
-use agent_ledger::{CoreEvent, EventBus, RuntimeContext};
+use agent_ledger::store::{
+    CompactedThread, ConsumerRecord, LedgerCut, ModelOverride, StoreError, StoreTx,
+    TemporaryConversation, TemporaryFork, domain_run,
+};
+use agent_ledger::{CoreEvent, EventBus, Role, RuntimeContext};
 use rusqlite::OptionalExtension;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::assembly::{ErasureFence, ModelBinding, ScriptedPause};
-use crate::compaction::{self, CompactTrigger};
+use crate::compaction::{COMPACTION_INSTRUCTIONS, CONTEXT_SWEEP, ContextWatch};
 use crate::error::CoreError;
 use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{ChannelKey, ChannelKind};
+use crate::streams;
 use crate::tools::palette::{TOOL_PALETTE_KIND, ToolPalette};
 
 /// The framework's own table for a status row, and the column carrying its
@@ -65,17 +109,25 @@ const STATUS_TABLE: &str = "block_status";
 /// The status row's machine-key column.
 const STATUS_COLUMN: &str = "status";
 
-/// What one compact came to.
+/// How long a compaction waits for its temporary conversation's one turn
+/// before giving up on it. Generous against a slow model on a long first
+/// half, bounded so a provider that never answers cannot park the driver
+/// forever: the failure leaves every conversation standing and the next
+/// trigger re-derives the whole operation.
+const SUMMARY_BOUND: Duration = Duration::from_mins(3);
+
+/// What one compaction came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CompactOutcome {
-    /// The fork stands and the channel points at it.
+    /// The compacted thread stands and the channel points at it.
     Compacted,
-    /// There was nothing to cut: no tool traffic stored, and no more chat
-    /// rows than the kept bound. Nothing was forked and nothing changed.
+    /// The ledger does not split: it is too short to have two halves, or its
+    /// cut reaches the end and leaves nothing to carry forward verbatim.
+    /// Nothing was forked, no model was called and nothing changed.
     AlreadyCompact,
-    /// The fork lost its mapping claim to a concurrent racer and was
-    /// deleted; the winner's session governs the channel. Every block lives
-    /// on in the source conversation.
+    /// The compacted thread lost its mapping claim to a concurrent racer and
+    /// was deleted; the winner's session governs the channel. Every block
+    /// lives on in the source conversation.
     ClaimLost,
 }
 
@@ -153,10 +205,35 @@ pub(crate) struct Sessions {
     /// the same reason: it forks and re-points while an erasure would be
     /// walking the very conversations it moves.
     erasure_fence: ErasureFence,
+    /// The stream and activity readings, held for the two things a session
+    /// replacement needs from them: the stream it must settle before it
+    /// copies a conversation's history away, and the readings it must drop
+    /// for every conversation it deletes — the store reissues ids, and a
+    /// dead entry would arm a threshold on the id's next holder.
+    context: Arc<ContextWatch>,
     /// The reset claim race's test seam, run between a reset's mapping
     /// delete and its claim — exactly the window a concurrent racer takes
     /// the channel in. Unset in production.
     reset_claim_pause: OnceLock<ScriptedPause>,
+}
+
+/// What a session replacement has to agree with the rest of the process
+/// about: the two holds every path takes, and the readings a deleted
+/// conversation's entries have to be dropped from.
+///
+/// Handed over as ONE value because they are one thing — the shared state a
+/// reset coordinates against — and because a bare lock travelling beside a
+/// bare fence beside a bare watch is how two of them get swapped.
+pub(crate) struct SessionCoordination {
+    /// Serializes the answer-due stamp and every session reset; the whole
+    /// contract is on [`Sessions::stamp_lock`]'s field.
+    pub stamp_lock: Arc<Mutex<()>>,
+    /// Orders erasure against ingestion and against a reset; the whole
+    /// contract is on [`Sessions::erasure_fence`]'s field.
+    pub erasure_fence: ErasureFence,
+    /// The stream and activity readings; the whole contract is on
+    /// [`Sessions::context`]'s field.
+    pub context: Arc<ContextWatch>,
 }
 
 impl Sessions {
@@ -166,8 +243,7 @@ impl Sessions {
         reasoning: ReasoningLevel,
         system_prompt: String,
         palette: Vec<String>,
-        stamp_lock: Arc<Mutex<()>>,
-        erasure_fence: ErasureFence,
+        coordination: SessionCoordination,
     ) -> Self {
         Self {
             ctx,
@@ -175,10 +251,29 @@ impl Sessions {
             reasoning,
             system_prompt,
             palette,
-            stamp_lock,
-            erasure_fence,
+            stamp_lock: coordination.stamp_lock,
+            erasure_fence: coordination.erasure_fence,
+            context: coordination.context,
             reset_claim_pause: OnceLock::new(),
         }
+    }
+
+    /// Delete one conversation and drop what was measured for it, which is
+    /// ONE act here and never two: the store reissues conversation ids, so a
+    /// measurement left behind hands the id's next holder a stranger's token
+    /// count and its dispatch time, and both threshold arms can arm on it
+    /// before that conversation's own first turn ever reports.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Store`] if the deletion fails.
+    async fn retire(&self, conversation_id: i64) -> Result<(), CoreError> {
+        self.ctx
+            .store()
+            .delete_conversation(conversation_id)
+            .await?;
+        self.context.forget(conversation_id);
+        Ok(())
     }
 
     /// Install the reset claim race's test seam: the given pause runs
@@ -194,6 +289,13 @@ impl Sessions {
         if let Some(pause) = self.reset_claim_pause.get() {
             pause().await;
         }
+    }
+
+    /// The runtime this assembly runs on. Handed out because the paths
+    /// that outlive an assembly call — the spawned erasure above all — need
+    /// the store and the bus without borrowing the assembly itself.
+    pub(crate) fn context(&self) -> &RuntimeContext<AssistantKind, CoreEvent> {
+        &self.ctx
     }
 
     /// The ingestion serialization every path takes, reset and ingestion
@@ -278,7 +380,7 @@ impl Sessions {
             .await?;
         let winner = mapping::claim(&store.tx(), channel, kind, created).await?;
         if winner != created {
-            store.delete_conversation(created).await?;
+            self.retire(created).await?;
         }
         store
             .set_conversation_reasoning(winner, Some(self.reasoning.as_key().to_owned()))
@@ -322,26 +424,56 @@ impl Sessions {
     ) -> Result<i64, CoreError> {
         let store = self.ctx.store();
         let successor = store
-            .fork_conversation(
-                source,
-                up_to_block_id,
-                ModelOverride {
-                    provider_id: Some(self.binding.provider_instance.clone()),
-                    external_id: Some(self.binding.model.clone()),
-                    display_name: Some(self.binding.model_display_name.clone()),
-                    vendor: Some(self.binding.vendor.clone()),
-                    reasoning: None,
-                },
-            )
+            .fork_conversation(source, up_to_block_id, self.current_model())
             .await?;
         store.detach_blocks(successor, detach.to_vec()).await?;
         store
             .insert_system_prompt(successor, self.system_prompt.clone())
             .await?;
-        store
-            .set_conversation_reasoning(successor, Some(self.reasoning.as_key().to_owned()))
-            .await?;
         Ok(successor)
+    }
+
+    /// Clone a conversation minus a named set of blocks: every other
+    /// junction row is SHARED, never copied, and the named ones are simply
+    /// absent from the clone.
+    ///
+    /// The copy-on-write erasure of the design's scrub, and it is the
+    /// junction table's own sharing rather than a mechanism beside it — a
+    /// block only ever exists once, and a conversation is which blocks it
+    /// holds. The source keeps every one of them: a clone does not edit what
+    /// it came from.
+    ///
+    /// An empty conversation clones to an empty conversation. The clone
+    /// inherits the source's model and level rather than the current
+    /// binding: this is a scrubbed COPY of a history, not a session being
+    /// replaced, and re-pointing its model would change what it is a copy
+    /// of.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Store`] if the read, the clone or the detaching fails.
+    pub(crate) async fn cloned_without(
+        &self,
+        source: i64,
+        stripped: &[i64],
+    ) -> Result<i64, CoreError> {
+        let store = self.ctx.store();
+        let blocks = store.list_blocks(source).await?;
+        let Some(last) = blocks.last().map(|block| block.id) else {
+            return Ok(store
+                .create_conversation(
+                    self.binding.provider_instance.clone(),
+                    self.binding.model.clone(),
+                    self.binding.model_display_name.clone(),
+                    self.binding.vendor.clone(),
+                )
+                .await?);
+        };
+        let clone = store
+            .fork_conversation(source, last, ModelOverride::default())
+            .await?;
+        store.detach_blocks(clone, stripped.to_vec()).await?;
+        Ok(clone)
     }
 
     /// Replace a channel's session with an empty one: drop the mapping row
@@ -386,18 +518,20 @@ impl Sessions {
         Ok(WipeOutcome::Replaced)
     }
 
-    /// Trim a channel's session: fork the conversation with its full
-    /// history, detach from the fork everything the compaction reading does
-    /// not keep, and point the channel at the fork.
+    /// Compact a channel's session: summarize the first half of its ledger
+    /// and hand the channel a thread carrying that summary and the second
+    /// half verbatim. The whole mechanism is on this module's own
+    /// documentation.
     ///
-    /// The blocks are snapshotted BEFORE the fork, so the fork's own fresh
-    /// system prompt is structurally outside the sweep. A conversation with
-    /// nothing to cut is left alone entirely: no fork, no mapping write.
-    ///
-    /// The caller holds the stamp lock and the erasure fence.
+    /// The caller holds NEITHER hold. The capture drives a model turn, and
+    /// this method takes the two holds itself for the swap alone — which is
+    /// also where the channel's mapping is re-read, so a capture whose
+    /// channel moved on stands down instead of re-pointing it.
     ///
     /// # Errors
     ///
+    /// [`CoreError::CompactionUnsummarized`] if the temporary conversation
+    /// produced no summary — nothing is swapped and nothing is deleted;
     /// [`CoreError::ClaimLost`] if the re-claim finds no winner;
     /// [`CoreError::Store`] if a read or a write fails.
     pub(crate) async fn compact(
@@ -405,129 +539,659 @@ impl Sessions {
         source: i64,
         channel: &ChannelKey,
         kind: ChannelKind,
-        trigger: CompactTrigger,
     ) -> Result<CompactOutcome, CoreError> {
         let store = self.ctx.store();
-        let blocks = store.list_blocks(source).await?;
-        let planned = compaction::plan(&blocks, trigger);
-        if planned.nothing_to_cut {
-            return Ok(CompactOutcome::AlreadyCompact);
-        }
-        // An empty conversation reads as nothing to cut above, so the tail
-        // is present whenever the sweep runs; the absence is answered the
-        // same way instead of being unwrapped.
-        let Some(last) = blocks.last().map(|block| block.id) else {
+        let Some(cut) = store.compaction_cut(source).await? else {
             return Ok(CompactOutcome::AlreadyCompact);
         };
-        let successor = self
-            .forked_with_current_prompt(source, last, &planned.detach)
+        let temporary = store
+            .fork_temporary(
+                source,
+                cut.first_half_ends,
+                TemporaryFork {
+                    // The design's "dont provide any tools", recorded as
+                    // well as offered: the empty palette admits nothing, and
+                    // the instructions block's own kind is what makes the
+                    // turn offered nothing in the first place. Recorded
+                    // AHEAD of the instructions, so the turn they summon is
+                    // already governed by it.
+                    records: vec![ConsumerRecord {
+                        kind: TOOL_PALETTE_KIND,
+                        role: None,
+                        fields: ToolPalette::stored_fields(&[]),
+                    }],
+                    instructions: COMPACTION_INSTRUCTIONS.to_owned(),
+                },
+            )
             .await?;
+        let captured = self.capture_summary(temporary).await;
+        // Retired junction-only the moment its answer has been read,
+        // whatever the answer was: the first half's blocks all live on in
+        // the source, and the two blocks this conversation owns — the
+        // instructions and the captured answer — are all the collector is
+        // left.
+        if let Err(error) = self.retire(temporary.conversation_id).await {
+            tracing::warn!(
+                temporary = temporary.conversation_id,
+                %error,
+                "the compaction's temporary conversation was not retired; it holds no mapping and nothing serves it"
+            );
+        }
+        let Some(summary) = captured? else {
+            return Err(CoreError::CompactionUnsummarized {
+                conversation_id: source,
+            });
+        };
+        self.install_compacted_thread(source, cut, summary, channel, kind)
+            .await
+    }
+
+    /// Run the temporary conversation's one turn and read its answer.
+    ///
+    /// The conversation was born latched like every other, so nothing has
+    /// driven it: the unlatch below is what starts the turn, and subscribing
+    /// BEFORE it is what keeps a fast turn's end signal from being missed.
+    ///
+    /// The answer is read from the LEDGER, never from the event: the wait is
+    /// there to spare the read its polling, and a lagged or dropped signal
+    /// costs nothing because the blocks decide. What counts as the answer is
+    /// the newest assistant-voiced text past the instructions block — past
+    /// it, because everything before it is the inherited history the turn
+    /// was asked ABOUT, including the source's own earlier answers.
+    ///
+    /// `None` is a turn that produced no prose: it failed, it was silent, or
+    /// it never ran. The caller changes nothing on that answer.
+    async fn capture_summary(
+        &self,
+        temporary: TemporaryConversation,
+    ) -> Result<Option<String>, CoreError> {
+        let mut events = self.ctx.bus().subscribe();
+        self.ctx.bus().emit(CoreEvent::UnlatchRequested {
+            conversation_id: temporary.conversation_id,
+        });
+        let deadline = tokio::time::Instant::now() + SUMMARY_BOUND;
+        let ended =
+            streams::await_stream_end(&mut events, temporary.conversation_id, deadline).await;
+        if !ended {
+            tracing::warn!(
+                temporary = temporary.conversation_id,
+                "the compaction's turn did not end before its bound; the ledger decides what it wrote"
+            );
+        }
+        let blocks = self
+            .ctx
+            .store()
+            .list_blocks(temporary.conversation_id)
+            .await?;
+        Ok(blocks
+            .iter()
+            .rev()
+            .take_while(|block| block.id != temporary.instructions_block_id)
+            .filter(|block| {
+                block.role == Some(Role::Assistant)
+                    && Text::KINDS.contains(&block.block_type.as_str())
+            })
+            .map(|block| Text::parse(block).content.trim().to_owned())
+            .find(|content| !content.is_empty()))
+    }
+
+    /// Open the compacted thread and hand it the channel, both under the two
+    /// holds.
+    ///
+    /// The mapping is re-read first: the summary took a model turn to write,
+    /// and a `/wipe`, a racing compaction or an erasure may have moved the
+    /// channel meanwhile. A channel that is no longer on this source is one
+    /// this compaction has nothing to say about, so it stands down and
+    /// leaves everything as it found it.
+    ///
+    /// The source's own stream is settled next, and that is what keeps the
+    /// copy below from being taken from underneath a live turn. Left running,
+    /// the turn lands its answer in the source AFTER the second half was
+    /// copied — in a conversation the swap has unmapped, which the outbound
+    /// edge delivers nothing from — and the streaming tail it had already
+    /// written would ride across into the thread only to be swept out from
+    /// under it when the source finalizes. Stopping it is what the operator
+    /// contract already states a reset does: the answer it was working on is
+    /// cut.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::StreamUnsettled`] if the source's stream did not settle
+    /// before its bound — nothing is copied and nothing is swapped;
+    /// [`CoreError::Store`] if a read or a write fails.
+    async fn install_compacted_thread(
+        &self,
+        source: i64,
+        cut: LedgerCut,
+        summary: String,
+        channel: &ChannelKey,
+        kind: ChannelKind,
+    ) -> Result<CompactOutcome, CoreError> {
+        let store = self.ctx.store();
+        let _no_erasure_mid_reset = self.erasure_fence.read().await;
+        let _one_reset_at_a_time = self.stamp_lock.lock().await;
         let tx = store.tx();
-        mapping::delete_by_conversation(&tx, source).await?;
-        self.reset_claim_seam().await;
-        let winner = mapping::claim(&tx, channel, kind, successor).await?;
-        if winner != successor {
-            // A concurrent racer already claimed the channel. The fork owes
-            // turns nobody can deliver, so it goes — junction rows alone,
-            // every block living on in the source.
-            store.delete_conversation(successor).await?;
+        if mapping::find(&tx, channel).await? != Some((source, kind)) {
+            tracing::debug!(
+                source,
+                "the channel left this conversation while its summary was written; the compaction stands down"
+            );
+            return Ok(CompactOutcome::ClaimLost);
+        }
+        self.settle(source).await?;
+        // The second half is copied from the ledger AS IT STANDS NOW, not as
+        // it stood when the cut was derived: everything a member said while
+        // the summary was being written sits past the cut and rides across
+        // verbatim with the rest of it.
+        let successor = store
+            .open_compacted_thread(
+                source,
+                cut.first_half_ends,
+                CompactedThread {
+                    ancestor_conversation_id: source,
+                    system_prompt: Some(self.system_prompt.clone()),
+                    compaction_message: summary,
+                    model: self.current_model(),
+                },
+            )
+            .await?;
+        // Past the creation, every exit accounts for the thread: the swap
+        // maps it, the swap's own loser branch retires it, and a swap that
+        // FAILS leaves it here — built, unmapped, latched, serving nobody and
+        // reached by no sweep. So this path retires it, exactly as the
+        // capture path retires its temporary conversation.
+        let swapped = match self.swap_channel(source, successor, channel, kind).await {
+            Ok(swapped) => swapped,
+            Err(error) => {
+                self.discard(&[successor]).await;
+                return Err(error);
+            }
+        };
+        if !swapped {
             tracing::warn!(
                 source,
                 successor,
-                winner,
-                "the compacted fork lost the mapping claim and was dropped; the winner's session governs"
+                "the compacted thread lost the mapping claim and was dropped; the winner's session governs"
             );
             return Ok(CompactOutcome::ClaimLost);
         }
         tracing::info!(
             source,
             successor,
-            detached = planned.detach.len(),
+            first_half_ends = cut.first_half_ends,
             "the channel's session was compacted; the old conversation stays on record"
         );
         Ok(CompactOutcome::Compacted)
     }
 
-    /// The unattended compact, run for one conversation the bus woke us
-    /// about.
+    /// Move a channel from one conversation to another through the claim's
+    /// own winner check, answering whether `successor` is the conversation
+    /// the channel ended up on.
+    ///
+    /// THE swap, and the only one: the compaction takes it, and so does the
+    /// erasure scrub that replaces a whole lineage. A loser's conversation is
+    /// deleted before anything referenced it — it owes turns nobody can
+    /// deliver — and every block it shared lives on in what it was built
+    /// from.
+    ///
+    /// The caller holds the stamp lock and the erasure fence.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::ClaimLost`] if the claim finds no winner;
+    /// [`CoreError::Store`] if a read or a write fails.
+    pub(crate) async fn swap_channel(
+        &self,
+        retired: i64,
+        successor: i64,
+        channel: &ChannelKey,
+        kind: ChannelKind,
+    ) -> Result<bool, CoreError> {
+        let store = self.ctx.store();
+        let tx = store.tx();
+        mapping::delete_by_conversation(&tx, retired).await?;
+        self.reset_claim_seam().await;
+        let winner = mapping::claim(&tx, channel, kind, successor).await?;
+        if winner != successor {
+            self.retire(successor).await?;
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// Stop whatever model turn is still writing into this conversation,
+    /// before its history is copied away and its mapping moves. The whole
+    /// protocol — what an observed-open stream costs, what a stored
+    /// streaming tail costs, and what an idle conversation costs, which is
+    /// nothing — is [`streams::settle_stream`]'s own, and the erasure takes
+    /// the identical call ahead of its deletions.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::StreamUnsettled`] if the stream did not settle before
+    /// its bound; [`CoreError::Store`] if a read fails.
+    async fn settle(&self, conversation_id: i64) -> Result<(), CoreError> {
+        streams::settle_stream(
+            self.ctx.store(),
+            self.ctx.bus(),
+            self.context.streams(),
+            conversation_id,
+        )
+        .await
+    }
+
+    /// The model every conversation this deployment creates runs on, as the
+    /// fork doors take it: the current binding and the configured reasoning
+    /// level, in one value. Written once, because a fork that took the
+    /// binding and left the level behind is half a replacement.
+    pub(crate) fn current_model(&self) -> ModelOverride {
+        ModelOverride {
+            provider_id: Some(self.binding.provider_instance.clone()),
+            external_id: Some(self.binding.model.clone()),
+            display_name: Some(self.binding.model_display_name.clone()),
+            vendor: Some(self.binding.vendor.clone()),
+            reasoning: Some(self.reasoning.as_key().to_owned()),
+        }
+    }
+
+    /// Scrub an erased principal's words out of every compacted digest they
+    /// fed — the design's clone-strip-delete, copy-on-write.
+    ///
+    /// A digest is prose a model wrote about a stretch of conversation, so it
+    /// cannot be edited free of one voice the way a stored column is nulled:
+    /// it is REGENERATED from the history minus that person, and the old one
+    /// is deleted with the conversation that held it.
+    ///
+    /// The lineage is the WHOLE ancestry, not a pair. The words that fed the
+    /// oldest digest live on the ROOT — the first half nobody inherited — and
+    /// every thread above it carries a digest written from the half below,
+    /// which HOLDS the digest below. So the chain is rebuilt from the root
+    /// upward: the root is cloned without the erased blocks, and each hop in
+    /// turn gets a clone whose digest is regenerated from the clone beneath
+    /// it and whose reference names that clone. Stopping at one hop would
+    /// leave the older digest inside the very history the newer one is
+    /// regenerated from, and the erased words would come back as prose about
+    /// prose.
+    ///
+    /// Sharing is the erasure's own economy: a clone is junction rows, and
+    /// only what CHANGED is written fresh — each thread's two opening
+    /// appends, and nothing else. Every other block is the same block.
+    ///
+    /// Ordering is capture-first. Nothing is swapped and nothing established
+    /// is deleted until every regenerated summary is in hand, so a failed or
+    /// empty capture at any depth leaves the whole lineage standing exactly
+    /// as it was — the clones built so far go with the failure — and the
+    /// scrub can simply be run again.
+    ///
+    /// Returns whether a lineage was scrubbed.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::CompactionUnsummarized`] if a regeneration captured
+    /// nothing; [`CoreError::StreamUnsettled`] if the serving thread's own
+    /// stream did not settle; [`CoreError::Store`] if a read or a write
+    /// fails.
+    pub(crate) async fn scrub_compacted_digest(
+        &self,
+        stripped: &StrippedLineage,
+    ) -> Result<bool, CoreError> {
+        let store = self.ctx.store();
+        let serving = stripped.serving.conversation;
+        let Some((channel, kind)) = self.mapped_channel(serving).await? else {
+            return Ok(false);
+        };
+        // Built with NEITHER hold: every hop below the serving thread costs a
+        // model turn, and no hold may be held across one.
+        let mut created = Vec::new();
+        let rebuilt = match self.rebuilt_ancestry(stripped, &mut created).await {
+            Ok(Some(rebuilt)) => rebuilt,
+            Ok(None) => {
+                self.discard(&created).await;
+                return Ok(false);
+            }
+            Err(error) => {
+                self.discard(&created).await;
+                return Err(error);
+            }
+        };
+
+        let _no_erasure_mid_reset = self.erasure_fence.read().await;
+        let _one_reset_at_a_time = self.stamp_lock.lock().await;
+        let serving_clone = match self
+            .install_scrubbed_thread(&stripped.serving, rebuilt, &channel, kind, &mut created)
+            .await
+        {
+            Ok(Some(serving_clone)) => serving_clone,
+            Ok(None) => {
+                self.discard(&created).await;
+                return Ok(false);
+            }
+            Err(error) => {
+                self.discard(&created).await;
+                return Err(error);
+            }
+        };
+        // ONLY past the verified swap: every conversation carrying the erased
+        // words is deleted, junction-only. The blocks their clones share live
+        // on; the ones nobody shares — the old digests above all, which are
+        // the prose being scrubbed — are left to the collector, which runs
+        // here because deleting that prose IS the erasure.
+        for retired in retired_lineage(stripped) {
+            self.retire(retired).await?;
+        }
+        store.gc_orphan_blocks().await?;
+        tracing::info!(
+            serving,
+            root = stripped.root,
+            depth = stripped.below.len() + 1,
+            serving_clone,
+            "a compacted lineage was scrubbed of an erased principal's words"
+        );
+        Ok(true)
+    }
+
+    /// Rebuild everything BELOW the serving thread, with neither hold: the
+    /// root's scrubbed clone, then one scrubbed clone per intermediate hop
+    /// carrying a digest regenerated from the clone beneath it, and finally
+    /// the digest the serving thread's own clone will open with.
+    ///
+    /// The intermediate hops are safe to build holds-free for the reason the
+    /// root is: nothing maps them, so no ingestion can be writing into them
+    /// and no swap can move them. Only the serving thread is live, and its
+    /// clone is built under the holds by [`Self::install_scrubbed_thread`].
+    ///
+    /// Every conversation this creates is pushed to `created` as it is made,
+    /// so a caller that stands down or fails deletes exactly what was built,
+    /// however deep the walk got.
+    ///
+    /// `None` is a regeneration with nothing to be about — a span the
+    /// successor had inherited whole, which the mechanism cannot produce and
+    /// which is answered rather than assumed away.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::CompactionUnsummarized`] if a capture produced nothing;
+    /// [`CoreError::Store`] if a read or a write fails.
+    async fn rebuilt_ancestry(
+        &self,
+        stripped: &StrippedLineage,
+        created: &mut Vec<i64>,
+    ) -> Result<Option<RebuiltAncestry>, CoreError> {
+        let store = self.ctx.store();
+        // The root's clone IS the post-erasure history the oldest digest is
+        // written from.
+        let mut ancestor_clone = self
+            .cloned_without(stripped.root, &stripped.in_root)
+            .await?;
+        created.push(ancestor_clone);
+        for hop in &stripped.below {
+            let Some(summary) = self
+                .regenerated_digest(ancestor_clone, hop.conversation)
+                .await?
+            else {
+                return Ok(None);
+            };
+            let clone = store
+                .open_compacted_thread(
+                    hop.conversation,
+                    hop.opening_ends,
+                    CompactedThread {
+                        ancestor_conversation_id: ancestor_clone,
+                        system_prompt: Some(self.system_prompt.clone()),
+                        compaction_message: summary,
+                        model: self.current_model(),
+                    },
+                )
+                .await?;
+            store.detach_blocks(clone, hop.stripped.clone()).await?;
+            created.push(clone);
+            ancestor_clone = clone;
+        }
+        let Some(serving_digest) = self
+            .regenerated_digest(ancestor_clone, stripped.serving.conversation)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(RebuiltAncestry {
+            ancestor_clone,
+            serving_digest,
+        }))
+    }
+
+    /// Open the serving thread's scrubbed clone and hand it the channel, both
+    /// under the two holds. Answers the clone, or `None` when the scrub stood
+    /// down — the channel moved on, or the claim went to a racer.
+    ///
+    /// The mapping is re-read first: the regeneration took a model turn per
+    /// hop, and a `/wipe`, a compaction or another erasure may have moved the
+    /// channel meanwhile.
+    ///
+    /// The serving thread's own stream is settled next, for the reason the
+    /// compaction settles its source: the clone copies the thread's history
+    /// as it stands, and a turn still writing into the thread would land its
+    /// answer in a conversation this swap unmaps.
+    ///
+    /// The clone joins `created` the moment it exists, like every hop below
+    /// it: a failure past its creation — the detach, the swap's own store
+    /// calls — leaves a thread nothing maps and no sweep reaches, and the
+    /// caller's discard is what retires it. Answering with it never hands it
+    /// over twice: `created` is discarded only where the caller installs
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::StreamUnsettled`] if the thread's stream did not settle;
+    /// [`CoreError::Store`] if a read or a write fails.
+    async fn install_scrubbed_thread(
+        &self,
+        serving_hop: &StrippedHop,
+        rebuilt: RebuiltAncestry,
+        channel: &ChannelKey,
+        kind: ChannelKind,
+        created: &mut Vec<i64>,
+    ) -> Result<Option<i64>, CoreError> {
+        let store = self.ctx.store();
+        let serving = serving_hop.conversation;
+        if mapping::find(&store.tx(), channel).await? != Some((serving, kind)) {
+            tracing::debug!(
+                serving,
+                "the channel left this thread while its digest was regenerated; the scrub stands down"
+            );
+            return Ok(None);
+        }
+        self.settle(serving).await?;
+        // The serving clone: the new reference and the new digest in place of
+        // the old pair, everything past them shared, and the erased person's
+        // own blocks detached from the copy.
+        let serving_clone = store
+            .open_compacted_thread(
+                serving,
+                serving_hop.opening_ends,
+                CompactedThread {
+                    ancestor_conversation_id: rebuilt.ancestor_clone,
+                    system_prompt: Some(self.system_prompt.clone()),
+                    compaction_message: rebuilt.serving_digest,
+                    model: self.current_model(),
+                },
+            )
+            .await?;
+        created.push(serving_clone);
+        store
+            .detach_blocks(serving_clone, serving_hop.stripped.clone())
+            .await?;
+        if !self
+            .swap_channel(serving, serving_clone, channel, kind)
+            .await?
+        {
+            tracing::warn!(
+                serving,
+                "the scrubbed thread lost the mapping claim and was dropped; the winner's session governs"
+            );
+            return Ok(None);
+        }
+        Ok(Some(serving_clone))
+    }
+
+    /// Drop conversations a reset built and will not use, newest first — a
+    /// scrub standing down or failing past its first clone, and a compaction
+    /// whose swap failed with its thread already open. Junction-only, like
+    /// every other retirement here: the blocks they share live on in what
+    /// they were cloned from, and their own fresh appends are left to the
+    /// collector. A deletion that itself fails is logged rather than raised:
+    /// the caller is already reporting why nothing was installed, and an
+    /// unmapped clone nothing serves is not a second failure to hand back.
+    ///
+    /// Every door that opens a conversation it may not hand over ends here.
+    /// A thread built and neither mapped nor retired is a latched
+    /// conversation with a fresh digest that no sweep ever reaches, so
+    /// "retired on every exit past its creation" is one rule with one
+    /// implementation rather than a habit each path keeps separately.
+    async fn discard(&self, created: &[i64]) {
+        for &conversation_id in created.iter().rev() {
+            if let Err(error) = self.retire(conversation_id).await {
+                tracing::warn!(
+                    conversation_id,
+                    %error,
+                    "a scrub's unused clone was not retired; it holds no mapping and nothing serves it"
+                );
+            }
+        }
+    }
+
+    /// One thread's regenerated digest: captured from `ancestor_clone` over
+    /// exactly the span `successor` never inherited.
+    ///
+    /// The span is PINNED, not re-derived: exactly the ancestor clone's
+    /// blocks the successor never inherited — that thread's original first
+    /// half as it stands after the strip. The boundary needs no stored
+    /// position, because it is the complement of what the successor holds:
+    /// nothing silently drops out of the regenerated view, and nothing is
+    /// reported twice beside the verbatim second half. Those blocks are a
+    /// PREFIX of the clone's ledger — a thread's own opening appends sit at
+    /// the front and everything it inherited follows — so the last
+    /// non-inherited block is where the temporary fork ends.
+    ///
+    /// `None` means there was nothing to regenerate — a span the successor
+    /// had inherited whole, which the mechanism cannot produce and which is
+    /// answered rather than assumed away.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::CompactionUnsummarized`] if the capture produced
+    /// nothing; [`CoreError::Store`] if a read or a write fails.
+    async fn regenerated_digest(
+        &self,
+        ancestor_clone: i64,
+        successor: i64,
+    ) -> Result<Option<String>, CoreError> {
+        let store = self.ctx.store();
+        let held: std::collections::HashSet<i64> = store
+            .list_blocks(successor)
+            .await?
+            .iter()
+            .map(|block| block.id)
+            .collect();
+        let span_ends = store
+            .list_blocks(ancestor_clone)
+            .await?
+            .iter()
+            .map(|block| block.id)
+            .rfind(|id| !held.contains(id));
+        let Some(span_ends) = span_ends else {
+            // The successor inherited everything the clone still holds: there
+            // is nothing left for a digest to be about. Unreachable through
+            // the mechanism — a first half always keeps at least the
+            // conversation's own prompt — and answered rather than assumed.
+            tracing::warn!(
+                successor,
+                ancestor_clone,
+                "the regeneration span is empty; the digest is left as it stands"
+            );
+            return Ok(None);
+        };
+        let temporary = store
+            .fork_temporary(
+                ancestor_clone,
+                span_ends,
+                TemporaryFork {
+                    records: vec![ConsumerRecord {
+                        kind: TOOL_PALETTE_KIND,
+                        role: None,
+                        fields: ToolPalette::stored_fields(&[]),
+                    }],
+                    instructions: COMPACTION_INSTRUCTIONS.to_owned(),
+                },
+            )
+            .await?;
+        let captured = self.capture_summary(temporary).await;
+        if let Err(error) = self.retire(temporary.conversation_id).await {
+            tracing::warn!(
+                temporary = temporary.conversation_id,
+                %error,
+                "the regeneration's temporary conversation was not retired"
+            );
+        }
+        match captured {
+            Ok(Some(summary)) => Ok(Some(summary)),
+            captured => {
+                // Capture-first: nothing established has been touched yet, and
+                // the clones built so far go with the failure at the caller.
+                captured?;
+                Err(CoreError::CompactionUnsummarized {
+                    conversation_id: successor,
+                })
+            }
+        }
+    }
+
+    /// The compaction the driver runs for one conversation, behind whichever
+    /// door woke it.
     ///
     /// Nothing is answered in chat: nobody invoked anything, and a line
     /// nobody asked for in a group is noise. The record is this method's own
     /// log.
-    ///
-    /// The eligibility read runs first WITHOUT the holds, because the wake
-    /// arrives on every block change in every conversation and taking the
-    /// ingestion lock that often would stall the chat. It is read again
-    /// under the holds, which is what makes a lost race stand down instead
-    /// of forking a conversation the winner already replaced.
-    async fn auto_compact(&self, conversation_id: i64) {
-        match self.auto_compact_target(conversation_id).await {
-            Ok(None) => return,
-            Ok(Some(_)) => {}
-            Err(error) => {
+    async fn unattended_compact(&self, conversation_id: i64, door: &'static str) {
+        let Ok(Some((channel, kind))) = self.mapped_channel(conversation_id).await.inspect_err(
+            |error| {
                 tracing::warn!(
                     conversation_id,
                     %error,
-                    "the unattended compact could not read its conditions; the next change re-reads"
+                    "the unattended compaction could not read its channel; the next wake re-reads"
                 );
-                return;
-            }
-        }
-        match self.auto_compact_behind_the_holds(conversation_id).await {
-            Ok(Some(outcome)) => {
-                tracing::warn!(
-                    conversation_id,
-                    ?outcome,
-                    "a turn ended on a spent tool-call window; the session was compacted unattended"
-                );
-            }
-            Ok(None) => tracing::debug!(
+            },
+        ) else {
+            return;
+        };
+        match self.compact(conversation_id, &channel, kind).await {
+            Ok(outcome) => tracing::info!(
                 conversation_id,
-                "the unattended compact stood down; the conversation is no longer eligible"
+                door,
+                ?outcome,
+                "the session was compacted unattended"
             ),
             Err(error) => tracing::warn!(
                 conversation_id,
+                door,
                 %error,
-                "the unattended compact failed; the session stands and the next change retries"
+                "the unattended compaction failed; the session stands and the next wake retries"
             ),
         }
     }
 
-    /// The unattended compact's acting half, behind the two holds, with the
-    /// conditions read again inside them. `None` says the conversation
-    /// stopped being eligible between the two reads.
-    async fn auto_compact_behind_the_holds(
-        &self,
-        conversation_id: i64,
-    ) -> Result<Option<CompactOutcome>, CoreError> {
-        let _no_erasure_mid_reset = self.erasure_fence.read().await;
-        let _one_reset_at_a_time = self.stamp_lock.lock().await;
-        let Some((channel, kind)) = self.auto_compact_target(conversation_id).await? else {
-            return Ok(None);
-        };
-        self.compact(conversation_id, &channel, kind, CompactTrigger::Signal)
-            .await
-            .map(Some)
-    }
-
-    /// Whether this conversation is eligible for an unattended compact, and
-    /// where it would be re-claimed: its stored status blocks record the
-    /// framework's forced turn end, AND it is currently mapped to a channel.
+    /// The channel this conversation is currently mapped to, or `None` when
+    /// it is mapped to none.
     ///
-    /// Both halves are read from durable state, never from the event, so a
-    /// wake the lossy bus dropped costs nothing: the next change on that
-    /// conversation reads the same standing fact. The mapped half is what
-    /// makes the operation self-limiting from the other side — a swept
-    /// source is unmapped from the moment its fork claims the channel, so
-    /// however many late appends wake it, it is never compacted again.
-    async fn auto_compact_target(
+    /// Read from durable state, never from an event, so a wake the lossy bus
+    /// dropped costs nothing. It is also what makes the operation
+    /// self-limiting from the other side: a compacted source is unmapped
+    /// from the moment its successor claims the channel, so however many
+    /// late appends wake it, it is never compacted again.
+    async fn mapped_channel(
         &self,
         conversation_id: i64,
     ) -> Result<Option<(ChannelKey, ChannelKind)>, CoreError> {
         let tx = self.ctx.store().tx();
-        if !exhausted_turn_recorded(&tx, conversation_id).await? {
-            return Ok(None);
-        }
         let (Some(channel), Some(kind)) = (
             mapping::channel_for_conversation(&tx, conversation_id).await?,
             mapping::kind_for_conversation(&tx, conversation_id).await?,
@@ -538,57 +1202,212 @@ impl Sessions {
     }
 }
 
-/// Watch the bus and compact a mapped conversation whose turn the framework
-/// ended over a spent tool-call window. The task holds the sessions weakly
-/// and ends with the assembly or with the bus, whichever goes first — the
-/// stream observer's own shape.
+/// Watch for the two unattended doors into the compaction and drive them —
+/// the framework's forced turn end, and the context thresholds.
 ///
-/// The trigger is level-read from stored state on every block change, so a
-/// dropped or lagged event heals on the next change instead of losing the
-/// incident the watcher exists for.
+/// One task, and the compactions it runs are awaited inline: two captures for
+/// one conversation would spend two model turns to produce one summary, and
+/// the second would find the channel already moved. The task holds the
+/// sessions weakly and ends with the assembly or with the bus, whichever goes
+/// first — the stream observer's own shape.
 ///
-/// It fires on DIRECT chats as well as groups, deliberately, where the two
-/// commands are fenced to groups: the commands' fence is about authority —
-/// a moderator floor states nothing in a room with no moderators — while
-/// this healing is about a conversation whose history has gone bad, which
-/// happens wherever a mapped conversation exhausts its tool-call window.
-pub(crate) fn spawn_auto_compact(sessions: &Arc<Sessions>, bus: &Arc<EventBus<CoreEvent>>) {
+/// **The forced turn end** (the design's runaway case) is level-read from
+/// stored state on every block change, so a dropped or lagged event heals on
+/// the next change instead of losing the incident the door exists for. It
+/// fires on DIRECT chats as well as groups, deliberately, where `/compact` is
+/// fenced to groups: the command's fence is about authority — a moderator
+/// floor states nothing in a room with no moderators — while this healing is
+/// about a conversation whose history has gone bad, which happens wherever a
+/// mapped conversation exhausts its tool-call window.
+///
+/// **The thresholds** are time-based readings, and nothing on the bus
+/// announces the moment one starts holding: the sweep is what notices, and it
+/// asks the context watch, which answers from what the stream observer
+/// measured and when the channel last heard from anyone.
+pub(crate) fn spawn_compaction_driver(
+    sessions: &Arc<Sessions>,
+    bus: &Arc<EventBus<CoreEvent>>,
+    watch: &Arc<ContextWatch>,
+) {
     let mut events = bus.subscribe();
     let weak = Arc::downgrade(sessions);
+    let watch = Arc::downgrade(watch);
+    // A process that stated no context window has both threshold arms
+    // permanently silent, so it gets no sweep and no periodic timer at all —
+    // the door simply does not exist there, rather than existing and
+    // answering no every time.
+    let mut sweep = watch
+        .upgrade()
+        .is_some_and(|watch| watch.sweeps())
+        .then(|| {
+            let mut sweep = tokio::time::interval(CONTEXT_SWEEP);
+            sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            sweep
+        });
     tokio::spawn(async move {
         loop {
-            let event = match events.recv().await {
-                Ok(event) => event,
-                Err(RecvError::Lagged(missed)) => {
-                    tracing::warn!(
-                        missed,
-                        "the compaction watcher lagged; the next change re-reads stored state"
-                    );
-                    continue;
+            tokio::select! {
+                event = events.recv() => {
+                    let event = match event {
+                        Ok(event) => event,
+                        Err(RecvError::Lagged(missed)) => {
+                            tracing::warn!(
+                                missed,
+                                "the compaction driver lagged; the next change re-reads stored state"
+                            );
+                            continue;
+                        }
+                        Err(RecvError::Closed) => break,
+                    };
+                    let CoreEvent::BlocksChanged { conversation_id, .. } = event else {
+                        continue;
+                    };
+                    let Some(sessions) = weak.upgrade() else {
+                        break;
+                    };
+                    match exhausted_turn_since_the_thread_opened(
+                        &sessions.ctx.store().tx(),
+                        conversation_id,
+                    )
+                    .await
+                    {
+                        Ok(true) => {
+                            sessions.unattended_compact(conversation_id, "forced turn end").await;
+                        }
+                        Ok(false) => {}
+                        Err(error) => tracing::warn!(
+                            conversation_id,
+                            %error,
+                            "the forced-turn-end read failed; the next change re-reads"
+                        ),
+                    }
                 }
-                Err(RecvError::Closed) => break,
-            };
-            let CoreEvent::BlocksChanged {
-                conversation_id, ..
-            } = event
-            else {
-                continue;
-            };
-            let Some(sessions) = weak.upgrade() else {
-                break;
-            };
-            sessions.auto_compact(conversation_id).await;
+                () = next_sweep(&mut sweep) => {
+                    let (Some(sessions), Some(watch)) = (weak.upgrade(), watch.upgrade()) else {
+                        break;
+                    };
+                    for conversation_id in watch.observed() {
+                        if !watch.due(conversation_id) {
+                            continue;
+                        }
+                        sessions.unattended_compact(conversation_id, "context threshold").await;
+                        // The compacted source is unmapped and its successor
+                        // is a fresh id with no measurement of its own; the
+                        // stale reading would otherwise keep answering for a
+                        // conversation nothing serves.
+                        watch.forget(conversation_id);
+                    }
+                }
+            }
         }
     });
 }
 
+/// What one erased principal costs one compacted lineage: the whole
+/// ancestry the serving thread stands on, and the blocks each conversation
+/// in it must lose.
+///
+/// A lineage is not two conversations. A thread compacted twice continues a
+/// thread that continues a conversation, and each hop's digest was written
+/// from the half below it — a half that HOLDS the digest below — so prose
+/// about an erased person's words survives one generation on as prose about
+/// that prose. Every digest in the chain is therefore regenerated, from the
+/// root upward.
+///
+/// Read once, by the caller that finds the lineage, and handed here whole —
+/// so the scrub never re-derives what it is scrubbing while it scrubs it.
+#[derive(Debug, Clone)]
+pub(crate) struct StrippedLineage {
+    /// The oldest conversation in the chain: the one that continues
+    /// nothing, and the history every digest above it is ultimately written
+    /// from.
+    pub root: i64,
+    /// The erased principal's blocks in the root.
+    pub in_root: Vec<i64>,
+    /// The threads BETWEEN the root and the serving one, each continuing the
+    /// one before it, OLDEST FIRST. Empty for a lineage one compaction deep.
+    pub below: Vec<StrippedHop>,
+    /// The thread the channel is on, and the one whose clone takes it. A
+    /// field of its own rather than the last of a list, because a lineage
+    /// always has exactly one and no caller should have to answer what an
+    /// empty one would mean.
+    pub serving: StrippedHop,
+}
+
+/// Every conversation a scrubbed lineage retires, oldest first: the root
+/// and every thread that stood on it. Written once, because the deletion
+/// set and the set the clones replaced are the same set, and two spellings
+/// of it would eventually disagree.
+fn retired_lineage(stripped: &StrippedLineage) -> impl Iterator<Item = i64> + '_ {
+    std::iter::once(stripped.root)
+        .chain(stripped.below.iter().map(|hop| hop.conversation))
+        .chain(std::iter::once(stripped.serving.conversation))
+}
+
+/// What a scrub's holds-free half hands to its held half: the ancestor the
+/// serving thread's clone will name, and the digest that clone opens with.
+struct RebuiltAncestry {
+    /// The newest clone below the serving thread — the root's clone when the
+    /// lineage is one hop deep, an intermediate thread's clone otherwise.
+    ancestor_clone: i64,
+    /// The serving clone's regenerated digest, captured from
+    /// `ancestor_clone`.
+    serving_digest: String,
+}
+
+/// One compacted thread inside a lineage.
+#[derive(Debug, Clone)]
+pub(crate) struct StrippedHop {
+    /// The thread itself.
+    pub conversation: i64,
+    /// Its own opening: its ancestor reference and the digest behind it.
+    /// Everything past this block is what the thread inherited, and it is
+    /// what the scrubbed clone inherits in turn.
+    pub opening_ends: i64,
+    /// The erased principal's blocks in this thread.
+    pub stripped: Vec<i64>,
+}
+
+/// The next threshold sweep, or a future that never completes when this
+/// process has no sweep — which is what lets the driver's one loop carry a
+/// door that may not exist without a second loop beside it.
+async fn next_sweep(sweep: &mut Option<tokio::time::Interval>) {
+    match sweep {
+        Some(interval) => {
+            interval.tick().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
 /// Whether the conversation holds a status row recording the framework's
-/// forced turn end over a spent tool-call window.
+/// forced turn end over a spent tool-call window, recorded INSIDE this
+/// thread's own life.
+///
+/// The scoping is what keeps the door from re-opening on an incident that
+/// has already been answered (2026-08-31). A compacted thread inherits the
+/// second half of its source's ledger, and the forced end's marker sits at
+/// the end of the turn it ended — so it usually rides across, and an
+/// unscoped read would find it in the successor, compact that, find it in
+/// ITS successor, and burn a model turn per round until the ledger ran out.
+///
+/// A thread's own life begins at its ancestor-reference block, which is the
+/// first thing a compaction writes; block ids ascend with insertion, so
+/// every inherited block is older than that reference and every later
+/// incident is newer. A thread that carries no such reference has never been
+/// compacted, and its whole ledger is its own life.
+///
+/// The framework-table names it joins carry the deliberate coupling decision
+/// 0032 records, exactly as the owing-tail walk's do, and the kinds are
+/// named through the framework's own declarations rather than literals.
 ///
 /// # Errors
 ///
 /// [`StoreError`] if the query fails or the store's actor has stopped.
-async fn exhausted_turn_recorded(tx: &StoreTx, conversation_id: i64) -> Result<bool, StoreError> {
+async fn exhausted_turn_since_the_thread_opened(
+    tx: &StoreTx,
+    conversation_id: i64,
+) -> Result<bool, StoreError> {
     domain_run(tx, crate::schema::DOMAIN, move |conn| {
         let found: Option<i64> = conn
             .query_row(
@@ -596,9 +1415,18 @@ async fn exhausted_turn_recorded(tx: &StoreTx, conversation_id: i64) -> Result<b
                     "SELECT 1 FROM conversation_blocks cb \
                      JOIN {STATUS_TABLE} s ON s.block_id = cb.block_id \
                      WHERE cb.conversation_id = ?1 AND s.{STATUS_COLUMN} = ?2 \
+                     AND cb.block_id > COALESCE(( \
+                       SELECT MAX(opening.block_id) FROM conversation_blocks opening \
+                       JOIN blocks b ON b.id = opening.block_id \
+                       WHERE opening.conversation_id = ?1 AND b.block_type = ?3 \
+                     ), 0) \
                      LIMIT 1"
                 ),
-                rusqlite::params![conversation_id, Status::TOOL_CALLS_EXHAUSTED],
+                rusqlite::params![
+                    conversation_id,
+                    Status::TOOL_CALLS_EXHAUSTED,
+                    AncestorReference::KINDS[0]
+                ],
                 |row| row.get(0),
             )
             .optional()?;

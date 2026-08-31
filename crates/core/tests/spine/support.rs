@@ -241,6 +241,36 @@ impl TurnHold {
     pub fn release(&self) {
         self.permits.add_permits(1);
     }
+
+    /// Announce this turn and park it until the test releases it OR the turn
+    /// is torn down. Answers whether the provider carries on; `false` ends
+    /// its task, as a torn-down wire does.
+    ///
+    /// The teardown arm is the load-bearing one and both scripted providers
+    /// take it from here rather than each spelling it out: an interrupt drops
+    /// the request sender, and a held provider that kept its response channel
+    /// open past that would hold the settle protocol under test hostage — no
+    /// reader ever drains, so no stream-end signal is emitted and every
+    /// settle burns its whole bound against a stream the framework has
+    /// already torn down.
+    async fn await_release(
+        &self,
+        turn: usize,
+        requests: &mut mpsc::UnboundedReceiver<ProviderRequest>,
+    ) -> bool {
+        let _ = self.started_tx.send(turn);
+        tokio::select! {
+            permit = self.permits.acquire() => match permit {
+                Ok(permit) => {
+                    permit.forget();
+                    true
+                }
+                // The hold closed with the test.
+                Err(_) => false,
+            },
+            _ = requests.recv() => false,
+        }
+    }
 }
 
 /// The error text an unqualified scripted failure carries: prose in no
@@ -433,22 +463,10 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                     let _ =
                         response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta { text }));
                 }
-                if let Some(hold) = &hold {
-                    let _ = hold.started_tx.send(turn);
-                    // The hold ends on the test's release or on the turn's
-                    // teardown: an interrupt drops the request sender, and a
-                    // scripted provider that kept the stream open past that
-                    // would hold the settle protocol under test hostage.
-                    tokio::select! {
-                        permit = hold.permits.acquire() => {
-                            permit.expect("the hold outlives the test").forget();
-                        }
-                        _ = requests.recv() => {
-                            // An interrupt or a closed channel: end the turn
-                            // without a message end, as a torn-down wire does.
-                            break;
-                        }
-                    }
+                if let Some(hold) = &hold
+                    && !hold.await_release(turn, &mut requests).await
+                {
+                    break;
                 }
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
                     usage: agent_ledger::providers::Usage::default(),
@@ -512,6 +530,39 @@ pub struct ToolScript {
 /// answered call.
 pub const CLOSING_ANSWER: &str = "The scripted closing answer.";
 
+/// A distinctive opening clause of the core's compaction instructions — the
+/// harness message a compaction appends to its temporary conversation, and
+/// the one thing in this suite that carries these words. The core pins the
+/// instructions' full text; the scripted providers only need to recognize
+/// the turn.
+pub const COMPACTION_MARK: &str = "You are compacting the conversation above";
+
+/// What the scripted providers answer a compaction's turn with — the
+/// summary a compacted thread then carries as its compaction message.
+pub const SCRIPTED_SUMMARY: &str = "The scripted summary of the first half.";
+
+/// Whether this request is a compaction's own turn: its harness message
+/// carries the instructions' opening clause.
+pub fn is_compaction_turn(messages: &[Message]) -> bool {
+    messages.iter().any(|m| carries(m, COMPACTION_MARK))
+}
+
+/// Stream the scripted summary and end the turn — what every scripted
+/// provider answers a compaction's turn with, written once so the two of
+/// them cannot answer it differently.
+fn answer_compaction(response_tx: &mpsc::UnboundedSender<ProviderResponse>) {
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+        text: SCRIPTED_SUMMARY.into(),
+    }));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+        usage: agent_ledger::providers::Usage::default(),
+        stop_reason: StopReason::EndTurn,
+    }));
+    let _ = response_tx.send(ProviderResponse::Done);
+}
+
 /// Build the tool-scripted provider: the opening turn answers with one tool
 /// call carrying the script's input, and every request already carrying an
 /// answered call — a result or a recorded decline alike, both projecting as
@@ -540,6 +591,7 @@ pub fn tool_scripted_provider(
             let (response_tx, responses) = mpsc::unbounded_channel();
             let turns = Arc::clone(&observed.turns);
             let seen = Arc::clone(&observed.seen);
+            let failures = Arc::clone(&observed.failures);
             let title_requests = Arc::clone(&observed.title_requests);
             let script = script.clone();
             let hold = hold.clone();
@@ -551,6 +603,25 @@ pub fn tool_scripted_provider(
                     if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
                         title_requests.fetch_add(1, Ordering::SeqCst);
                         let _ = response_tx.send(ProviderResponse::Done);
+                        continue;
+                    }
+                    // A compaction's own turn, recognized by the harness
+                    // message it carries: it is answered with the summary
+                    // and never with the tool script, whose call the empty
+                    // palette would decline anyway. A scripted failure
+                    // takes it like any other turn, which is how a test
+                    // drives a capture that produces nothing.
+                    if is_compaction_turn(&messages) {
+                        seen.lock().unwrap().push(messages);
+                        let scripted_failure = failures.lock().unwrap().pop_front();
+                        match scripted_failure {
+                            Some(failure) => {
+                                let _ = response_tx
+                                    .send(ProviderResponse::Event(StreamEvent::Connected));
+                                let _ = response_tx.send(ProviderResponse::Error(failure));
+                            }
+                            None => answer_compaction(&response_tx),
+                        }
                         continue;
                     }
                     let answered = messages.iter().any(carries_tool_result);
@@ -588,13 +659,10 @@ pub fn tool_scripted_provider(
                             text: narration.clone(),
                         }));
                     }
-                    if let Some(hold) = &hold {
-                        let _ = hold.started_tx.send(turn);
-                        match hold.permits.acquire().await {
-                            Ok(permit) => permit.forget(),
-                            // The hold closed with the test; end the task.
-                            Err(_) => break,
-                        }
+                    if let Some(hold) = &hold
+                        && !hold.await_release(turn, &mut requests).await
+                    {
+                        break;
                     }
                     // The production order: every provider emits its tool
                     // lifecycle AFTER `MessageEnd`, which finalizes any
@@ -896,6 +964,12 @@ pub fn binding() -> ModelBinding {
         vendor: VENDOR.into(),
         model: "script-model".into(),
         model_display_name: "Script Model".into(),
+        // Unstated on purpose: the suite drives the compaction through its
+        // two explicit doors, and the threshold arms are pinned at their own
+        // policy function over injected numbers. A fixture that stated a
+        // window would also start the threshold sweep, whose timer perturbs
+        // every paused-clock test in this suite for no coverage gained.
+        context_window: None,
     }
 }
 

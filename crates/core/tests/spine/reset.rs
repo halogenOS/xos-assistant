@@ -1,38 +1,38 @@
-//! The session-reset commands at the core's edges (unit 45): `/wipe`
-//! starting a group over on an empty conversation, `/compact` forking one
-//! down to its recent tail, the outbound edge's seam that keeps a fork's
-//! inherited answers from going out twice, the floor and the direct-chat
-//! fence, the unattended compaction the framework's forced turn end
-//! triggers, and the promise that runs through all of it: nothing
-//! established is deleted.
+//! The session resets at the core's edges (unit 45, and the compaction of
+//! unit 48): `/wipe` starting a group over on an empty conversation,
+//! `/compact` summarizing the first half of a conversation and carrying the
+//! second forward verbatim, the outbound edge's seam that keeps inherited
+//! answers from going out twice, the floor and the direct-chat fence, the
+//! unattended compaction the framework's forced turn end triggers, the
+//! erasure scrub that replaces a whole compacted lineage, and the promise
+//! that runs through all of it: nothing established is deleted.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_ledger::agency::{
-    LeafKind, Quote, Status, SystemPrompt, Text, ToolCall, ToolError, ToolResult,
+    AncestorReference, LeafKind, Status, SystemPrompt, Text, ToolCall, ToolResult,
 };
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
 use agent_ledger::store::{BlockDestination, domain_run};
-use agent_ledger::{Block, CoreEvent, Store, ToolContext, ToolHandler, ToolOutcome};
-use assistant_core::commands::{
-    COMPACT_ALREADY, COMPACT_COMMAND, COMPACT_DONE, COMPACT_KEPT_MESSAGES, WIPE_COMMAND, WIPE_DONE,
-};
+use agent_ledger::{Block, CoreEvent, Role, Store, ToolContext, ToolHandler, ToolOutcome};
+use assistant_core::commands::{COMPACT_COMMAND, COMPACT_DONE, WIPE_COMMAND, WIPE_DONE};
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::note::CONTEXT_NOTE_KIND;
 use assistant_core::schema::{DOMAIN, store_config};
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::palette::TOOL_PALETTE_KIND;
 use assistant_core::{
-    Assistant, Authority, ChannelKey, ChannelKind, ChannelReset, InboundMessage, IngestOutcome,
-    Observation, ObservedFact, PRIVACY_REPLY_CAP, PRIVACY_UNPUBLISHED, ProtectionConfig,
-    RESET_REPLY_CAP, privacy,
+    Assistant, Authority, ChannelKey, ChannelKind, ChannelReset, ErasureOutcome, InboundMessage,
+    IngestOutcome, Observation, ObservedFact, PRIVACY_REPLY_CAP, PRIVACY_UNPUBLISHED,
+    ProtectionConfig, RESET_REPLY_CAP, privacy,
 };
 use serde_json::json;
 
 use crate::support::{
-    self, CLOSING_ANSWER, ToolScript, channel, inbound, inbound_as, inbound_unaddressed,
-    recv_reply, settle_shape, tool_scripted_provider, with_command, with_origin,
+    self, CLOSING_ANSWER, SCRIPTED_SUMMARY, ToolScript, channel, inbound, inbound_as,
+    inbound_unaddressed, recv_reply, settle_shape, tool_scripted_provider, with_command,
+    with_origin,
 };
 
 /// The scripted tool the reset fixtures call: it needs no wire, so a
@@ -67,20 +67,14 @@ impl ToolHandler<CoreEvent> for ProbeTool {
 /// The outbound edge a fixture's replies arrive on.
 type Replies = tokio::sync::mpsc::UnboundedReceiver<assistant_core::Outbound>;
 
-/// Whether the stored kind is one a compact counts as a chat row, read
-/// through the same declarations the core reads: a recorded channel
-/// message, one of the assistant's own text blocks, or a stored quote.
-fn is_chat_row(kind: &str) -> bool {
-    kind == CHAT_MESSAGE_KIND || Text::KINDS.contains(&kind) || Quote::KINDS.contains(&kind)
-}
+/// How many filler chat rows the flooded fixture appends. Enough that the
+/// ledger splits with room on both sides of the cut; the exact number is
+/// this fixture's business and nothing reads it as policy.
+const FILLER_ROWS: usize = 12;
 
-/// Whether the stored kind is tool traffic — a call, its result, its error
-/// — named through the framework's own declarations.
-fn is_tool_traffic(kind: &str) -> bool {
-    ToolCall::KINDS.contains(&kind)
-        || ToolResult::KINDS.contains(&kind)
-        || ToolError::KINDS.contains(&kind)
-}
+/// What the held provider streams before it stops mid-turn, so the source's
+/// ledger provably holds a streaming tail when the compaction reaches it.
+const HELD_NARRATION: &str = "Looking that up now.";
 
 /// One assembled fixture over the tool-scripted provider with the probe
 /// registered, plus the outbound edge taken before anything is ingested —
@@ -89,9 +83,27 @@ async fn reset_fixture() -> (support::Fixture, Replies) {
     reset_fixture_configured(ProtectionConfig::default()).await
 }
 
+/// The reset fixture over a provider that HOLDS its first turn open, having
+/// narrated into it first — the shape a compaction has to survive: a source
+/// caught mid-stream, with a streaming tail already in its ledger. The
+/// compaction's own turns are never held; the scripted provider answers those
+/// ahead of the hold.
+async fn held_reset_fixture(hold: &Arc<support::TurnHold>) -> (support::Fixture, Replies) {
+    reset_fixture_built(ProtectionConfig::default(), Some(Arc::clone(hold))).await
+}
+
 /// The reset fixture with the answering budgets spelled out, for the pin
 /// that a spent budget never silences a moderator's reset.
 async fn reset_fixture_configured(protection: ProtectionConfig) -> (support::Fixture, Replies) {
+    reset_fixture_built(protection, None).await
+}
+
+/// The one assembly every reset fixture is built from: the probe tool, the
+/// tool script, and whatever turn hold the caller needs.
+async fn reset_fixture_built(
+    protection: ProtectionConfig,
+    hold: Option<Arc<support::TurnHold>>,
+) -> (support::Fixture, Replies) {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let mut tools = ToolSet::new();
     tools.admit(
@@ -102,9 +114,11 @@ async fn reset_fixture_configured(protection: ProtectionConfig) -> (support::Fix
         ToolScript {
             tool: PROBE.into(),
             input: "{}".into(),
-            narration: None,
+            // A held turn has to have written something before it stops, or
+            // there is no streaming tail for the settle to read.
+            narration: hold.as_ref().map(|_| HELD_NARRATION.to_owned()),
         },
-        None,
+        hold,
     );
     let fixture = support::start_assistant_full(store, provider, handle, tools, protection).await;
     let replies = fixture
@@ -194,60 +208,75 @@ async fn kinds(store: &Store, conversation_id: i64) -> Vec<String> {
         .collect()
 }
 
-/// The shape a compacted fork has, whichever trigger produced it: no tool
-/// traffic, no forced-end marker, exactly the kept bound of chat rows, one
-/// palette, the newest note of the topic, and the current prompt alone.
-/// Both triggers are held to this one reading, which is what "one
-/// operation, two triggers" has to mean observably.
-fn assert_compacted_shape(blocks: &[Block]) {
+/// The shape a compacted thread has, whichever door produced it, asserted
+/// against the source it came from: the current prompt, a block naming that
+/// source, the captured summary, and then a SUFFIX of the source's own
+/// ledger — the same blocks, shared by id, never copies. Both doors are held
+/// to this one reading, which is what "one mechanism, three doors" has to
+/// mean observably.
+///
+/// The summarized half is what is missing from the front of that suffix, and
+/// the assertion below is exactly that: the thread's inherited ids are a
+/// non-empty proper suffix of the source's, so something was summarized and
+/// something was carried.
+async fn assert_compacted_shape(store: &Store, source: i64, thread: i64) {
+    let blocks = store.list_blocks(thread).await.expect("the ledger reads");
     let kinds: Vec<&str> = blocks
         .iter()
         .map(|block| block.block_type.as_str())
         .collect();
     assert!(
-        !blocks
-            .iter()
-            .any(|block| is_tool_traffic(block.block_type.as_str())),
-        "no tool traffic survives: {kinds:?}"
+        blocks.len() >= 4,
+        "a compacted thread opens with three blocks and inherits at least one: {kinds:?}"
     );
+
+    assert_eq!(blocks[0].block_type, SystemPrompt::KINDS[0]);
+    assert_eq!(
+        support::block_text(&blocks[0], "content"),
+        support::composed_prompt(),
+        "the thread records the current prompt"
+    );
+
+    assert_eq!(
+        blocks[1].block_type,
+        AncestorReference::KINDS[0],
+        "the thread's first content block names where it came from: {kinds:?}"
+    );
+    assert_eq!(
+        blocks[1].fields["ancestor_conversation_id"],
+        json!(source),
+        "the reference names the conversation this thread continues"
+    );
+
+    assert_eq!(
+        blocks[2].block_type,
+        Text::KINDS[0],
+        "the compaction message is its own append behind the reference: {kinds:?}"
+    );
+    assert_eq!(blocks[2].role, Some(Role::System));
+    assert_eq!(
+        support::block_text(&blocks[2], "content"),
+        SCRIPTED_SUMMARY,
+        "the compaction message carries the captured summary"
+    );
+
+    let source_ids: Vec<i64> = store
+        .list_blocks(source)
+        .await
+        .expect("the source reads")
+        .iter()
+        .map(|block| block.id)
+        .collect();
+    let inherited: Vec<i64> = blocks[3..].iter().map(|block| block.id).collect();
+    let at = source_ids.len() - inherited.len();
     assert!(
-        !blocks
-            .iter()
-            .any(|block| Status::KINDS.contains(&block.block_type.as_str())),
-        "no forced-end marker crosses, so a fork cannot re-fire: {kinds:?}"
+        at > 0,
+        "the summarized half is what the thread does NOT inherit"
     );
     assert_eq!(
-        chat_rows(blocks),
-        COMPACT_KEPT_MESSAGES,
-        "exactly the kept bound of chat rows crosses: {kinds:?}"
-    );
-    assert_eq!(
-        blocks
-            .iter()
-            .filter(|block| block.block_type == TOOL_PALETTE_KIND)
-            .count(),
-        1,
-        "the palette crosses, so a fork woken by a turn still admits its tools"
-    );
-    let notes: Vec<String> = blocks
-        .iter()
-        .filter(|block| block.block_type == CONTEXT_NOTE_KIND)
-        .map(|block| support::field(block, "text"))
-        .collect();
-    assert_eq!(
-        notes,
-        vec!["The newest title".to_owned()],
-        "the newest note of the topic crosses, and only it"
-    );
-    let prompts: Vec<String> = blocks
-        .iter()
-        .filter(|block| SystemPrompt::KINDS.contains(&block.block_type.as_str()))
-        .map(|block| support::block_text(block, "content"))
-        .collect();
-    assert_eq!(
-        prompts,
-        vec![support::composed_prompt()],
-        "the fork records the current prompt and none of the inherited ones"
+        inherited,
+        source_ids[at..],
+        "the second half rides across by identity: shared junction rows, never copies"
     );
 }
 
@@ -267,21 +296,25 @@ async fn assert_kept_whole(store: &Store, conversation_id: i64, held: &[i64], wh
     );
 }
 
-/// How many of the conversation's blocks are chat rows.
-fn chat_rows(blocks: &[Block]) -> usize {
-    blocks
-        .iter()
-        .filter(|block| is_chat_row(block.block_type.as_str()))
-        .count()
-}
-
 /// A group whose conversation holds real tool traffic, two title notes and
-/// more chat rows than the kept bound — the shape `/compact` exists for.
-/// Answers the channel, the conversation, and its block ids.
+/// a long tail of chat — a ledger with two halves, the shape a compaction
+/// exists for. Answers the channel, the conversation, and its block ids.
 async fn flooded_group(
     fixture: &support::Fixture,
     replies: &mut Replies,
     id: &str,
+) -> (ChannelKey, i64, Vec<i64>) {
+    flooded_group_of(fixture, replies, id, FILLER_ROWS).await
+}
+
+/// The flooded group with its filler count spelled out, for the fixture
+/// that needs the delivered answer to land in the half a compaction carries
+/// forward rather than the half it summarizes.
+async fn flooded_group_of(
+    fixture: &support::Fixture,
+    replies: &mut Replies,
+    id: &str,
+    fillers: usize,
 ) -> (ChannelKey, i64, Vec<i64>) {
     let key = support::authorized_group(&fixture.assistant, id).await;
     for title in ["The first title", "The newest title"] {
@@ -321,7 +354,7 @@ async fn flooded_group(
     let first = recv_reply(replies).await;
     assert_eq!(first.text, support::disclosed(CLOSING_ANSWER));
 
-    for index in 0..COMPACT_KEPT_MESSAGES {
+    for index in 0..fillers {
         support::ingest_recorded(
             &fixture.assistant,
             with_origin(
@@ -400,12 +433,13 @@ async fn a_moderators_wipe_starts_the_group_over_on_an_empty_session() {
     assert_eq!(receipt.conversation_id, fresh);
 }
 
-/// AC3: `/compact` maps the channel to a fork whose readable history is
-/// the kept set — no tool traffic, at most the kept bound of chat rows,
-/// the palette, the newest note per topic — the source keeps every block,
-/// and a second `/compact` answers the nothing-to-cut line.
+/// AC2 and AC3: `/compact` runs THE mechanism. The channel moves to a
+/// thread carrying the current prompt, a block naming the conversation it
+/// continues, the captured summary and the second half of the ledger
+/// verbatim; the source keeps every block it had; and the next member
+/// message is answered from the compacted thread as usual.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_moderators_compact_keeps_the_recent_tail_and_cuts_the_flood() {
+async fn a_moderators_compact_summarizes_the_first_half_and_carries_the_second() {
     let (fixture, mut replies) = reset_fixture().await;
     let (key, source, source_ids) = flooded_group(&fixture, &mut replies, "compact-room").await;
 
@@ -424,52 +458,50 @@ async fn a_moderators_compact_keeps_the_recent_tail_and_cuts_the_flood() {
     assert_eq!(
         reset,
         ChannelReset::Kept,
-        "a compact carries its context notes across, so the adapter forgets nothing"
+        "a compaction carries the second half across, so the adapter forgets nothing"
     );
 
-    let fork = mapped_conversation(&fixture.store, &key)
+    let thread = mapped_conversation(&fixture.store, &key)
         .await
         .expect("the channel is mapped");
-    assert_ne!(fork, source, "the channel points at the fork");
-    let blocks = fixture
-        .store
-        .list_blocks(fork)
-        .await
-        .expect("the ledger reads");
-    assert_compacted_shape(&blocks);
+    assert_ne!(thread, source, "the channel points at the compacted thread");
+    assert_compacted_shape(&fixture.store, source, thread).await;
 
-    // Nothing was deleted: detaching removes a junction row from the FORK,
-    // so the source still reads exactly as it did, with the command row
-    // that asked for the compact behind it.
+    // Nothing was deleted: the thread SHARES the second half's blocks, so
+    // the source still reads exactly as it did, with the command row that
+    // asked for the compaction behind it.
     assert_kept_whole(&fixture.store, source, &source_ids, "the compacted source").await;
 
-    let (again, _) = invoke(
-        &fixture.assistant,
-        command_message(
-            &key,
-            "5",
-            Authority::Moderator,
-            COMPACT_COMMAND,
-            "compact-2",
-        ),
-    )
-    .await;
-    assert_eq!(
-        again.as_deref(),
-        Some(COMPACT_ALREADY),
-        "a second compact finds nothing to cut"
-    );
+    // The temporary conversation is retired: nothing but the source and the
+    // thread hold the channel's history, and no third conversation is left
+    // mapped anywhere.
     assert_eq!(
         mapped_conversation(&fixture.store, &key).await,
-        Some(fork),
-        "the nothing-to-cut answer forks nothing"
+        Some(thread),
+        "the temporary conversation never took the channel"
     );
+
+    // And the thread is served like any other: the next member message
+    // lands in it and draws its answer.
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "42", "and now?"),
+    )
+    .await;
+    assert_eq!(receipt.conversation_id, thread);
+    let reply = recv_reply(&mut replies).await;
+    assert_eq!(reply.text, CLOSING_ANSWER);
 }
 
-/// The fork is born delivered. No answer the edge already sent goes
-/// out again after a compact, no disclosure line is written a second time
-/// into a block the source still holds, and the fork's own next answer
-/// delivers normally.
+/// The compacted thread is born delivered. No answer the edge already sent
+/// goes out again after a compaction, no disclosure line is written a second
+/// time into a block the source still holds, and the thread's own next
+/// answer delivers normally.
+///
+/// The fixture is deliberately SHORT, so the cut leaves the already-answered
+/// turn's own text block in the half that rides across verbatim: that is the
+/// block a re-send would come from, and a longer ledger would summarize it
+/// away and prove nothing.
 ///
 /// The last of the three is what rules out the durable ratchet cursor as
 /// the seed: that cursor stands past the answer the wake is about by the
@@ -477,9 +509,9 @@ async fn a_moderators_compact_keeps_the_recent_tail_and_cuts_the_flood() {
 /// answer this test receives. The inherited boundary is the seed, and it
 /// leaves no re-send residual to accept.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_compacted_fork_delivers_its_own_answers_and_never_the_inherited_ones() {
+async fn the_compacted_thread_delivers_its_own_answers_and_never_the_inherited_ones() {
     let (fixture, mut replies) = reset_fixture().await;
-    let (key, source, _) = flooded_group(&fixture, &mut replies, "seam-room").await;
+    let (key, source, _) = flooded_group_of(&fixture, &mut replies, "seam-room", 4).await;
     let delivered_answer: Vec<String> = fixture
         .store
         .list_blocks(source)
@@ -496,27 +528,42 @@ async fn the_compacted_fork_delivers_its_own_answers_and_never_the_inherited_one
         command_message(&key, "5", Authority::Moderator, COMPACT_COMMAND, "seam-1"),
     )
     .await;
-    let fork = mapped_conversation(&fixture.store, &key)
+    let thread = mapped_conversation(&fixture.store, &key)
         .await
         .expect("the channel is mapped");
+    let inherited_answers = fixture
+        .store
+        .list_blocks(thread)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .filter(|block| {
+            block.role == Some(Role::Assistant) && Text::KINDS.contains(&block.block_type.as_str())
+        })
+        .count();
+    assert_eq!(
+        inherited_answers, 1,
+        "the fixture is short enough that the delivered answer rides across, \
+         which is what makes a re-send observable at all"
+    );
 
-    // The fork's own turn: its answer is the one item on the edge.
+    // The thread's own turn: its answer is the one item on the edge.
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound(&key, ChannelKind::Group, "42", "and now?"),
     )
     .await;
-    assert_eq!(receipt.conversation_id, fork);
+    assert_eq!(receipt.conversation_id, thread);
     let reply = recv_reply(&mut replies).await;
     assert_eq!(
         reply.text, CLOSING_ANSWER,
-        "the fork's own answer goes out, and the kept history carries the \
+        "the thread's own answer goes out, and the inherited history carries the \
          introduction receipt across, so nobody is introduced twice"
     );
     let extra = replies.try_recv();
     assert!(
         extra.is_err(),
-        "no inherited answer is re-sent after a compact; got {extra:?}"
+        "no inherited answer is re-sent after a compaction; got {extra:?}"
     );
 
     // The inherited answer block is untouched: one disclosure line, not two.
@@ -657,9 +704,9 @@ async fn below_the_floor_and_outside_the_group_the_resets_answer_silence() {
     );
 }
 
-/// AC5: the framework's forced turn end triggers the same compaction
-/// unattended — nothing is answered in chat, the fork carries no marker,
-/// and the swept source is unmapped so no later change re-fires it.
+/// AC3: the framework's forced turn end drives the SAME mechanism
+/// unattended — nothing is answered in chat, the thread has the compacted
+/// shape, and the incident it answered never re-fires it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_exhausted_turn_compacts_the_session_unattended() {
     let (fixture, mut replies) = reset_fixture().await;
@@ -676,10 +723,10 @@ async fn an_exhausted_turn_compacts_the_session_unattended() {
         .expect("the forced turn end records its marker");
 
     let deadline = std::time::Instant::now() + support::DEADLINE;
-    let fork = loop {
+    let thread = loop {
         // The re-point drops the source's mapping row and then claims the
-        // channel for the fork, so a poll landing between the two reads no
-        // mapping at all. That gap is the watcher mid-flight, not a
+        // channel for the thread, so a poll landing between the two reads no
+        // mapping at all. That gap is the driver mid-flight, not a
         // failure: only a mapping that has MOVED ends the wait.
         if let Some(mapped) = mapped_conversation(&fixture.store, &key).await
             && mapped != source
@@ -693,20 +740,47 @@ async fn an_exhausted_turn_compacts_the_session_unattended() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     };
 
-    let blocks = fixture
-        .store
-        .list_blocks(fork)
-        .await
-        .expect("the ledger reads");
-    assert_compacted_shape(&blocks);
+    assert_compacted_shape(&fixture.store, source, thread).await;
     assert!(
         replies.try_recv().is_err(),
         "the unattended compaction answers nothing in chat"
     );
 
-    // The swept source is unmapped, so however many late changes wake its
-    // fold it is never compacted again.
-    let before = kinds(&fixture.store, source).await.len();
+    // The incident is answered. The marker the thread INHERITED with its
+    // second half is older than the thread's own opening, so no amount of
+    // later activity re-fires the door on it — without that scoping the
+    // thread would compact itself, and its successor again, once per round.
+    let inherited_marker = fixture
+        .store
+        .list_blocks(thread)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .any(|block| Status::KINDS.contains(&block.block_type.as_str()));
+    let before = kinds(&fixture.store, thread).await.len();
+    support::ingest_recorded(
+        &fixture.assistant,
+        with_origin(
+            inbound_unaddressed(&key, ChannelKind::Group, "43", "more chatter"),
+            "post-compaction",
+        ),
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(
+        mapped_conversation(&fixture.store, &key).await,
+        Some(thread),
+        "an answered incident never compacts the thread that inherited its marker \
+         (the marker rode across: {inherited_marker})"
+    );
+    assert!(
+        kinds(&fixture.store, thread).await.len() > before,
+        "the message really landed in the thread"
+    );
+
+    // The swept source is unmapped, so however many late changes wake the
+    // driver it is never compacted again.
+    let source_before = kinds(&fixture.store, source).await.len();
     fixture
         .store
         .insert_status_block(
@@ -719,12 +793,12 @@ async fn an_exhausted_turn_compacts_the_session_unattended() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert_eq!(
         mapped_conversation(&fixture.store, &key).await,
-        Some(fork),
-        "an unmapped source is never auto-compacted"
+        Some(thread),
+        "an unmapped source is never compacted"
     );
     assert_eq!(
         kinds(&fixture.store, source).await.len(),
-        before + 1,
+        source_before + 1,
         "the late marker is the only thing that changed"
     );
 }
@@ -1052,5 +1126,674 @@ async fn a_spent_answering_budget_never_silences_a_reset() {
         mapped_conversation(&fixture.store, &key).await,
         Some(source),
         "the reset stood"
+    );
+}
+
+/// A compacted lineage ONE hop deep, whose summarized half holds one
+/// person's words: the channel, the erased principal, the root conversation
+/// and the serving thread. The test below erases at this depth; the one after
+/// it compacts a second time and erases at two.
+async fn compacted_lineage(
+    fixture: &support::Fixture,
+    replies: &mut Replies,
+    id: &str,
+) -> (ChannelKey, i64, i64, i64) {
+    let key = support::authorized_group(&fixture.assistant, id).await;
+    // The person whose words end up in the summarized half.
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "42", "what changed?"),
+    )
+    .await;
+    settle_shape(
+        &fixture.store,
+        receipt.conversation_id,
+        "the tool turn",
+        &[
+            SystemPrompt::KINDS[0],
+            TOOL_PALETTE_KIND,
+            CHAT_MESSAGE_KIND,
+            ToolCall::KINDS[0],
+            ToolResult::KINDS[0],
+            Text::KINDS[0],
+        ],
+    )
+    .await;
+    let _ = recv_reply(replies).await;
+    // A tail of somebody else's chatter, so the cut leaves the erased
+    // person's message in the half a digest is written from.
+    for index in 0..FILLER_ROWS {
+        support::ingest_recorded(
+            &fixture.assistant,
+            with_origin(
+                inbound_unaddressed(&key, ChannelKind::Group, "43", "chatter"),
+                &format!("{id}-filler-{index}"),
+            ),
+        )
+        .await;
+    }
+    invoke(
+        &fixture.assistant,
+        command_message(
+            &key,
+            "5",
+            Authority::Moderator,
+            COMPACT_COMMAND,
+            &format!("{id}-compact"),
+        ),
+    )
+    .await;
+    let thread = mapped_conversation(&fixture.store, &key)
+        .await
+        .expect("the channel is mapped");
+    (key, receipt.principal_id, receipt.conversation_id, thread)
+}
+
+/// AC5: erasing a principal whose words fed a compacted digest replaces the
+/// whole lineage — clone, strip, regenerate, swap, delete — and the prose
+/// written from those words stops existing.
+///
+/// At this depth the lineage is two conversations and both are replaced: the
+/// root, whose first half the digest was written from, and the serving thread
+/// that carries the digest. What is asserted is the design's own economy —
+/// every unchanged row is SHARED by block identity, never copied — and its
+/// ordering: the channel is on the scrubbed thread and the two originals are
+/// gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn erasing_a_principal_whose_words_fed_a_digest_replaces_the_lineage() {
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, erased, source, thread) =
+        compacted_lineage(&fixture, &mut replies, "scrub-room").await;
+    assert_compacted_shape(&fixture.store, source, thread).await;
+
+    let ancestor_ids: Vec<i64> = fixture
+        .store
+        .list_blocks(source)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .map(|block| block.id)
+        .collect();
+    let thread_blocks = fixture
+        .store
+        .list_blocks(thread)
+        .await
+        .expect("the ledger reads");
+    let old_digest = thread_blocks[2].id;
+    let erased_ids = principal_blocks(&fixture.store, source, erased).await;
+    assert!(
+        !erased_ids.is_empty(),
+        "the erased person has blocks in the summarized half"
+    );
+
+    fixture
+        .assistant
+        .erase_principal(erased)
+        .await
+        .expect("the erasure runs");
+
+    let scrubbed = assert_lineage_retired(&fixture, &key, source, thread, old_digest).await;
+    let scrubbed_blocks = fixture
+        .store
+        .list_blocks(scrubbed)
+        .await
+        .expect("the ledger reads");
+    assert_eq!(scrubbed_blocks[1].block_type, AncestorReference::KINDS[0]);
+    let ancestor_clone = scrubbed_blocks[1].fields["ancestor_conversation_id"]
+        .as_i64()
+        .expect("the reference names a conversation");
+    assert_ne!(
+        ancestor_clone, source,
+        "the reference names the scrubbed ancestor, not the deleted one"
+    );
+    assert_eq!(
+        support::block_text(&scrubbed_blocks[2], "content"),
+        SCRIPTED_SUMMARY,
+        "the regenerated digest is the capture from the scrubbed history"
+    );
+    assert_ne!(
+        scrubbed_blocks[2].id, old_digest,
+        "the digest is regenerated, never edited"
+    );
+
+    // The ancestor clone is the old ancestor minus the erased blocks, and
+    // every surviving row is the SAME BLOCK — shared by identity, not
+    // copied.
+    let clone_ids: Vec<i64> = fixture
+        .store
+        .list_blocks(ancestor_clone)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .map(|block| block.id)
+        .collect();
+    let expected: Vec<i64> = ancestor_ids
+        .iter()
+        .copied()
+        .filter(|id| !erased_ids.contains(id))
+        .collect();
+    assert_eq!(
+        clone_ids, expected,
+        "the clone shares every unchanged row and drops exactly the erased ones"
+    );
+
+    assert_span_partitions(&clone_ids, &scrubbed_blocks, &erased_ids);
+}
+
+/// The channel is on a NEW thread, and the two conversations carrying the
+/// erased words are gone — with the prose written FROM those words gone with
+/// them: the old digest was nobody else's block, so deleting its thread left
+/// it to the collector. Answers the scrubbed thread.
+async fn assert_lineage_retired(
+    fixture: &support::Fixture,
+    key: &ChannelKey,
+    source: i64,
+    thread: i64,
+    old_digest: i64,
+) -> i64 {
+    let scrubbed = mapped_conversation(&fixture.store, key)
+        .await
+        .expect("the channel is mapped");
+    assert_ne!(scrubbed, thread, "the channel took the scrubbed thread");
+    for retired in [source, thread] {
+        assert!(
+            fixture
+                .store
+                .find_conversation(retired)
+                .await
+                .expect("the conversation reads")
+                .is_none(),
+            "the conversation carrying the erased words is deleted"
+        );
+    }
+    assert!(
+        fixture
+            .store
+            .find_block(old_digest)
+            .await
+            .expect("the block reads")
+            .is_none(),
+        "the digest written from the erased words is gone"
+    );
+    scrubbed
+}
+
+/// The regeneration span is the complement of what the serving thread
+/// inherited, and the complement is a PREFIX of the ancestor clone: nothing
+/// drops out of the serving view, nothing is reported twice beside the
+/// verbatim second half, and no block of the erased person survives in
+/// either.
+///
+/// The prefix property is the one the mechanism rests on and the one a
+/// counting identity cannot see. The regeneration forks the clone up to its
+/// LAST non-inherited block, so an inherited block sitting anywhere before
+/// that boundary would be summarized AND carried forward verbatim, while a
+/// non-inherited block sitting after it would drop out of both. Both are
+/// asserted position by position here, against the boundary itself.
+fn assert_span_partitions(clone_ids: &[i64], scrubbed: &[Block], erased_ids: &[i64]) {
+    let inherited: std::collections::HashSet<i64> =
+        scrubbed[3..].iter().map(|block| block.id).collect();
+    let boundary = clone_ids
+        .iter()
+        .position(|id| inherited.contains(id))
+        .expect("the serving thread inherited part of the scrubbed ancestor");
+    assert!(
+        boundary > 0,
+        "the regeneration covers a non-empty first half: {clone_ids:?}"
+    );
+    assert!(
+        clone_ids[boundary..]
+            .iter()
+            .all(|id| inherited.contains(id)),
+        "the summarized span is a PREFIX: nothing past the boundary is \
+         summarized as well as carried verbatim ({clone_ids:?} against \
+         {inherited:?})"
+    );
+    assert!(
+        scrubbed[3..]
+            .iter()
+            .all(|block| clone_ids.contains(&block.id)),
+        "nothing the thread carries verbatim is missing from the ancestor \
+         clone: the two together are the whole scrubbed history"
+    );
+    assert!(
+        !scrubbed.iter().any(|block| erased_ids.contains(&block.id)),
+        "no block of the erased person survives in the serving thread"
+    );
+    assert!(
+        !clone_ids.iter().any(|id| erased_ids.contains(id)),
+        "no block of the erased person survives in the regenerated span"
+    );
+}
+
+/// A compaction that lands while the SOURCE is mid-turn settles that turn
+/// before it copies anything.
+///
+/// Left running, the turn lands its answer in the source AFTER the second
+/// half was copied — in a conversation the swap has just unmapped, which the
+/// outbound edge delivers nothing from, so the member's question rides across
+/// into the thread while its answer simply vanishes. Worse, the streaming
+/// tail the turn had already written would ride across into the thread as
+/// shared junction rows, and the source's own finalization deletes those
+/// blocks by id, cascading the thread's rows away underneath its born cursor.
+///
+/// The settle is the same one the erasure runs ahead of its deletions, and
+/// what it leaves is what is asserted here: the interrupt went out for the
+/// source, its tail is swept with the interrupt's status recorded in its
+/// place, and the thread inherits no streaming row at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_compaction_settles_the_sources_open_turn_before_it_copies_anything() {
+    let hold = support::TurnHold::new();
+    let (fixture, _replies) = held_reset_fixture(&hold).await;
+    let key = support::authorized_group(&fixture.assistant, "held-compact-room").await;
+    for index in 0..FILLER_ROWS {
+        support::ingest_recorded(
+            &fixture.assistant,
+            with_origin(
+                inbound_unaddressed(&key, ChannelKind::Group, "43", "chatter"),
+                &format!("held-compact-{index}"),
+            ),
+        )
+        .await;
+    }
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "42", "the held ask"),
+    )
+    .await;
+    let source = receipt.conversation_id;
+    hold.started().await;
+    // The stream is provably open once its tail is in stored state; waiting
+    // for that is what makes this deterministic instead of racing the reader.
+    support::await_ledger(&fixture.store, source, "the streaming tail", |blocks| {
+        blocks.iter().any(|block| block.block_type == "streaming")
+    })
+    .await;
+
+    let mut events = fixture.bus.subscribe();
+    let (answer, _) = invoke(
+        &fixture.assistant,
+        command_message(
+            &key,
+            "5",
+            Authority::Moderator,
+            COMPACT_COMMAND,
+            "held-compact-1",
+        ),
+    )
+    .await;
+    assert_eq!(
+        answer.as_deref(),
+        Some(COMPACT_DONE),
+        "the compaction completes over a settled source"
+    );
+
+    let mut interrupted = false;
+    while let Ok(event) = events.try_recv() {
+        if matches!(event, CoreEvent::InterruptRequested { conversation_id } if conversation_id == source)
+        {
+            interrupted = true;
+        }
+    }
+    assert!(
+        interrupted,
+        "the source's open turn was interrupted before its history was copied"
+    );
+
+    let source_kinds = kinds(&fixture.store, source).await;
+    assert!(
+        !source_kinds
+            .iter()
+            .any(|kind| kind.starts_with("streaming")),
+        "the interrupt swept the source's tail: {source_kinds:?}"
+    );
+    assert!(
+        source_kinds.iter().any(|kind| kind == Status::KINDS[0]),
+        "and recorded its own status in the tail's place: {source_kinds:?}"
+    );
+
+    let thread = mapped_conversation(&fixture.store, &key)
+        .await
+        .expect("the channel is mapped");
+    let thread_kinds = kinds(&fixture.store, thread).await;
+    assert!(
+        !thread_kinds
+            .iter()
+            .any(|kind| kind.starts_with("streaming")),
+        "the thread inherited no streaming row, so nothing the source finalizes \
+         can cascade out from under it: {thread_kinds:?}"
+    );
+}
+
+/// AC5 on a lineage compacted TWICE — the depth a one-hop reading cannot
+/// see.
+///
+/// A thread's digest is written from the half below it, and that half holds
+/// the digest of the compaction before it, so prose about an erased person's
+/// words survives one generation on as prose about that prose. The person
+/// here speaks ONCE, in the root's summarized half, and never again: neither
+/// the serving thread nor the thread below it holds a block of theirs, which
+/// is exactly the shape a walk that stopped at the newest ancestor would find
+/// nothing to scrub in while the derived digest kept serving.
+///
+/// What is asserted is that the whole chain is replaced: every conversation
+/// in it retired, BOTH old digests gone with them, and the thread the channel
+/// took standing on a scrubbed ancestry two deep whose root holds none of the
+/// erased person's blocks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_twice_compacted_lineage_loses_every_digest_the_erased_words_reached() {
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, erased, root, first) =
+        compacted_lineage(&fixture, &mut replies, "deep-scrub-room").await;
+    let erased_ids = principal_blocks(&fixture.store, root, erased).await;
+    assert!(
+        !erased_ids.is_empty(),
+        "the erased person has blocks in the root's summarized half"
+    );
+    assert!(
+        principal_blocks(&fixture.store, first, erased)
+            .await
+            .is_empty(),
+        "and none at all in the thread above it: the digest is the only trace left"
+    );
+
+    // A second round of chatter, so the first thread has two halves of its
+    // own, and a second compaction over it.
+    for index in 0..FILLER_ROWS {
+        support::ingest_recorded(
+            &fixture.assistant,
+            with_origin(
+                inbound_unaddressed(&key, ChannelKind::Group, "43", "more chatter"),
+                &format!("deep-scrub-room-second-{index}"),
+            ),
+        )
+        .await;
+    }
+    invoke(
+        &fixture.assistant,
+        command_message(
+            &key,
+            "5",
+            Authority::Moderator,
+            COMPACT_COMMAND,
+            "deep-scrub-room-recompact",
+        ),
+    )
+    .await;
+    let serving = mapped_conversation(&fixture.store, &key)
+        .await
+        .expect("the channel is mapped");
+    assert_ne!(serving, first, "the channel took the second compaction");
+    assert_compacted_shape(&fixture.store, first, serving).await;
+    let first_digest = digest_of(&fixture.store, first).await;
+    let serving_digest = digest_of(&fixture.store, serving).await;
+    assert!(
+        principal_blocks(&fixture.store, serving, erased)
+            .await
+            .is_empty(),
+        "the serving thread holds none of the erased person's blocks either"
+    );
+
+    fixture
+        .assistant
+        .erase_principal(erased)
+        .await
+        .expect("the erasure runs");
+
+    let scrubbed = mapped_conversation(&fixture.store, &key)
+        .await
+        .expect("the channel is mapped");
+    assert_ne!(scrubbed, serving, "the channel took the scrubbed thread");
+    for retired in [root, first, serving] {
+        assert!(
+            fixture
+                .store
+                .find_conversation(retired)
+                .await
+                .expect("the conversation reads")
+                .is_none(),
+            "every conversation in the lineage is retired, not just the newest two"
+        );
+    }
+    for digest in [first_digest, serving_digest] {
+        assert!(
+            fixture
+                .store
+                .find_block(digest)
+                .await
+                .expect("the block reads")
+                .is_none(),
+            "a digest the erased words reached — directly or through the digest \
+             below it — stops existing"
+        );
+    }
+
+    assert_rebuilt_ancestry(&fixture, scrubbed, &erased_ids).await;
+}
+
+/// Every hop of a scrubbed lineage was REBUILT, not carried across: the
+/// serving clone and the clone one hop below it each carry a fresh capture as
+/// their digest, and no conversation in the chain — the root's clone
+/// included — still holds a block of the erased person.
+async fn assert_rebuilt_ancestry(fixture: &support::Fixture, scrubbed: i64, erased_ids: &[i64]) {
+    let scrubbed_blocks = fixture
+        .store
+        .list_blocks(scrubbed)
+        .await
+        .expect("the ledger reads");
+    assert_eq!(
+        support::block_text(&scrubbed_blocks[2], "content"),
+        SCRIPTED_SUMMARY,
+        "the serving digest is a fresh capture"
+    );
+    let first_clone = ancestor_named_by(&scrubbed_blocks);
+    let first_clone_blocks = fixture
+        .store
+        .list_blocks(first_clone)
+        .await
+        .expect("the ledger reads");
+    assert_eq!(
+        support::block_text(&first_clone_blocks[2], "content"),
+        SCRIPTED_SUMMARY,
+        "the digest one hop down was regenerated too, not carried across"
+    );
+    let root_clone = ancestor_named_by(&first_clone_blocks);
+    for (conversation, what) in [
+        (root_clone, "the root's clone"),
+        (first_clone, "the middle thread's clone"),
+        (scrubbed, "the serving clone"),
+    ] {
+        let ids: Vec<i64> = fixture
+            .store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads")
+            .iter()
+            .map(|block| block.id)
+            .collect();
+        assert!(
+            !ids.iter().any(|id| erased_ids.contains(id)),
+            "{what} holds none of the erased person's blocks"
+        );
+    }
+}
+
+/// The conversation a thread's ancestor-reference block names.
+fn ancestor_named_by(blocks: &[Block]) -> i64 {
+    assert_eq!(
+        blocks[1].block_type,
+        AncestorReference::KINDS[0],
+        "a compacted thread's first content block names where it came from"
+    );
+    blocks[1].fields["ancestor_conversation_id"]
+        .as_i64()
+        .expect("the reference names a conversation")
+}
+
+/// The block id of one compacted thread's digest — the compaction message
+/// its own opening appended, behind the ancestor reference.
+async fn digest_of(store: &Store, conversation_id: i64) -> i64 {
+    store
+        .list_blocks(conversation_id)
+        .await
+        .expect("the ledger reads")[2]
+        .id
+}
+
+/// The blocks in one conversation that record this principal as their
+/// author — what an erasure's scrub has to make disappear from a clone.
+async fn principal_blocks(store: &Store, conversation_id: i64, principal_id: i64) -> Vec<i64> {
+    store
+        .list_blocks(conversation_id)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .filter(|block| {
+            block.block_type == CHAT_MESSAGE_KIND
+                && block.fields["principal_id"] == json!(principal_id)
+        })
+        .map(|block| block.id)
+        .collect()
+}
+
+/// The scrub's capture-first ordering, at the edge it exists for: a
+/// regeneration that captures nothing changes nothing. The lineage stands
+/// exactly as it was, the channel stays where it was, and the erasure of
+/// the stored data itself still completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_regeneration_that_captures_nothing_leaves_the_lineage_standing() {
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, erased, source, thread) =
+        compacted_lineage(&fixture, &mut replies, "scrub-fail-room").await;
+    let held: Vec<i64> = fixture
+        .store
+        .list_blocks(thread)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .map(|block| block.id)
+        .collect();
+
+    // The regeneration's own turn fails.
+    fixture.script.fail_next_turns(1);
+    fixture
+        .assistant
+        .erase_principal(erased)
+        .await
+        .expect("the erasure runs whatever the scrub does");
+
+    assert_eq!(
+        mapped_conversation(&fixture.store, &key).await,
+        Some(thread),
+        "a capture that failed swapped nothing"
+    );
+    assert!(
+        fixture
+            .store
+            .find_conversation(source)
+            .await
+            .expect("the conversation reads")
+            .is_some(),
+        "a capture that failed deleted nothing"
+    );
+    assert_eq!(
+        fixture
+            .store
+            .list_blocks(thread)
+            .await
+            .expect("the ledger reads")
+            .iter()
+            .map(|block| block.id)
+            .collect::<Vec<i64>>(),
+        held,
+        "the serving thread stands exactly as it was"
+    );
+    // The stored data itself is erased regardless: the scrub completes the
+    // erasure of a digest, it never delays the erasure of the data.
+    assert!(
+        fixture
+            .store
+            .list_blocks(thread)
+            .await
+            .expect("the ledger reads")
+            .iter()
+            .filter(|block| block.block_type == CHAT_MESSAGE_KIND)
+            .all(|block| block.fields["principal_id"] != json!(erased)
+                || block.fields["text"] == json!(null)),
+        "the erased person's stored words are nulled whatever the scrub did"
+    );
+}
+
+/// The recovery the failure above promises, at the one shape that could not
+/// reach it: a REPEAT erasure of a principal whose identity row the first
+/// call already concluded still scrubs the digest that stayed standing.
+///
+/// What stands after a failed regeneration is model prose written from the
+/// erased person's words, serving the group. The only stated recovery is
+/// running the erasure again — and an unflagged person has no identity row
+/// left by then, so a run that read its lineages behind the identity lookup
+/// would report `NotFound` and walk straight past that prose. The lineages are
+/// read off the BLOCKS, which keep the principal id, so the retry lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_repeat_erasure_scrubs_the_digest_the_first_run_left_standing() {
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, erased, source, thread) =
+        compacted_lineage(&fixture, &mut replies, "scrub-retry-room").await;
+    let old_digest = fixture
+        .store
+        .list_blocks(thread)
+        .await
+        .expect("the ledger reads")[2]
+        .id;
+
+    fixture.script.fail_next_turns(1);
+    assert!(
+        matches!(
+            fixture
+                .assistant
+                .erase_principal(erased)
+                .await
+                .expect("the erasure runs"),
+            ErasureOutcome::Erased { .. }
+        ),
+        "the stored data is erased even where the digest cannot be"
+    );
+    assert_eq!(
+        mapped_conversation(&fixture.store, &key).await,
+        Some(thread),
+        "the unscrubbed thread is still what serves the group"
+    );
+
+    // The retry. The person is gone from the identity table, so the erasure
+    // itself has nothing to do — and the scrub, which had, runs.
+    assert!(
+        matches!(
+            fixture
+                .assistant
+                .erase_principal(erased)
+                .await
+                .expect("the retry runs"),
+            ErasureOutcome::NotFound
+        ),
+        "a concluded principal has nothing left to erase"
+    );
+    let scrubbed = assert_lineage_retired(&fixture, &key, source, thread, old_digest).await;
+    assert_eq!(
+        support::block_text(
+            &fixture
+                .store
+                .list_blocks(scrubbed)
+                .await
+                .expect("the ledger reads")[2],
+            "content"
+        ),
+        SCRIPTED_SUMMARY,
+        "the retry regenerated the digest from the scrubbed history"
+    );
+    assert!(
+        principal_blocks(&fixture.store, scrubbed, erased)
+            .await
+            .is_empty(),
+        "and no block of the erased person survives in what serves the group"
     );
 }

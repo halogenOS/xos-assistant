@@ -1754,7 +1754,7 @@ async fn a_filing_racing_an_erasure_waits_on_the_fence() {
         .await
         .expect_err("the deaf stream fails the erasure at the bound");
     assert!(
-        matches!(failure, CoreError::ErasureUnsettled { .. }),
+        matches!(failure, CoreError::StreamUnsettled { .. }),
         "the erasure failed loudly at the bound; got {failure:?}"
     );
     let blocks = support::await_ledger(&fixture.store, conv, "the filed report", |blocks| {
