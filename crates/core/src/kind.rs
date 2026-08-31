@@ -159,6 +159,33 @@ pub const COLUMN_REPLY_TARGET: &str = "reply_target";
 /// erasure leaves it. Added by the reply-target migration step, so
 /// pre-migration rows read NULL.
 pub const COLUMN_REPLY_TO_ASSISTANT: &str = "reply_to_assistant";
+/// The platform's own id for the message this one is a new version of,
+/// opaque — the revision reference (unit T3, 2026-08-31). NULL for an
+/// ordinary message, which supersedes nothing, and for every pre-migration
+/// row. The stored value names the message as first known, so every version
+/// of one message carries one key: `WHERE {COLUMN_ORIGIN} = ?1 OR
+/// {COLUMN_REVISES} = ?1` reaches a chain of any length in one match
+/// whenever the id matched against is THAT key. On this platform every id
+/// the platform can name for a message is that key, because an edit arrives
+/// under the original's own message id — which is how the newest-version
+/// read, the mirror's named erasure and the report's resolution all reach
+/// every version without walking a chain. On a platform delivering an id
+/// per revision the same match reaches the whole chain from the root id and
+/// one row from any later version's id, which is why such an adapter owes a
+/// root-resolution step before it reports a revision (decision 0171).
+///
+/// Personal data of its author, the same standing
+/// [`COLUMN_REPLY_TARGET`] holds: the author-keyed pass nulls it with the
+/// rest of the row, and the deletion mirror's named pass nulls it across the
+/// conversation when the named message is erased. No target-keyed pass is
+/// owed for it, and that is ENFORCED rather than assumed: the ingestion
+/// compares the reviser's resolved principal against the author of the
+/// newest recorded version and stores this column only when the two are the
+/// same person — a mismatch records the message as an ordinary new one,
+/// with no reference at all. A stored reference therefore always names a
+/// message of its own row's author, and the author-keyed pass reaches both
+/// ends of it. Added by the revision migration step.
+pub const COLUMN_REVISES: &str = "revises";
 
 /// What an erased message contributes to a projected request in place of its
 /// nulled prose. Non-empty on purpose: the live vendors whose strict
@@ -167,6 +194,24 @@ pub const COLUMN_REPLY_TO_ASSISTANT: &str = "reply_to_assistant";
 /// message built from these contributions alone. A fixed marker carries none
 /// of the person's words, so the erasure's promise holds.
 pub const ERASED_MARKER: &str = "[message erased]";
+
+/// What a revision carries at the head of its text, so the model reads the
+/// line as what the room sees: the same message, said differently (unit T3,
+/// 2026-08-31). A fixed constant beside the erased marker, and prose like
+/// the speaker prefix and the id mark — a member can type these characters
+/// into their own message and nothing distinguishes the bytes.
+///
+/// The bound is that NOTHING mechanical reads it: no stamp, no tool, no
+/// erasure pass and no admission consults the marker, so a forgery can
+/// mislead the model's reading and reach nothing else, exactly as
+/// [`projected_origin_mark`]'s own documentation bounds a forged id. The
+/// stored fact the marker speaks for is [`COLUMN_REVISES`], and every
+/// mechanism reads that column instead.
+///
+/// It sits after the speaker prefix and ahead of the text, never inside the
+/// bracketed id: the id is the one token the model is taught to name a
+/// message by, and folding a word into it would corrupt exactly that token.
+pub const EDITED_MARKER: &str = "(edited)";
 
 /// The projected id mark of one recorded message: the stored origin in
 /// brackets, ahead of the speaker prefix and the text (unit 15,
@@ -261,6 +306,25 @@ pub struct RecordedSender<'a> {
     /// substitute identifier is minted (decision 0056) — and a handle
     /// outside [`storable_speaker`]'s bound stores NULL the same way.
     pub speaker: Option<&'a str>,
+}
+
+/// The two platform identifiers one write records: the message's own
+/// opaque origin, and the origin of the message it supersedes where the
+/// adapter reported one (unit T3, 2026-08-31). They enter the row together
+/// and are carried as one value so the append's field map cannot take them
+/// apart — the same discipline [`RecordedSender`] and [`Stamp`] travel
+/// under.
+///
+/// Both are `None` for a message the platform gave no usable id for; the
+/// revision reference alone is `None` for every ordinary message, which
+/// supersedes nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RecordedOrigin<'a> {
+    /// This version's own identifier, stored under [`COLUMN_ORIGIN`].
+    pub origin: Option<&'a str>,
+    /// The identifier of the message this one is a new version of, stored
+    /// under [`COLUMN_REVISES`].
+    pub revises: Option<&'a str>,
 }
 
 /// The summons resolution's two facts, decided together at the ONE place
@@ -397,6 +461,11 @@ pub struct ChatMessage {
     pub speaker: Option<String>,
     /// The platform's own id for the message, opaque.
     pub origin: Option<String>,
+    /// The origin of the message this one is a new version of, per
+    /// [`COLUMN_REVISES`]. `None` for an ordinary message, for every
+    /// pre-migration row, and for an erased row, whose author-keyed pass
+    /// nulled it.
+    pub revises: Option<String>,
     /// The platform's send time, RFC 3339. The store's insertion time lives
     /// on the block header. `None` only for a block the store did not
     /// produce.
@@ -439,15 +508,16 @@ impl ChatMessage {
     /// back — both sides of the kind's encoding live in this module, so a
     /// column rename cannot split them. The role travels as the append's own
     /// argument, never as a field; the three sender facts travel together
-    /// as the [`RecordedSender`]; the four decided facts travel together as
-    /// the composed [`Stamp`]; the reply fact travels as the translated
-    /// [`ReplyTarget`](crate::message::ReplyTarget), encoded into its two
-    /// columns here.
+    /// as the [`RecordedSender`]; the two platform identifiers travel
+    /// together as the [`RecordedOrigin`]; the four decided facts travel
+    /// together as the composed [`Stamp`]; the reply fact travels as the
+    /// translated [`ReplyTarget`](crate::message::ReplyTarget), encoded into
+    /// its two columns here.
     #[must_use]
     pub fn stored_fields(
         text: &str,
         sender: RecordedSender<'_>,
-        origin: Option<&str>,
+        identifiers: RecordedOrigin<'_>,
         reply_target: Option<&crate::message::ReplyTarget>,
         sent_at: &str,
         stamp: Stamp,
@@ -459,8 +529,11 @@ impl ChatMessage {
         if let Some(speaker) = sender.speaker.filter(|handle| storable_speaker(handle)) {
             fields.insert(COLUMN_SPEAKER.into(), json!(speaker));
         }
-        if let Some(origin) = origin {
+        if let Some(origin) = identifiers.origin {
             fields.insert(COLUMN_ORIGIN.into(), json!(origin));
+        }
+        if let Some(revises) = identifiers.revises {
+            fields.insert(COLUMN_REVISES.into(), json!(revises));
         }
         match reply_target {
             Some(crate::message::ReplyTarget::Message { origin }) => {
@@ -615,17 +688,32 @@ impl ChatMessage {
     /// non-user voice, and the erased marker — the erasure pass nulls the
     /// speaker and the origin with the text, and even a row it
     /// half-reached keeps the placeholder exactly as it is, unmarked.
+    ///
+    /// A revision — a row carrying [`COLUMN_REVISES`] — differs in two
+    /// places (unit T3, 2026-08-31). It projects under the REVISED
+    /// message's id, so every version of one message shows the model one
+    /// token to name it by and the report resolves that token through
+    /// either column. And [`EDITED_MARKER`] opens its text, after the
+    /// speaker prefix, so the model reads which version it is looking at.
+    /// The superseded version keeps projecting its own words untouched:
+    /// this is a per-block reading with no ledger access, so folding
+    /// history is not something it can do, and rewriting a stored row is
+    /// not something an append-only ledger does.
     fn projected_text(&self) -> String {
         let Some(text) = &self.text else {
             return ERASED_MARKER.to_owned();
         };
-        let line = match &self.speaker {
-            Some(speaker) if self.role == Some(Role::User) => format!("{speaker}: {text}"),
-            _ => text.clone(),
+        let said = match &self.revises {
+            Some(_) => format!("{EDITED_MARKER} {text}"),
+            None => text.clone(),
         };
-        match &self.origin {
-            Some(origin) if self.role == Some(Role::User) => {
-                format!("{} {line}", projected_origin_mark(origin))
+        let line = match &self.speaker {
+            Some(speaker) if self.role == Some(Role::User) => format!("{speaker}: {said}"),
+            _ => said,
+        };
+        match self.revises.as_deref().or(self.origin.as_deref()) {
+            Some(named) if self.role == Some(Role::User) => {
+                format!("{} {line}", projected_origin_mark(named))
             }
             _ => line,
         }
@@ -654,6 +742,7 @@ impl LeafKind for ChatMessage {
             Column::new(COLUMN_DEBT_AUTHORITY, ColumnType::Text),
             Column::new(COLUMN_REPLY_TARGET, ColumnType::Text),
             Column::new(COLUMN_REPLY_TO_ASSISTANT, ColumnType::Boolean),
+            Column::new(COLUMN_REVISES, ColumnType::Text),
         ],
         reference_columns: &[],
         // What a quote of one of these messages resolves to (unit 31,
@@ -705,6 +794,7 @@ impl LeafKind for ChatMessage {
                 .fields
                 .get(COLUMN_REPLY_TO_ASSISTANT)
                 .and_then(Value::as_bool),
+            revises: string_field(block, COLUMN_REVISES),
         }
     }
 }
@@ -746,8 +836,9 @@ impl Projection for ChatMessage {
 }
 
 /// Null the personal columns — text, origin reference, platform send time,
-/// the reply-target reference and the speaker (both extended 2026-08-23) —
-/// of every message a principal wrote, in every conversation: the first of
+/// the reply-target reference and the speaker (both extended 2026-08-23),
+/// and the revision reference (unit T3, 2026-08-31) — of every message a
+/// principal wrote, in every conversation: the first of
 /// erasure's three steps (decision 0012), owned by the kind because the
 /// nullable columns are the kind's own contract. The block header rows are
 /// never touched; each affected content row keeps its shape and its message
@@ -766,7 +857,8 @@ pub(crate) async fn erase_principal_content(
             &format!(
                 "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_TEXT} = NULL, \
                  {COLUMN_ORIGIN} = NULL, {COLUMN_SENT_AT} = NULL, \
-                 {COLUMN_REPLY_TARGET} = NULL, {COLUMN_SPEAKER} = NULL \
+                 {COLUMN_REPLY_TARGET} = NULL, {COLUMN_SPEAKER} = NULL, \
+                 {COLUMN_REVISES} = NULL \
                  WHERE {COLUMN_PRINCIPAL_ID} = ?1"
             ),
             [principal_id],
@@ -776,13 +868,29 @@ pub(crate) async fn erase_principal_content(
     .await
 }
 
-/// Null the ONE message row a deletion mirror names (2026-08-23, the
-/// deletion mirror): text, origin, send time, reply reference and speaker
-/// — the five nulls [`erase_principal_content`] applies to a person's own
-/// rows, scoped to the row whose stored origin matches within the
-/// conversation. Returns how many rows were nulled, which is what tells
-/// the composition whether the named target was ever here: the
-/// unknown-target command stays a full no-op.
+/// Null EVERY recorded version of the message a deletion mirror names
+/// (2026-08-23, the deletion mirror; widened to versions by unit T3,
+/// 2026-08-31): text, origin, send time, reply reference, speaker and the
+/// revision reference — the six nulls [`erase_principal_content`] applies
+/// to a person's own rows, scoped within the conversation to the rows whose
+/// stored origin OR stored revision reference matches the named id. Returns
+/// how many rows were nulled, which is what tells the composition whether
+/// the named target was ever here: the unknown-target command stays a full
+/// no-op.
+///
+/// The match is a disjunction because a message can be recorded more than
+/// once: every version of one message stores the original's id under
+/// [`COLUMN_REVISES`], so one statement reaches a chain of any length from
+/// that id. On this platform that is every id a deletion can name — an edit
+/// arrives under the original's own message id, so the reply an
+/// administrator deletes carries it whichever version they were looking at.
+/// On a platform delivering an id per revision the same statement reaches
+/// the whole chain from the root id and the one row an id naming a later
+/// version alone identifies; an adapter there owes a root-resolution step
+/// before it reports a revision (decision 0171), and nothing here changes
+/// for it. Deleting a message deletes what the group saw, and what the
+/// group saw is every version of it. The count is therefore the number of
+/// VERSIONS emptied, not a claim that one row was.
 ///
 /// The references pointing AT the target are nulled beside this, at the
 /// composition site — the reply references by
@@ -813,8 +921,9 @@ pub(crate) async fn erase_message_named(
             &format!(
                 "UPDATE {CHAT_MESSAGE_TABLE} SET {COLUMN_TEXT} = NULL, \
                  {COLUMN_ORIGIN} = NULL, {COLUMN_SENT_AT} = NULL, \
-                 {COLUMN_REPLY_TARGET} = NULL, {COLUMN_SPEAKER} = NULL \
-                 WHERE {COLUMN_ORIGIN} = ?1 AND EXISTS (\
+                 {COLUMN_REPLY_TARGET} = NULL, {COLUMN_SPEAKER} = NULL, \
+                 {COLUMN_REVISES} = NULL \
+                 WHERE ({COLUMN_ORIGIN} = ?1 OR {COLUMN_REVISES} = ?1) AND EXISTS (\
                    SELECT 1 FROM conversation_blocks cb \
                    WHERE cb.block_id = {CHAT_MESSAGE_TABLE}.block_id \
                    AND cb.conversation_id = ?2\
@@ -1071,6 +1180,88 @@ pub(crate) async fn newest_message_of_origin(
             .optional()?)
     })
     .await
+}
+
+/// The newest recorded version of one named message in one conversation —
+/// the read every one of a revision's readings is decided from (unit T3,
+/// 2026-08-31).
+///
+/// `None` says the store holds NO version of that message: never recorded,
+/// or emptied by erasure, which nulls a row's origin and its revision
+/// reference along with its text and so leaves nothing to match. Both
+/// readings are one answer on purpose — the caller records nothing either
+/// way — and the erasure half is why: an edit update the platform fired on
+/// its own would otherwise write a person's erased words back into the
+/// ledger with no human act anywhere in the path.
+///
+/// `Some` carries the newest version's stored text, which the caller
+/// compares byte for byte against the incoming one, and the principal that
+/// wrote it, which the caller compares against the reviser: the two facts
+/// travel together because one row answers both questions and a second read
+/// would be a second chance for them to disagree.
+///
+/// The match is `origin OR revises`, because every version of one message
+/// stores the original's id: on a platform where a revision carries an
+/// origin of its own, matching the origin alone would find nothing after
+/// the first edit and silently record every later one twice. Newest is by
+/// the junction's own append order, never by a stored send time — that is a
+/// clock a platform supplied, and two edits within one second would be
+/// unordered under it. Erased rows drop out by their nulled text, exactly
+/// as in [`newest_message_of_origin`] above.
+///
+/// One bounded statement, not a conversation load: this runs on every edit
+/// update the platform delivers, and hydrating a ledger per link preview
+/// would be a different cost class.
+///
+/// # Errors
+///
+/// [`StoreError`] if the query fails or the store's actor has stopped. The
+/// caller fails closed on it: recording anyway would duplicate a row and,
+/// under helpful answering, spend a model turn on it.
+pub(crate) async fn newest_recorded_version(
+    tx: &StoreTx,
+    conversation_id: i64,
+    origin: &str,
+) -> Result<Option<RecordedVersion>, StoreError> {
+    let origin = origin.to_owned();
+    domain_run(tx, crate::schema::DOMAIN, move |conn| {
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT m.{COLUMN_TEXT}, m.{COLUMN_PRINCIPAL_ID} \
+                     FROM {CHAT_MESSAGE_TABLE} m \
+                     JOIN conversation_blocks cb ON cb.block_id = m.block_id \
+                     WHERE cb.conversation_id = ?1 \
+                     AND (m.{COLUMN_ORIGIN} = ?2 OR m.{COLUMN_REVISES} = ?2) \
+                     AND m.{COLUMN_TEXT} IS NOT NULL \
+                     ORDER BY cb.id DESC LIMIT 1"
+                ),
+                (conversation_id, &origin),
+                |row| {
+                    Ok(RecordedVersion {
+                        text: row.get(0)?,
+                        principal_id: row.get(1)?,
+                    })
+                },
+            )
+            .optional()?)
+    })
+    .await
+}
+
+/// The newest recorded version of one message, as
+/// [`newest_recorded_version`] answers it: the text a revision is compared
+/// against, and the principal that wrote that version.
+///
+/// The author rides along because the revision reference is only stored
+/// when the reviser IS that author — the invariant [`COLUMN_REVISES`]
+/// states, enforced at the ingestion rather than assumed of a platform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecordedVersion {
+    /// The stored text of that version, compared byte for byte.
+    pub text: String,
+    /// The principal that wrote it, compared against the reviser's.
+    pub principal_id: i64,
 }
 
 // ─── The budget counts ───────────────────────────────────────────────────
@@ -1393,7 +1584,7 @@ mod tests {
                         authority: Authority::Member,
                         speaker: None,
                     },
-                    None,
+                    RecordedOrigin::default(),
                     None,
                     "2026-08-23T00:00:00Z",
                     Stamp::compose(
@@ -1649,7 +1840,7 @@ mod tests {
                 authority: Authority::Member,
                 speaker: None,
             },
-            None,
+            RecordedOrigin::default(),
             None,
             "2026-08-24T00:00:00Z",
             unaddressed_helpful,
@@ -1673,15 +1864,16 @@ mod tests {
         );
     }
 
-    /// One chat row of the transparent run the read below is asked about,
-    /// at the given text, origin and summons — every other fact a fixed
-    /// well-formed value, since the read judges the text and the stamp
-    /// alone.
+    /// One chat row at the given text, recorded origin pair and summons —
+    /// every other fact a fixed well-formed value, since the reads below
+    /// judge the text, the stamp and the two identifiers alone. The pair
+    /// travels whole, the way the kind's own field map takes it, so a
+    /// revision row is one call and not a second helper.
     async fn append_chat_row(
         store: &Store,
         conversation: i64,
         text: &str,
-        origin: &str,
+        origin: RecordedOrigin<'_>,
         summoned: bool,
     ) {
         store
@@ -1696,7 +1888,7 @@ mod tests {
                         authority: Authority::Member,
                         speaker: None,
                     },
-                    Some(origin),
+                    origin,
                     None,
                     "2026-08-23T00:00:00Z",
                     Stamp::compose(
@@ -1750,7 +1942,10 @@ mod tests {
             &store,
             conversation,
             "an unsummoned line, its text intact",
-            "live-false",
+            RecordedOrigin {
+                origin: Some("live-false"),
+                revises: None,
+            },
             false,
         )
         .await;
@@ -1762,7 +1957,17 @@ mod tests {
             "a live row whose stamp is false is transparent on its own"
         );
 
-        append_chat_row(&store, conversation, "soon deleted", "gone-1", true).await;
+        append_chat_row(
+            &store,
+            conversation,
+            "soon deleted",
+            RecordedOrigin {
+                origin: Some("gone-1"),
+                revises: None,
+            },
+            true,
+        )
+        .await;
         let target_rows = erase_message_named(&tx, conversation, "gone-1")
             .await
             .expect("the mirror pass runs");
@@ -1799,6 +2004,68 @@ mod tests {
         assert!(
             newest > behind,
             "an empty kind list reads past transparent rows and date markers: the note answers"
+        );
+    }
+
+    /// The named erasure's returned count is the number of VERSIONS it
+    /// emptied, not a claim that one row was (unit T3, 2026-08-31). The
+    /// chain is three: the original, a second version stored under the
+    /// original's own id as this platform delivers it, and a third under an
+    /// origin of its own as a platform delivering an edit as its own event
+    /// would. A stranger row in the same conversation is there so the count
+    /// cannot pass by counting everything, and narrowing the disjunction
+    /// back to either column alone fails this.
+    #[tokio::test]
+    async fn the_named_erasure_counts_every_version_it_emptied() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let tx = store.tx();
+
+        for origin in [
+            RecordedOrigin {
+                origin: Some("chain-1"),
+                revises: None,
+            },
+            RecordedOrigin {
+                origin: Some("chain-1"),
+                revises: Some("chain-1"),
+            },
+            RecordedOrigin {
+                origin: Some("chain-1-v3"),
+                revises: Some("chain-1"),
+            },
+        ] {
+            append_chat_row(&store, conversation, "one version of it", origin, true).await;
+        }
+        append_chat_row(
+            &store,
+            conversation,
+            "someone else entirely",
+            RecordedOrigin {
+                origin: Some("stranger"),
+                revises: None,
+            },
+            true,
+        )
+        .await;
+
+        assert_eq!(
+            erase_message_named(&tx, conversation, "chain-1")
+                .await
+                .expect("the mirror pass runs"),
+            3,
+            "the count reports the three versions emptied, and no row beyond them"
+        );
+        assert_eq!(
+            erase_message_named(&tx, conversation, "chain-1")
+                .await
+                .expect("the second mirror pass runs"),
+            0,
+            "a second pass finds nothing: every emptied row's two identifiers are NULL"
         );
     }
 }

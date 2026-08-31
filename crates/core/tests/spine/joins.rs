@@ -607,7 +607,7 @@ async fn a_join_over_an_unanswered_message_leaves_the_turn_owed() {
                     authority: Authority::Member,
                     speaker: None,
                 },
-                None,
+                assistant_core::kind::RecordedOrigin::default(),
                 None,
                 "2026-08-29T00:00:00+00:00",
                 assistant_core::kind::Stamp {

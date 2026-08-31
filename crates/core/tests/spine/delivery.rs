@@ -225,7 +225,7 @@ async fn a_receipt_over_an_unanswered_message_leaves_the_turn_owed() {
                     authority: Authority::Member,
                     speaker: None,
                 },
-                None,
+                assistant_core::kind::RecordedOrigin::default(),
                 None,
                 "2026-08-30T00:00:00+00:00",
                 assistant_core::kind::Stamp {

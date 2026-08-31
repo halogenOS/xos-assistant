@@ -136,7 +136,7 @@ fn the_write_refuses_the_handles_that_would_blur_the_prefix() {
                 authority: Authority::Member,
                 speaker: handle,
             },
-            None,
+            assistant_core::kind::RecordedOrigin::default(),
             None,
             "2026-08-23T00:00:00+00:00",
             Stamp {
@@ -513,7 +513,10 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
                         authority: Authority::Member,
                         speaker: None,
                     },
-                    Some("scripted:9"),
+                    assistant_core::kind::RecordedOrigin {
+                        origin: Some("scripted:9"),
+                        revises: None,
+                    },
                     None,
                     "2026-08-23T00:00:00+00:00",
                     Stamp {
@@ -537,13 +540,16 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         // the reopen.
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
-                "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;
+                "DROP INDEX {revises_index};
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN revises;
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
                  DROP TABLE {join};
                  DROP TABLE {delivered};
                  DROP TABLE {marks};",
+                revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
                 marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
@@ -569,7 +575,7 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         .expect("the version-ten store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        18,
+        19,
         "the appended steps advanced the domain's version to the newest"
     );
     let blocks = support::consumer_view(

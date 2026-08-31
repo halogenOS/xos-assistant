@@ -780,9 +780,18 @@ impl Assistant {
     /// (2026-08-23), because a peer ingestion's flag write is serialized
     /// under that very lock and can land after the pre-lock read: the
     /// re-read drops the racing message before its append, so the flag
-    /// suppresses from the moment it stands. Past the re-read runs the
-    /// deletion mirror (2026-08-23) — behind the suppression drop and the
-    /// direct-channel admission by this very order, ahead of the tail read
+    /// suppresses from the moment it stands. Beside it, and still ahead of
+    /// the palette reconcile, run a revision's two drops (unit T3,
+    /// 2026-08-31): a message revising one whose newest recorded version
+    /// carries the same text, and one revising a message the store holds
+    /// no version of, are both disregarded with nothing written. The same
+    /// one read settles the author invariant — a reviser who did not write
+    /// the version the store holds records an ordinary new message, with no
+    /// revision reference stored. All of it reads through one under-lock
+    /// reading, behind the one privacy family exemption the drops share.
+    /// Past those runs the deletion mirror (2026-08-23) — behind the
+    /// suppression drop and the direct-channel admission by this very
+    /// order, ahead of the tail read
     /// so the stamp sees the post-mirror world; its trigger and its
     /// silence are the mirror module's contract. Opt-out does not
     /// reach backward: what was stored before stands until deletion, keeps
@@ -851,12 +860,21 @@ impl Assistant {
         // contract is on the field it lives on, [`Sessions::stamp_lock`].
         let _one_stamp_at_a_time = self.sessions.stamp_lock().lock().await;
         let conversation_id = self.conversation_under_lock(&tx, &message).await?;
-        // The under-lock re-read closes the suppression race; its whole
-        // reasoning is on [`Self::suppressed_under_lock`]. The command
-        // family stays exempt, exactly as before the lock.
-        if family.is_none() && self.suppressed_under_lock(&tx, &message).await? {
-            return Ok(IngestOutcome::Disregarded);
-        }
+        // Every under-lock drop, in one reading and behind one exemption,
+        // and with it whether this row stores the revision reference the
+        // adapter reported — see [`Self::under_lock_reading`]. Placed HERE
+        // on purpose: ahead of the palette reconciliation below, which
+        // appends a delta block on the conversation's first activity per
+        // process, so a drop taken past it would have written a block and
+        // still claimed [`IngestOutcome::Disregarded`], whose documented
+        // meaning is that nothing touched the ledger.
+        let revision_link = match self
+            .under_lock_reading(&tx, conversation_id, &message, family, principal_id)
+            .await?
+        {
+            UnderLock::Disregarded => return Ok(IngestOutcome::Disregarded),
+            UnderLock::Recorded(link) => link,
+        };
         // The palette supersession, on the conversation's first activity
         // per process (decided 2026-08-23): the delta append lands ahead of
         // the message, so this very turn's admission reads the fresh
@@ -865,9 +883,10 @@ impl Assistant {
         // The deletion mirror (decided 2026-08-23), past the suppression
         // and channel admissions on purpose and ahead of the tail read on
         // purpose: an administrator's reply carrying the moderation bot's
-        // own deletion command nulls the named row here, inline under this
-        // ingestion's erasure-fence read hold — one row's nulls, not the
-        // person-wide operation, so no spawn is needed — and behind the
+        // own deletion command nulls every recorded version of the named
+        // message here, inline under this ingestion's erasure-fence read
+        // hold — one message's nulls, not the person-wide operation, so no
+        // spawn is needed — and behind the
         // filing door the pass takes for itself, in the order the door's
         // module fixes: fence first, door second, exactly as a filing tool
         // takes them, so no cycle exists. The stamp below is then decided against the
@@ -879,25 +898,23 @@ impl Assistant {
         // Silent throughout: the admin addressed the
         // moderation bot, and the command row appended below is the lawful
         // record of the request.
-        let mirrored = mirror::mirrored_target(&message, authority);
-        if let Some(target) = mirrored {
-            self.mirror_named_deletion(&tx, conversation_id, target)
-                .await?;
-        }
+        //
+        // Recognising the command and acting on it are two readings (unit
+        // T3, 2026-08-31), taken together in [`Self::mirror_deletion`]:
+        // what comes back is the RECOGNITION, which the stamp below reads,
+        // while the erasure it may or may not have run is the narrower
+        // question. A deletion command arriving as a revision therefore
+        // stays a command — silent, no debt, no budget slot — while the
+        // store is left alone.
+        let deletion_command = self
+            .mirror_deletion(&tx, conversation_id, &message, authority)
+            .await?;
         let summons = self.resolved_summons(&message);
         let owing_tail = self.owed_tail(conversation_id, &message, summons).await?;
-        // The command stamp covers ANY recognized command since unit 45
-        // (2026-08-30), not the privacy family alone: recognition is global
-        // and the audience reading decides only the ANSWER, so a command
-        // invoked where it is not offered still takes no debt, opens no
-        // turn and never unlatches.
-        let limited = if command.is_some() || mirrored.is_some() {
-            Some(kind::LimitedBy::Command)
-        } else if summons.summoned {
-            self.refusing_budget(principal_id, conversation_id).await?
-        } else {
-            None
-        };
+        let commanded = command.is_some() || deletion_command;
+        let limited = self
+            .limiting_fact(commanded, summons, principal_id, conversation_id)
+            .await?;
         // The composition rule and the minimum rule live on the kind, as
         // one pure composition beside the stamp's readers.
         let stamp = kind::Stamp::compose(summons, authority, limited, owing_tail);
@@ -913,30 +930,13 @@ impl Assistant {
                 .refusing_budget(principal_id, conversation_id)
                 .await?
                 .is_none();
-        // The speaker is the sender's public username as delivered at this
-        // receipt — the handle as it was when the person spoke (decision
-        // 0065). A handleless sender stores NULL and projects bare — no
-        // substitute identifier is minted (decision 0056) — and the kind's
-        // storable-speaker bound refuses a handle whose shape would blur
-        // the projected prefix. A suppressed sender's exempt command
-        // records no speaker at all: the freeze covers the delivered
-        // handle too, so after a deletion no command re-materializes the
-        // field the erasure emptied (decided 2026-08-23).
-        let fields = ChatMessage::stored_fields(
-            &message.text,
-            kind::RecordedSender {
-                principal_id,
-                authority,
-                speaker: if suppressed {
-                    None
-                } else {
-                    message.sender.username.as_deref()
-                },
-            },
-            message.origin.as_deref(),
-            message.reply_target.as_ref(),
-            &message.timestamp.to_rfc3339(),
+        let fields = recorded_fields(
+            &message,
+            principal_id,
+            authority,
+            suppressed,
             stamp,
+            revision_link,
         );
         // The reply's context lands first (unit 31, 2026-08-28): a reply
         // to a message this conversation holds is preceded by a quote
@@ -1740,6 +1740,68 @@ impl Assistant {
         Ok(())
     }
 
+    /// Which fact, if any, limited this write's own debt — the one place
+    /// the write's limit is decided.
+    ///
+    /// The command stamp covers ANY recognized command since unit 45
+    /// (2026-08-30), not the privacy family alone: recognition is global
+    /// and the audience reading decides only the ANSWER, so a command
+    /// invoked where it is not offered still takes no debt, opens no turn
+    /// and never unlatches. The moderation bot's deletion token is no
+    /// catalogue command, so it reaches this stamp through its own
+    /// RECOGNITION — never through whether the mirror acted (unit T3,
+    /// 2026-08-31); the caller passes the two recognitions folded into
+    /// one.
+    ///
+    /// Budgets are consulted for summoned non-command messages only,
+    /// principal before channel, and the first refusing budget names the
+    /// limited fact — so under helpful answering a rate-limited member's
+    /// message opens no turn and costs no model read.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Store`] if a budget count fails.
+    async fn limiting_fact(
+        &self,
+        commanded: bool,
+        summons: kind::Summons,
+        principal_id: i64,
+        conversation_id: i64,
+    ) -> Result<Option<kind::LimitedBy>, CoreError> {
+        if commanded {
+            return Ok(Some(kind::LimitedBy::Command));
+        }
+        if summons.summoned {
+            return self.refusing_budget(principal_id, conversation_id).await;
+        }
+        Ok(None)
+    }
+
+    /// The deletion mirror's two readings for one write (decision 0179):
+    /// whether the message IS the moderation bot's deletion command, and
+    /// whether the mirror therefore erases. The recognition is taken once
+    /// and returned — the write's command stamp reads it — while the
+    /// action is that same recognition narrowed by the mirror's own gate,
+    /// so a command the mirror declines to act on is still a command.
+    ///
+    /// Answers `true` for a recognized deletion command, erasure or no
+    /// erasure. The ordering reasoning for WHERE this runs is at the call
+    /// site; what it erases is [`Self::mirror_named_deletion`] below.
+    async fn mirror_deletion(
+        &self,
+        tx: &StoreTx,
+        conversation_id: i64,
+        message: &InboundMessage,
+        authority: Authority,
+    ) -> Result<bool, CoreError> {
+        let recognized = mirror::recognized_deletion(message, authority);
+        if let Some(target) = mirror::mirrored_target(message, recognized) {
+            self.mirror_named_deletion(tx, conversation_id, target)
+                .await?;
+        }
+        Ok(recognized.is_some())
+    }
+
     /// The summons resolution — the ONE place the answering mode enters
     /// the machinery (unit 14): a message summons the assistant when it
     /// addressed it, or when helpful answering evaluates every message.
@@ -1815,6 +1877,116 @@ impl Assistant {
         )
         .await?
         .is_some_and(|standing| standing.opted_out))
+    }
+
+    /// What the stamp lock's own reading decides for this write: whether it
+    /// is disregarded — nothing written, nothing delivered, the update
+    /// acknowledged — and, when it is recorded, whether the revision
+    /// reference the adapter reported is stored with it.
+    ///
+    /// Every under-lock drop reads here, in the order it is decided, behind
+    /// the ONE exemption they share: the privacy command family is answered
+    /// whatever the store holds, resolved once into `exempt` and passed
+    /// down, so the drops cannot drift apart.
+    ///
+    /// The suppression re-read comes first, being the cheaper question and
+    /// the one about the sender rather than the message; the revision
+    /// reading follows and answers the rest.
+    async fn under_lock_reading(
+        &self,
+        tx: &StoreTx,
+        conversation_id: i64,
+        message: &InboundMessage,
+        family: Option<PrivacyCommand>,
+        reviser: i64,
+    ) -> Result<UnderLock, CoreError> {
+        let exempt = family.is_some();
+        if !exempt && self.suppressed_under_lock(tx, message).await? {
+            return Ok(UnderLock::Disregarded);
+        }
+        self.revision_reading(tx, conversation_id, message, exempt, reviser)
+            .await
+    }
+
+    /// What one revision's ONE store read decides (unit T3, 2026-08-31):
+    /// the editing unit's two drops, and whether the reported reference is
+    /// stored. An ordinary message revises nothing, never reaches the read,
+    /// and records exactly as it always did.
+    ///
+    /// No recorded version at all is the ERASURE GUARD. Erasure nulls a
+    /// row's origin and its revision reference along with its text, so an
+    /// erased message matches nothing — and the platform fires edit
+    /// updates for changes nobody asked for, a link preview attaching
+    /// hours later among them. Recording such a revision as a fresh
+    /// statement would write a person's erased words, and their erased
+    /// identifier, back into the ledger with no human act anywhere in the
+    /// path. What is given up is the case where an edit adds text to a
+    /// message the store never held: nothing about the group's memory
+    /// silently changes there, while an erased message resurrecting itself
+    /// is a defect against a published promise.
+    ///
+    /// Text identical to that newest version is a REDELIVERY of content
+    /// the ledger already holds, byte for byte, under that same message —
+    /// so no statement a person made goes unrecorded, and decision 0030 is
+    /// untouched: this is not a protection mechanism, and a genuinely
+    /// different edit always records, however many a person makes. It also
+    /// makes a redelivered update after a halted batch idempotent for that
+    /// tail version, where a redelivered new message still duplicates.
+    ///
+    /// A reviser who is NOT the author of the version the store holds gets
+    /// the author invariant enforced instead of assumed: the message
+    /// records as an ordinary new one, with no reference at all. Recording
+    /// is never refused — a person's words are not dropped because a
+    /// platform reported an implausible relation — and what falls away is
+    /// only the link, which the erasure passes and the report resolution
+    /// read as one person's own data. On this platform the case cannot
+    /// arise; [`kind::COLUMN_REVISES`] states the rule, and this is the one
+    /// place that keeps it.
+    ///
+    /// The privacy family is exempt from the two drops and never from the
+    /// read: a rights command is answered whatever the store holds, so it
+    /// records where an ordinary revision would be dropped — and it takes
+    /// the same author check, because a rights request about one's own data
+    /// is exactly the message that must not carry a link to somebody
+    /// else's.
+    ///
+    /// Fail-closed on the read, as every other admission read is
+    /// (decisions 0041, 0052): a store failure propagates and the
+    /// ingestion refuses, because recording anyway would duplicate a row
+    /// and, under helpful answering, spend a model turn on it. A store the
+    /// read cannot answer is one the append below could not use either.
+    async fn revision_reading(
+        &self,
+        tx: &StoreTx,
+        conversation_id: i64,
+        message: &InboundMessage,
+        exempt: bool,
+        reviser: i64,
+    ) -> Result<UnderLock, CoreError> {
+        let Some(named) = message.revises.as_deref() else {
+            return Ok(UnderLock::Recorded(RevisionLink::Kept));
+        };
+        let Some(newest) = kind::newest_recorded_version(tx, conversation_id, named).await? else {
+            if exempt {
+                return Ok(UnderLock::Recorded(RevisionLink::Kept));
+            }
+            tracing::debug!(
+                conversation_id,
+                "a revision names a message the store holds no version of; nothing recorded"
+            );
+            return Ok(UnderLock::Disregarded);
+        };
+        if newest.principal_id != reviser {
+            tracing::debug!(
+                conversation_id,
+                "a revision names a message written by somebody else; recorded unlinked"
+            );
+            return Ok(UnderLock::Recorded(RevisionLink::Dropped));
+        }
+        if !exempt && newest.text == message.text {
+            return Ok(UnderLock::Disregarded);
+        }
+        Ok(UnderLock::Recorded(RevisionLink::Kept))
     }
 
     /// The rules acknowledgment's text (unit 20): the bounded one-shot
@@ -2163,7 +2335,7 @@ impl Assistant {
     /// never disagree about one stamp: an erased tail's OWN debt, which the
     /// hook cancels, propagates nothing here either, while a live debt a
     /// third party's row still owes behind an erased run reads through
-    /// (decision 0086) — someone else's deletion erases one row's ask, not
+    /// (decision 0086) — someone else's deletion erases one message's ask, not
     /// the standing question behind it. The tail carrying the debt
     /// IS it being unanswered: an answer, a streaming tail or any later
     /// block would be the tail instead, and mid-turn absorption keeps its
@@ -2285,6 +2457,86 @@ impl Assistant {
         }
         Ok(None)
     }
+}
+
+/// The stored row one ingested message becomes: its text, the three sender
+/// facts, the two platform identifiers, the reply fact, the platform send
+/// time and the composed stamp — every one of them encoded into columns by
+/// the kind, which owns that map.
+///
+/// The speaker is the sender's public username as delivered at this receipt
+/// — the handle as it was when the person spoke (decision 0065). A
+/// handleless sender stores NULL and projects bare — no substitute
+/// identifier is minted (decision 0056) — and the kind's storable-speaker
+/// bound refuses a handle whose shape would blur the projected prefix. A
+/// suppressed sender's exempt command records no speaker at all: the freeze
+/// covers the delivered handle too, so after a deletion no command
+/// re-materializes the field the erasure emptied (decided 2026-08-23).
+///
+/// The revision reference is stored only where the under-lock reading kept
+/// the link ([`RevisionLink`]): a message revising one that somebody else
+/// wrote becomes an ordinary new row here, which is where
+/// [`kind::COLUMN_REVISES`]'s author invariant is enforced.
+fn recorded_fields(
+    message: &InboundMessage,
+    principal_id: i64,
+    authority: Authority,
+    suppressed: bool,
+    stamp: kind::Stamp,
+    revision_link: RevisionLink,
+) -> serde_json::Map<String, serde_json::Value> {
+    ChatMessage::stored_fields(
+        &message.text,
+        kind::RecordedSender {
+            principal_id,
+            authority,
+            speaker: if suppressed {
+                None
+            } else {
+                message.sender.username.as_deref()
+            },
+        },
+        kind::RecordedOrigin {
+            origin: message.origin.as_deref(),
+            revises: match revision_link {
+                RevisionLink::Kept => message.revises.as_deref(),
+                RevisionLink::Dropped => None,
+            },
+        },
+        message.reply_target.as_ref(),
+        &message.timestamp.to_rfc3339(),
+        stamp,
+    )
+}
+
+/// What the stamp lock's reading decided for one write (unit T3,
+/// 2026-08-31): either nothing is recorded at all, or the write proceeds
+/// carrying what that same reading settled about its revision reference.
+///
+/// One value, because the drops and the reference are decided from ONE
+/// store read: two returns would be two chances for them to disagree about
+/// the row they both read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnderLock {
+    /// Nothing written, nothing delivered, the update acknowledged —
+    /// [`IngestOutcome::Disregarded`]'s full no-write claim.
+    Disregarded,
+    /// The write proceeds, storing the revision reference this says.
+    Recorded(RevisionLink),
+}
+
+/// Whether a recorded row keeps the revision reference the adapter reported
+/// (unit T3, 2026-08-31).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevisionLink {
+    /// Stored as reported. Every ordinary message reads this way too,
+    /// having no reference to store.
+    Kept,
+    /// Not stored: the reviser is not the author of the version the store
+    /// holds, so the message records as an ordinary new one. The words are
+    /// never refused — only the link falls away, which is the author
+    /// invariant [`kind::COLUMN_REVISES`] states.
+    Dropped,
 }
 
 /// What the writing path knows about an admitted sender: the resolved

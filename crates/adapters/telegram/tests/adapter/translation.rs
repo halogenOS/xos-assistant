@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 use crate::server::BotApiServer;
 use crate::support::{
     TempStateFile, authorize_group, await_chat_messages, await_conversations, await_state_file,
-    group_update, message_id_of, message_update, private_update, recording_sleep, spawn_adapter,
-    start_assistant,
+    date_of, group_update, message_id_of, message_update, private_update, recording_sleep,
+    spawn_adapter, start_assistant,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -204,24 +204,198 @@ async fn a_message_on_behalf_of_a_chat_is_skipped_and_acknowledged() {
     .await;
 }
 
-/// An edit to an existing message is skipped per decision 0017: the ledger
-/// keeps the message as first seen.
+/// AC2 over the wire: an edit of a recorded message records a SECOND row
+/// naming the message it revises, carrying its own origin, its sender, the
+/// reply target and the edit time as the stored send time — and the first
+/// row stands untouched beside it. The decision-0017 deferral falls due
+/// here: the update was skipped, and now it records.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_edited_message_is_skipped_and_acknowledged() {
-    assert_skipped_and_acknowledged(
-        "skip-edit",
-        json!({
-            "update_id": 1,
-            "edited_message": {
-                "message_id": message_id_of(1),
-                "date": 1_700_000_001,
-                "chat": { "id": SKIP_TEST_CHAT, "type": "group" },
-                "from": { "id": 3, "first_name": "Person 3" },
-                "text": "an edited statement",
-            },
-        }),
-    )
-    .await;
+async fn an_edit_records_a_second_row_naming_what_it_revises() {
+    let chat = -91;
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    server.set_admins(chat, &[]);
+    authorize_group(&fixture.assistant, chat).await;
+    // The original, replying to an earlier message so the revision's own
+    // reply fact is provably carried across too.
+    server.push_update(json!({
+        "update_id": 1,
+        "message": {
+            "message_id": message_id_of(1),
+            "date": date_of(1),
+            "chat": { "id": chat, "type": "group" },
+            "from": { "id": 7, "first_name": "Person 7", "username": "casey" },
+            "reply_to_message": { "message_id": 4242, "from": { "id": 8 } },
+            "text": "what is the reelase cadence?",
+        },
+    }));
+
+    let state = TempStateFile::new("edit-records");
+    let (sleep, _) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+
+    let conversation = await_conversations(&fixture.store, 1).await[0];
+    let first = await_chat_messages(&fixture.store, conversation, 1).await;
+    let original = first[0].fields.clone();
+
+    // The edit: the same message id, the corrected text, and the platform's
+    // own edit time beside the original send time.
+    server.push_update(json!({
+        "update_id": 2,
+        "edited_message": {
+            "message_id": message_id_of(1),
+            "date": date_of(1),
+            "edit_date": date_of(50),
+            "chat": { "id": chat, "type": "group" },
+            "from": { "id": 7, "first_name": "Person 7", "username": "casey" },
+            "reply_to_message": { "message_id": 4242, "from": { "id": 8 } },
+            "text": "what is the release cadence?",
+        },
+    }));
+
+    let messages = await_chat_messages(&fixture.store, conversation, 2).await;
+    assert_eq!(
+        messages[0].fields, original,
+        "the earlier version's row is untouched in every column"
+    );
+    let revision = &messages[1].fields;
+    assert_eq!(revision["text"], json!("what is the release cadence?"));
+    assert_eq!(
+        revision["revises"],
+        json!(
+            messages[0].fields["origin"]
+                .as_str()
+                .expect("the original stored an origin")
+        ),
+        "the revision names the message it supersedes"
+    );
+    assert_eq!(
+        revision["origin"], messages[0].fields["origin"],
+        "an edit arrives under the original's own id on this platform"
+    );
+    assert_eq!(revision["speaker"], json!("casey"));
+    assert_eq!(revision["authority"], json!("member"));
+    assert_eq!(
+        revision["reply_target"], messages[0].fields["reply_target"],
+        "the revision reports the reply fact like any message"
+    );
+    assert_eq!(
+        revision["sent_at"],
+        json!(
+            chrono::DateTime::from_timestamp(date_of(50), 0)
+                .expect("a representable edit time")
+                .to_rfc3339()
+        ),
+        "the edit time is the version's send time"
+    );
+}
+
+/// The edit time's fallback, pinned over the wire: an edit update that
+/// decodes without an edit time records under the ORIGINAL send time
+/// instead of being refused a timestamp. The platform documents the edit
+/// time on the message an edit update carries — the fallback is this
+/// decoder's leniency about an optional field, never a platform case, and
+/// the row it writes still names what it revises.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edit_without_an_edit_time_records_the_original_send_time() {
+    let chat = -92;
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    server.set_admins(chat, &[]);
+    authorize_group(&fixture.assistant, chat).await;
+    server.push_update(json!({
+        "update_id": 1,
+        "message": {
+            "message_id": message_id_of(1),
+            "date": date_of(1),
+            "chat": { "id": chat, "type": "group" },
+            "from": { "id": 7, "first_name": "Person 7" },
+            "text": "the first wording",
+        },
+    }));
+
+    let state = TempStateFile::new("edit-without-edit-date");
+    let (sleep, _) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+
+    let conversation = await_conversations(&fixture.store, 1).await[0];
+    await_chat_messages(&fixture.store, conversation, 1).await;
+
+    server.push_update(json!({
+        "update_id": 2,
+        "edited_message": {
+            "message_id": message_id_of(1),
+            "date": date_of(1),
+            "chat": { "id": chat, "type": "group" },
+            "from": { "id": 7, "first_name": "Person 7" },
+            "text": "the corrected wording",
+        },
+    }));
+
+    let messages = await_chat_messages(&fixture.store, conversation, 2).await;
+    let revision = &messages[1].fields;
+    assert_eq!(revision["text"], json!("the corrected wording"));
+    assert_eq!(
+        revision["revises"], messages[0].fields["origin"],
+        "the revision still names the message it supersedes"
+    );
+    assert_eq!(
+        revision["sent_at"], messages[0].fields["sent_at"],
+        "with no edit time reported, the original send time stands"
+    );
+}
+
+/// AC8 over the wire: an edit that leaves a message with neither text nor
+/// caption — a member deleting a photo's caption — records nothing and is
+/// acknowledged, and the earlier version's row stands untouched beside the
+/// nothing it wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edit_that_leaves_no_text_records_nothing_and_is_acknowledged() {
+    let chat = -93;
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    server.set_admins(chat, &[]);
+    authorize_group(&fixture.assistant, chat).await;
+    server.push_update(json!({
+        "update_id": 1,
+        "message": {
+            "message_id": message_id_of(1),
+            "date": date_of(1),
+            "chat": { "id": chat, "type": "group" },
+            "from": { "id": 3, "first_name": "Person 3" },
+            "caption": "the caption a member then deletes",
+            "photo": [ { "file_id": "irrelevant" } ],
+        },
+    }));
+
+    let state = TempStateFile::new("skip-textless-edit");
+    let (sleep, _) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+
+    let conversation = await_conversations(&fixture.store, 1).await[0];
+    let before = await_chat_messages(&fixture.store, conversation, 1).await;
+    let original = before[0].fields.clone();
+
+    server.push_update(json!({
+        "update_id": 2,
+        "edited_message": {
+            "message_id": message_id_of(1),
+            "date": date_of(1),
+            "edit_date": date_of(50),
+            "chat": { "id": chat, "type": "group" },
+            "from": { "id": 3, "first_name": "Person 3" },
+            "photo": [ { "file_id": "irrelevant" } ],
+        },
+    }));
+
+    // The acknowledgment is the offset advancing past the skipped update.
+    await_state_file(state.path(), 3).await;
+    let after = await_chat_messages(&fixture.store, conversation, 1).await;
+    assert_eq!(after.len(), 1, "the textless edit recorded nothing");
+    assert_eq!(
+        after[0].fields, original,
+        "the earlier version's row stands untouched in every column"
+    );
 }
 
 /// A message with neither text nor caption is skipped per decision 0017.

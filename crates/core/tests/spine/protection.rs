@@ -168,7 +168,10 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                         authority: Authority::Member,
                         speaker: None,
                     },
-                    Some("scripted:41"),
+                    assistant_core::kind::RecordedOrigin {
+                        origin: Some("scripted:41"),
+                        revises: None,
+                    },
                     None,
                     "2026-08-21T00:00:00+00:00",
                     Stamp {
@@ -257,7 +260,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        18,
+        19,
         "the appended steps advanced the domain's version"
     );
 
@@ -816,7 +819,7 @@ async fn a_pre_migration_owing_tail_folds_to_its_stored_sender_authority() {
                     authority: Authority::Admin,
                     speaker: None,
                 },
-                None,
+                assistant_core::kind::RecordedOrigin::default(),
                 None,
                 "2026-08-21T00:00:00+00:00",
                 // The old binary's stamp: addressed and answer-due, with

@@ -26,10 +26,22 @@ block of its own kind through the observation surface, carrying the name the
 platform showed, because a joining account's displayed name can be the whole
 of an advertisement and the assistant cannot assess what it never recorded.
 
+## Amended 2026-08-31 — the deferral falls due
+
+The sentence above, "an edit kind — appending the revision as its own block
+— is a later unit's decision, taken when the acting policy exists to read
+it", is spent. The acting policy exists, and decision 0170 takes that
+decision: an edit is recorded as a new message NAMING the message it
+revises, and the skip is gone. What this decision rejected is untouched —
+the rejection below is of recording edits with no marking, and a marked
+revision is not that.
+
 ## Rejected alternatives
 
 - **Recording edits as fresh messages.** Two blocks claiming to be the person's one
-  statement, with no marking.
+  statement, with no marking. (Still rejected as stated: decision 0170's
+  revision names what it supersedes and projects marked, which is what this
+  alternative lacked.)
 - **Letting a join in through the message kind (2026-08-29).** A join carries no
   text, no sender and no ask; widening the message invariants to admit one
   would carve out every one of them.

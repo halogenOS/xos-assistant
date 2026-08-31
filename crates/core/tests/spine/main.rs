@@ -6,8 +6,10 @@
 //! single compilation keeps them all exercised. The modules split by concern:
 //! acknowledgment (the rules acknowledgment's bounded one-shot generation
 //! and its deterministic fallback),
-//! assembly (the wiring contract), storage (the composed kind and the durable
-//! registry), audience (the clarifying question's ordinary delivery and
+//! assembly (the wiring contract), storage (the composed kind, the durable
+//! registry, and a member's edit recorded as a further version — with the
+//! two drops that record nothing and the read that fails closed),
+//! audience (the clarifying question's ordinary delivery and
 //! the two-turn disambiguation),
 //! addressing (the answer-due stamp, the notice, re-engagement),
 //! bots (an automated sender summoned by address alone, its message
@@ -31,7 +33,8 @@
 //! joins (the join notice: its marked blocks through the observation seam,
 //! its transparency on both walks, its reach into the report path and its
 //! erasure by person and by event),
-//! projection (role alternation under erasure),
+//! projection (role alternation under erasure, and the revised message's
+//! marked line beside the version it supersedes),
 //! reactions (the react tool: the filed mark block, the outbound edge's
 //! second arm, the aiming and duplicate declines, the read-through that
 //! keeps a question owed behind a reaction, and both nulling paths),
@@ -45,7 +48,9 @@
 //! the turn's provenance), `privacy_rights` (the suppression drop, the
 //! self-service commands, the spawned deletion and the privacy tool),
 //! `mirror` (the deletion mirror riding the moderation bot's reply
-//! command), reset (the session-reset commands: the wipe's empty session,
+//! command, its silence for a command that arrives as an edit, and its
+//! reach over every recorded version of one message),
+//! reset (the session-reset commands: the wipe's empty session,
 //! the compact's kept tail, the outbound edge's inherited boundary, the
 //! floor and the direct-chat fence, and the unattended compaction), search (the web search's envelope over a scripted vendor, its
 //! guard and person bound refusing before the wire, its taught failures,

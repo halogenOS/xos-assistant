@@ -127,8 +127,9 @@ controller, and anything the project does outside the assistant.
 ### 3.2 Categories of data
 
 - **Message content.** Text, including the caption of a media message. No media, no files,
-  no voice, no stickers (decision 0017). Edited versions are not collected; the message
-  stands as first seen.
+  no voice, no stickers (decision 0017). Each distinct version of an edited message is
+  stored beside the first, in a row of its own; nothing is rewritten and no version
+  replaces another (amended 2026-08-31, unit T3; assessed in section 16).
 - **Identity.** The platform's opaque account identifier, display name, username. Held in
   tables of their own and never inline in the ledger (decisions 0003, 0006). The username
   is transmitted to the processor with the conversation, by the operator's decision of
@@ -381,7 +382,11 @@ against anybody. The proportionality rests on
 that pairing, not on the storage alone. If any part of the pairing were removed, this
 conclusion would have to be taken again.
 
-**Is the amount minimal?** Text only, no media, no edits, no anonymous stand-in senders.
+**Is the amount minimal?** Text only, no media, no anonymous stand-in senders. Each
+distinct version of an edited message is stored (amended 2026-08-31, unit T3): storing
+only the first would mean holding a record of what a person said that the person has
+already corrected, and the platform's own repeated deliveries of unchanged text are the
+one thing dropped.
 Identity is one opaque account identifier plus the display fields the platform already
 shows to everyone in the group. The provider receives the conversation's text and one of
 those fields, the public username, which the group sees on every message anyway; the
@@ -652,7 +657,8 @@ Any one of these triggers a review, and none of them is optional:
   reactions half of this trigger FIRED on 2026-08-30, when the assistant gained the
   ability to place one; section 15 is the review it demanded. It stands unspent for
   the receiving half — collecting anybody else's reactions is a separate change and
-  takes its own review.
+  takes its own review. The EDITS half FIRED on 2026-08-31, when a member's edit
+  began to be recorded; section 16 is the review it demanded.
 - Any change to the groups' readability. A group that becomes closed, approval-only or
   invite-only voids the Article 9(2)(e) claim recorded for self-posted content, because
   posting into it stops being publication to the public. Added 2026-08-23 with that claim.
@@ -944,3 +950,86 @@ erasure residual smaller than the ones already accepted for a report's public re
 The overall judgment of section 8 stands: the residual risk is not high in the
 meaning of Article 36(1). Reading the group's reactions remains a review trigger of
 its own, and a product decision this assessment does not make.
+
+## 16. Addendum, 2026-08-31: a member's edit is recorded
+
+The review trigger "a change to what is collected: media, **edits**, reactions,
+membership events" fired with the editing unit, and this addendum is the assessment
+it demands. This document is a draft amended in place, per its own status line.
+
+**The change, described.** Until now an edit was thrown away and the message stood as
+first seen. From this unit a member's edit is recorded as a new message that names the
+message it revises: the earlier version keeps its row and its place, the later one is
+appended beside it, and nothing is rewritten. The assistant reads the later version as
+what the person now means. Three things are still not recorded: a repeat of the version
+already stored, which the platform delivers on its own for changes nobody made — a link
+preview attaching, hours later; an edit that leaves the message with no text at all; and
+an edit naming a message the store holds no version of, which is what keeps an erased
+message from reappearing.
+
+**Why the earlier rule was worse.** Storing only the first version means holding a record
+of what a person said that the person has already corrected, and answering a question its
+author has already withdrawn. The accuracy principle in Article 5(1)(d) argues against
+keeping a knowingly stale record of someone's words when the correction is in hand.
+
+**What is new for the people concerned.**
+
+- *More rows for one message.* Every distinct version a person writes is kept. The volume
+  this adds is NOT bounded: decision 0003 sets no retention timer, and nothing here
+  introduces one. What the drops above remove is only the platform's own repeated
+  deliveries of unchanged text, never a version a person wrote.
+- *One further stored reference.* The identifier of the message a version revises, listed
+  as D12 in the records of processing. It is the author's own data — the identifier of a
+  message they sent — and their erasure empties it beside the text, the origin, the send
+  time, the reply reference and the handle.
+- *No new recipient and no new transfer.* The revised text reaches the same processor as
+  every other message, under the same terms. Section 3.5's list of places data leaves the
+  EEA is unchanged at four.
+- *Deletion reaches every version.* A person's own deletion request empties every row they
+  wrote, versions included. An administrator's reply deletion through the moderation bot
+  now empties every recorded version of the named message, not one row of it, and the
+  references naming that message go with them.
+
+**The residuals, stated rather than engineered away.** Four of them are the ones the
+unit's decisions accept by name; the last two are the same drop reached by two other
+routes, written down here rather than left to be rediscovered.
+
+1. *A message can be edited after it was reported.* What the group's administrators then
+   see is not what the assistant assessed. The report names the message, not its text, and
+   administrators read the message as it now stands; one report is filed per message, not
+   per version, so an edit cannot manufacture a second report either.
+2. *Every version a person writes is retained, and the product offers no per-message
+   correction.* The routes out are the ones the product already offers: the person's own
+   deletion command, which removes everything, or an administrator's reply deletion, which
+   now reaches every version of the one message.
+3. *An edit that empties a message's text records nothing, so the earlier wording stays.*
+   Recording an empty message would break the reading that an absent text means erased,
+   and recording a fixed retraction sentence would be the machine putting words in a
+   person's mouth. The route to removing the earlier wording is the deletion path above.
+4. *An edit naming a message the store holds no version of is dropped.* This is the
+   completeness price paid for the erasure guard: an edit of a message erasure emptied
+   would otherwise write a person's erased words back into the ledger with no human act
+   anywhere in the path. What is given up is the case where an edit adds text to a message
+   the store never held.
+5. *An edit whose original was never recorded is dropped with it.* The same rule reached
+   from the other side: where the original never entered the ledger — a delivery reordered
+   ahead of it, or a message the intake did not record — the correction is not recorded
+   either, and nothing of that message stands anywhere to be inaccurate.
+6. *An edit of a message the serving conversation no longer holds is dropped.* A session
+   reset and a compaction both fork the conversation and point the channel at the fork,
+   and the version lookup is scoped to the conversation being served — a match across
+   conversations would reach a stranger's row. So an edit of a message left behind by the
+   fork records nothing. What stays behind is the earlier wording, in the conversation the
+   fork left, reachable by the same deletion routes as any other stored message.
+
+**The assistant's own messages are untouched by this unit.** It edits none of the messages
+it has sent and deletes nobody's message, ever. The platform grants an administrator bot
+the power to delete any message in a group, and helpful-mode deployments run the bot as an
+administrator, so the capability is live and deliberately unused: decision 0070 keeps a
+human at every moderation effect.
+
+**Judgment.** One further stored reference, made of an identifier the record already
+collects for a reply, plus more rows for a message a person chose to say more than once —
+with no new recipient, no new transfer, no new model input, and a deletion path that
+reaches every version. The overall judgment of section 8 stands: the residual risk is not
+high in the meaning of Article 36(1).

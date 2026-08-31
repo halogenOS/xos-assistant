@@ -2072,3 +2072,156 @@ fn the_commands_menu_design_records_what_was_already_built() {
         );
     }
 }
+
+// ─── The editing unit's pins (unit T3, AC14, 2026-08-31) ─────────────────
+
+/// AC14: the five published documents ship changed with the code. Shipping
+/// while the texts still said edits are not collected would make a
+/// published statement false, which is a defect.
+#[test]
+fn the_editing_unit_ships_its_five_document_changes() {
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains(&flattened(
+            "When you edit a message, the edited message is stored as a further \
+             version beside the first, and the earlier wording stays."
+        )),
+        "the policy states what an edit now does"
+    );
+    assert!(
+        !policy.contains("We do not store the media itself, edits"),
+        "the policy no longer claims edits are not stored"
+    );
+
+    let record = flattened(&repo_file("docs/privacy/records-of-processing.md"));
+    assert!(
+        record.contains(&flattened(
+            "| D12 | Revision reference (added 2026-08-31) | The identifier of the \
+             message an edited message is a further version of."
+        )),
+        "the record of processing names the revision reference in its erasure table"
+    );
+    assert!(
+        record.contains(&flattened(
+            "for an edited message the platform's edit time is what is recorded as \
+             its send time"
+        )),
+        "the record states the edit time as circumstance"
+    );
+    assert!(
+        !record.contains("Edits are not collected."),
+        "the record no longer claims edits are not collected"
+    );
+
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    assert!(
+        dpia.contains(&flattened(
+            "## 16. Addendum, 2026-08-31: a member's edit is recorded"
+        )),
+        "the impact assessment gains its dated addendum"
+    );
+    for residual in [
+        "A message can be edited after it was reported.",
+        "Every version a person writes is retained, and the product offers no \
+         per-message correction.",
+        "An edit that empties a message's text records nothing, so the earlier \
+         wording stays.",
+        "An edit naming a message the store holds no version of is dropped.",
+    ] {
+        assert!(
+            dpia.contains(&flattened(residual)),
+            "the addendum carries the residual: {residual}"
+        );
+    }
+    assert!(
+        dpia.contains(&flattened("The EDITS half FIRED on 2026-08-31")),
+        "the assessment records that its own review trigger fired"
+    );
+
+    let lia = flattened(&repo_file("docs/privacy/lia.md"));
+    assert!(
+        lia.contains(&flattened(
+            "**Recording a member's edit is necessary, added 2026-08-31.**"
+        )),
+        "the legitimate-interest assessment states the replacement necessity"
+    );
+    assert!(
+        lia.contains(&flattened(
+            "every distinct version a person writes is kept, decision 0003 sets no \
+             retention timer, and the added volume is not bounded"
+        )),
+        "the assessment states the unbounded volume instead of overstating a safeguard"
+    );
+    assert!(
+        !lia.contains("Edits are not collected."),
+        "the not-necessary list no longer holds edits"
+    );
+
+    let contract = flattened(&repo_file("docs/reference/group-operator-contract.md"));
+    assert!(
+        contract.contains(&flattened(
+            "And a deletion command that arrives as an EDIT mirrors nothing and stays \
+             silent"
+        )),
+        "the operator reference states the third mirror bound"
+    );
+}
+
+/// The editing unit's decisions are recorded with their dates and their
+/// rejected alternatives, and the three records it narrows carry their
+/// dated amendments rather than being rewritten.
+#[test]
+fn the_editing_units_decisions_are_recorded_and_the_three_it_narrows_are_amended() {
+    for record in [
+        "docs/decisions/0170-a-members-edit-is-a-new-message-naming-what-it-revises.md",
+        "docs/decisions/0171-the-neutral-word-is-revises-and-it-names-the-original.md",
+        "docs/decisions/0172-the-send-time-of-a-revision-is-the-edit-time.md",
+        "docs/decisions/0173-an-unchanged-revision-and-an-unheld-target-record-nothing.md",
+        "docs/decisions/0174-the-comparison-is-one-store-read-defined-exactly.md",
+        "docs/decisions/0175-a-revision-is-stamped-like-any-other-message.md",
+        "docs/decisions/0176-the-revision-projects-under-the-revised-id-marked.md",
+        "docs/decisions/0177-an-edit-that-leaves-no-text-records-nothing.md",
+        "docs/decisions/0178-the-model-is-taught-which-version-is-meant.md",
+        "docs/decisions/0179-recognising-a-deletion-command-and-acting-on-it-are-two-readings.md",
+        "docs/decisions/0180-the-deletion-mirror-ignores-revisions.md",
+        "docs/decisions/0181-erasure-and-the-report-reach-every-version.md",
+        "docs/decisions/0182-the-zero-message-id-is-named-not-defended-against.md",
+        "docs/decisions/0183-the-assistant-edits-none-of-her-own-messages-in-this-unit-and-deletes-nobodys-ever.md",
+        "docs/decisions/0184-five-documents-change-with-the-code.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-31"),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+    assert!(
+        flattened(&repo_file(
+            "docs/decisions/0017-text-is-what-this-unit-records.md"
+        ))
+        .contains(&flattened("## Amended 2026-08-31 — the deferral falls due")),
+        "decision 0017's deferral is recorded as spent"
+    );
+    assert!(
+        flattened(&repo_file(
+            "docs/decisions/0082-the-deletion-mirror-rides-the-moderation-bots-command.md"
+        ))
+        .contains(&flattened(
+            "## Amended 2026-08-31 — recognition and action split, and revisions mirror nothing"
+        )),
+        "decision 0082 records the narrowing and the recognition split"
+    );
+    assert!(
+        flattened(&repo_file(
+            "docs/decisions/0085-the-mirror-scrubs-reply-references-the-command-row-keeps-its-own.md"
+        ))
+        .contains(&flattened(
+            "## Amended 2026-08-31 — \"the target row\" is every version of it"
+        )),
+        "decision 0085 records the amended row-count wording"
+    );
+}

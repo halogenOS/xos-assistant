@@ -10,6 +10,7 @@ use assistant_core::kind::{
     AssistantKind, CHAT_MESSAGE_KIND, CHAT_MESSAGE_TABLE, ERASED_MARKER, FrameworkKind,
 };
 use assistant_core::schema::store_config;
+use assistant_core::{ChannelKind, IngestOutcome};
 use serde_json::json;
 
 use crate::support;
@@ -302,16 +303,19 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
         // that unit's disk shape. The written value proves the drop
         // deletes data, not just an empty surface.
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
-            conn.execute_batch(
+            conn.execute_batch(&format!(
                 "ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
+                 DROP INDEX {revises_index};
+                 ALTER TABLE block_chat_message DROP COLUMN revises;
                  ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
                  DROP TABLE block_join_notice;
                  DROP TABLE block_delivered;
                  DROP TABLE block_message_mark;
                  INSERT INTO principals (adapter, external_id, display_name, username)
                      VALUES ('test-adapter', '42', 'Ada Lovelace', 'ada');",
-            )?;
+                revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
+            ))?;
             Ok(())
         })
         .await
@@ -325,7 +329,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
         .expect("the version-eleven store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        18,
+        19,
         "the appended steps advanced the domain's version"
     );
     let (columns, row): (Vec<String>, (String, String, Option<String>)) =
@@ -390,7 +394,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             Store::open_with(db.path(), store_config()).expect("the configured store opens");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            18,
+            19,
             "the domain's recorded version is the shipped step count"
         );
         // One recorded summoned message, then the rewind: drop exactly the
@@ -423,10 +427,13 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             .expect("the pre-upgrade row appends");
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
-                "ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
+                "DROP INDEX {revises_index};
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN revises;
+                 ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
                  DROP TABLE {join};
                  DROP TABLE {delivered};
                  DROP TABLE {marks};",
+                revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
                 marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
@@ -444,7 +451,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         .expect("the version-thirteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        18,
+        19,
         "the appended step advanced the domain's version"
     );
     let blocks = support::consumer_view(
@@ -495,7 +502,7 @@ async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() 
         .expect("the version-fourteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        18,
+        19,
         "the appended steps advanced the domain's version"
     );
 
@@ -636,7 +643,9 @@ async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
         .expect("the pre-upgrade report appends");
     agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
         conn.execute_batch(&format!(
-            "DROP TABLE {join};
+            "DROP INDEX {revises_index};
+             ALTER TABLE block_chat_message DROP COLUMN revises;
+             DROP TABLE {join};
              DROP TABLE {delivered};
              DROP TABLE {marks};
              CREATE TABLE {report}_v14 (
@@ -649,6 +658,7 @@ async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
                  SELECT block_id, {target}, {reported}, {line} FROM {report};
              DROP TABLE {report};
              ALTER TABLE {report}_v14 RENAME TO {report};",
+            revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
             join = assistant_core::join::JOIN_NOTICE_TABLE,
             delivered = assistant_core::delivery::DELIVERED_TABLE,
             marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
@@ -691,8 +701,11 @@ async fn a_version_sixteen_store_upgrades_through_the_delivery_step() {
             .expect("a conversation row");
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
-                "DROP TABLE {table};
+                "DROP INDEX {revises_index};
+                 ALTER TABLE block_chat_message DROP COLUMN revises;
+                 DROP TABLE {table};
                  DROP TABLE {marks};",
+                revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
                 table = assistant_core::delivery::DELIVERED_TABLE,
                 marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
             ))?;
@@ -709,7 +722,7 @@ async fn a_version_sixteen_store_upgrades_through_the_delivery_step() {
         .expect("the version-sixteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        18,
+        19,
         "the appended step advanced the domain's version"
     );
 
@@ -849,5 +862,325 @@ async fn the_mark_tables_check_bounds_the_stored_emoji_in_bytes() {
     assert!(
         append(past_in_bytes_only).await.is_err(),
         "the CHECK counts bytes, not characters"
+    );
+}
+
+// ─── The editing unit's pins (unit T3, 2026-08-31) ───────────────────────
+
+/// The recorded chat messages of one conversation, in ledger order.
+async fn recorded_messages(store: &Store, conversation_id: i64) -> Vec<Block> {
+    store
+        .list_blocks(conversation_id)
+        .await
+        .expect("the ledger reads")
+        .into_iter()
+        .filter(|block| block.block_type == CHAT_MESSAGE_KIND)
+        .collect()
+}
+
+/// AC2: an edit of a recorded message appends a SECOND message block in the
+/// same conversation, column by column against the descriptor's own list —
+/// the revised message's origin in the new column, this version's own
+/// origin, the sender, the speaker, the reply target, the edit time as the
+/// send time and the stamp the message earns. The earlier row is untouched
+/// in every column: the ledger is append-only, and the earlier version was
+/// already read and possibly already answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edit_appends_a_second_block_and_leaves_the_first_untouched() {
+    let fixture = support::start_assistant(None).await;
+    let room = support::authorized_group(&fixture.assistant, "room-revision").await;
+
+    let original = support::with_reply(
+        support::with_origin(
+            support::with_username(
+                support::inbound_unaddressed(
+                    &room,
+                    ChannelKind::Group,
+                    "casey-ext",
+                    "what is the reelase cadence?",
+                ),
+                "casey",
+            ),
+            "msg-1",
+        ),
+        assistant_core::ReplyTarget::Message {
+            origin: "earlier-9".into(),
+        },
+    );
+    let receipt = support::ingest_recorded(&fixture.assistant, original.clone()).await;
+    let conversation = receipt.conversation_id;
+    let before = recorded_messages(&fixture.store, conversation).await;
+    assert_eq!(before.len(), 1);
+
+    let mut edit = original;
+    edit.text = "what is the release cadence?".into();
+    edit.timestamp = "2026-08-31T12:00:00+00:00"
+        .parse::<chrono::DateTime<chrono::Utc>>()
+        .expect("a representable edit time");
+    support::ingest_recorded(&fixture.assistant, support::revising(edit, "msg-1")).await;
+
+    let after = recorded_messages(&fixture.store, conversation).await;
+    assert_eq!(
+        after.len(),
+        2,
+        "the revision is a second row, not a rewrite"
+    );
+    assert_eq!(
+        (after[0].id, after[0].role, &after[0].fields),
+        (before[0].id, before[0].role, &before[0].fields),
+        "the earlier version's row is untouched in every column"
+    );
+
+    let revision = &after[1];
+    assert_eq!(revision.role, Some(Role::User));
+    assert_eq!(
+        revision.fields["revises"],
+        json!("msg-1"),
+        "the new column names the message this one supersedes"
+    );
+    assert_eq!(revision.fields["origin"], json!("msg-1"));
+    assert_eq!(
+        revision.fields["text"],
+        json!("what is the release cadence?")
+    );
+    assert_eq!(revision.fields["speaker"], json!("casey"));
+    assert_eq!(revision.fields["authority"], json!("member"));
+    assert_eq!(
+        revision.fields["principal_id"],
+        before[0].fields["principal_id"]
+    );
+    assert_eq!(revision.fields["reply_target"], json!("earlier-9"));
+    assert_eq!(
+        revision.fields["sent_at"],
+        json!("2026-08-31T12:00:00+00:00"),
+        "the edit time is the version's send time"
+    );
+    assert_eq!(
+        revision.fields["addressed"],
+        json!(false),
+        "the revision is stamped like the unaddressed message it is"
+    );
+    assert_eq!(revision.fields["answer_due"], json!(false));
+    // Every column the descriptor declares is either written above or
+    // absent for a stated reason, so a column added without a home here
+    // fails this pin instead of shipping unwritten.
+    let written: Vec<&str> = revision.fields.keys().map(String::as_str).collect();
+    assert_eq!(
+        written,
+        vec![
+            "addressed",
+            "answer_due",
+            "authority",
+            "literal_addressed",
+            "origin",
+            "principal_id",
+            "reply_target",
+            "revises",
+            "sent_at",
+            "speaker",
+            "text",
+        ],
+        "the revision's stored columns, exactly"
+    );
+}
+
+/// AC3: a revision whose text equals the newest recorded version of that
+/// message records nothing and delivers nothing, and the update is
+/// acknowledged — the platform fires edit updates for changes nobody asked
+/// for. A genuinely different edit records. So does one that returns to an
+/// earlier wording: the comparison is against the NEWEST version, never
+/// against the history. And the same update redelivered after the first
+/// records once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edit_repeating_the_newest_version_records_nothing() {
+    let fixture = support::start_assistant(None).await;
+    let room = support::authorized_group(&fixture.assistant, "room-identical").await;
+
+    let first = support::with_origin(
+        support::inbound_unaddressed(&room, ChannelKind::Group, "casey-ext", "the first wording"),
+        "msg-2",
+    );
+    let conversation = support::ingest_recorded(&fixture.assistant, first.clone())
+        .await
+        .conversation_id;
+
+    let revision_of = |text: &str| {
+        let mut message = first.clone();
+        message.text = text.into();
+        support::revising(message, "msg-2")
+    };
+
+    // The platform's own repeat: the same text under the same message.
+    let outcome = fixture
+        .assistant
+        .ingest(revision_of("the first wording"))
+        .await
+        .expect("the redelivered update is acknowledged");
+    assert!(
+        matches!(outcome, IngestOutcome::Disregarded),
+        "an unchanged edit touches nothing: {outcome:?}"
+    );
+    assert_eq!(
+        recorded_messages(&fixture.store, conversation).await.len(),
+        1
+    );
+
+    // A genuine edit records.
+    support::ingest_recorded(&fixture.assistant, revision_of("the second wording")).await;
+    assert_eq!(
+        recorded_messages(&fixture.store, conversation).await.len(),
+        2
+    );
+
+    // Redelivery of that same update after a halted batch records nothing.
+    let redelivered = fixture
+        .assistant
+        .ingest(revision_of("the second wording"))
+        .await
+        .expect("the redelivered update is acknowledged");
+    assert!(matches!(redelivered, IngestOutcome::Disregarded));
+    assert_eq!(
+        recorded_messages(&fixture.store, conversation).await.len(),
+        2
+    );
+
+    // Returning to the first wording is a change against the NEWEST
+    // version, so it records: the comparison reads one row, not a history.
+    support::ingest_recorded(&fixture.assistant, revision_of("the first wording")).await;
+    let messages = recorded_messages(&fixture.store, conversation).await;
+    assert_eq!(messages.len(), 3);
+    assert_eq!(
+        messages
+            .iter()
+            .map(|block| block.fields["text"].as_str().expect("stored text"))
+            .collect::<Vec<_>>(),
+        vec![
+            "the first wording",
+            "the second wording",
+            "the first wording"
+        ],
+        "every version a person wrote stands in the ledger, in order"
+    );
+}
+
+/// AC5: a failed store read in the identical-text path refuses the
+/// ingestion as a store error and records nothing. The refusal is
+/// TRANSIENT, which is the whole of what the adapter's batch discipline
+/// reads: the update goes unacknowledged and the batch redelivers it.
+/// Fail-closed is the standing choice for every admission read (decisions
+/// 0041, 0052) — recording anyway would duplicate a row and, under helpful
+/// answering, spend a model turn on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_read_in_the_revision_path_refuses_the_ingestion() {
+    let fixture = support::start_assistant(None).await;
+    let room = support::authorized_group(&fixture.assistant, "room-read-fails").await;
+
+    let original = support::with_origin(
+        support::inbound_unaddressed(&room, ChannelKind::Group, "casey-ext", "a first wording"),
+        "msg-3",
+    );
+    let conversation = support::ingest_recorded(&fixture.assistant, original.clone())
+        .await
+        .conversation_id;
+
+    // The failing store: the kind's own content table is gone, so the
+    // revision's read cannot answer.
+    agent_ledger::store::domain_run(
+        &fixture.store.tx(),
+        assistant_core::schema::DOMAIN,
+        |conn| {
+            conn.execute_batch(&format!("ALTER TABLE {CHAT_MESSAGE_TABLE} RENAME TO away;"))?;
+            Ok(())
+        },
+    )
+    .await
+    .expect("the table is renamed away");
+
+    let mut edit = original;
+    edit.text = "a second wording".into();
+    let refused = fixture
+        .assistant
+        .ingest(support::revising(edit, "msg-3"))
+        .await
+        .expect_err("the failed read refuses the ingestion");
+    assert!(
+        matches!(refused, assistant_core::CoreError::Store(_)),
+        "the read fails closed as a store error: {refused:?}"
+    );
+    assert_eq!(
+        refused.failure_kind(),
+        assistant_core::FailureKind::Transient,
+        "the adapter's batch discipline redelivers it like any transient refusal"
+    );
+
+    agent_ledger::store::domain_run(
+        &fixture.store.tx(),
+        assistant_core::schema::DOMAIN,
+        |conn| {
+            conn.execute_batch(&format!("ALTER TABLE away RENAME TO {CHAT_MESSAGE_TABLE};"))?;
+            Ok(())
+        },
+    )
+    .await
+    .expect("the table is restored");
+    assert_eq!(
+        recorded_messages(&fixture.store, conversation).await.len(),
+        1,
+        "the refused ingestion recorded nothing"
+    );
+}
+
+/// The author invariant the revision column states, ENFORCED at the
+/// ingestion instead of assumed of a platform: a revision whose reviser is
+/// not the author of the version the store holds records as an ordinary new
+/// message, carrying no reference at all. Recording is never refused — a
+/// person's words are not dropped because a platform reported an
+/// implausible relation — and what falls away is the link, which erasure
+/// and the report both read as one person's own data. On this platform the
+/// case cannot arise; the enforcement is what makes the column's
+/// documentation true of every stored row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revision_by_another_author_records_without_the_link() {
+    let fixture = support::start_assistant(None).await;
+    let room = support::authorized_group(&fixture.assistant, "room-other-author").await;
+
+    let original = support::with_origin(
+        support::inbound_unaddressed(
+            &room,
+            ChannelKind::Group,
+            "casey-ext",
+            "the author's own wording",
+        ),
+        "msg-4",
+    );
+    let conversation = support::ingest_recorded(&fixture.assistant, original)
+        .await
+        .conversation_id;
+
+    let stranger = support::inbound_unaddressed(
+        &room,
+        ChannelKind::Group,
+        "stranger-ext",
+        "somebody else's rewording",
+    );
+    support::ingest_recorded(&fixture.assistant, support::revising(stranger, "msg-4")).await;
+
+    let messages = recorded_messages(&fixture.store, conversation).await;
+    assert_eq!(
+        messages.len(),
+        2,
+        "the words record; only the link falls away"
+    );
+    assert_eq!(
+        messages[1].fields["text"],
+        json!("somebody else's rewording")
+    );
+    assert!(
+        messages[1].fields.get("revises").is_none(),
+        "no reference is stored to a message the reviser did not write"
+    );
+    assert_ne!(
+        messages[1].fields["principal_id"], messages[0].fields["principal_id"],
+        "the two versions are two people, which is what the check reads"
     );
 }

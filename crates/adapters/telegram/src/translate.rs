@@ -43,9 +43,6 @@ pub(crate) enum Translation {
 pub(crate) enum Skip {
     /// The update carries no new message at all (decision 0017).
     NonMessage,
-    /// An edit to an existing message; the ledger keeps the message as
-    /// first seen (decision 0017).
-    EditedMessage,
     /// A broadcast-channel post; no conversation this assistant serves
     /// (the loop contract).
     ChannelBroadcast,
@@ -132,7 +129,16 @@ pub(crate) struct Pending {
     pub text: String,
     /// The platform's message id, the origin reference.
     pub origin: String,
-    /// The platform's send time.
+    /// The id of the message this one is a new version of, when the update
+    /// reported an edit (unit T3, 2026-08-31). On this platform an edit
+    /// arrives under the same message id as the original, so this equals
+    /// [`Self::origin`]; the core is told the relation instead of being
+    /// left to derive it from two rows sharing a key, which is true here
+    /// and false elsewhere. `None` for an ordinary message.
+    pub revises: Option<String>,
+    /// The platform's send time — the EDIT time for a revision, which is
+    /// when the version being recorded came into existence, falling back to
+    /// the original send time for an edit update that decodes without one.
     pub sent_at: DateTime<Utc>,
 }
 
@@ -143,10 +149,18 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity, wake: Option<&str>) -
     if let Some(member) = &update.my_chat_member {
         return translate_membership(member);
     }
-    if update.edited_message.is_some() {
-        return Translation::Skip(Skip::EditedMessage);
-    }
-    let Some(message) = &update.message else {
+    // The update's TYPE is the whole reading of whether this is a new
+    // version of something already said (unit T3, 2026-08-31): a revision
+    // translates exactly like a fresh message down every branch below, with
+    // one extra fact reported at the end. Nothing is inferred from a field
+    // on the message — a forwarded message can carry an edit time and is no
+    // revision.
+    let Some((message, revision)) = update
+        .edited_message
+        .as_ref()
+        .map(|edited| (edited, true))
+        .or_else(|| update.message.as_ref().map(|fresh| (fresh, false)))
+    else {
         return Translation::Skip(Skip::NonMessage);
     };
     let (channel_kind, authority) = match message.chat.kind.as_str() {
@@ -203,7 +217,21 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity, wake: Option<&str>) -
     let Some(text) = text_of(message) else {
         return Translation::Skip(Skip::NoText);
     };
-    let Some(sent_at) = DateTime::from_timestamp(message.date, 0) else {
+    // A revision's send time is the EDIT time: the row would otherwise
+    // claim this version existed hours before it did. The platform
+    // documents the edit time on the message an edit update carries, so
+    // the fallback below states no platform case — it is this decoder's
+    // leniency, which models the field as optional because it is optional
+    // on the shared message shape, and an update that arrives without it
+    // records under the original send time rather than being refused a
+    // timestamp. Either value passes the same representable-range guard,
+    // and a value outside it is the same named skip it has always been.
+    let stated_send_time = if revision {
+        message.edit_date.unwrap_or(message.date)
+    } else {
+        message.date
+    };
+    let Some(sent_at) = DateTime::from_timestamp(stated_send_time, 0) else {
         return Translation::Skip(Skip::BadTimestamp);
     };
     let addressed = match (channel_kind, from.is_bot) {
@@ -235,6 +263,10 @@ pub(crate) fn translate(update: &Update, me: &BotIdentity, wake: Option<&str>) -
         sender_id: from.id,
         text: text.to_owned(),
         origin: origin_of(message.message_id),
+        // The one extra fact a revision reports: which message it
+        // supersedes. An edit arrives under the original's own id here, so
+        // the two identifiers coincide on this platform.
+        revises: revision.then(|| origin_of(message.message_id)),
         sent_at,
     })
 }
@@ -713,7 +745,6 @@ impl std::fmt::Display for Skip {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let reason = match self {
             Self::NonMessage => "a non-message update",
-            Self::EditedMessage => "an edit to an existing message",
             Self::ChannelBroadcast => "a broadcast-channel post",
             Self::OnBehalfOfChat => "a message sent on behalf of a chat",
             Self::NoText => "a message with neither text nor caption",
@@ -758,6 +789,7 @@ mod tests {
         Incoming {
             message_id: 0,
             date: 1_700_000_000,
+            edit_date: None,
             chat: Chat {
                 id: 0,
                 kind: "supergroup".into(),

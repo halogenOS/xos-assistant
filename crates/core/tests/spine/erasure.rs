@@ -365,3 +365,242 @@ async fn assert_group_prose_reached_exactly(
         }
     }
 }
+
+// ─── The editing unit's pins (unit T3, 2026-08-31) ───────────────────────
+
+/// The recorded chat messages of one conversation, in ledger order.
+async fn message_rows(
+    store: &agent_ledger::Store,
+    conversation_id: i64,
+) -> Vec<assistant_core::kind::ChatMessage> {
+    store
+        .list_blocks(conversation_id)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .filter_map(|block| match AssistantKind::from_block(block) {
+            AssistantKind::ChatMessage(message) => Some(message),
+            _ => None,
+        })
+        .collect()
+}
+
+/// AC11's author-keyed half: a person's erasure nulls the revision
+/// reference on every row they wrote, beside the five columns it already
+/// reached. The reference is personal data of its author — it is the
+/// identifier of a message that person sent — so leaving it would keep a
+/// pointer at what the erasure emptied.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_persons_erasure_nulls_the_revision_reference_too() {
+    let fixture = support::start_assistant(None).await;
+    let assistant = &fixture.assistant;
+    let room = support::authorized_group(assistant, "room-erase-revision").await;
+
+    let first = support::with_origin(
+        support::with_username(
+            support::inbound_unaddressed(
+                &room,
+                ChannelKind::Group,
+                "casey-ext",
+                "the first wording",
+            ),
+            "casey",
+        ),
+        "erase-1",
+    );
+    let receipt = support::ingest_recorded(assistant, first.clone()).await;
+    let mut edited = first;
+    edited.text = "the second wording".into();
+    support::ingest_recorded(assistant, support::revising(edited, "erase-1")).await;
+
+    let before = message_rows(&fixture.store, receipt.conversation_id).await;
+    assert_eq!(
+        before[1].revises.as_deref(),
+        Some("erase-1"),
+        "the revision reference stands before the erasure — the delta is provable"
+    );
+
+    assistant
+        .erase_principal(receipt.principal_id)
+        .await
+        .expect("erasure succeeds in one call");
+
+    let after = message_rows(&fixture.store, receipt.conversation_id).await;
+    for row in &after {
+        assert_eq!(row.text, None, "the prose is nulled");
+        assert_eq!(row.origin, None);
+        assert_eq!(
+            row.revises, None,
+            "the revision reference goes with the rest of the person's row"
+        );
+    }
+}
+
+/// AC4: an edit naming a message the store holds no recorded version of —
+/// emptied by erasure here — records nothing and delivers nothing. The
+/// erased row stays erased and its text reappears nowhere, in the ledger or
+/// in any projection. The platform fires edit updates nobody asked for, so
+/// without this rule an erased message could resurrect itself with no human
+/// act anywhere in the path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edit_of_an_erased_message_records_nothing() {
+    let fixture = support::start_assistant(None).await;
+    let assistant = &fixture.assistant;
+    let room = support::authorized_group(assistant, "room-erased-edit").await;
+
+    let said = support::with_origin(
+        support::inbound_unaddressed(
+            &room,
+            ChannelKind::Group,
+            "casey-ext",
+            "a line they later had erased",
+        ),
+        "gone-1",
+    );
+    let receipt = support::ingest_recorded(assistant, said.clone()).await;
+    let conversation = receipt.conversation_id;
+
+    assistant
+        .erase_principal(receipt.principal_id)
+        .await
+        .expect("erasure succeeds in one call");
+
+    // The platform delivers an edit of that same message — a link preview
+    // attaching, hours later, is enough to produce one.
+    let mut edit = said;
+    edit.text = "a line they later had erased, with a link".into();
+    let outcome = assistant
+        .ingest(support::revising(edit, "gone-1"))
+        .await
+        .expect("the edit is acknowledged");
+    assert!(
+        matches!(outcome, assistant_core::IngestOutcome::Disregarded),
+        "an edit of a message the store holds no version of records nothing: {outcome:?}"
+    );
+
+    let rows = message_rows(&fixture.store, conversation).await;
+    assert_eq!(rows.len(), 1, "nothing was appended");
+    assert_eq!(rows[0].text, None, "the erased row stays erased");
+    let projected = agent_ledger::providers::blocks_to_messages::<AssistantKind>(
+        &fixture
+            .store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads"),
+    );
+    let rendered = format!("{projected:?}");
+    assert!(
+        !rendered.contains("a line they later had erased"),
+        "the erased text reaches no projection: {rendered}"
+    );
+}
+
+/// AC4's other half: an edit naming a message the store NEVER held — no
+/// erasure anywhere in the path — records nothing and delivers nothing
+/// either. The rule reads the store's answer, not the reason for it: a
+/// caption typed onto a photo that arrived without one is the case given
+/// up, and it is given up so that the erased case above cannot resurrect
+/// itself. Without this pin the drop could be narrowed to erased rows alone
+/// and every test would still pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edit_of_a_message_never_held_records_nothing() {
+    let fixture = support::start_assistant(None).await;
+    let assistant = &fixture.assistant;
+    let room = support::authorized_group(assistant, "room-unheld-edit").await;
+
+    // One ordinary message, so the conversation exists and the count below
+    // measures the edit alone.
+    let conversation = support::ingest_recorded(
+        assistant,
+        support::with_origin(
+            support::inbound_unaddressed(
+                &room,
+                ChannelKind::Group,
+                "casey-ext",
+                "an ordinary line",
+            ),
+            "held-1",
+        ),
+    )
+    .await
+    .conversation_id;
+
+    let unheld = support::with_origin(
+        support::inbound_unaddressed(
+            &room,
+            ChannelKind::Group,
+            "casey-ext",
+            "a caption typed onto a photo that arrived without one",
+        ),
+        "never-held",
+    );
+    let outcome = assistant
+        .ingest(support::revising(unheld, "never-held"))
+        .await
+        .expect("the edit is acknowledged");
+    assert!(
+        matches!(outcome, assistant_core::IngestOutcome::Disregarded),
+        "an edit naming a message the store never held records nothing: {outcome:?}"
+    );
+
+    let rows = message_rows(&fixture.store, conversation).await;
+    assert_eq!(
+        rows.len(),
+        1,
+        "nothing was appended beside the ordinary line"
+    );
+    assert_eq!(
+        rows[0].text.as_deref(),
+        Some("an ordinary line"),
+        "the message the store does hold is untouched"
+    );
+}
+
+/// AC4's exemption: a privacy self-service command invoked through an edit
+/// records and is answered even when the store holds no version of the
+/// message being revised — a rights command is answered whatever the store
+/// holds, exactly as it is exempt from the suppression re-read one line
+/// above it. Its row carries the revision reference even though nothing
+/// joins to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edited_privacy_command_is_answered_though_nothing_joins_to_it() {
+    let fixture = support::start_assistant(None).await;
+    let assistant = &fixture.assistant;
+    let room = support::authorized_group(assistant, "room-edited-rights").await;
+
+    let asked = support::with_command(
+        support::with_origin(
+            support::inbound_unaddressed(
+                &room,
+                ChannelKind::Group,
+                "casey-ext",
+                assistant_core::privacy::OPT_OUT_COMMAND,
+            ),
+            "never-held",
+        ),
+        assistant_core::privacy::OPT_OUT_COMMAND,
+    );
+
+    match assistant
+        .ingest(support::revising(asked, "never-held"))
+        .await
+        .expect("the edited command ingests")
+    {
+        assistant_core::IngestOutcome::Recorded {
+            receipt, deliver, ..
+        } => {
+            assert!(
+                deliver.is_some(),
+                "the rights command is answered through the edit"
+            );
+            let rows = message_rows(&fixture.store, receipt.conversation_id).await;
+            let command = rows.last().expect("the command row is recorded");
+            assert_eq!(
+                command.revises.as_deref(),
+                Some("never-held"),
+                "the row carries its revision fact even though nothing joins to it"
+            );
+        }
+        refused => panic!("the rights command was refused: {refused:?}"),
+    }
+}

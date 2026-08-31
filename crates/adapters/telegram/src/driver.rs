@@ -568,6 +568,7 @@ impl<'a> Intake<'a> {
             command: pending.command,
             text: pending.text,
             origin: Some(pending.origin),
+            revises: pending.revises,
             timestamp: pending.sent_at,
         };
         match self.assistant.ingest(message).await {

@@ -1474,8 +1474,34 @@ pub fn inbound_as(
             "origin-{sender_external_id}-{text_len}",
             text_len = text.len()
         )),
+        revises: None,
         timestamp: chrono::Utc::now(),
     }
+}
+
+/// The same message, reported as a new version of the message under the
+/// given id — the one extra fact an edit carries (unit T3, 2026-08-31).
+/// The revision's own origin is set to the same id, which is what this
+/// platform's edits do: an edit arrives under the original's message id.
+pub fn revising(mut message: InboundMessage, revised: &str) -> InboundMessage {
+    message.origin = Some(revised.into());
+    message.revises = Some(revised.into());
+    message
+}
+
+/// The same message, reported as a new version of the message under
+/// `revised` while carrying an origin of its own — the shape a platform
+/// that delivers an edit as its own event produces. Nothing in the core
+/// knows which platform it is talking to, so both shapes must record and
+/// resolve identically.
+pub fn revising_under_own_origin(
+    mut message: InboundMessage,
+    revised: &str,
+    origin: &str,
+) -> InboundMessage {
+    message.origin = Some(origin.into());
+    message.revises = Some(revised.into());
+    message
 }
 
 /// The same message, invoking the given command — the report the adapter

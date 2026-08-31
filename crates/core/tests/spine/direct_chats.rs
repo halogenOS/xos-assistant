@@ -190,3 +190,43 @@ async fn the_default_serves_direct_chats_unchanged() {
     assert_eq!(reply.channel, dm);
     assert_eq!(reply.text, first_answer_to("still with me?"));
 }
+
+/// AC6's direct case (unit T3, 2026-08-31): in a direct channel every
+/// message is addressed by the channel's nature, so a revision summons and
+/// is answered there exactly as every message is — the answer following the
+/// version the person now means.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revision_in_a_direct_chat_summons_like_every_message_there() {
+    let fixture = support::start_assistant(None).await;
+    let mut replies = fixture
+        .assistant
+        .outbound(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
+    let dm = channel("dm-revision");
+
+    let asked = support::with_origin(
+        inbound(&dm, ChannelKind::Direct, "62", "how do I flesh it?"),
+        "dm-1",
+    );
+    let receipt = support::ingest_recorded(&fixture.assistant, asked.clone()).await;
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        first_answer_to("how do I flesh it?")
+    );
+    support::settle(&fixture.store, receipt.conversation_id, "the ask", 4).await;
+
+    let mut corrected = asked;
+    corrected.text = "how do I flash it?".into();
+    support::ingest_recorded(&fixture.assistant, support::revising(corrected, "dm-1")).await;
+    let reply = recv_reply(&mut replies).await;
+    assert_eq!(reply.channel, dm);
+    assert_eq!(
+        reply.text,
+        support::answer_to(&format!(
+            "{marker} how do I flash it?",
+            marker = assistant_core::kind::EDITED_MARKER
+        )),
+        "the corrected wording is answered, like every message in a direct chat"
+    );
+}

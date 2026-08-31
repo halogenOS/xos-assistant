@@ -287,6 +287,7 @@ pub(crate) const REACTION_CARVE_OUT: &str = "The one exception is the emoji reac
 fn answering_section(answering: AnsweringMode) -> String {
     let sourcing = sourcing_rules();
     let audience = audience_rules();
+    let revisions = revision_rules();
     match answering {
         AnsweringMode::Helpful => format!(
             "Every message in a group conversation reaches you, including \
@@ -304,7 +305,8 @@ fn answering_section(answering: AnsweringMode) -> String {
              something. When you do not speak, end your turn without \
              writing any text — no placeholder. An answer is the \
              exception, and an answer that makes a substantive claim must \
-             be one you can back with a lookup. {sourcing} {audience}"
+             be one you can back with a lookup. {sourcing} {audience} \
+             {revisions}"
         ),
         AnsweringMode::Addressed => format!(
             "You are brought in when a message addresses you: a mention, a \
@@ -312,7 +314,8 @@ fn answering_section(answering: AnsweringMode) -> String {
              Answer what was asked of you; when even an addressed message \
              leaves you nothing useful to say, end your turn without \
              writing any text — no placeholder. \
-             {sourcing} {audience} When you ask a clarifying question, \
+             {sourcing} {audience} {revisions} When you ask a clarifying \
+             question, \
              invite the member to reply to your message: only a message \
              that addresses you reaches you, so a plain follow-up would \
              otherwise go unseen."
@@ -343,6 +346,22 @@ fn sourcing_rules() -> String {
      memory or offer a hedged recollection. When you were not addressed \
      and have nothing to add, end the turn with no text."
         .to_owned()
+}
+
+/// The revision discipline, shared by both modes so the rule has one
+/// spelling (unit T3, 2026-08-31): a person may say the same thing again,
+/// differently, and the conversation then holds both wordings under one
+/// id. Three sentences, and no fourth — what a person meant by their own
+/// edit is theirs to mean, so the last clause teaches the judgment instead
+/// of mechanising it.
+///
+/// No platform vocabulary: the marker and the id are what the projection
+/// shows, and nothing here names an event type, a field or a platform.
+fn revision_rules() -> &'static str {
+    "A message may appear again marked as edited under the same id: the \
+     edited version is what the person now means, so answer that one. When \
+     the earlier wording was already answered and the edit does not change \
+     what was asked, end the turn with no text."
 }
 
 /// The audience discipline, shared by both modes so it applies wherever a
@@ -520,6 +539,38 @@ mod tests {
                  guess from memory or offer a hedged recollection",
                 "When you were not addressed and have nothing to add, end \
                  the turn with no text",
+            ] {
+                assert!(
+                    prompt.contains(fact),
+                    "the {mode:?} teaching carries: {fact}"
+                );
+            }
+        }
+    }
+
+    /// AC9 (unit T3, 2026-08-31): both modes' teaching carries the
+    /// revision rules and the whole sourcing paragraph beside them —
+    /// compared against [`sourcing_rules`] itself, never against a copied
+    /// string, so a reworded paragraph cannot pass here by having been
+    /// reworded in two places. The revision teaching names no platform:
+    /// what it points at is the marker and the id the projection shows.
+    #[test]
+    fn both_modes_teach_the_revision_rules_beside_the_whole_sourcing_paragraph() {
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            let prompt = composed_system_prompt("b", "n", mode, Capabilities::default());
+            assert!(
+                prompt.contains(&sourcing_rules()),
+                "the {mode:?} teaching carries the sourcing paragraph whole"
+            );
+            assert!(
+                prompt.contains(revision_rules()),
+                "the {mode:?} teaching carries the revision rules whole"
+            );
+            for fact in [
+                "A message may appear again marked as edited under the same id",
+                "the edited version is what the person now means, so answer that one",
+                "When the earlier wording was already answered and the edit does \
+                 not change what was asked, end the turn with no text",
             ] {
                 assert!(
                     prompt.contains(fact),

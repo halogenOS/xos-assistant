@@ -6,7 +6,8 @@
 
 use agent_ledger::providers::{Message, MessageContent, MessageRole, blocks_to_messages};
 use agent_ledger::{Block, Role};
-use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND, ERASED_MARKER};
+use agent_ledger::{FromBlock, Projection};
+use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND, EDITED_MARKER, ERASED_MARKER};
 use assistant_core::{ChannelKind, ErasureOutcome};
 use serde_json::json;
 
@@ -235,5 +236,147 @@ async fn a_really_erased_group_ledger_projects_alternating() {
                 MessageContent::Parts(_) => false,
             }),
         "the erased prose projects in no user-voice message"
+    );
+}
+
+// ─── The revision's projection (unit T3, AC7, 2026-08-31) ────────────────
+
+/// One synthetic chat-message block carrying the columns a projection
+/// reads: the text, the stored origin, the speaker, and the revision
+/// reference where the row is a new version of another message.
+fn projected_block(
+    id: i64,
+    text: Option<&str>,
+    origin: Option<&str>,
+    speaker: Option<&str>,
+    revises: Option<&str>,
+) -> Block {
+    let mut fields = serde_json::Map::new();
+    if let Some(text) = text {
+        fields.insert("text".into(), json!(text));
+    }
+    if let Some(origin) = origin {
+        fields.insert("origin".into(), json!(origin));
+    }
+    if let Some(speaker) = speaker {
+        fields.insert("speaker".into(), json!(speaker));
+    }
+    if let Some(revises) = revises {
+        fields.insert("revises".into(), json!(revises));
+    }
+    fields.insert("principal_id".into(), json!(1));
+    fields.insert("authority".into(), json!("member"));
+    fields.insert("addressed".into(), json!(true));
+    fields.insert("answer_due".into(), json!(true));
+    Block {
+        id,
+        role: Some(Role::User),
+        block_type: CHAT_MESSAGE_KIND.into(),
+        created_at: String::new(),
+        dispatch_anchor: None,
+        fields,
+    }
+}
+
+/// The one projected line of a single-block ledger.
+fn projected_line(block: &Block) -> String {
+    AssistantKind::from_block(block)
+        .llm_text()
+        .expect("a chat message projects")
+}
+
+/// AC7: a revision projects as the REVISED message's bracketed id, the
+/// speaker prefix, then the fixed edited marker and the text — the marker
+/// at the head of what was said, never folded into the id, which is the one
+/// token the model is taught to name a message by. The superseded version
+/// projects unchanged beside it, because this is a per-block reading with
+/// no ledger access: nothing here can hide an earlier line, and nothing
+/// rewrites a stored row.
+#[test]
+fn a_revision_projects_under_the_revised_id_with_the_marker() {
+    let earlier = projected_block(
+        2,
+        Some("the first wording"),
+        Some("m-9"),
+        Some("casey"),
+        None,
+    );
+    let revision = projected_block(
+        3,
+        Some("the second wording"),
+        Some("m-9"),
+        Some("casey"),
+        Some("m-9"),
+    );
+    assert_eq!(
+        projected_line(&earlier),
+        "[m-9] casey: the first wording",
+        "the superseded version keeps its own line"
+    );
+    assert_eq!(
+        projected_line(&revision),
+        format!("[m-9] casey: {EDITED_MARKER} the second wording")
+    );
+}
+
+/// The same reading where the platform gave the revision an origin of its
+/// own: the projection still shows the REVISED message's id, so every
+/// version of one message reaches the model under one token — which is what
+/// the report tool then resolves through either column.
+#[test]
+fn a_revision_under_its_own_origin_still_projects_the_revised_id() {
+    assert_eq!(
+        projected_line(&projected_block(
+            4,
+            Some("the second wording"),
+            Some("own-4"),
+            None,
+            Some("m-9"),
+        )),
+        format!("[m-9] {EDITED_MARKER} the second wording"),
+    );
+}
+
+/// An erased revision projects the erasure marker alone: no id, no edited
+/// marker, none of the prose. The erasing passes null the revision
+/// reference with the text and the origin, and even a half-reached row
+/// keeps the placeholder exactly as it is.
+#[test]
+fn an_erased_revision_projects_the_erasure_marker_alone() {
+    assert_eq!(
+        projected_line(&projected_block(5, None, None, None, None)),
+        ERASED_MARKER
+    );
+    assert_eq!(
+        projected_line(&projected_block(
+            6,
+            None,
+            Some("m-9"),
+            Some("casey"),
+            Some("m-9")
+        )),
+        ERASED_MARKER,
+        "a half-reached row still projects the placeholder unmarked"
+    );
+}
+
+/// A member's own message whose text BEGINS with the marker's literal
+/// characters records and projects unchanged: the marker is prose, exactly
+/// as a bracketed id is, and a member can type either. The bound is that
+/// nothing mechanical reads it — the stored revision reference is what
+/// every mechanism reads, and this row carries none.
+#[test]
+fn a_typed_marker_projects_as_the_prose_it_is() {
+    let typed = format!("{EDITED_MARKER} I never edited this");
+    assert_eq!(
+        projected_line(&projected_block(
+            7,
+            Some(&typed),
+            Some("m-3"),
+            Some("casey"),
+            None
+        )),
+        format!("[m-3] casey: {typed}"),
+        "a typed marker is text, and no second marker is added"
     );
 }

@@ -1322,13 +1322,16 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
             // the later grounded-answer step appends — and set the version
             // back, leaving the previous unit's disk shape. The
             // non-vacuity check proves the drop was real.
-            conn.execute_batch(
+            conn.execute_batch(&format!(
                 "ALTER TABLE principals DROP COLUMN opted_out;
-                 ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
-                 DROP TABLE block_join_notice;
-                 DROP TABLE block_delivered;
-                 DROP TABLE block_message_mark;",
-            )?;
+                     DROP INDEX {revises_index};
+                     ALTER TABLE block_chat_message DROP COLUMN revises;
+                     ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
+                     DROP TABLE block_join_notice;
+                     DROP TABLE block_delivered;
+                     DROP TABLE block_message_mark;",
+                revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
+            ))?;
             let refused = conn.execute("UPDATE principals SET opted_out = 1", []);
             assert!(
                 refused.is_err(),
@@ -1347,7 +1350,7 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
         .expect("the version-twelve store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        18,
+        19,
         "the appended steps advanced the domain's version"
     );
     assert_eq!(

@@ -19,8 +19,8 @@ use agent_ledger::{DomainMigrations, FromBlock, StoreConfig};
 use crate::kind::{
     AssistantKind, CHAT_MESSAGE_TABLE, COLUMN_ADDRESSED, COLUMN_ANSWER_DUE, COLUMN_AUTHORITY,
     COLUMN_DEBT_AUTHORITY, COLUMN_LIMITED, COLUMN_LITERAL_ADDRESSED, COLUMN_ORIGIN,
-    COLUMN_PRINCIPAL_ID, COLUMN_REPLY_TARGET, COLUMN_REPLY_TO_ASSISTANT, COLUMN_ROLE,
-    COLUMN_SENT_AT, COLUMN_SPEAKER, COLUMN_TEXT,
+    COLUMN_PRINCIPAL_ID, COLUMN_REPLY_TARGET, COLUMN_REPLY_TO_ASSISTANT, COLUMN_REVISES,
+    COLUMN_ROLE, COLUMN_SENT_AT, COLUMN_SPEAKER, COLUMN_TEXT,
 };
 use crate::message::{Authority, ChannelKind};
 
@@ -552,6 +552,36 @@ const MARK_EMOJI_BYTE_LIMIT: usize = 32;
 pub static MESSAGE_MARK_ORIGIN_INDEX: LazyLock<String> =
     LazyLock::new(|| format!("idx_{}_origin", crate::tools::mark::MESSAGE_MARK_TABLE));
 
+/// The revision reference — an appended migration step of the editing unit
+/// (unit T3, 2026-08-31), per decision 0026's discipline. One nullable
+/// column on the message table, so every pre-existing row reads NULL and
+/// projects and resolves exactly as it did: the origin of the message a row
+/// is a new version of. Personal data of the row's author, under the same
+/// author-keyed null as the origin and the reply reference beside it.
+///
+/// The step indexes the column, as the join notice's, the delivery
+/// receipt's and the mark's own steps index theirs. What the index serves
+/// is the REVISES arm of the reads that match `origin OR revises`, and that
+/// arm alone: the newest-version read runs on every edit update the
+/// platform delivers, against a table that grows with every message ever
+/// recorded. The origin arm is matched exactly as the reply quote's own
+/// read already matched it, on the shape this table had before the step —
+/// no index is added for it here, and none is claimed. No frozen vocabulary
+/// list either: the column holds an opaque identifier, not a closed
+/// vocabulary, so nothing here quotes an enum.
+static REVISES_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "ALTER TABLE {CHAT_MESSAGE_TABLE} ADD COLUMN {COLUMN_REVISES} TEXT;
+         CREATE INDEX {index} ON {CHAT_MESSAGE_TABLE}({COLUMN_REVISES});",
+        index = MESSAGE_REVISES_INDEX.as_str(),
+    )
+});
+
+/// The revision reference's index, named once: the appended step creates it
+/// and the suite's schema pins read it back under this name.
+pub static MESSAGE_REVISES_INDEX: LazyLock<String> =
+    LazyLock::new(|| format!("idx_{CHAT_MESSAGE_TABLE}_revises"));
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -580,6 +610,7 @@ pub fn store_config() -> StoreConfig {
                 REPORTED_NULLABLE_MIGRATION.as_str(),
                 DELIVERY_MIGRATION.as_str(),
                 MESSAGE_MARK_MIGRATION.as_str(),
+                REVISES_MIGRATION.as_str(),
             ],
         }],
     }

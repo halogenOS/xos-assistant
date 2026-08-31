@@ -274,6 +274,32 @@ pub struct InboundMessage {
     /// The platform's own id for the message, opaque, kept for later reply
     /// threading.
     pub origin: Option<String>,
+    /// The opaque origin of the message this one supersedes — a member's
+    /// edit reported as a new version of something they already said (unit
+    /// T3, 2026-08-31). `None` for an ordinary message, which supersedes
+    /// nothing.
+    ///
+    /// The value names the message as FIRST known, never the version
+    /// immediately superseded: a third edit of one message reports the same
+    /// identifier as the first, so every version of one message shares one
+    /// key and a single match on THAT key reaches them all — which is what
+    /// lets erasure and the report resolve a whole chain without walking
+    /// it. On a platform where an edit arrives under the same identifier as
+    /// the original, this equals [`Self::origin`] and every id the platform
+    /// can name for that message is the shared key. On one where a revision
+    /// carries an identifier of its own, the two differ: the readings that
+    /// match either column — the newest-version read, the mirror's named
+    /// erasure, the report's resolution — then reach the whole chain from
+    /// the ORIGINAL's identifier and one row from a later version's, which
+    /// is why such an adapter owes a root-resolution step before it reports
+    /// a revision at all — the obligation decision 0171 states, and the one
+    /// place it is stated. The reply quote's read is narrower still and
+    /// matches [`Self::origin`] alone, so a quote resolves to the version
+    /// stored under the id the reply named. WHICH update is a revision is
+    /// the adapter's reading of the platform's own event type, never an
+    /// inference from a field's presence, and the core never learns which
+    /// platform reported it.
+    pub revises: Option<String>,
     /// When the platform says the message was sent. Recorded on the message
     /// block, so the ledger keeps both times: the platform's send time from
     /// this field, and the store's own insertion time on the block header.
