@@ -208,8 +208,10 @@ pub(crate) struct Update {
     pub id: i64,
     /// A newly sent message. Absent on every other update kind.
     pub message: Option<Incoming>,
-    /// An edit to an existing message — present so the edit skip is a named
-    /// case instead of an anonymous non-message update.
+    /// A new version of a message the bot already received. The update's
+    /// TYPE is what says a message is a revision — never a field on the
+    /// message itself — so translation reads the revised id and the edit
+    /// time from this branch alone.
     pub edited_message: Option<Incoming>,
     /// A change to the assistant's own membership in a chat.
     pub my_chat_member: Option<MemberUpdate>,
@@ -221,6 +223,12 @@ pub(crate) struct Incoming {
     pub message_id: i64,
     /// The platform's send time, unix seconds.
     pub date: i64,
+    /// When the message was last edited, unix seconds — the platform's own
+    /// optional field, absent on a message nobody has edited. Read on the
+    /// edited-message branch alone: an ordinary message carrying one is
+    /// still an ordinary message, because the update type decides that and
+    /// a forwarded message can carry an edit time of its own.
+    pub edit_date: Option<i64>,
     pub chat: Chat,
     /// The sending person. Absent on service messages and channel posts.
     pub from: Option<User>,

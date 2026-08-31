@@ -924,3 +924,231 @@ async fn the_direct_channel_admission_precedes_the_mirror() {
         "nothing was written"
     );
 }
+
+// ─── The editing unit's pins (unit T3, 2026-08-31) ───────────────────────
+
+/// AC10: an administrator's deletion command arriving as an EDIT erases
+/// nothing and is still recorded with the command stamp — no debt, no
+/// budget slot, no delivery. Pinned in helpful mode, where an unstamped
+/// message would summon a turn: the recognition is what the stamp reads,
+/// so separating it from the mirror's action is what keeps a corrected
+/// `/del` out of the answer machinery. The same command sent as a NEW
+/// message mirrors as before, and a non-administrator's is ordinary in
+/// either form.
+///
+/// The sequence is the real one: an administrator mistypes the command,
+/// their message is recorded as the ordinary prose it was, and their
+/// correction arrives as an edit of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)]
+async fn an_edited_deletion_command_stays_a_silent_command_and_erases_nothing() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let fixture = support::start_assistant_answering(
+        store,
+        None,
+        ProtectionConfig::default(),
+        assistant_core::AnsweringMode::Helpful,
+    )
+    .await;
+    let assistant = &fixture.assistant;
+    let room = support::authorized_group(assistant, "room-edited-del").await;
+
+    let receipt = support::ingest_recorded(
+        assistant,
+        support::with_origin(
+            support::inbound_unaddressed(
+                &room,
+                ChannelKind::Group,
+                "casey-ext",
+                "an offending line",
+            ),
+            "target-edit",
+        ),
+    )
+    .await;
+    let conversation = receipt.conversation_id;
+
+    // The mistyped command: ordinary prose, which helpful answering
+    // summons like any group message.
+    let mut mistyped = support::with_origin(
+        support::with_reply(
+            support::inbound_unaddressed(&room, ChannelKind::Group, "root-ext", "dell"),
+            ReplyTarget::Message {
+                origin: "target-edit".into(),
+            },
+        ),
+        "del-edit",
+    );
+    mistyped.authority = Some(Authority::Admin);
+    support::ingest_recorded(assistant, mistyped.clone()).await;
+    // Both summoning messages settle before the correction, so the turn
+    // count below measures the correction alone.
+    support::settle(&fixture.store, conversation, "the summoned turns", 6).await;
+    let turns_before = fixture
+        .script
+        .turns
+        .load(std::sync::atomic::Ordering::SeqCst);
+
+    // The correction, arriving as an edit of that same message.
+    let mut corrected = mistyped;
+    corrected.text = DELETION_COMMAND.into();
+    let corrected =
+        support::with_command(support::revising(corrected, "del-edit"), DELETION_COMMAND);
+    ingest_silent(&fixture, corrected).await;
+
+    let after = chat_messages(
+        &fixture
+            .store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads after the edited command"),
+    );
+    assert_eq!(
+        after[0].text.as_deref(),
+        Some("an offending line"),
+        "the mirror left the store alone: the moderation bot's own deletion \
+         is not established for an edited command"
+    );
+    let command_row = after.last().expect("the corrected command is recorded");
+    assert_eq!(
+        command_row.text.as_deref(),
+        Some(DELETION_COMMAND),
+        "the correction is recorded verbatim, the lawful record of the request"
+    );
+    assert_eq!(
+        command_row.limited,
+        Some(LimitedBy::Command),
+        "recognition, not the erasure, is what the command stamp reads"
+    );
+    assert_eq!(command_row.answer_due, Some(false), "no debt is taken");
+    assert_eq!(
+        command_row.revises.as_deref(),
+        Some("del-edit"),
+        "the command row records that it arrived as a revision"
+    );
+    assert_eq!(
+        fixture
+            .script
+            .turns
+            .load(std::sync::atomic::Ordering::SeqCst),
+        turns_before,
+        "no model turn ran for a command aimed at the other bot"
+    );
+
+    // The same command as a NEW message mirrors exactly as it always has.
+    ingest_silent(
+        &fixture,
+        support::with_origin(
+            support::deletion_reply(&room, "root-ext", Authority::Admin, "target-edit"),
+            "del-fresh",
+        ),
+    )
+    .await;
+    let mirrored = chat_messages(
+        &fixture
+            .store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads after the fresh command"),
+    );
+    assert_eq!(mirrored[0].text, None, "the fresh command mirrors");
+
+    // A non-administrator's is an ordinary message in either form.
+    let members_command = support::with_origin(
+        support::deletion_reply(&room, "peer-ext", Authority::Member, "target-edit"),
+        "del-member",
+    );
+    support::ingest_recorded(assistant, members_command.clone()).await;
+    let mut edited_member = members_command;
+    edited_member.text = format!("{DELETION_COMMAND} please");
+    support::ingest_recorded(assistant, support::revising(edited_member, "del-member")).await;
+    let ordinary = chat_messages(
+        &fixture
+            .store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads after the member\'s commands"),
+    );
+    for row in &ordinary[ordinary.len() - 2..] {
+        assert_eq!(
+            row.limited, None,
+            "a member\'s deletion command is ordinary, edited or not"
+        );
+    }
+}
+
+/// AC11's named half: the mirror's erasure empties EVERY recorded version
+/// of the named message — a chain of three, a version stored under a
+/// distinct origin included — plus the reply references naming it, and its
+/// row count reports the versions it emptied. Deleting a message deletes
+/// what the group saw, and what the group saw is every version of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_named_erasure_empties_every_version_of_the_message() {
+    let fixture = support::start_assistant(None).await;
+    let assistant = &fixture.assistant;
+    let room = support::authorized_group(assistant, "room-versions").await;
+
+    let first = support::with_origin(
+        support::inbound_unaddressed(&room, ChannelKind::Group, "casey-ext", "the first wording"),
+        "chain-1",
+    );
+    let conversation = support::ingest_recorded(assistant, first.clone())
+        .await
+        .conversation_id;
+    // The second version arrives under the original's id, as this platform
+    // delivers it; the third under an origin of its own, as a platform
+    // that delivers an edit as its own event would.
+    let mut second = first.clone();
+    second.text = "the second wording".into();
+    support::ingest_recorded(assistant, support::revising(second, "chain-1")).await;
+    let mut third = first.clone();
+    third.text = "the third wording".into();
+    support::ingest_recorded(
+        assistant,
+        support::revising_under_own_origin(third, "chain-1", "chain-1-v3"),
+    )
+    .await;
+    // Someone replies to the message; their stored copy of its id must go
+    // with it (decision 0085).
+    support::ingest_recorded(
+        assistant,
+        support::with_reply(
+            support::inbound_unaddressed(&room, ChannelKind::Group, "peer-ext", "seconded"),
+            ReplyTarget::Message {
+                origin: "chain-1".into(),
+            },
+        ),
+    )
+    .await;
+
+    ingest_silent(
+        &fixture,
+        support::deletion_reply(&room, "root-ext", Authority::Admin, "chain-1"),
+    )
+    .await;
+
+    let after = chat_messages(
+        &fixture
+            .store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads after the mirror"),
+    );
+    for (index, version) in after[..3].iter().enumerate() {
+        assert_eq!(version.text, None, "version {index} is emptied");
+        assert_eq!(version.origin, None);
+        assert_eq!(
+            version.revises, None,
+            "the revision reference goes with the rest of the row"
+        );
+    }
+    assert_eq!(
+        after[3].reply_target, None,
+        "the replier's stored copy of the deleted id is scrubbed"
+    );
+    assert_eq!(
+        after[3].text.as_deref(),
+        Some("seconded"),
+        "the replier's own words stand: only their copy of the id went"
+    );
+}

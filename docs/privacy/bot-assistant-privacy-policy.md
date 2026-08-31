@@ -20,9 +20,16 @@ Data protection enquiries: [privacy@halogenos.org](mailto:privacy@halogenos.org)
 We store the text of each message in a group the assistant belongs to, including the
 caption under a picture or a file, the group's pinned rules, which can name a person, and
 the assistant's lookups with their results — which, since 29 August 2026, include the
-words it sends to a web search when a question is not about the project. We do not store the media itself, edits, or
+words it sends to a web search when a question is not about the project. We do not store the media itself or
 posts made anonymously for the group, except a pinned rules text. We do not serve direct
 chats: a direct message is rejected and not stored.
+
+When you edit a message, the edited message is stored as a further version beside the
+first, and the earlier wording stays. Nothing is rewritten: the assistant reads the later
+version as what you now mean, and both versions are removed together when that message is
+deleted — by your own deletion request, or by the group's administrators deleting it
+through the moderation bot. An edit that only removes a caption stores nothing new, and
+the wording already stored stays until it is deleted. Added 31 August 2026.
 
 We do not look for sensitive content and cannot recognise it: whatever a message carries,
 we store and send on like any other text. We delete a stored message that concerns you on

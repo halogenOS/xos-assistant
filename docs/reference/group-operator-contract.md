@@ -185,7 +185,12 @@ nothing — the assistant strips only its own handle from a command. The
 moderation bot's other
 forms — bulk purges, and direct removals through the platform's own
 interface — produce nothing the assistant can read and leave the stored
-copy in place. For those, the person-wide deletion commands of the privacy
+copy in place. And a deletion command that arrives as an EDIT mirrors
+nothing and stays silent: nothing establishes that the moderation bot acts
+on an edited command, and an assistant that erased its stored copy of a
+message still visible to everyone would produce the divergence this mirror
+exists to prevent. Send the command as a new message. For everything
+outside these bounds, the person-wide deletion commands of the privacy
 route remain the way to clear the store.
 
 ## The privacy command

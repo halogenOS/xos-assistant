@@ -110,8 +110,19 @@ and would take away purpose 2. The absence of a timer is necessary for purpose 2
 combination with an effective deletion path, which is why the two decisions were taken
 together.
 
+**Recording a member's edit is necessary, added 2026-08-31.** Storing only the first
+version means holding a record of what a person said that the person has already
+corrected, and answering a question its author has already withdrawn — which purposes 1
+and 2 are both worse for, and which the accuracy principle in Article 5(1)(d) argues
+against. So each distinct version is stored beside the first, and the assistant reads the
+later one as what the person now means. The bound is stated honestly rather than
+overstated: every distinct version a person writes is kept, decision 0003 sets no
+retention timer, and the added volume is not bounded. What the drops remove is only the
+platform's own repeated deliveries of unchanged text — a link preview attaching to a
+message nobody touched — never a version a person wrote.
+
 **What is not necessary, and therefore not done.** Media, files and voice are not stored.
-Edits are not collected. Anonymous administrator posts and channel forwards are skipped.
+Anonymous administrator posts and channel forwards are skipped.
 No profile of any member is built. No message is used to train anything. No third party
 receives the history.
 

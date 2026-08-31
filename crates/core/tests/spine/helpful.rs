@@ -418,3 +418,175 @@ async fn an_absorbed_question_and_the_intervening_answer_reach_the_model() {
         "the member's intervening answer is visible beside it"
     );
 }
+
+// ─── The editing unit's pins (unit T3, AC6, 2026-08-31) ──────────────────
+
+/// AC6: a revision is stamped, budgeted and answered exactly as a fresh
+/// message is. A member who edits a question into shape gets an answer for
+/// the version they now mean, and the person's own budget counts the
+/// revision like any message — five edits spend five slots, which is what
+/// the budgets are for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revision_summons_answers_and_spends_a_budget_slot() {
+    // Two answers per person per window: the first message takes one, the
+    // revision takes the second, and a third message meets the spent
+    // window.
+    let fixture = helpful_fixture(support::budgets(Some((2, 600)), None)).await;
+    let mut replies = fixture
+        .assistant
+        .outbound(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
+    let room = support::authorized_group(&fixture.assistant, "room-revision-budget").await;
+
+    let asked = support::with_origin(
+        inbound_unaddressed(
+            &room,
+            ChannelKind::Group,
+            "42",
+            "what is the reelase cadence?",
+        ),
+        "ask-1",
+    );
+    let receipt = support::ingest_recorded(&fixture.assistant, asked.clone()).await;
+    let conversation = receipt.conversation_id;
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        first_answer_to("what is the reelase cadence?")
+    );
+    support::settle(&fixture.store, conversation, "the first turn", 4).await;
+
+    let mut corrected = asked;
+    corrected.text = "what is the release cadence?".into();
+    support::ingest_recorded(&fixture.assistant, support::revising(corrected, "ask-1")).await;
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        support::answer_to(&format!(
+            "{marker} what is the release cadence?",
+            marker = assistant_core::kind::EDITED_MARKER,
+        )),
+        "the revision draws its own answer, off the version the person now means"
+    );
+    support::settle(&fixture.store, conversation, "the revision's turn", 6).await;
+
+    // The third message meets the spent window: the revision spent a slot
+    // exactly as a fresh message would.
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&room, ChannelKind::Group, "42", "one question too many"),
+    )
+    .await;
+    let blocks = fixture
+        .store
+        .list_blocks(conversation)
+        .await
+        .expect("the ledger reads");
+    let rows = message_rows(&blocks);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows[1].fields["revises"],
+        json!("ask-1"),
+        "the revision is the second recorded message"
+    );
+    assert_eq!(rows[1].fields["answer_due"], json!(true), "its own debt");
+    assert_eq!(
+        rows[2].fields["limited"],
+        json!("principal"),
+        "the revision spent the second slot, so the third message is refused"
+    );
+}
+
+/// AC6's absorption half: a revision arriving while its own original is
+/// being answered is absorbed exactly like any mid-turn message (decision
+/// 0010) — it opens no second turn, and the answer in flight answers the
+/// wording it was opened on. The framework's scheduling law is unchanged
+/// here; what the next turn then reads is both versions, the later one
+/// marked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_revision_arriving_mid_turn_is_absorbed_like_any_message() {
+    let hold = support::TurnHold::new();
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let fixture = support::start_assistant_answering(
+        store,
+        Some(std::sync::Arc::clone(&hold)),
+        assistant_core::ProtectionConfig::default(),
+        AnsweringMode::Helpful,
+    )
+    .await;
+    let mut replies = fixture
+        .assistant
+        .outbound(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
+    let room = support::authorized_group(&fixture.assistant, "room-revision-midturn").await;
+
+    let asked = support::with_origin(
+        inbound_unaddressed(&room, ChannelKind::Group, "42", "the first wording"),
+        "mid-1",
+    );
+    support::ingest_recorded(&fixture.assistant, asked.clone()).await;
+    hold.started().await;
+
+    // The edit lands while the turn is held open.
+    let mut corrected = asked;
+    corrected.text = "the second wording".into();
+    support::ingest_recorded(&fixture.assistant, support::revising(corrected, "mid-1")).await;
+    // The held turn is let go; further permits keep whatever the absorption
+    // schedules from parking the test.
+    for _ in 0..6 {
+        hold.release();
+    }
+
+    assert_eq!(
+        recv_reply(&mut replies).await.text,
+        first_answer_to("the first wording"),
+        "the answer in flight answers the wording it was opened on"
+    );
+
+    // A later message opens a fresh turn, and THAT request is where both
+    // versions stand: the earlier one keeping its own line, the later one
+    // marked.
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&room, ChannelKind::Group, "43", "and the tag?"),
+    )
+    .await;
+    let deadline = std::time::Instant::now() + support::DEADLINE;
+    let later = loop {
+        let found = {
+            let seen = fixture.script.seen.lock().unwrap();
+            seen.iter()
+                .rev()
+                .find(|request| {
+                    request
+                        .iter()
+                        .any(|message| carries(message, "and the tag?"))
+                })
+                .cloned()
+        };
+        if let Some(found) = found {
+            break found;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the later turn's request never reached the provider"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    assert!(
+        later
+            .iter()
+            .any(|message| carries(message, "the first wording")),
+        "the superseded version keeps its line: {later:?}"
+    );
+    assert!(
+        later.iter().any(|message| carries(
+            message,
+            &format!(
+                "{marker} the second wording",
+                marker = assistant_core::kind::EDITED_MARKER
+            )
+        )),
+        "the later version reaches the model marked: {later:?}"
+    );
+}

@@ -980,7 +980,7 @@ mod tests {
                         authority: crate::message::Authority::Member,
                         speaker: None,
                     },
-                    None,
+                    crate::kind::RecordedOrigin::default(),
                     None,
                     "2026-08-24T00:00:00Z",
                     crate::kind::Stamp::compose(

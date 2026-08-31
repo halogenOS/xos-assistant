@@ -30,6 +30,22 @@ administrator's own erasure nulls it like every reply reference on their
 rows. A repeated deletion of the same target matches zero target rows,
 skips the scrub, and so leaves earlier command rows' records intact.
 
+## Amended 2026-08-31 — "the target row" is every version of it
+
+A message can now stand in the ledger as several rows: a member's edit is
+recorded as a further version naming the message it revises (decision 0170).
+So the mirror's named erasure matches the origin OR the revision reference
+and nulls the revision reference beside the five columns it already nulled —
+one statement reaching a chain of any length from the id every version of
+that message stores, which on this platform is every id a deletion can name,
+since an edit arrives under the original's own message id (decision 0171
+records what an adapter delivering an id per revision owes instead). Everything this decision
+records holds unchanged, with "the ONE target row" read as "every recorded
+version of the named message": the scrub still runs exactly when the target
+was present, the returned count is the number of versions emptied, and a
+repeated deletion still matches nothing and leaves earlier command rows
+intact.
+
 ## Rejected alternatives
 
 - **Scrubbing unconditionally, target present or not.** A `/del` naming a

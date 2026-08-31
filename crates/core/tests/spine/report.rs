@@ -2122,3 +2122,115 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
         );
     });
 }
+
+// ─── The editing unit's pins (unit T3, AC12, 2026-08-31) ─────────────────
+
+/// AC12's resolution half: the model names the id the projection showed —
+/// the REVISED message's — and the tool resolves it through the revision
+/// reference, reporting the same principal either version would have. The
+/// turn under test assesses the revision alone: its own origin differs from
+/// the named id, so a resolution matching the origin column only would
+/// decline it as unassessed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_report_resolves_a_named_id_through_the_revision_reference() {
+    let (provider, handle, _release, _started) = sequenced_provider(vec![
+        Step::Answer(CLOSING_ANSWER),
+        call(r#"{"message_id":"origin-edited"}"#),
+        Step::Answer(CLOSING_ANSWER),
+    ]);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-report-edit").await;
+
+    let offense = record_offense(&fixture, &key, "spammer-2", "origin-edited").await;
+    let conv = offense.conversation_id;
+    let first = recv_reply(&mut replies).await;
+    assert_eq!(first.kind, ReplyKind::Answer, "the first turn closes");
+
+    // The edit, delivered as its own event under an origin of its own —
+    // the shape a second platform produces, and the one that proves the
+    // resolution reads the revision reference.
+    let edited = support::revising_under_own_origin(
+        inbound_unaddressed(&key, ChannelKind::Group, "spammer-2", "a worse line"),
+        "origin-edited",
+        "origin-edited-v2",
+    );
+    support::ingest_recorded(&fixture.assistant, edited).await;
+
+    let blocks = support::await_ledger(&fixture.store, conv, "the report of the edit", |blocks| {
+        blocks.iter().any(|block| block.block_type == "report")
+            && blocks.last().is_some_and(|b| b.block_type == "text")
+    })
+    .await;
+    let filed = blocks
+        .iter()
+        .find(|block| block.block_type == "report")
+        .expect("the named id resolved through the revision reference");
+    assert_eq!(field(filed, "target_origin"), "origin-edited");
+    assert_eq!(
+        filed.fields["reported_principal_id"],
+        json!(offense.principal_id),
+        "either version names the same person: only its author can revise it"
+    );
+}
+
+/// AC12's dedup half: a report already filed against a message is not
+/// filed again because its text moved. The re-summoning revision is back
+/// in the assessment set — which the decline itself proves, being the
+/// already-reported one and not the anti-aiming refusal — and decision
+/// 0092 stands: one report per message, not per version.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reported_message_is_not_reported_again_after_an_edit() {
+    let (provider, handle, _release, _started) = sequenced_provider(vec![
+        call(r#"{"message_id":"origin-twice"}"#),
+        Step::Answer(CLOSING_ANSWER),
+        call(r#"{"message_id":"origin-twice"}"#),
+        Step::Answer(CLOSING_ANSWER),
+    ]);
+    let (fixture, mut replies) =
+        report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let key = support::authorized_group(&fixture.assistant, "room-report-twice").await;
+
+    let offense = record_offense(&fixture, &key, "spammer-3", "origin-twice").await;
+    let conv = offense.conversation_id;
+    let filed = recv_reply(&mut replies).await;
+    assert_eq!(filed.kind, ReplyKind::Report);
+    let closed = recv_reply(&mut replies).await;
+    assert_eq!(closed.kind, ReplyKind::Answer);
+
+    let edited = support::revising(
+        inbound_unaddressed(
+            &key,
+            ChannelKind::Group,
+            "spammer-3",
+            "the same line, reworded",
+        ),
+        "origin-twice",
+    );
+    support::ingest_recorded(&fixture.assistant, edited).await;
+
+    let blocks = support::await_ledger(&fixture.store, conv, "the declined re-report", |blocks| {
+        blocks.iter().any(|block| block.block_type == "tool_error")
+            && blocks.last().is_some_and(|b| b.block_type == "text")
+    })
+    .await;
+    let declined = blocks
+        .iter()
+        .find(|block| block.block_type == "tool_error")
+        .expect("the repeat records its decline");
+    assert_eq!(
+        field(declined, "error"),
+        report::ALREADY_REPORTED_ERROR,
+        "the edited message is in the assessment set and already reported"
+    );
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block.block_type == "report")
+            .count(),
+        1,
+        "one report per message, not per version"
+    );
+    let last = recv_reply(&mut replies).await;
+    assert_eq!(last.kind, ReplyKind::Answer, "no second report goes out");
+}

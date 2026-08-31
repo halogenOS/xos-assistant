@@ -440,6 +440,7 @@ mod tests {
             debt_authority: None,
             reply_target: None,
             reply_to_assistant: None,
+            revises: None,
         }
     }
 
@@ -519,7 +520,7 @@ mod tests {
                     authority,
                     speaker: None,
                 },
-                None,
+                crate::kind::RecordedOrigin::default(),
                 None,
                 "2026-08-22T00:00:00Z",
                 crate::kind::Stamp::compose(
@@ -551,7 +552,10 @@ mod tests {
                     authority,
                     speaker: None,
                 },
-                Some(origin),
+                crate::kind::RecordedOrigin {
+                    origin: Some(origin),
+                    revises: None,
+                },
                 None,
                 "2026-08-22T00:00:00Z",
                 crate::kind::Stamp::compose(

@@ -396,12 +396,28 @@ struct Reportable {
     /// The platform's own id for the record — what the model names and
     /// what the filing threads onto.
     origin: String,
+    /// The id of the message this record is a new version of, where it is
+    /// one (unit T3, 2026-08-31). A revision projects under the REVISED
+    /// message's id, so that is the token the model names it by, and the
+    /// resolution below matches either column. `None` for an ordinary
+    /// message and for every join event.
+    revises: Option<String>,
     /// Whom a filing against it would name.
     person: ReportedPerson,
     /// The record's stored voice, where the record has one. `None` for a
     /// record that carries no voice at all — a join notice — which is why
     /// a join can never read as the assistant's own words.
     role: Option<Role>,
+}
+
+impl Reportable {
+    /// Whether this record answers to the id the model named — its own, or
+    /// the id of the message it is a version of (unit T3, 2026-08-31).
+    /// Every version of one message answers to one id, which is what makes
+    /// decision 0092's one-report-per-message rule hold across an edit.
+    fn answers_to(&self, origin: &str) -> bool {
+        self.origin == origin || self.revises.as_deref() == Some(origin)
+    }
 }
 
 /// Everything the turn is assessing, in one list: the co-summoning
@@ -419,6 +435,7 @@ fn assessment_set(ledger: &[Block], call_block_id: i64) -> Vec<Reportable> {
         .filter_map(|message| {
             Some(Reportable {
                 origin: message.origin?,
+                revises: message.revises,
                 person: message
                     .principal_id
                     .map_or(ReportedPerson::Unrecorded, ReportedPerson::One),
@@ -440,6 +457,8 @@ fn assessment_set(ledger: &[Block], call_block_id: i64) -> Vec<Reportable> {
             .collect();
         events.push(Reportable {
             origin: origin.to_owned(),
+            // A join event is announced once and has no versions.
+            revises: None,
             person: match sharing.as_slice() {
                 [only] => only
                     .principal_id
@@ -471,6 +490,20 @@ fn assessment_set(ledger: &[Block], call_block_id: i64) -> Vec<Reportable> {
 /// is named in the same filing, never in a second one. `Ok` is the
 /// reported principal, absent for a record several people share; `Err` is
 /// the decline the model reads.
+///
+/// A named id resolves through either identifier a record answers to (unit
+/// T3, 2026-08-31), so the id the projection showed for an edited message
+/// finds it whichever version the turn carries. WHICH version is defined
+/// rather than left open: the first match in turn order, the earliest
+/// present in the assessment set. Nothing depends on the choice — the only
+/// facts read from that row are its voice and its principal, and both are
+/// identical across versions of one message: the ingestion stores a
+/// revision reference only where the reviser wrote the version it names, so
+/// the author fact this rests on is enforced there rather than assumed of a
+/// platform. Decision 0092 stands unchanged: one report per message, not
+/// per version — the dedup below matches the filed target id, and on this
+/// platform every version answers to that one id, so a report already filed
+/// is not re-filed because the text moved.
 fn resolve_reportable(
     ledger: &[Block],
     call_block_id: i64,
@@ -478,7 +511,7 @@ fn resolve_reportable(
 ) -> Result<Option<i64>, &'static str> {
     let Some(target) = assessment_set(ledger, call_block_id)
         .into_iter()
-        .find(|reportable| reportable.origin == origin)
+        .find(|reportable| reportable.answers_to(origin))
     else {
         return Err(NOT_ASSESSED_ERROR);
     };

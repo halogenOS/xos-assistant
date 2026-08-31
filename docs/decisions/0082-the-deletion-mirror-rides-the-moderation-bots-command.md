@@ -33,6 +33,23 @@ SILENT: no reply, no acknowledgment. The administrator addressed the
 moderation bot, and a second bot answering a command meant for the first is
 noise.
 
+## Amended 2026-08-31 — recognition and action split, and revisions mirror nothing
+
+Two narrowings, both from the editing unit. Recognising this command and
+ACTING on it become two readings (decision 0179): the recognition keeps the
+body described above and is what the write's command stamp reads, and the
+mirror's action is that recognition gated on the message revising nothing.
+And the action itself narrows (decision 0180): a deletion command arriving
+as an EDIT mirrors nothing, because this decision's premise — the moderation
+bot receives the same command and deletes — is not established for an edited
+one, and a one-sided erasure of a message still visible to the group is the
+divergence the mirror exists to prevent. Such a command is still recorded,
+still stamped a command, and still silent.
+
+The erasure this decision describes as "scoped to one row" is now scoped to
+every recorded VERSION of the named message; the amendment is on decision
+0085 beside it.
+
 ## Rejected alternatives
 
 - **A reply from the assistant.** Noise — the admin asked the moderation
