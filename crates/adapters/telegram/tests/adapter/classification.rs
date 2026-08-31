@@ -50,9 +50,9 @@ fn the_adapter_source_names_no_core_error_variant() {
     }
 }
 
-/// The platform methods that reach back into a message already sent: the
-/// edit family whole — text, caption, media, reply markup, and the live
-/// location with the call that stops it — the two that delete, and the two
+/// The platform methods that reach back into a message already sent and
+/// stay uncalled: the edit family whole — text, caption, media, reply
+/// markup, and the live location with the call that stops it — and the two
 /// that stream a partial one. Named here, in a test, because their ABSENCE
 /// is the fact.
 ///
@@ -61,9 +61,7 @@ fn the_adapter_source_names_no_core_error_variant() {
 /// is the same discipline the core error variants above are listed under.
 /// Every name is matched as a SUBSTRING of the source, so a builder
 /// composing one from pieces still trips the scan on the piece it spells
-/// whole, and `deleteMessage` covers `deleteMessages` by construction —
-/// both are listed anyway, because the list states what is refused, not
-/// what the matcher needs.
+/// whole.
 const UNCALLED_MESSAGE_METHODS: &[&str] = &[
     "editMessageText",
     "editMessageCaption",
@@ -71,23 +69,27 @@ const UNCALLED_MESSAGE_METHODS: &[&str] = &[
     "editMessageReplyMarkup",
     "editMessageLiveLocation",
     "stopMessageLiveLocation",
-    "deleteMessage",
-    "deleteMessages",
     "sendMessageDraft",
     "sendRichMessageDraft",
 ];
 
-/// AC13 of the editing unit (unit T3, 2026-08-31): the assistant edits none
-/// of its own delivered messages and deletes no member's message, and the
-/// proof is that no request builder in this crate names a method that
-/// would. The self-edit refusal is decision 0079's equality — a delivered
-/// answer would silently change under readers who already read it, and the
-/// stored answer block would stop being what the channel saw — and the
-/// deletion refusal is decision 0070's: every moderation effect keeps a
-/// human in it, and the platform grants an administrator bot the power
-/// this deployment deliberately leaves unused.
+/// AC13 of the editing unit (unit T3, 2026-08-31), narrowed by the
+/// retraction unit (unit T4, 2026-08-31): the assistant edits none of its
+/// own delivered messages and deletes no member's message ever, and the
+/// proof is that no request builder in this crate names a method that would.
+/// The self-edit refusal is decision 0079's equality — a delivered answer
+/// would silently change under readers who already read it, and the stored
+/// answer block would stop being what the channel saw.
+///
+/// The deletion half is no longer an absence, and the amendment on decision
+/// 0183 records that. The assistant takes its OWN messages back on an
+/// administrator's reply command, so one deletion method is named here — the
+/// plural one, in the wire client and nowhere else. Decision 0070 is
+/// untouched by it: the administrator's command is the human decision, and
+/// the ids the core may name come only from its own recorded deliveries, so
+/// no member's message is reachable through this method.
 #[test]
-fn the_adapter_calls_no_message_edit_deletion_or_draft_method() {
+fn the_adapter_calls_no_message_edit_or_draft_method() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     collect_rust_files(&src, &mut files);
@@ -99,8 +101,8 @@ fn the_adapter_calls_no_message_edit_deletion_or_draft_method() {
             assert!(
                 !content.contains(method),
                 "{} names {method}; the assistant edits none of its own \
-                 delivered messages and deletes nobody's, so adding one is \
-                 a decision a unit takes on purpose",
+                 delivered messages, so adding one is a decision a unit \
+                 takes on purpose",
                 file.display()
             );
         }

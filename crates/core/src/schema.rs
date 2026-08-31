@@ -582,6 +582,39 @@ static REVISES_MIGRATION: LazyLock<String> = LazyLock::new(|| {
 pub static MESSAGE_REVISES_INDEX: LazyLock<String> =
     LazyLock::new(|| format!("idx_{CHAT_MESSAGE_TABLE}_revises"));
 
+/// The retraction's content table — an appended migration step of the
+/// message-retraction unit (unit T4, 2026-08-31), per decision 0026's
+/// discipline. The table shape is the retraction kind's descriptor contract:
+/// the block header row is the ledger entry, and this row carries the one
+/// value a retraction records, the key of the send that was asked back.
+///
+/// Structure and not personal data, exactly as the delivery receipt beside
+/// it: the key is one of the platform's own ids for a message the assistant
+/// wrote. Erasure leaves it, and the conversation's own deletion removes it
+/// through the block cascade. The one keyed access path is indexed in the
+/// same step — the idempotence read asks whether a retraction already stands
+/// for one delivery — and the index is not unique, because a retraction
+/// recorded in an ancestor and read back through the channel's lineage is
+/// one fact answered once. No frozen vocabulary list: the step quotes no
+/// enum.
+static RETRACTION_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {table} (
+            block_id   INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {delivery} TEXT
+        );
+        CREATE INDEX {delivery_index} ON {table}({delivery});",
+        table = crate::delivery::RETRACTION_TABLE,
+        delivery = crate::delivery::COLUMN_RETRACTED_DELIVERY,
+        delivery_index = RETRACTION_KEY_INDEX.as_str(),
+    )
+});
+
+/// The retraction's send-keyed index, named once: the appended step creates
+/// it and the suite's schema pins read it back under this name.
+pub static RETRACTION_KEY_INDEX: LazyLock<String> =
+    LazyLock::new(|| format!("idx_{}_delivery", crate::delivery::RETRACTION_TABLE));
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors and the domain migrations — the three creating steps, then
 /// every appended step in order.
@@ -611,6 +644,7 @@ pub fn store_config() -> StoreConfig {
                 DELIVERY_MIGRATION.as_str(),
                 MESSAGE_MARK_MIGRATION.as_str(),
                 REVISES_MIGRATION.as_str(),
+                RETRACTION_MIGRATION.as_str(),
             ],
         }],
     }

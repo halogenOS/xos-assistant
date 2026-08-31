@@ -37,3 +37,11 @@ setmessagereaction
 reactiontypeemoji
 messagereactionupdated
 messagereactioncountupdated
+
+# The deletion methods (added with the retraction unit): the plural one the
+# adapter calls to take the assistant's own messages back off a chat, and
+# the singular one it deliberately does not add. Neither can appear in
+# neutral core prose, so listing them creates no false positive and makes
+# the core half of "no platform method name leaves the adapter" checkable.
+deletemessage
+deletemessages

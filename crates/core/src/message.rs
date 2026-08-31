@@ -397,14 +397,29 @@ pub enum DeliveryItem {
     Acknowledgment(String),
     /// A command's fixed answer — the privacy command's, in this unit.
     CommandAnswer(String),
+    /// Take the assistant's own messages back off the channel (unit T4,
+    /// 2026-08-31): every message of one recorded delivery, named by the
+    /// platform's own ids. The adapter performs it and decides nothing —
+    /// which messages these are was decided by the recorded delivery an
+    /// administrator's reply named, and the retraction is already on the
+    /// ledger by the time this item exists.
+    Retraction {
+        /// The platform's own ids for the messages to take back, in the
+        /// order they were sent.
+        origins: Vec<String>,
+    },
 }
 
 impl DeliveryItem {
-    /// The delivered text, whichever kind carries it.
+    /// The delivered text, where the item carries words at all. `None` for
+    /// an item that asks for an act instead of a message: nothing is sent
+    /// for a retraction, so there is no text to answer with, and a caller
+    /// that read one blindly would put the wrong thing on the channel.
     #[must_use]
-    pub fn text(&self) -> &str {
+    pub fn text(&self) -> Option<&str> {
         match self {
-            Self::Acknowledgment(text) | Self::CommandAnswer(text) => text,
+            Self::Acknowledgment(text) | Self::CommandAnswer(text) => Some(text),
+            Self::Retraction { .. } => None,
         }
     }
 }

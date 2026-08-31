@@ -828,6 +828,162 @@ fn the_deletion_mirrors_decisions_are_recorded_with_dates_and_rejected_alternati
     );
 }
 
+// ─── The message-retraction unit's pins (AC8, 2026-08-31) ────────────────
+
+/// The retraction ships FOUR document changes, one anchor each: the public
+/// policy's converse sentence, the assessment's erasure-and-retraction
+/// distinction with the identifier's retention answered, the assessment's
+/// own retraction paragraph, and the operator reference's second effect of
+/// the deletion command.
+#[test]
+fn the_retraction_ships_its_four_document_updates() {
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains(&flattened(
+            "asking us to delete removes nothing from the group's chat"
+        )),
+        "the policy states the converse of the deletion sentence"
+    );
+    assert!(
+        policy.contains(&flattened(
+            "the assistant can only delete messages it sent itself, and only within the \
+             48 hours the platform allows"
+        )),
+        "the policy states both bounds of the one deletion capability"
+    );
+    assert!(
+        policy.contains(&flattened(
+            "the text stays in the chat while the assistant has already dropped it from \
+             what it reads"
+        )),
+        "the policy states the refused-removal residual instead of hiding it"
+    );
+
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    assert!(
+        dpia.contains(&flattened(
+            "**Erasure and retraction are two mechanisms, added 2026-08-31 with the \
+             retraction unit.**"
+        )),
+        "the assessment's storage section carries the dated distinction"
+    );
+    assert!(
+        dpia.contains(&flattened(
+            "nothing is rewritten, and no person's row is reached"
+        )),
+        "the storage section states what a retraction does to the store"
+    );
+    assert!(
+        dpia.contains(&flattened(
+            "Their only use expires after 48 hours, when the platform stops allowing the \
+             deletion, while the store carries no expiry timer at all"
+        )),
+        "the storage section answers the storage-limitation question the unit creates"
+    );
+    assert!(
+        dpia.contains(&flattened("**The retraction.** Added 2026-08-31,")),
+        "the assessment's moderation section carries the dated retraction paragraph"
+    );
+    assert!(
+        dpia.contains(&flattened(
+            "This is a platform deletion capability, and it is assessed as one, not \
+             as bookkeeping"
+        )),
+        "the retraction is assessed as a capability, unlike the mirror beside it"
+    );
+    assert!(
+        dpia.contains(&flattened(
+            "The bound is therefore in the code and not in a granted right"
+        )) && dpia.contains(&flattened(
+            "The standing-capability review trigger therefore does not fire."
+        )),
+        "the assessment states where the bound lives and that the trigger stays unfired"
+    );
+    assert!(
+        dpia.contains(&flattened(
+            "the group keeps the text while the assistant has already dropped it"
+        )),
+        "the assessment states the refused-removal asymmetry in the policy's own words"
+    );
+
+    let contract = flattened(&repo_file("docs/reference/group-operator-contract.md"));
+    assert!(
+        contract.contains(&flattened(
+            "The same command has a second effect, added 2026-08-31."
+        )),
+        "the operator reference states the deletion command's second effect"
+    );
+    assert!(
+        contract.contains(&flattened(
+            "the assistant takes that message back off the chat itself, and stops \
+             speaking from it"
+        )),
+        "the reference states both halves of what a retraction does"
+    );
+    assert!(
+        contract.contains(&flattened(
+            "the assistant must NEVER be granted the right to delete any message in the \
+             group, nor made an administrator"
+        )),
+        "the reference states the standing capability the deployment refuses"
+    );
+    assert!(
+        !contract.contains(&flattened(
+            "The assistant adds no second answer, because the administrator addressed \
+             the moderation bot"
+        )),
+        "the bookkeeping-only framing is gone: the assistant now acts on the same command"
+    );
+    assert!(
+        contract.contains(&flattened("An edited command retracts nothing either")),
+        "the reference carries the edited command's bound over to the retraction"
+    );
+}
+
+/// The retraction's decisions are recorded with their dates and their
+/// rejected alternatives, and the record its build falsified carries a dated
+/// amendment instead of being rewritten.
+#[test]
+fn the_retractions_decisions_are_recorded_and_the_two_it_narrows_are_amended() {
+    for record in [
+        "docs/decisions/0193-a-retraction-takes-the-answer-off-the-chat-and-out-of-the-model-view.md",
+        "docs/decisions/0194-a-reply-to-her-own-message-is-the-recognized-command.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-31"),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+    assert!(
+        flattened(&repo_file(
+            "docs/decisions/0194-a-reply-to-her-own-message-is-the-recognized-command.md"
+        ))
+        .contains(&flattened(
+            "The earlier decision's own document stays unedited."
+        )),
+        "decision 0083's amendment rides its own record, as the earlier one did"
+    );
+    assert!(
+        flattened(&repo_file(
+            "docs/decisions/0183-the-assistant-edits-none-of-her-own-messages-in-this-unit-and-deletes-nobodys-ever.md"
+        ))
+        .contains(&flattened(
+            "## Amended 2026-08-31 — the assistant deletes its own messages, and nobody else's"
+        )),
+        "decision 0183 records that its proof sentence no longer holds as written"
+    );
+    let vocabulary = repo_file("docs/platform-vocabulary.txt");
+    assert!(
+        vocabulary.contains("\ndeletemessage\n") && vocabulary.contains("\ndeletemessages\n"),
+        "both deletion method names join the core's forbidden vocabulary"
+    );
+}
+
 // ─── The helpful-mode unit's pins (AC5, 2026-08-23) ──────────────────────
 
 #[test]

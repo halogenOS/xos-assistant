@@ -45,6 +45,12 @@ const FALLBACK_RETRY_WAIT: Duration = Duration::from_secs(1);
 /// usual failure rule — for a send, logged and dropped.
 const MAX_RATE_LIMIT_WAIT: Duration = Duration::from_mins(1);
 
+/// How many message identifiers one deletion request may carry — the
+/// platform's own stated range for the plural deletion method is one to a
+/// hundred. A longer retraction goes out as successive calls of at most this
+/// many ids, and no larger request body is ever assembled.
+pub(crate) const DELETE_BATCH_LIMIT: usize = 100;
+
 /// The typing action's own rate-limit wait ceiling: one refresh period,
 /// not [`MAX_RATE_LIMIT_WAIT`]. The action is a presence cue re-sent on
 /// the refresh cadence, and the platform lets the indicator expire in
@@ -579,6 +585,38 @@ impl BotClient {
             .request("leaveChat", &body, Some(MAX_RATE_LIMIT_WAIT))
             .await?;
         let _left: serde_json::Value = self.decode(response).await?;
+        Ok(())
+    }
+
+    /// Take messages back off a chat — what the core's retraction directive
+    /// maps to (unit T4, 2026-08-31). The ids are the assistant's own, read
+    /// from its recorded deliveries; nothing here decides which.
+    ///
+    /// One method serves every size. The platform's own range for the
+    /// request is one to a hundred identifiers, so a single-message
+    /// retraction is a legal one-element call, and the caller walks a longer
+    /// delivery in batches of [`DELETE_BATCH_LIMIT`] without ever building a
+    /// larger request. The plural method is chosen for every size on purpose:
+    /// it skips ids it cannot find and still succeeds, while the single-id
+    /// method refuses with a client error — and the commonest reason an id
+    /// goes missing is the moderation bot deleting the same message on the
+    /// same command a moment earlier.
+    ///
+    /// A failure is the caller's to log and drop: a message past the
+    /// platform's own 48-hour window cannot be taken back, and the recorded
+    /// retraction stands either way. The send ceiling applies because the
+    /// call runs inside the sequential update batch, where an unbounded
+    /// stated wait would park every later update.
+    pub(crate) async fn delete_messages(
+        &self,
+        chat_id: i64,
+        message_ids: &[i64],
+    ) -> Result<(), ClientError> {
+        let body = serde_json::json!({ "chat_id": chat_id, "message_ids": message_ids });
+        let response = self
+            .request("deleteMessages", &body, Some(MAX_RATE_LIMIT_WAIT))
+            .await?;
+        let _deleted: serde_json::Value = self.decode(response).await?;
         Ok(())
     }
 

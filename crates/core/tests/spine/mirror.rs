@@ -234,15 +234,22 @@ async fn the_silent_no_ops_leave_the_standing_state_alone() {
     );
     bare.addressed = false;
     ingest_silent(&fixture, support::with_command(bare, DELETION_COMMAND)).await;
-    // A reply to the assistant's own message carries no origin to name.
-    let mut to_assistant = support::inbound_as(
+    // A reply to one of the assistant's own messages whose delivery the
+    // store never recorded: recognized, silent, and retracting nothing. The
+    // addressed flag is left exactly as the adapter produces it — every
+    // reply to the assistant arrives addressed — so the silence here is the
+    // command stamp's doing and not a hand-set fixture's.
+    let to_assistant = support::inbound_as(
         &room,
         ChannelKind::Group,
         "root-ext",
         Authority::Admin,
         DELETION_COMMAND,
     );
-    to_assistant.addressed = false;
+    assert!(
+        to_assistant.addressed,
+        "non-vacuity: the reply arrives addressed, as the adapter delivers it"
+    );
     ingest_silent(
         &fixture,
         support::with_command(
@@ -291,8 +298,10 @@ async fn the_silent_no_ops_leave_the_standing_state_alone() {
         "a targetless deletion command is an ordinary message"
     );
     assert_eq!(
-        messages[3].limited, None,
-        "a reply to the assistant's own message is an ordinary message"
+        messages[3].limited,
+        Some(LimitedBy::Command),
+        "a reply to one of the assistant's own messages is the recognized \
+         command since unit T4, whether or not a delivery resolves for it"
     );
     assert_eq!(
         messages[4].limited,

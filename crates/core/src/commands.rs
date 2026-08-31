@@ -28,7 +28,10 @@
 //!
 //! The moderation bot's own deletion command stays outside the catalogue
 //! (see [`crate::mirror`]): it is not this assistant's command, and listing
-//! it would present the assistant as the actor that deletes messages.
+//! it would present the assistant as the actor that deletes messages. That
+//! stays true with the retraction (unit T4, 2026-08-31): the assistant
+//! deletes only its OWN messages, on an administrator's reply command it
+//! reads and never owns, and no member's message is reachable through it.
 //!
 //! # What the report carries
 //!

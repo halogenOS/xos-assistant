@@ -312,6 +312,25 @@ an erased person's words and, since the speaker projection shipped, repeat their
 field). All are recorded as open, all wait on the same storage framework seam, and the
 first is named in the public policy; the answer-block gap joins R6.
 
+**Erasure and retraction are two mechanisms, added 2026-08-31 with the retraction unit.**
+Erasure empties stored columns and touches no chat message. Retraction removes a chat
+message the assistant sent itself, on a group administrator's reply command, and empties
+nothing: the retracted answer's blocks are dropped from a copy of the conversation, the
+copy serves the channel from then on, and the blocks nothing holds any more go to the
+orphan collector — nothing is rewritten, and no person's row is reached. Neither
+mechanism borrows the other's: a person asking us to delete their data still reaches no
+chat message, and an administrator retracting one of the assistant's messages still
+empties no stored column of anybody's.
+
+The identifiers of the assistant's own sent messages raise the storage-limitation
+question this unit creates, and it is answered, not left open. Their only use
+expires after 48 hours, when the platform stops allowing the deletion, while the store
+carries no expiry timer at all (decision 0003). They stay: an identifier names a message
+the assistant wrote and carries nothing of anybody, an expired one is inert, and adding a
+timer for a structural field would be new machinery with no benefit to anyone's rights.
+They are removed with the conversation that holds them, and a person's erasure leaves
+them because there is nothing of that person in them.
+
 ### 3.7 Measures in place
 
 - Personal data in tables of its own, referenced by key, so append-only storage and
@@ -747,6 +766,29 @@ the conversation as it stood before the command arrived, so it can fold the
 pre-erasure prose of the deleted message into a public answer. The store is nulled
 mid-turn all the same, and every later reading sees only the erased marker — the
 same deletion-timing window every erasure route carries, not a new exposure.
+
+**The retraction.** Added 2026-08-31, with the message-retraction unit. The same
+administrator command aimed at one of the ASSISTANT's own messages makes the assistant
+take that message off the chat and stop speaking from it. This is a platform deletion
+capability, and it is assessed as one, not as bookkeeping: the assistant issues a
+deletion request to the platform. Three facts bound it. It reaches only messages the
+assistant sent itself, because the identifiers it may name come from its own recorded
+deliveries and from nowhere else. The bound is therefore in the code and not in a granted
+right: the bot is never made an administrator and never granted the right to delete any
+message, so promoting it for some unrelated reason still could not turn into power over a
+member's words. And the act touches no person: the only message deleted is one the
+assistant itself wrote, so there is no moderation effect on anybody, and the
+administrator's own command is the human decision decision 0070 requires. The
+standing-capability review trigger therefore does not fire.
+
+Two consequences are recorded, not hidden. The retracted answer leaves what the
+assistant reads — its blocks are dropped from the copy of the conversation that serves the
+channel from then on, and so is every quote of it, including the digest prose a
+compaction wrote from it, which is regenerated without it. And the strip happens whether
+or not the chat obeys: where the platform refuses the removal, its own 48-hour window or
+a message somebody deleted first, the group keeps the text while the assistant has
+already dropped it. That asymmetry is the cost of recording the administrator's ask
+and never the platform's outcome, and the public policy states it in the same words.
 
 **The wiki fetch.** A wiki question makes the assistant fetch one page of the
 project's public wiki. The request carries a page name and nothing about any person;

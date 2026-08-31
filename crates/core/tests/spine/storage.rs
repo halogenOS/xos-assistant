@@ -66,7 +66,8 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
         | AssistantKind::Delivered(_)
-        | AssistantKind::MessageMark(_) => {
+        | AssistantKind::MessageMark(_)
+        | AssistantKind::Retraction(_) => {
             panic!("the assistant's kind resolved through the delegate")
         }
     }
@@ -83,7 +84,7 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         "a framework kind resolves through the delegate, untouched"
     );
 
-    assert_eq!(AssistantKind::DESCRIPTORS.len(), 7);
+    assert_eq!(AssistantKind::DESCRIPTORS.len(), 8);
     assert_eq!(AssistantKind::DESCRIPTORS[0].table, CHAT_MESSAGE_TABLE);
     assert_eq!(
         AssistantKind::DESCRIPTORS[1].table,
@@ -107,7 +108,11 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
     );
     assert_eq!(
         AssistantKind::DESCRIPTORS[6].table,
-        assistant_core::tools::mark::MESSAGE_MARK_TABLE,
+        assistant_core::tools::mark::MESSAGE_MARK_TABLE
+    );
+    assert_eq!(
+        AssistantKind::DESCRIPTORS[7].table,
+        assistant_core::delivery::RETRACTION_TABLE,
         "the newest kind's descriptor is last, as its migration step is"
     );
     agent_ledger::agency::check_descriptor_durability::<AssistantKind>(AssistantKind::DESCRIPTORS)
@@ -150,7 +155,8 @@ fn resting_and_erased_messages_summon_no_turn() {
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
         | AssistantKind::Delivered(_)
-        | AssistantKind::MessageMark(_) => {
+        | AssistantKind::MessageMark(_)
+        | AssistantKind::Retraction(_) => {
             panic!("the resting row resolved through the delegate")
         }
     }
@@ -195,7 +201,8 @@ fn resting_and_erased_messages_summon_no_turn() {
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
         | AssistantKind::Delivered(_)
-        | AssistantKind::MessageMark(_) => {
+        | AssistantKind::MessageMark(_)
+        | AssistantKind::Retraction(_) => {
             panic!("the erased row resolved through the delegate")
         }
     }
@@ -277,7 +284,8 @@ async fn a_file_backed_store_reopens_and_loads_the_stored_kind() {
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
         | AssistantKind::Delivered(_)
-        | AssistantKind::MessageMark(_) => {
+        | AssistantKind::MessageMark(_)
+        | AssistantKind::Retraction(_) => {
             panic!("the reopened row resolved through the delegate")
         }
     }
@@ -306,6 +314,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
             conn.execute_batch(&format!(
                 "ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
+                 DROP TABLE {retractions};
                  DROP INDEX {revises_index};
                  ALTER TABLE block_chat_message DROP COLUMN revises;
                  ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
@@ -315,6 +324,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
                  INSERT INTO principals (adapter, external_id, display_name, username)
                      VALUES ('test-adapter', '42', 'Ada Lovelace', 'ada');",
                 revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
+                retractions = assistant_core::delivery::RETRACTION_TABLE,
             ))?;
             Ok(())
         })
@@ -329,7 +339,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
         .expect("the version-eleven store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        19,
+        20,
         "the appended steps advanced the domain's version"
     );
     let (columns, row): (Vec<String>, (String, String, Option<String>)) =
@@ -394,7 +404,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             Store::open_with(db.path(), store_config()).expect("the configured store opens");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            19,
+            20,
             "the domain's recorded version is the shipped step count"
         );
         // One recorded summoned message, then the rewind: drop exactly the
@@ -427,12 +437,14 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             .expect("the pre-upgrade row appends");
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
-                "DROP INDEX {revises_index};
+                "DROP TABLE {retractions};
+                 DROP INDEX {revises_index};
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN revises;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
                  DROP TABLE {join};
                  DROP TABLE {delivered};
                  DROP TABLE {marks};",
+                retractions = assistant_core::delivery::RETRACTION_TABLE,
                 revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
@@ -451,7 +463,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         .expect("the version-thirteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        19,
+        20,
         "the appended step advanced the domain's version"
     );
     let blocks = support::consumer_view(
@@ -478,7 +490,8 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
         | AssistantKind::Delivered(_)
-        | AssistantKind::MessageMark(_) => {
+        | AssistantKind::MessageMark(_)
+        | AssistantKind::Retraction(_) => {
             panic!("the upgraded row resolved through the delegate")
         }
     }
@@ -502,7 +515,7 @@ async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() 
         .expect("the version-fourteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        19,
+        20,
         "the appended steps advanced the domain's version"
     );
 
@@ -575,7 +588,8 @@ async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() 
         | AssistantKind::JoinNotice(_)
         | AssistantKind::ChatMessage(_)
         | AssistantKind::Delivered(_)
-        | AssistantKind::MessageMark(_) => {
+        | AssistantKind::MessageMark(_)
+        | AssistantKind::Retraction(_) => {
             panic!("the upgraded report row resolved as another kind")
         }
     }
@@ -643,7 +657,8 @@ async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
         .expect("the pre-upgrade report appends");
     agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
         conn.execute_batch(&format!(
-            "DROP INDEX {revises_index};
+            "DROP TABLE {retractions};
+             DROP INDEX {revises_index};
              ALTER TABLE block_chat_message DROP COLUMN revises;
              DROP TABLE {join};
              DROP TABLE {delivered};
@@ -658,6 +673,7 @@ async fn a_populated_version_fourteen_store(db: &TempDb) -> i64 {
                  SELECT block_id, {target}, {reported}, {line} FROM {report};
              DROP TABLE {report};
              ALTER TABLE {report}_v14 RENAME TO {report};",
+            retractions = assistant_core::delivery::RETRACTION_TABLE,
             revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
             join = assistant_core::join::JOIN_NOTICE_TABLE,
             delivered = assistant_core::delivery::DELIVERED_TABLE,
@@ -701,10 +717,12 @@ async fn a_version_sixteen_store_upgrades_through_the_delivery_step() {
             .expect("a conversation row");
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
-                "DROP INDEX {revises_index};
+                "DROP TABLE {retractions};
+                 DROP INDEX {revises_index};
                  ALTER TABLE block_chat_message DROP COLUMN revises;
                  DROP TABLE {table};
                  DROP TABLE {marks};",
+                retractions = assistant_core::delivery::RETRACTION_TABLE,
                 revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
                 table = assistant_core::delivery::DELIVERED_TABLE,
                 marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
@@ -722,7 +740,7 @@ async fn a_version_sixteen_store_upgrades_through_the_delivery_step() {
         .expect("the version-sixteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        19,
+        20,
         "the appended step advanced the domain's version"
     );
 

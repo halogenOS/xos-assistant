@@ -72,13 +72,13 @@ use std::time::{Duration, Instant};
 
 use assistant_core::{
     Assistant, ChannelKind, ChannelReset, ComposingState, ComposingUpdate, DeliveryHandle,
-    FailureKind, InboundMessage, IngestOutcome, Observation, ObserveOutcome, ObservedFact,
-    Outbound, OutboundMark, OutboundReply,
+    DeliveryItem, FailureKind, InboundMessage, IngestOutcome, Observation, ObserveOutcome,
+    ObservedFact, Outbound, OutboundMark, OutboundReply,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::authority::AdminCache;
-use crate::client::{BotClient, BotIdentity, SendError, SendThread, Update};
+use crate::client::{self, BotClient, BotIdentity, SendError, SendThread, Update};
 use crate::translate::{self, LookupScope, Translation};
 use crate::{ADAPTER_NAME, AdapterError, Config, Sleep, state, webhook};
 
@@ -590,11 +590,11 @@ impl<'a> Intake<'a> {
                     // The receipt names the conversation the item's send is
                     // recorded in (unit 38, 2026-08-30) — the ingestion's
                     // own, which is where the item was resolved.
-                    send_item(
+                    perform_item(
                         self.client,
                         self.assistant,
                         pending.chat_id,
-                        item.text(),
+                        &item,
                         receipt.delivery(),
                     )
                     .await;
@@ -737,11 +737,11 @@ impl<'a> Intake<'a> {
         match self.assistant.observe(observation).await {
             Ok(ObserveOutcome::Observed { deliver }) => {
                 if let Some(delivered) = deliver {
-                    send_item(
+                    perform_item(
                         self.client,
                         self.assistant,
                         chat_id,
-                        delivered.item.text(),
+                        &delivered.item,
                         delivered.delivery,
                     )
                     .await;
@@ -764,6 +764,73 @@ impl<'a> Intake<'a> {
                 );
                 Handled::Halted
             }
+        }
+    }
+}
+
+/// Carry out one item the core returned, whichever kind it is: words go to
+/// the chat, a retraction takes words back off it.
+///
+/// The match is the core's own statement of which is which, and it is
+/// exhaustive on purpose — a kind that asks for an act instead of a message
+/// carries no text, so a consumer that read the text blindly would put the
+/// wrong thing on the channel. Nothing here judges: which messages a
+/// retraction names was decided by the recorded delivery an administrator's
+/// reply pointed at, and the fact is already on the ledger.
+async fn perform_item(
+    client: &BotClient,
+    assistant: &Assistant,
+    chat_id: i64,
+    item: &DeliveryItem,
+    delivery: DeliveryHandle,
+) {
+    match item {
+        DeliveryItem::Acknowledgment(text) | DeliveryItem::CommandAnswer(text) => {
+            send_item(client, assistant, chat_id, text, delivery).await;
+        }
+        DeliveryItem::Retraction { origins } => retract(client, chat_id, origins).await,
+    }
+}
+
+/// Take one recorded delivery's messages back off the chat, in batches of at
+/// most the platform's own hundred, walking the recorded origins without
+/// assembling any larger request.
+///
+/// An origin this adapter did not mint is dropped from its batch and logged:
+/// the ids are the platform's own, translated back through the same naming
+/// rule the receipt stored them under, and a value that does not decode names
+/// no message here.
+///
+/// A refused call is one warning line and nothing else — no retry. A message
+/// past the platform's 48-hour window will not become deletable inside this
+/// update batch, and an administrator's own repeat of the command is the
+/// retry. The batch's later calls still go out: a chunk the platform refuses
+/// says nothing about the next one.
+async fn retract(client: &BotClient, chat_id: i64, origins: &[String]) {
+    for batch in origins.chunks(client::DELETE_BATCH_LIMIT) {
+        let message_ids: Vec<i64> = batch
+            .iter()
+            .filter_map(|origin| {
+                let named = translate::message_id_of(origin);
+                if named.is_none() {
+                    tracing::warn!(
+                        chat_id,
+                        "a retraction names a message this adapter did not mint; dropped"
+                    );
+                }
+                named
+            })
+            .collect();
+        if message_ids.is_empty() {
+            continue;
+        }
+        if let Err(error) = client.delete_messages(chat_id, &message_ids).await {
+            tracing::warn!(
+                chat_id,
+                messages = message_ids.len(),
+                %error,
+                "the retraction was refused by the platform; the recorded retraction stands"
+            );
         }
     }
 }

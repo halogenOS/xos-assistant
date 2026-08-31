@@ -75,6 +75,7 @@ mod filing;
 mod identity;
 pub mod join;
 pub mod kind;
+mod lineage;
 mod mapping;
 mod message;
 pub mod mirror;

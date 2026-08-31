@@ -10,6 +10,17 @@ unit does ship is narrow: an administrator replying with the deletion command to
 assistant's OWN messages makes the assistant take that message back from the chat and record
 the retraction on the ledger.
 
+Amendment, 2026-08-31, at build time. The build refined three points below, and decision
+0193 carries each with its reasons. A retracted answer no longer stays in the model's view:
+the session is forked without it and without every quote derived from it, so criterion 6's
+identical-projection clause and the decision paragraph stating "stays projected" are
+superseded — the stored blocks are still never rewritten, they are dropped from the serving
+session and left to the collector. Criterion 11's leave-the-turn-alone clause is superseded
+the same way: a retraction settles an in-flight turn before the fork, as the compaction
+door does. Criterion 13 ships four document changes, not five: the records-of-processing
+category was overruled by decision 0145. The mechanism reference `mirrored_target` in the
+grounding below was renamed `performed_deletion` by the same build.
+
 **What the first draft of this unit got wrong.** Two reviews read it against the live API and
 the tree and found three structural faults, each of which made a stated criterion
 unreachable. They are corrected here, and the corrections changed the design, not only the

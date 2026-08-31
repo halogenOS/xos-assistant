@@ -171,11 +171,29 @@ Added 2026-08-23. When a group administrator replies to a message with the
 moderation bot's own deletion command — a reply `/del` — both bots read the
 same command: the moderation bot deletes the message in the chat, and the
 assistant erases its stored copy of that message, silently. The assistant
-adds no second answer, because the administrator addressed the moderation
-bot; only administrators' commands count, exactly as the moderation bot
-ignores everyone else's. Nothing to configure: the mirror rides the
-moderation bot's own command, with or without the report setup above — no
-switch exists, and the bounds below are its only limits.
+adds no second answer; only administrators' commands count, exactly as the
+moderation bot ignores everyone else's. Nothing to configure: the mirror
+rides the moderation bot's own command, with or without the report setup
+above — no switch exists, and the bounds below are its only limits.
+
+The same command has a second effect, added 2026-08-31. Reply `/del` to one
+of the ASSISTANT's own messages and the assistant takes that message back
+off the chat itself, and stops speaking from it: the answer leaves what the
+assistant reads, and so does every quote of it. A long answer that went out
+as several messages is taken back whole from a reply to any one of them.
+Nothing is said in return, the request is recorded whatever the chat does
+with it, and repeating the command asks again — which is what to do when the
+message is still standing.
+
+Two bounds on that second effect, and they are the point of it. The
+assistant deletes only messages it sent ITSELF: the messages it may name are
+the ones it recorded sending, so no member's message is reachable this way.
+And the assistant must NEVER be granted the right to delete any message in
+the group, nor made an administrator: the moderation bot holds that right
+and answers to you for it. The platform also refuses to delete any message
+older than 48 hours, its own limit, so an older answer can no longer be
+taken off the chat — the assistant still stops speaking from it, and the
+group keeps the text.
 
 The constraint, stated plainly: the assistant must SEE the command, so only
 deletions issued as a reply `/del` reach it, and only the bare token: a
@@ -189,7 +207,8 @@ copy in place. And a deletion command that arrives as an EDIT mirrors
 nothing and stays silent: nothing establishes that the moderation bot acts
 on an edited command, and an assistant that erased its stored copy of a
 message still visible to everyone would produce the divergence this mirror
-exists to prevent. Send the command as a new message. For everything
+exists to prevent. An edited command retracts nothing either, for the same
+reason. Send the command as a new message. For everything
 outside these bounds, the person-wide deletion commands of the privacy
 route remain the way to clear the store.
 

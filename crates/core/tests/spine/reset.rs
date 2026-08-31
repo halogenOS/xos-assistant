@@ -190,9 +190,10 @@ async fn invoke(assistant: &Assistant, message: InboundMessage) -> (Option<Strin
         .await
         .expect("the command ingests")
     {
-        IngestOutcome::Recorded { deliver, reset, .. } => {
-            (deliver.map(|item| item.text().to_owned()), reset)
-        }
+        IngestOutcome::Recorded { deliver, reset, .. } => (
+            deliver.and_then(|item| item.text().map(ToOwned::to_owned)),
+            reset,
+        ),
         other => panic!("the command is recorded, not refused: {other:?}"),
     }
 }

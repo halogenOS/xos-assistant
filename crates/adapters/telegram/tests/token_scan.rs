@@ -1,7 +1,8 @@
 //! AC6: neither the bot token nor the webhook secret appears in any log line
 //! or error string. The failure paths that format errors are forced — a
 //! transport failure whose raw error carries the token-bearing URL, a send
-//! dropped past the rate-limit bound, a malformed state file, and the
+//! dropped past the rate-limit bound, a malformed state file, a retraction
+//! the platform refuses, and the
 //! webhook door's own refusals with the registration refusal beside them —
 //! and every captured line is scanned for both secrets.
 //!
@@ -35,9 +36,10 @@ use tracing::span;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    DEADLINE, TOKEN, TempStateFile, WEBHOOK_PATH, deliver, kept_secret, knock, pending_sleep,
-    private_update, recording_sleep, spawn_adapter, spawn_webhook_adapter, start_assistant,
-    webhook_adapter_config,
+    DEADLINE, TOKEN, TempStateFile, WEBHOOK_PATH, authorize_group, await_conversations,
+    await_receipts, date_of, deliver, kept_secret, knock, mention_update, message_id_of,
+    pending_sleep, private_update, recording_sleep, spawn_adapter, spawn_webhook_adapter,
+    start_assistant, webhook_adapter_config,
 };
 
 /// A capture subscriber: every event's fields, formatted into one line.
@@ -86,6 +88,7 @@ async fn the_token_reaches_no_log_line_and_no_error_string() {
     force_a_transport_failure().await;
     force_a_dropped_send_and_a_malformed_state_read(&lines).await;
     force_a_cut_short_reply(&lines).await;
+    force_a_refused_retraction(&lines).await;
     let secrets = force_the_webhook_refusals(&lines).await;
 
     let lines = lines.lock().expect("the line log locks");
@@ -106,6 +109,12 @@ async fn the_token_reaches_no_log_line_and_no_error_string() {
     assert!(
         lines.iter().any(|line| line.contains("cut short")),
         "the cut-short path logged"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("refused by the platform")),
+        "the refused-retraction path logged"
     );
     assert!(
         lines
@@ -193,6 +202,52 @@ async fn force_a_cut_short_reply(lines: &Arc<Mutex<Vec<String>>>) {
     server.await_recorded("sendMessage", 2).await;
 
     await_line(lines, "cut short").await;
+}
+
+/// A retraction the platform refuses — its own 48-hour window, or a message
+/// somebody else already deleted — is logged and dropped, under the capture,
+/// so the scan covers this path's error string too (unit T4, 2026-08-31).
+async fn force_a_refused_retraction(lines: &Arc<Mutex<Vec<String>>>) {
+    let chat = -790;
+    let fixture = start_assistant().await;
+    authorize_group(&fixture.assistant, chat).await;
+    let server = BotApiServer::start().await;
+    server.set_chat_info(chat, "The kernel room", None);
+    server.set_admins(chat, &[(5, "administrator")]);
+    server.fail_deletions();
+    server.push_update(mention_update(1, chat, 7, "where did it move?"));
+    let state = TempStateFile::new("token-scan-retraction");
+
+    let (sleep, _) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+    server.await_recorded("sendMessage", 1).await;
+    let conversation = await_conversations(&fixture.store, 1).await[0];
+    await_receipts(&fixture.store, conversation, 1).await;
+
+    server.push_update(serde_json::json!({
+        "update_id": 2,
+        "message": {
+            "message_id": message_id_of(2),
+            "date": date_of(2),
+            "chat": { "id": chat, "type": "group" },
+            "from": { "id": 5, "first_name": "Person 5" },
+            "text": "/del",
+            "reply_to_message": {
+                "message_id": 1,
+                "date": date_of(2) - 10,
+                "chat": { "id": chat, "type": "group" },
+                "from": {
+                    "id": crate::support::BOT_ID,
+                    "is_bot": true,
+                    "first_name": "Fixture",
+                    "username": crate::support::BOT_USERNAME,
+                },
+                "text": "an earlier answer",
+            },
+        },
+    }));
+
+    await_line(lines, "refused by the platform").await;
 }
 
 /// The webhook intake's own logging paths, under the capture: a delivery

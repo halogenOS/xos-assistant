@@ -68,7 +68,8 @@ fn parsed(block: &Block) -> ChatMessage {
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
         | AssistantKind::Delivered(_)
-        | AssistantKind::MessageMark(_) => panic!("the chat row resolved through the delegate"),
+        | AssistantKind::MessageMark(_)
+        | AssistantKind::Retraction(_) => panic!("the chat row resolved through the delegate"),
     }
 }
 
@@ -420,7 +421,8 @@ async fn erasure_nulls_the_speaker_and_the_handle_returns_with_the_person() {
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
         | AssistantKind::Delivered(_)
-        | AssistantKind::MessageMark(_) => panic!("the stored row resolved through the delegate"),
+        | AssistantKind::MessageMark(_)
+        | AssistantKind::Retraction(_) => panic!("the stored row resolved through the delegate"),
     }
     let requests = fixture.script.seen.lock().unwrap();
     assert!(
@@ -540,7 +542,8 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         // the reopen.
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, |conn| {
             conn.execute_batch(&format!(
-                "DROP INDEX {revises_index};
+                "DROP TABLE {retractions};
+                 DROP INDEX {revises_index};
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN revises;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
@@ -549,6 +552,7 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
                  DROP TABLE {join};
                  DROP TABLE {delivered};
                  DROP TABLE {marks};",
+                retractions = assistant_core::delivery::RETRACTION_TABLE,
                 revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
@@ -575,7 +579,7 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         .expect("the version-ten store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        19,
+        20,
         "the appended steps advanced the domain's version to the newest"
     );
     let blocks = support::consumer_view(
@@ -604,7 +608,8 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
         | AssistantKind::Delivered(_)
-        | AssistantKind::MessageMark(_) => panic!("the upgraded row resolved through the delegate"),
+        | AssistantKind::MessageMark(_)
+        | AssistantKind::Retraction(_) => panic!("the upgraded row resolved through the delegate"),
     }
 
     // The upgraded store serves the write path: the first post-upgrade
