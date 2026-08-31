@@ -984,6 +984,69 @@ pub struct Fixture {
     pub bus: Arc<EventBus<CoreEvent>>,
 }
 
+impl Fixture {
+    /// Stop this process's assembly and wait until the runtime has stopped
+    /// it — what a restart test owes between its two processes, and what
+    /// dropping the fixture does not do.
+    ///
+    /// A drop drops the handle, not the running assembly: the reactor and
+    /// the per-conversation schedulers it spawned live on the test's
+    /// runtime, and a scheduler wakes on the STORE's row changes, not on
+    /// this bus. A dropped process therefore still sees the next process's
+    /// message land in the store they share, still finds the turn owed,
+    /// and can answer it from its own provider before the restarted
+    /// process does. A restart test that gives each process a runtime of
+    /// its own ([`process_runtime`]) and drops that runtime has no such
+    /// race; a test restarting inside one runtime stops its first process
+    /// here.
+    ///
+    /// The stop is the framework's own teardown edge, the interrupt the
+    /// core's stream settle already stops a turn with: it latches the
+    /// conversation — a latched delivery stands down, and only an append or
+    /// an unlatch on THIS bus releases one, neither of which a stopped
+    /// process can produce — closes the dispatch and drops the provider
+    /// binding. The awaited signal is the teardown's own last act, the
+    /// status block it appends once the rest of it has run: the latched
+    /// state publishes earlier, so waiting on that would leave the append
+    /// to land behind the next process's message.
+    pub async fn shutdown(self) {
+        let conversations = self
+            .store
+            .list_conversations()
+            .await
+            .expect("the conversation list reads");
+        for conversation in conversations {
+            let before = status_blocks(
+                &self
+                    .store
+                    .list_blocks(conversation.id)
+                    .await
+                    .expect("the ledger reads"),
+            );
+            self.bus.emit(CoreEvent::InterruptRequested {
+                conversation_id: conversation.id,
+            });
+            await_ledger(
+                &self.store,
+                conversation.id,
+                "the stopped process's teardown",
+                |blocks| status_blocks(blocks) > before,
+            )
+            .await;
+        }
+    }
+}
+
+/// How many status blocks one conversation's ledger holds — the count the
+/// stop above compares against, the way the core's own stream settle
+/// confirms an interrupt completed.
+fn status_blocks(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .filter(|block| block.block_type == "status")
+        .count()
+}
+
 /// Assemble a running assistant over a fresh in-memory store, under the
 /// default budgets — which is also the standing proof that the defaults do
 /// not limit the suite's ordinary traffic.
