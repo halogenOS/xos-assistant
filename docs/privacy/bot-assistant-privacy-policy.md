@@ -153,6 +153,16 @@ that reply form reaches us: the moderation bot's bulk purges, its direct removal
 deletion made without that reply stay under the rule above, and asking remains the way to
 clear those from the store. If the service stops for good, we delete the store with it.
 
+We state the converse plainly, added 2026-08-31: asking us to delete removes
+nothing from the group's chat. Your messages stay where you posted them, under your chat
+platform's own rules, and we cannot take them down — the assistant can only delete
+messages it sent itself, and only within the 48 hours the platform allows. That one
+capability arrived with the same reply command: a group administrator replying `/del` to
+one of the assistant's own messages makes it take that message back off the chat and stop
+speaking from it. Where the platform refuses the removal — the message is older than 48
+hours, or somebody deleted it first — the text stays in the chat while the assistant has
+already dropped it from what it reads.
+
 We delete on request the text of every message you wrote, its send time and reply reference,
 your identity data, and — added 2026-08-29 — the join announcement we recorded for you,
 with the name and handle it showed. What remains in a

@@ -50,6 +50,11 @@
 //! `mirror` (the deletion mirror riding the moderation bot's reply
 //! command, its silence for a command that arrives as an edit, and its
 //! reach over every recorded version of one message),
+//! retraction (the same command aimed at one of the assistant's own
+//! messages: the recorded fact, the directive naming every message of the
+//! delivery, the fork that takes the answer out of the model's view with
+//! every quote of it, the in-flight turn settled first, and the lineage
+//! scrub for an answer below a compaction boundary),
 //! reset (the session-reset commands: the wipe's empty session,
 //! the compaction's summarized half and its verbatim one, the erasure scrub
 //! that replaces a compacted lineage, the outbound edge's inherited
@@ -99,6 +104,7 @@ mod reactions;
 mod reasoning;
 mod report;
 mod reset;
+mod retraction;
 mod runtime_facts;
 mod search;
 mod sourcing;

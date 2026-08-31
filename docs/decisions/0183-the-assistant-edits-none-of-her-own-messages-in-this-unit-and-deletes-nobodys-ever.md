@@ -33,6 +33,28 @@ decision, and the assistant only erases its stored copy.
 The proof is that no request builder in the adapter names a message-editing,
 message-deleting or message-draft method at all.
 
+## Amended 2026-08-31 — the assistant deletes its own messages, and nobody else's
+
+The message-retraction unit ships one deletion capability, so the proof
+sentence above is no longer true as written and the framing narrows with it.
+
+What stands: the assistant deletes NO member's message, ever, and no message
+leaves a chat on the assistant's own reading. What changes: on a group
+administrator's reply deletion command the assistant takes back a message it
+sent ITSELF, through the platform's plural deletion method, named by the wire
+client and nowhere else.
+
+Decision 0070 is untouched by that. The administrator's command is the human
+decision the mechanism requires, the act touches no person's words, and the
+bound lives in the code and not in a granted right: the identifiers the core
+may name for deletion come only from its own recorded deliveries, so the
+assistant cannot reach a member's message even where the platform would allow
+it. The bot is still never made an administrator and is never granted the
+delete-any-message right.
+
+The self-edit half is unchanged and unaffected: no edit method is called, and
+a delivered answer is never rewritten under readers who already read it.
+
 ## Rejected alternatives
 
 - **Editing without recording.** The ledger would carry an answer nobody can

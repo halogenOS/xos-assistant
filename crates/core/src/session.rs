@@ -85,13 +85,14 @@ use agent_ledger::store::{
     CompactedThread, ConsumerRecord, LedgerCut, ModelOverride, StoreError, StoreTx,
     TemporaryConversation, TemporaryFork, domain_run,
 };
-use agent_ledger::{CoreEvent, EventBus, Role, RuntimeContext};
+use agent_ledger::{Block, CoreEvent, EventBus, Role, RuntimeContext};
 use rusqlite::OptionalExtension;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::assembly::{ErasureFence, ModelBinding, ScriptedPause};
 use crate::compaction::{COMPACTION_INSTRUCTIONS, CONTEXT_SWEEP, ContextWatch};
+use crate::erasure;
 use crate::error::CoreError;
 use crate::kind::AssistantKind;
 use crate::mapping;
@@ -443,11 +444,13 @@ impl Sessions {
     /// holds. The source keeps every one of them: a clone does not edit what
     /// it came from.
     ///
-    /// An empty conversation clones to an empty conversation. The clone
-    /// inherits the source's model and level rather than the current
-    /// binding: this is a scrubbed COPY of a history, not a session being
-    /// replaced, and re-pointing its model would change what it is a copy
-    /// of.
+    /// An empty conversation clones to an empty conversation. Which model
+    /// the clone runs under is the CALLER's, because the two callers mean
+    /// different things by a clone: an ancestor rebuilt underneath a scrub
+    /// is a copy of a history and inherits, so re-pointing its model would
+    /// change what it is a copy of, while a clone that takes the channel is
+    /// a session being replaced and carries the current binding like every
+    /// other replacement door.
     ///
     /// # Errors
     ///
@@ -456,6 +459,7 @@ impl Sessions {
         &self,
         source: i64,
         stripped: &[i64],
+        model: ModelOverride,
     ) -> Result<i64, CoreError> {
         let store = self.ctx.store();
         let blocks = store.list_blocks(source).await?;
@@ -469,9 +473,7 @@ impl Sessions {
                 )
                 .await?);
         };
-        let clone = store
-            .fork_conversation(source, last, ModelOverride::default())
-            .await?;
+        let clone = store.fork_conversation(source, last, model).await?;
         store.detach_blocks(clone, stripped.to_vec()).await?;
         Ok(clone)
     }
@@ -794,6 +796,119 @@ impl Sessions {
         }
     }
 
+    /// Take a named set of blocks out of what a channel's session shows the
+    /// model, by forking the session without them (unit T4, 2026-08-31).
+    ///
+    /// Which blocks go is the caller's reading, taken per conversation over
+    /// that conversation's own ledger, so this door knows nothing about
+    /// answers, retractions or people. Answers whether anything was
+    /// replaced.
+    ///
+    /// Two shapes, one condition, and the condition is whether a DIGEST was
+    /// written from the stripped blocks. Prose a model wrote about a stretch
+    /// of conversation cannot be edited free of one message the way a
+    /// junction row is dropped, so a lineage whose digests hold the blocks
+    /// takes the regenerating scrub, at its per-hop model-turn cost — the
+    /// same mechanism and the same cost an erasure already accepts. When
+    /// nothing below the serving thread's own opening is stripped, no digest
+    /// can hold the blocks and the serving clone alone is the whole fork.
+    ///
+    /// The caller holds NEITHER hold: the scrub takes a model turn per hop,
+    /// and the swap takes the two holds for itself.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::CompactionUnsummarized`] if a regeneration captured
+    /// nothing; [`CoreError::StreamUnsettled`] if the serving thread's own
+    /// stream did not settle; [`CoreError::Store`] if a read or a write
+    /// fails.
+    pub(crate) async fn strip_from_view(
+        &self,
+        serving: i64,
+        stripped: &(dyn Fn(&[Block]) -> Vec<i64> + Sync),
+    ) -> Result<bool, CoreError> {
+        let store = self.ctx.store();
+        if let Some(lineage) = erasure::stripped_lineage(store, serving, stripped)
+            .await?
+            .filter(StrippedLineage::reaches_a_digest)
+        {
+            return self.scrub_compacted_digest(&lineage).await;
+        }
+        let blocks = store.list_blocks(serving).await?;
+        self.replace_with_clone(serving, &stripped(&blocks)).await
+    }
+
+    /// Hand a channel a clone of its own session minus the named blocks, and
+    /// retire what it replaced.
+    ///
+    /// The two holds are taken here and the mapping is re-read inside them,
+    /// for the reason every other replacement re-reads it: a `/wipe`, a
+    /// compaction or an erasure may have moved the channel since the caller
+    /// read it. The serving conversation's own stream is settled next,
+    /// exactly as a compaction settles its source — a turn still writing
+    /// into the conversation would land its answer in one this swap has
+    /// unmapped, and the streaming tail it had already written would ride
+    /// into the clone only to be swept out from under it. An administrator's
+    /// command arriving mid-answer therefore cuts that answer short, the same
+    /// way a reset does.
+    ///
+    /// The retirement is what makes the strip mean anything: the clone shares
+    /// every block it kept, so the stripped ones are held by the retired
+    /// conversation alone and the collector is what finally removes them.
+    /// Nothing here deletes a block by hand.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::StreamUnsettled`] if the stream did not settle before its
+    /// bound; [`CoreError::Store`] if a read or a write fails.
+    async fn replace_with_clone(&self, serving: i64, stripped: &[i64]) -> Result<bool, CoreError> {
+        if stripped.is_empty() {
+            return Ok(false);
+        }
+        let store = self.ctx.store();
+        let _no_erasure_mid_reset = self.erasure_fence.read().await;
+        let _one_reset_at_a_time = self.stamp_lock.lock().await;
+        let Some((channel, kind)) = self.mapped_channel(serving).await? else {
+            tracing::warn!(
+                serving,
+                "the conversation serves no channel any more, so the strip did not \
+                 run; if the stripped blocks ride in the channel's current session, \
+                 a repeat of the command strips them there"
+            );
+            return Ok(false);
+        };
+        self.settle(serving).await?;
+        let clone = self
+            .cloned_without(serving, stripped, self.current_model())
+            .await?;
+        // A swap that FAILS leaves the clone built, unmapped and reached by
+        // no sweep — the same exit the compacted door accounts for — so the
+        // error arm discards it before the failure travels.
+        let swapped = match self.swap_channel(serving, clone, &channel, kind).await {
+            Ok(swapped) => swapped,
+            Err(error) => {
+                self.discard(&[clone]).await;
+                return Err(error);
+            }
+        };
+        if !swapped {
+            tracing::warn!(
+                serving,
+                "the forked session lost the mapping claim and was dropped; the winner's session governs"
+            );
+            return Ok(false);
+        }
+        self.retire(serving).await?;
+        store.gc_orphan_blocks().await?;
+        tracing::info!(
+            serving,
+            clone,
+            stripped = stripped.len(),
+            "the channel's session was forked without the stripped blocks"
+        );
+        Ok(true)
+    }
+
     /// Scrub an erased principal's words out of every compacted digest they
     /// fed — the design's clone-strip-delete, copy-on-write.
     ///
@@ -838,6 +953,12 @@ impl Sessions {
         let store = self.ctx.store();
         let serving = stripped.serving.conversation;
         let Some((channel, kind)) = self.mapped_channel(serving).await? else {
+            tracing::warn!(
+                serving,
+                "the conversation serves no channel any more, so the scrub did not \
+                 run; if the scrubbed words ride in the channel's current session, \
+                 a repeat of the command scrubs them there"
+            );
             return Ok(false);
         };
         // Built with NEITHER hold: every hop below the serving thread costs a
@@ -885,7 +1006,7 @@ impl Sessions {
             root = stripped.root,
             depth = stripped.below.len() + 1,
             serving_clone,
-            "a compacted lineage was scrubbed of an erased principal's words"
+            "a compacted lineage was rebuilt without the stripped blocks' words"
         );
         Ok(true)
     }
@@ -921,7 +1042,7 @@ impl Sessions {
         // The root's clone IS the post-erasure history the oldest digest is
         // written from.
         let mut ancestor_clone = self
-            .cloned_without(stripped.root, &stripped.in_root)
+            .cloned_without(stripped.root, &stripped.in_root, ModelOverride::default())
             .await?;
         created.push(ancestor_clone);
         for hop in &stripped.below {
@@ -1332,6 +1453,22 @@ pub(crate) struct StrippedLineage {
     /// always has exactly one and no caller should have to answer what an
     /// empty one would mean.
     pub serving: StrippedHop,
+}
+
+impl StrippedLineage {
+    /// Whether any digest in this lineage was written from stripped blocks
+    /// — that is, whether anything BELOW the serving thread's own opening
+    /// goes.
+    ///
+    /// Every digest was written from the half beneath it, so a strip that
+    /// touches nothing beneath the serving thread cannot be inside any
+    /// digest's prose, and the serving clone alone answers it. A strip that
+    /// does reach down needs the whole chain regenerated: stopping at one
+    /// hop would leave the older digest inside the very history the newer
+    /// one is rewritten from.
+    pub(crate) fn reaches_a_digest(&self) -> bool {
+        !self.in_root.is_empty() || self.below.iter().any(|hop| !hop.stripped.is_empty())
+    }
 }
 
 /// Every conversation a scrubbed lineage retires, oldest first: the root

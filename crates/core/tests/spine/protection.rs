@@ -210,6 +210,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                  DROP TABLE {join};
                  DROP TABLE {delivered};
                  DROP TABLE {marks};
+                 DROP TABLE {retractions};
                  DROP TABLE group_authorizations;
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';",
                 index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
@@ -219,6 +220,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
                 marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
+                retractions = assistant_core::delivery::RETRACTION_TABLE,
             ))?;
             Ok(())
         })
@@ -260,7 +262,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        19,
+        20,
         "the appended steps advanced the domain's version"
     );
 

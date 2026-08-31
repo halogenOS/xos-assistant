@@ -103,6 +103,11 @@ struct ServerState {
     /// fixture for a group that restricted its reactions, a permission
     /// switched off, or a target the platform will not decorate.
     failing_reactions: Mutex<bool>,
+    /// Whether every message deletion answers a scripted refusal — the
+    /// fixture for the platform's own 48-hour window and for a message
+    /// somebody else already deleted (unit T4, 2026-08-31). Unset,
+    /// deletions succeed plainly.
+    failing_deletions: Mutex<bool>,
     /// The answer every `sendMessage` carrying reply parameters is served,
     /// as a status and a description. Unset, a threaded send is served
     /// like any other.
@@ -356,6 +361,17 @@ impl BotApiServer {
             .expect("the reaction refusal locks") = true;
     }
 
+    /// Script every message deletion from here on to answer a refusal — the
+    /// platform's own answer for a message past its 48-hour window, and for
+    /// one that is already gone.
+    pub fn fail_deletions(&self) {
+        *self
+            .state
+            .failing_deletions
+            .lock()
+            .expect("the deletion refusal locks") = true;
+    }
+
     /// Script every `sendChatAction` from here on to answer a server
     /// failure.
     pub fn fail_chat_actions(&self) {
@@ -554,6 +570,24 @@ fn reaction_answer(state: &Arc<ServerState>) -> (u16, Value) {
     (200, json!({ "ok": true, "result": true }))
 }
 
+/// Answer one message deletion from the script: the standing refusal, then
+/// plain success. The platform answers a message it cannot delete with a
+/// client error and no readable body, which is exactly what the
+/// adapter's own client reduces to a status.
+fn message_deletion_answer(state: &Arc<ServerState>) -> (u16, Value) {
+    if *state
+        .failing_deletions
+        .lock()
+        .expect("the deletion refusal locks")
+    {
+        return (
+            400,
+            json!({ "ok": false, "description": "Bad Request: message can't be deleted" }),
+        );
+    }
+    (200, json!({ "ok": true, "result": true }))
+}
+
 /// Answer one request from the script, recording it first.
 async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16, Value) {
     state
@@ -596,6 +630,7 @@ async fn dispatch(state: &Arc<ServerState>, method: String, body: Value) -> (u16
         }
         "sendMessage" => send_answer(state, &body),
         "setMessageReaction" => reaction_answer(state),
+        "deleteMessages" => message_deletion_answer(state),
         "getChat" => chat_info_answer(state, &body),
         "sendChatAction" => {
             if *state

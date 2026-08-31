@@ -1549,6 +1549,10 @@ pub enum AssistantKind {
     /// One emoji the assistant put on a message (the mark module owns the
     /// kind; it composes here so one parse path reads every block).
     MessageMark(crate::tools::mark::MessageMark),
+    /// One recorded delivery an administrator asked back (the delivery
+    /// module owns the kind; it composes here so one parse path reads every
+    /// block).
+    Retraction(crate::delivery::Retraction),
 }
 
 /// A text field read by column name from a loaded block's fields, absent when

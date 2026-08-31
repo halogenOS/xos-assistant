@@ -20,8 +20,8 @@ use std::time::Instant;
 use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{ProviderInstance, StoreTx};
 use agent_ledger::{
-    BlockKind, CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext, Store,
-    spawn_reactor,
+    Block, BlockKind, CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext,
+    Store, spawn_reactor,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 
@@ -59,7 +59,8 @@ use crate::window::{
     RESET_REPLY_WINDOW, ReplyWindow,
 };
 use crate::{
-    authorization, delivery, identity, join, mapping, mirror, outbound, privacy, session, streams,
+    authorization, delivery, identity, join, lineage, mapping, mirror, outbound, privacy, session,
+    streams,
 };
 
 /// The erasure fence, as the shared handle the report tool receives at its
@@ -98,6 +99,11 @@ pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
     // unanswered question behind a run of reactions would stop owing its
     // turn.
     mark::MESSAGE_MARK_KIND,
+    // The retraction (unit T4, 2026-08-31): appended by the deletion
+    // command's own path, ahead of the command row and therefore behind
+    // whatever the conversation was already owing. A debt standing behind
+    // one still owes its turn.
+    delivery::RETRACTION_KIND,
 ];
 
 /// The most conversations the palette-reconciliation memory holds. Past
@@ -861,9 +867,9 @@ impl Assistant {
     /// row mid-claim. [`CoreError::Store`] if identity resolution, mapping
     /// or the append fails.
     pub async fn ingest(&self, message: InboundMessage) -> Result<IngestOutcome, CoreError> {
-        // Named without an underscore because the compaction command below
-        // releases both holds explicitly before it runs; every other path
-        // holds them to its return.
+        // Named without an underscore because the compaction and retraction
+        // commands below release both holds explicitly before their
+        // mechanisms run; every other path holds them to its return.
         let no_erasure_mid_message = self.sessions.erasure_fence().read().await;
         let tx = self.ctx.store().tx();
 
@@ -879,6 +885,7 @@ impl Assistant {
             principal_id,
             authority,
             command,
+            deletion,
             family,
             suppressed,
         } = sender;
@@ -934,18 +941,26 @@ impl Assistant {
         // record of the request.
         //
         // Recognising the command and acting on it are two readings (unit
-        // T3, 2026-08-31), taken together in [`Self::mirror_deletion`]:
-        // what comes back is the RECOGNITION, which the stamp below reads,
-        // while the erasure it may or may not have run is the narrower
-        // question. A deletion command arriving as a revision therefore
-        // stays a command — silent, no debt, no budget slot — while the
-        // store is left alone.
-        let deletion_command = self
-            .mirror_deletion(&tx, conversation_id, &message, authority)
+        // T3, 2026-08-31). The RECOGNITION was taken with the sender and is
+        // what the stamp below reads; the effect this call runs is the
+        // narrower question. A deletion command arriving as a revision
+        // therefore stays a command — silent, no debt, no budget slot —
+        // while nothing is erased and nothing is retracted.
+        //
+        // One command, two effects, decided by what the reply names (unit
+        // T4, 2026-08-31). A reply naming a person's message erases that
+        // row here and now. A reply naming one of the assistant's own
+        // messages appends the retraction fact here — under this ingestion's
+        // holds, where the ledger is serialized — and answers the origins
+        // the chat must lose. The FORK that takes the retracted answer out
+        // of the model's view runs past the holds, with the compaction, for
+        // the reason stated there.
+        let retraction = self
+            .perform_deletion(&tx, conversation_id, &message, deletion)
             .await?;
         let summons = self.resolved_summons(&message);
         let owing_tail = self.owed_tail(conversation_id, &message, summons).await?;
-        let commanded = command.is_some() || deletion_command;
+        let commanded = command.is_some() || deletion.is_some();
         let limited = self
             .limiting_fact(commanded, summons, principal_id, conversation_id)
             .await?;
@@ -1013,6 +1028,7 @@ impl Assistant {
                 RecordedRow { conversation_id },
                 sender,
                 notice_admitted,
+                retraction,
             )
             .await;
         if stamp.own_debt_taken() {
@@ -1025,22 +1041,21 @@ impl Assistant {
         // that was refused before it reached the ledger does not count as
         // activity on a channel it never joined.
         self.context.record_inbound(conversation_id);
-        // The two holds are released HERE, before the one command that
-        // drives a model turn of its own runs. Holding the single ingestion
-        // lock across a model call would stall every conversation this
-        // process serves for that call's whole latency — the rules
-        // acknowledgment's own recorded reasoning, and the reason
-        // `/compact` cannot be answered from inside the lock the rest of the
-        // ingestion needs.
+        // The two holds are released HERE, before the mechanisms that
+        // replace a session run. Holding the single ingestion lock across a
+        // model call would stall every conversation this process serves for
+        // that call's whole latency — the rules acknowledgment's own
+        // recorded reasoning, and the reason `/compact` cannot be answered
+        // from inside the lock the rest of the ingestion needs. The
+        // retraction's fork is here for a second reason as well: it re-takes
+        // both holds for its own swap, and the compacted case re-takes them
+        // through the digest scrub, so calling it under them would deadlock
+        // on this very lock.
         drop(one_stamp_at_a_time);
         drop(no_erasure_mid_message);
-        let (deliver, reset) = match answered {
-            CommandAnswer::Settled(deliver, reset) => (deliver, reset),
-            CommandAnswer::Compaction => {
-                self.compaction_answer(&message, principal_id, conversation_id)
-                    .await
-            }
-        };
+        let (deliver, reset) = self
+            .released_answer(answered, &message, principal_id, conversation_id)
+            .await;
         Ok(IngestOutcome::Recorded {
             receipt: IngestReceipt {
                 principal_id,
@@ -1049,6 +1064,34 @@ impl Assistant {
             deliver,
             reset,
         })
+    }
+
+    /// What the write's answer came to, once the ingestion's holds are
+    /// released: an answer already in hand, or the mechanism that still owes
+    /// one.
+    ///
+    /// Both mechanisms here replace a channel's session, and neither may run
+    /// under the holds. The compaction takes a model turn, and no hold may
+    /// be held across one. The retraction's fork re-takes both holds for its
+    /// own swap — through the digest scrub, in the compacted case — so
+    /// calling it inside them would deadlock on the ingestion's own lock.
+    async fn released_answer(
+        &self,
+        answered: CommandAnswer,
+        message: &InboundMessage,
+        principal_id: i64,
+        conversation_id: i64,
+    ) -> (Option<DeliveryItem>, ChannelReset) {
+        match answered {
+            CommandAnswer::Settled(deliver, reset) => (deliver, reset),
+            CommandAnswer::Compaction => {
+                self.compaction_answer(message, principal_id, conversation_id)
+                    .await
+            }
+            CommandAnswer::Retraction(retraction) => {
+                self.retraction_answer(retraction, conversation_id).await
+            }
+        }
     }
 
     /// `/compact`, run once the ingestion's holds are released: the one
@@ -1697,11 +1740,11 @@ impl Assistant {
     /// unresolved, the message is refused transient and redelivers — the
     /// never-default rule, without letting a stranger group's failing
     /// authority source starve the batch (see the error's doc).
-    async fn resolve_writing_sender(
+    async fn resolve_writing_sender<'a>(
         &self,
         tx: &StoreTx,
-        message: &InboundMessage,
-    ) -> Result<Option<WritingSender>, CoreError> {
+        message: &'a InboundMessage,
+    ) -> Result<Option<WritingSender<'a>>, CoreError> {
         let standing = identity::find_standing(
             tx,
             message.channel.adapter.clone(),
@@ -1736,6 +1779,12 @@ impl Assistant {
             principal_id,
             authority,
             command,
+            // The moderation bot's token is no catalogue command, so it has
+            // its own recognition — taken HERE, beside the catalogue's, so
+            // one write asks the message once and the stamp, the mirror and
+            // the retraction all read the same answer. It needs the resolved
+            // authority, which is why it stands past the refusal above.
+            deletion: mirror::recognized_deletion(message, authority),
             family,
             suppressed,
         }))
@@ -1875,29 +1924,150 @@ impl Assistant {
         Ok(None)
     }
 
-    /// The deletion mirror's two readings for one write (decision 0179):
-    /// whether the message IS the moderation bot's deletion command, and
-    /// whether the mirror therefore erases. The recognition is taken once
-    /// and returned — the write's command stamp reads it — while the
-    /// action is that same recognition narrowed by the mirror's own gate,
-    /// so a command the mirror declines to act on is still a command.
+    /// What the recognized deletion command DOES, decided by what its reply
+    /// names (unit T4, 2026-08-31) and narrowed by the revision reading of
+    /// decision 0180.
     ///
-    /// Answers `true` for a recognized deletion command, erasure or no
-    /// erasure. The ordering reasoning for WHERE this runs is at the call
-    /// site; what it erases is [`Self::mirror_named_deletion`] below.
-    async fn mirror_deletion(
+    /// A reply naming a person's message erases that stored row and answers
+    /// nothing. A reply naming one of the assistant's own messages resolves
+    /// the recorded delivery that message belonged to, appends the retraction
+    /// fact unless one already stands, and answers what the chat must lose.
+    /// A reply the platform carried no id for, and one naming a message no
+    /// delivery was ever recorded for, resolve nothing and answer nothing —
+    /// the command stays recognized either way, so the row still records
+    /// silently and takes no debt.
+    ///
+    /// The recognition rides in from the sender resolution instead of being
+    /// asked again, so the stamp and this reading are one recognition per
+    /// write. The ordering reasoning for WHERE this runs is at the call site;
+    /// what the mirror erases is [`Self::mirror_named_deletion`] above.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Store`] if a lookup, a null or the retraction's append
+    /// fails.
+    async fn perform_deletion(
         &self,
         tx: &StoreTx,
         conversation_id: i64,
         message: &InboundMessage,
-        authority: Authority,
-    ) -> Result<bool, CoreError> {
-        let recognized = mirror::recognized_deletion(message, authority);
-        if let Some(target) = mirror::mirrored_target(message, recognized) {
-            self.mirror_named_deletion(tx, conversation_id, target)
-                .await?;
+        recognized: Option<mirror::DeletionAsk<'_>>,
+    ) -> Result<Option<ResolvedRetraction>, CoreError> {
+        match mirror::performed_deletion(message, recognized) {
+            Some(mirror::DeletionAsk::Message { origin }) => {
+                self.mirror_named_deletion(tx, conversation_id, origin)
+                    .await?;
+                Ok(None)
+            }
+            Some(mirror::DeletionAsk::AssistantMessage {
+                origin: Some(origin),
+            }) => self.resolve_retraction(tx, conversation_id, origin).await,
+            Some(mirror::DeletionAsk::AssistantMessage { origin: None }) | None => Ok(None),
         }
-        Ok(recognized.is_some())
+    }
+
+    /// Resolve the delivery an administrator's reply named and record the
+    /// retraction of it.
+    ///
+    /// The lookups are scoped to the channel's whole thread lineage, not to
+    /// this one conversation: a platform message id is unique per channel,
+    /// and a compaction leaves the serving thread holding only the second
+    /// half, so a conversation-scoped lookup would go blind on every delivery
+    /// recorded before the cut.
+    ///
+    /// The fact is appended at most once per delivery. Asking twice is one
+    /// ask, and the recorded fact is the ask — while the WIRE call is
+    /// re-issued on every repeat, because the first one may have failed and
+    /// an administrator who sees the message still standing is telling us so.
+    /// That is why the origins are answered whether or not a retraction
+    /// already stood.
+    async fn resolve_retraction(
+        &self,
+        tx: &StoreTx,
+        conversation_id: i64,
+        origin: &str,
+    ) -> Result<Option<ResolvedRetraction>, CoreError> {
+        let store = self.ctx.store();
+        let lineage = lineage::serving_lineage(store, conversation_id).await?;
+        let Some(key) = delivery::delivery_of_origin(tx, &lineage, origin).await? else {
+            tracing::debug!(
+                conversation_id,
+                "the reply names a message this channel recorded no delivery for; \
+                 the command is recorded and nothing is retracted"
+            );
+            return Ok(None);
+        };
+        let send = delivery::recorded_send(tx, &lineage, &key).await?;
+        if delivery::retraction_stands(tx, &lineage, &key).await? {
+            tracing::info!(
+                conversation_id,
+                messages = send.origins.len(),
+                "the delivery already carries a retraction; the ask is re-issued and no \
+                 second fact is appended"
+            );
+        } else {
+            delivery::record_retraction(store, conversation_id, &key).await?;
+            tracing::info!(
+                conversation_id,
+                messages = send.origins.len(),
+                "an administrator's reply retracted one of the assistant's own deliveries"
+            );
+        }
+        Ok(Some(ResolvedRetraction {
+            origins: send.origins,
+            answer_blocks: send.answer_blocks,
+        }))
+    }
+
+    /// The retraction, run once the ingestion's holds are released: the fork
+    /// that takes the retracted answer out of the model's view, and then the
+    /// directive that takes its messages out of the chat.
+    ///
+    /// The fork runs FIRST and unconditionally. What the platform does with
+    /// the deletion request is the platform's — a message past its 48-hour
+    /// window cannot be taken back — and the assistant's own reading must not
+    /// depend on it: an answer that was retracted is one the assistant no
+    /// longer speaks from, whether or not the chat still shows it. A failed
+    /// fork is logged and the directive still goes out, for the same reason
+    /// in reverse.
+    ///
+    /// The directive is answered on every repeat, including one whose fork
+    /// found nothing left to strip. The retraction fact stands from the first
+    /// ask; the wire call is what an administrator's repeat is asking for.
+    async fn retraction_answer(
+        &self,
+        retraction: ResolvedRetraction,
+        conversation_id: i64,
+    ) -> (Option<DeliveryItem>, ChannelReset) {
+        let answer_blocks = retraction.answer_blocks.clone();
+        let stripped = move |blocks: &[Block]| delivery::retracted_blocks(blocks, &answer_blocks);
+        match self
+            .sessions
+            .strip_from_view(conversation_id, &stripped)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => tracing::debug!(
+                conversation_id,
+                "the retracted answer was already out of the session's view, or the \
+                 channel had moved on"
+            ),
+            Err(error) => tracing::warn!(
+                conversation_id,
+                %error,
+                "the retracted answer could not be forked out of the session's view; it \
+                 stands there, and a repeat of the command runs the fork again"
+            ),
+        }
+        (
+            Some(DeliveryItem::Retraction {
+                origins: retraction.origins,
+            }),
+            // The fork carries every block but the retracted answer's, so
+            // the channel's standing observations cross with it and the
+            // adapter has nothing to forget.
+            ChannelReset::Kept,
+        )
     }
 
     /// The summons resolution — the ONE place the answering mode enters
@@ -2220,6 +2390,12 @@ impl Assistant {
     /// channel it does not serve, is recognized, stamped and answered with
     /// silence.
     ///
+    /// A resolved retraction answers ahead of the catalogue, and the two
+    /// cannot both stand for one write: the moderation bot's token is no
+    /// catalogue command, so a message that resolved a retraction is a
+    /// message the catalogue recognized nothing in. Its own mechanism runs
+    /// past the holds, like the compaction's.
+    ///
     /// The caller holds the erasure fence shared and the stamp lock, which
     /// is what lets the two session resets swap a channel's conversation
     /// from here with no ingestion halfway through one.
@@ -2228,9 +2404,13 @@ impl Assistant {
         tx: &StoreTx,
         message: &InboundMessage,
         recorded: RecordedRow,
-        sender: WritingSender,
+        sender: WritingSender<'_>,
         notice_admitted: bool,
+        retraction: Option<ResolvedRetraction>,
     ) -> CommandAnswer {
+        if let Some(retraction) = retraction {
+            return CommandAnswer::Retraction(retraction);
+        }
         let WritingSender {
             principal_id,
             authority,
@@ -2493,7 +2673,8 @@ impl Assistant {
                 | AssistantKind::JoinNotice(_)
                 | AssistantKind::Report(_)
                 | AssistantKind::Delivered(_)
-                | AssistantKind::MessageMark(_),
+                | AssistantKind::MessageMark(_)
+                | AssistantKind::Retraction(_),
             )
             | None => None,
         })
@@ -2616,13 +2797,19 @@ enum RevisionLink {
 /// stands — the facts [`Assistant::resolve_writing_sender`] hands the stamp,
 /// the stored fields and the delivery.
 #[derive(Debug, Clone, Copy)]
-struct WritingSender {
+struct WritingSender<'a> {
     principal_id: i64,
     authority: Authority,
     /// The catalogue command the message invokes, if any — the one
     /// recognition of the write. The stamp reads whether it is present at
     /// all; the delivery reads which one it is.
     command: Option<Command>,
+    /// The moderation bot's deletion command and what it names, if the
+    /// message is one — the write's OTHER recognition, taken here beside the
+    /// catalogue's so no later reader asks the message a second time. The
+    /// stamp reads whether it is present at all; the mirror and the
+    /// retraction read which side of the ask it names.
+    deletion: Option<mirror::DeletionAsk<'a>>,
     /// The privacy family member the command projects to, if any: the
     /// suppression exemption's own reading.
     family: Option<PrivacyCommand>,
@@ -2650,6 +2837,30 @@ enum CommandAnswer {
     /// `/compact` was invoked and offered: the mechanism runs past the
     /// holds, and its own reply reports what it did.
     Compaction,
+    /// The moderation bot's deletion command named one of the assistant's
+    /// own deliveries, and the retraction fact for it is already on the
+    /// ledger: the fork that takes the answer out of the model's view runs
+    /// past the holds — it re-takes both for its own swap — and the chat's
+    /// own directive is answered with it.
+    Retraction(ResolvedRetraction),
+}
+
+/// One resolved retraction, carried from the ingestion's held stretch to the
+/// mechanisms that run past the holds: what the chat must lose, and what the
+/// assistant's own reading must lose.
+///
+/// The two travel together because they are one act read two ways — the
+/// messages an administrator asked back, and the stored blocks those messages
+/// were the transport for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedRetraction {
+    /// The platform ids of every message of the retracted delivery, in send
+    /// order.
+    origins: Vec<String>,
+    /// The assistant's own blocks the delivery carried. Empty for a send of
+    /// fixed prose, which the ledger never stored and the fork has nothing
+    /// to take out.
+    answer_blocks: Vec<i64>,
 }
 
 /// Where one ingested message landed: the conversation it was written into,
