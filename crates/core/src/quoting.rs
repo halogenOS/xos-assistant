@@ -139,7 +139,7 @@ fn characters(text: &str) -> i64 {
 /// - a reply to one of the assistant's own messages that the ledger cannot
 ///   resolve lands quoteless the same way (unit 38, 2026-08-30): a message
 ///   she sent before her deliveries were recorded, one whose receipt never
-///   landed, a deterministic item or a notice, which carry no block of
+///   landed, a deterministic item, which carries no block of
 ///   hers at all, and a reply the platform carried no id on. The quote
 ///   resolves against what the ledger holds when the reply lands and
 ///   nothing heals backwards — a receipt appended after a reply already

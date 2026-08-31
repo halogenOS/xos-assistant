@@ -1,8 +1,8 @@
 //! Addressing end to end over the public wire: the identity-first contract,
 //! the three addressed shapes each answered, the unaddressed message that
 //! rests into the next context, the debt that survives a trailing
-//! unaddressed message, and the failure notice's plain line with the
-//! addressed re-engagement.
+//! unaddressed message, and the failed turn's silence with the addressed
+//! re-engagement.
 
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    BOT_USERNAME, TempStateFile, answer_to, authorize_group, await_chat_messages,
+    self, BOT_USERNAME, TempStateFile, answer_to, authorize_group, await_chat_messages,
     await_conversations, await_receipts, first_answer_to, group_update, mention_update,
     private_update, recording_sleep, reply_to_bot_update, spawn_adapter, start_assistant,
 };
@@ -229,45 +229,47 @@ async fn a_trailing_unaddressed_message_does_not_cancel_the_owed_answer() {
     await_chat_messages(&fixture.store, conversation, 2).await;
 }
 
-/// A failed turn reaches the chat as the one plain notice line, and the next
-/// addressed message re-engages the conversation.
+/// A failed turn reaches the chat with nothing at all, and the next
+/// addressed message re-engages the conversation (unit 49).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failed_turn_sends_the_plain_notice_line_and_the_chat_recovers() {
+async fn a_failed_turn_sends_nothing_and_the_chat_recovers() {
     let fixture = start_assistant().await;
     let server = BotApiServer::start().await;
+    let mut events = fixture.bus.subscribe();
     fixture
         .failures
         .store(1, std::sync::atomic::Ordering::SeqCst);
     server.push_update(private_update(1, 5, "the failing ask"));
 
-    let state = TempStateFile::new("notice-line");
+    let state = TempStateFile::new("silent-failure");
     let (sleep, _) = recording_sleep();
     let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
 
-    let sends = server.await_recorded("sendMessage", 1).await;
-    assert_eq!(
-        sends[0].body["text"],
-        json!(assistant_core::FAILURE_NOTICE),
-        "the notice goes out as one plain line"
-    );
-    assert_eq!(sends[0].body["chat_id"], json!(5));
-
-    // The notice's own delivery is recorded before the next message, so
-    // the ledger the second turn projects is settled rather than raced
-    // (unit 38, 2026-08-30): a receipt is a real block, appended after the
-    // send, and it ends the contiguous user run before it — the framework's
-    // stated consequence for every record kind, the report's included.
+    // The failed turn's own settling, awaited on the latch it closes. The
+    // latch orders nothing about the outbound edge's arm; the empty wire is
+    // decided by the arm having no send left in it and by this turn having
+    // stored nothing to deliver. The wait itself keeps the second update
+    // from overtaking the first turn.
     let conversation = await_conversations(&fixture.store, 1).await[0];
-    await_receipts(&fixture.store, conversation, 1).await;
+    support::await_failure_latch(&mut events, conversation).await;
+    assert!(
+        server.recorded("sendMessage").is_empty(),
+        "the failed turn put nothing on the wire"
+    );
 
     // The next message from the same chat is addressed — a direct chat
     // always is — so it unlatches and gets answered.
     server.push_update(private_update(2, 5, "asking again"));
-    let sends = server.await_recorded("sendMessage", 2).await;
+    let sends = server.await_recorded("sendMessage", 1).await;
+    assert_eq!(sends[0].body["chat_id"], json!(5));
     assert_eq!(
-        sends[1].body["text"],
-        json!(first_answer_to("asking again")),
-        "the failed ask stands in its own user message, behind the notice's \
-         receipt, and the second turn answers the message that summoned it"
+        sends[0].body["text"],
+        json!(first_answer_to("the failing ask\n\nasking again")),
+        "the answer is the chat's first message: the dead turn recorded no \
+         block of its own between the two asks, so they stand as one user \
+         run and the answer covers both"
     );
+
+    // The delivery of that answer is recorded like any other send.
+    await_receipts(&fixture.store, conversation, 1).await;
 }

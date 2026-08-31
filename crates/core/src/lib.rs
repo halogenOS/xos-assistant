@@ -110,9 +110,7 @@ pub use message::{
     OutboundMark, OutboundReply, QuotedExcerpt, ReplyKind, ReplyTarget, ReplyThread,
     SenderIdentity,
 };
-pub use outbound::{
-    FAILURE_NOTICE, PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT,
-};
+pub use outbound::{PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT};
 pub use teaching::{
     Capabilities, MODERATION_TEACHING, REACT_TEACHING, SEARCH_TEACHING, composed_system_prompt,
     moderation_taught,

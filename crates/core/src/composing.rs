@@ -33,8 +33,7 @@
 //! channel is stopped and the set cleared; a stop lost inside the lag
 //! stays stopped, the failure direction a presence cue wants. The stop is
 //! still delivered at most once end-to-end, and a turn can end without
-//! any further state event reaching this edge — the quiet failure above
-//! all — so no open signal may depend on a stop arriving: every begin
+//! any further state event reaching this edge, so no open signal may depend on a stop arriving: every begin
 //! carries a deadline of [`COMPOSING_SIGNAL_LIFETIME`], and a signal
 //! still open at its deadline is stopped on the edge's own clock (refined
 //! 2026-08-23, after a lost stop left an adapter refreshing an indicator

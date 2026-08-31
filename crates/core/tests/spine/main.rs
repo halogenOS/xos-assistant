@@ -11,7 +11,7 @@
 //! two drops that record nothing and the read that fails closed),
 //! audience (the clarifying question's ordinary delivery and
 //! the two-turn disambiguation),
-//! addressing (the answer-due stamp, the notice, re-engagement),
+//! addressing (the answer-due stamp, the silent failed turn, re-engagement),
 //! bots (an automated sender summoned by address alone, its message
 //! carrying no owing tail, and the debt waiting behind it for a carrier
 //! entitled to it),

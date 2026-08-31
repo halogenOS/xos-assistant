@@ -27,3 +27,8 @@ the substance.
 - **Blind automatic retry.** Spends without consent and can loop.
 - **A notice classified by string-matching provider prose.** A coupling to wording
   nobody owns.
+
+---
+
+Amended 2026-08-31: superseded by decision 0192. A failed turn now says nothing in the
+chat, for every failure cause, and the log carries the record instead.

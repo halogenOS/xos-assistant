@@ -16,8 +16,8 @@ use agent_ledger::providers::{
     BoxFuture, ContentPart as WirePart, Message, MessageContent, ModelInfo, ProviderRx, ProviderTx,
 };
 use agent_ledger::{
-    Block, EventBus, LlmError, ProviderModule, ProviderRegistry, ProviderRequest, ProviderResponse,
-    StopReason, Store, StoreError, StreamEvent,
+    Block, CoreEvent, EventBus, LlmError, ProviderModule, ProviderRegistry, ProviderRequest,
+    ProviderResponse, StopReason, Store, StoreError, StreamEvent,
 };
 use assistant_adapter_telegram::{ADAPTER_NAME, Config, Sleep, TelegramAdapter};
 use assistant_core::delivery::Delivered;
@@ -385,6 +385,11 @@ fn message_text(message: &Message) -> String {
 pub struct Fixture {
     pub assistant: Arc<Assistant>,
     pub store: Store,
+    /// The bus the assembly runs on, kept so a test can wait on a turn's
+    /// own settling instead of on the wire. A failed turn writes nothing to
+    /// the store and sends nothing to the platform, so its events are the
+    /// only place its ending is stated; see [`await_failure_latch`].
+    pub bus: Arc<EventBus<CoreEvent>>,
     /// How many upcoming turns fail with a scripted stream error.
     pub failures: Arc<AtomicUsize>,
     /// Every turn request's projected messages, as the scripted provider
@@ -414,10 +419,10 @@ impl Fixture {
         hold
     }
 
-    /// Reword the error every scripted failure streams. The default is an
-    /// ordinary transient rendering, which the core answers with the
-    /// failure notice; the quiet-failure pin words it as the payment
-    /// rendering instead, which the core keeps out of the chat entirely.
+    /// Reword the error every scripted failure streams. Nothing reads the
+    /// text: a failed turn is silent in the chat whatever it says, and a
+    /// test that words it differently asserts exactly that — the error
+    /// reaches the log and no further.
     pub fn word_failures_as(&self, text: &str) {
         text.clone_into(&mut self.failure_text.lock().expect("the failure text locks"));
     }
@@ -533,9 +538,10 @@ async fn assemble(
         failure_text: Arc::clone(&failure_text),
         title_requests: Arc::clone(&title_requests),
     }));
+    let bus: Arc<EventBus<CoreEvent>> = Arc::new(EventBus::new());
     let assistant = Assistant::start(
         store.clone(),
-        Arc::new(EventBus::new()),
+        Arc::clone(&bus),
         Arc::new(providers),
         tools,
         assistant_core::AssemblyConfig {
@@ -566,11 +572,42 @@ async fn assemble(
     Fixture {
         assistant: Arc::new(assistant),
         store,
+        bus,
         failures,
         seen,
         turn_hold,
         failure_text,
         title_requests,
+    }
+}
+
+/// Wait until one conversation's failed turn has settled: the stream error
+/// followed by the latch that closes the conversation on it. A failed turn
+/// leaves no block and sends no message, so this is the only statement of
+/// its ending — and reading the wire before it would race the core rather
+/// than observe it.
+pub async fn await_failure_latch(
+    events: &mut tokio::sync::broadcast::Receiver<CoreEvent>,
+    conversation_id: i64,
+) {
+    let mut failed = false;
+    loop {
+        let event = tokio::time::timeout(DEADLINE, events.recv())
+            .await
+            .expect("the failed turn settles before the deadline")
+            .expect("the bus outlives the test");
+        match event {
+            CoreEvent::StreamError {
+                conversation_id: conv,
+                ..
+            } if conv == conversation_id => failed = true,
+            CoreEvent::ConversationState {
+                conversation_id: conv,
+                latched: true,
+                ..
+            } if failed && conv == conversation_id => return,
+            _ => {}
+        }
     }
 }
 

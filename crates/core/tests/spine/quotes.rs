@@ -19,9 +19,9 @@ use agent_ledger::{
 use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND, COLUMN_TEXT};
 use assistant_core::schema::{DOMAIN, store_config};
 use assistant_core::{
-    AnsweringMode, ChannelKey, ChannelKind, ErasureOutcome, JoinedMember, Observation,
-    ObserveOutcome, ObservedFact, ProtectionConfig, QuotedExcerpt, ReplyKind, ReplyTarget,
-    SenderIdentity,
+    AnsweringMode, ChannelKey, ChannelKind, DeliveryItem, ErasureOutcome, IngestOutcome,
+    JoinedMember, Observation, ObserveOutcome, ObservedFact, ProtectionConfig, QuotedExcerpt,
+    ReplyKind, ReplyTarget, SenderIdentity,
 };
 
 use crate::support::{self, inbound, inbound_unaddressed, recv_reply, with_origin, with_reply};
@@ -791,40 +791,44 @@ async fn a_reply_to_an_unresolvable_message_of_hers_lands_quoteless() {
     }
 }
 
-/// Unit 38 AC6, the notice's own case: a reply to the failure notice
-/// lands quoteless. The notice is the core's fixed prose and is never
-/// stored, so its receipt names no block of hers and the resolution
-/// answers nothing — and she still wakes on the reply.
+/// Unit 38 AC6, the deterministic send's own case: a reply to the privacy
+/// command's answer lands quoteless. That answer is the core's fixed prose
+/// and is never stored, so its receipt names no block of hers and the
+/// resolution answers nothing — and she still wakes on the reply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_reply_to_the_failure_notice_lands_quoteless() {
+async fn a_reply_to_a_deterministic_answer_lands_quoteless() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
         .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
-    let room = support::authorized_group(&fixture.assistant, "room-quote-her-notice").await;
+    let room = support::authorized_group(&fixture.assistant, "room-quote-her-fixed").await;
 
-    fixture.script.fail_next_turns(1);
-    let first = support::ingest_recorded(
-        &fixture.assistant,
-        with_origin(
-            inbound(&room, ChannelKind::Group, "A", "the failing ask"),
-            "org-her-notice",
-        ),
-    )
-    .await;
-    let notice = recv_reply(&mut replies).await;
-    assert_eq!(
-        notice.kind,
-        ReplyKind::Notice,
-        "non-vacuity: the send under test is the notice's"
-    );
-    support::report_delivery(&fixture.assistant, notice.delivery, &["notice-1"]).await;
+    let outcome = fixture
+        .assistant
+        .ingest(support::with_command(
+            with_origin(
+                inbound_unaddressed(&room, ChannelKind::Group, "A", "/privacy"),
+                "org-her-command",
+            ),
+            "/privacy",
+        ))
+        .await
+        .expect("the command ingests");
+    let IngestOutcome::Recorded {
+        receipt,
+        deliver: Some(DeliveryItem::CommandAnswer(_)),
+        ..
+    } = outcome
+    else {
+        panic!("non-vacuity: the send under test is the command answer's: {outcome:?}");
+    };
+    support::report_delivery(&fixture.assistant, receipt.delivery(), &["fixed-1"]).await;
 
     support::ingest_recorded(
         &fixture.assistant,
-        her_reply(&room, "org-second", "notice-1", "what happened?"),
+        her_reply(&room, "org-second", "fixed-1", "what does that cover?"),
     )
     .await;
     let answered = recv_reply(&mut replies).await;
@@ -832,13 +836,14 @@ async fn a_reply_to_the_failure_notice_lands_quoteless() {
     assert_eq!(
         answered.kind,
         ReplyKind::Answer,
-        "she still wakes on a reply to the notice"
+        "she still wakes on a reply to a deterministic answer"
     );
     assert!(
-        quote_blocks(&fixture.store, first.conversation_id)
+        quote_blocks(&fixture.store, receipt.conversation_id)
             .await
             .is_empty(),
-        "the notice is not stored, so nothing of hers is quoted and nothing invented"
+        "the command answer is not stored, so nothing of hers is quoted \
+         and nothing invented"
     );
 }
 
@@ -879,7 +884,11 @@ async fn the_crash_shape_over_her_block_asks_nothing_and_settles_nothing() {
     support::report_delivery(&fixture.assistant, answer.delivery, &["her-crash"]).await;
 
     // A question the assistant never answered — its turn fails — so a real
-    // debt stands behind whatever lands next.
+    // debt stands behind whatever lands next. The failure is awaited at the
+    // latch it closes, and it reaches the chat with nothing: the channel is
+    // empty past that point, which is the non-vacuity here — the second
+    // turn provably died instead of quietly answering.
+    let mut events = fixture.bus.subscribe();
     fixture.script.fail_next_turns(1);
     support::ingest_recorded(
         &fixture.assistant,
@@ -889,8 +898,14 @@ async fn the_crash_shape_over_her_block_asks_nothing_and_settles_nothing() {
         ),
     )
     .await;
-    let notice = recv_reply(&mut replies).await;
-    assert_eq!(notice.kind, ReplyKind::Notice, "the second turn failed");
+    support::await_failure_latch(&mut events, conversation).await;
+    assert!(
+        matches!(
+            replies.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "the failed turn said nothing: the debt stands with no send behind it"
+    );
 
     // The crash shape: the quote of HER answer lands, its message does not.
     let her_block = settled.last().expect("her answer is the settled tail");

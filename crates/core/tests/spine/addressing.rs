@@ -1,7 +1,7 @@
 //! The addressing seam at the core's edge: the write-time answer-due stamp,
 //! the resting unaddressed message, the debt that propagates instead of
-//! cancelling, the recorded system prompt, and the failure notice with the
-//! addressed re-engagement.
+//! cancelling, the recorded system prompt, and the silent failed turn with
+//! the addressed re-engagement.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use agent_ledger::{CoreEvent, EventBus, Store};
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::schema::store_config;
-use assistant_core::{Assistant, ChannelKind, FAILURE_NOTICE, ReplyKind};
+use assistant_core::{Assistant, ChannelKind, ReplyKind};
 use serde_json::json;
 
 use crate::support::{
@@ -127,40 +127,41 @@ async fn the_system_prompt_is_recorded_and_projected() {
     );
 }
 
-/// The failure notice and the addressed re-engagement, end to end on the
-/// core's edges: a scripted stream error latches the conversation and yields
-/// exactly one notice, marked as a notice; the next addressed message
-/// unlatches, and the conversation answers again.
+/// AC1: the silent failed turn and the addressed re-engagement, end to end
+/// on the core's edges. A scripted stream error latches the conversation
+/// and puts NOTHING on the channel — the turn stored nothing, so there is
+/// nothing to deliver and no line about the failure — and the next
+/// addressed message unlatches and is answered.
 ///
-/// The notice is at most once by construction — it derives from a lossy bus
-/// event — so this test pins the one-notice case, not a redelivery.
+/// The absence is awaited at the mechanism's own settling point: the latch
+/// the failed turn closes. The latch orders nothing about the edge's arm;
+/// the empty channel is decided by the arm itself, which has no send left
+/// in it, and by this turn having stored nothing to deliver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failed_turn_yields_one_notice_and_the_next_addressed_message_reengages() {
+async fn a_failed_turn_says_nothing_and_the_next_addressed_message_reengages() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
         .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
+    let mut events = fixture.bus.subscribe();
     let key = channel("dm-failure");
 
     fixture.script.fail_next_turns(1);
-    support::ingest_recorded(
+    let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound(&key, ChannelKind::Direct, "42", "the failing ask"),
     )
     .await;
 
-    let notice = recv_reply(&mut replies).await;
-    assert_eq!(notice.kind, ReplyKind::Notice, "the notice is marked");
-    assert_eq!(notice.text, FAILURE_NOTICE);
-    assert_eq!(notice.channel, key);
+    support::await_failure_latch(&mut events, receipt.conversation_id).await;
     assert!(
         matches!(
             replies.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ),
-        "one failed turn, one notice"
+        "the failed turn reached the chat with nothing"
     );
 
     // The next addressed message re-engages the latched conversation.
@@ -170,29 +171,33 @@ async fn a_failed_turn_yields_one_notice_and_the_next_addressed_message_reengage
     )
     .await;
     let reply = recv_reply(&mut replies).await;
-    assert_eq!(reply.kind, ReplyKind::Answer);
+    assert_eq!(
+        reply.kind,
+        ReplyKind::Answer,
+        "the failed turn queued nothing ahead of this answer"
+    );
+    assert_eq!(reply.channel, key);
     // The failed turn stored no answer, so this is still the person's
-    // first one and carries the line.
+    // first one and carries the line. Both messages stand in one user run:
+    // the failure recorded no block of its own between them.
     assert_eq!(
         reply.text,
         first_answer_to("the failing ask\n\nasking again")
     );
 }
 
-/// The quiet rule: a payment-class refusal fails the turn like any other,
-/// and tells the chat nothing. Scripted as the wire renders it —
-/// `api error 402: …`, the framework's own rendering of a non-success
-/// provider response — so what the consumer classifies on is the text it
-/// would really receive.
+/// AC3: the silence is bound to nothing the failure says. The provider
+/// rendering that once carried its own suppression rule — `api error 402:
+/// …`, the framework's own rendering of a non-success provider response —
+/// and an ordinary transient failure both leave the chat with nothing, on
+/// one channel, one after the other. A re-introduced classification would
+/// have to speak for one of the two and fails here.
 ///
-/// The absence is proven by order, not by waiting: the outbound edge is one
-/// task feeding one channel in order, so a notice for the quiet failure
-/// would necessarily sit in front of everything the following turn
-/// produces. The first reply that arrives is therefore the whole evidence,
-/// and the plain failure at the end shows the silence is bound to the class
-/// and not to the path.
+/// Each half is awaited at the latch, the failed turn's own settling, and
+/// then read off the channel; the answered turn between them shows the
+/// conversation goes on working across both.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_payment_class_failure_stays_quiet_and_a_plain_failure_still_speaks() {
+async fn every_wording_of_a_failure_leaves_the_chat_with_nothing() {
     let fixture = support::start_assistant(None).await;
     let mut replies = fixture
         .assistant
@@ -220,11 +225,11 @@ async fn a_payment_class_failure_stays_quiet_and_a_plain_failure_still_speaks() 
             replies.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ),
-        "a payment-class failure tells the chat nothing"
+        "the payment rendering tells the chat nothing"
     );
 
     // The next addressed message re-engages and is answered. This reply
-    // arriving as an answer is what proves no notice was queued ahead of it.
+    // arriving as an answer is what proves nothing was queued ahead of it.
     support::ingest_recorded(
         &fixture.assistant,
         inbound(&key, ChannelKind::Direct, "42", "asking again"),
@@ -234,30 +239,27 @@ async fn a_payment_class_failure_stays_quiet_and_a_plain_failure_still_speaks() 
     assert_eq!(
         reply.kind,
         ReplyKind::Answer,
-        "the quiet failure queued no notice ahead of this answer"
+        "the failed turn queued nothing ahead of this answer"
     );
     assert_eq!(
         reply.text,
         first_answer_to("the ask with no balance\n\nasking again")
     );
 
-    // An ordinary failure on the same channel still speaks.
+    // An ordinary failure on the same channel is just as quiet.
     fixture.script.fail_next_turns(1);
-    support::ingest_recorded(
+    let plain = support::ingest_recorded(
         &fixture.assistant,
         inbound(&key, ChannelKind::Direct, "42", "the plainly failing ask"),
     )
     .await;
-    let notice = recv_reply(&mut replies).await;
-    assert_eq!(notice.kind, ReplyKind::Notice);
-    assert_eq!(notice.text, FAILURE_NOTICE);
-    assert_eq!(notice.channel, key);
+    support::await_failure_latch(&mut events, plain.conversation_id).await;
     assert!(
         matches!(
             replies.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ),
-        "two failed turns, one notice"
+        "two failed turns, two silences"
     );
 }
 
