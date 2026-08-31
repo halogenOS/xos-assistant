@@ -219,12 +219,17 @@ session; the old one stays on record.` The group's title and its pinned
 rules come back by themselves on the next message, without anyone
 re-pinning anything.
 
-`/compact` trims instead. The recent messages stay — the last twenty
-lines of conversation, with their day — along with the group's title and
-rules; everything older, and every trace of the assistant's tool work, is
-set aside. It answers `Done. This session was compacted: recent messages
-stay, old context is set aside.`, or `This session is already compact.
-Nothing changed.` when there was nothing to trim.
+`/compact` shortens instead. The conversation is cut in half: the recent
+half stays word for word, and the older half is replaced by a summary of
+it, written by the assistant itself — what was asked and answered, what was
+decided, what is still open, and the topics that came up. The group's title
+and rules ride across with the recent half. It answers `Done. This session
+was compacted: recent messages stay, old context is set aside.`, or `This
+session is already compact. Nothing changed.` when the conversation is too
+short to have two halves.
+
+Writing the summary takes the assistant a moment, so the answer arrives
+when the work is done rather than the instant the command is typed.
 
 Three things are true of both, and are the reason to reach for them:
 
@@ -235,7 +240,9 @@ Three things are true of both, and are the reason to reach for them:
   cuts the answer it was working on and any unanswered question behind it.
   That is the point of a reset, and it is why the commands are worth
   reaching for rather than habitual.
-- **The assistant may compact a session by itself.** When a turn ends
-  because the assistant kept trying the same failing tool call, the same
-  trim runs unattended and nothing is said in the chat. That is a recovery
-  from a session that had gone bad, not a message worth reading.
+- **The assistant may compact a session by itself.** Two things make it do
+  so, and neither says anything in the chat. A turn that ended because the
+  assistant kept trying the same failing tool call is a session that has
+  gone bad, and compacting is the recovery. A conversation running out of
+  room in the model's context window is compacted before it hits the wall,
+  at a quiet moment where the summary interrupts nobody.

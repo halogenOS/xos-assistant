@@ -51,8 +51,10 @@
 //! command, its silence for a command that arrives as an edit, and its
 //! reach over every recorded version of one message),
 //! reset (the session-reset commands: the wipe's empty session,
-//! the compact's kept tail, the outbound edge's inherited boundary, the
-//! floor and the direct-chat fence, and the unattended compaction), search (the web search's envelope over a scripted vendor, its
+//! the compaction's summarized half and its verbatim one, the erasure scrub
+//! that replaces a compacted lineage, the outbound edge's inherited
+//! boundary, the floor and the direct-chat fence, and the unattended
+//! compaction), search (the web search's envelope over a scripted vendor, its
 //! guard and person bound refusing before the wire, its taught failures,
 //! and the one predicate deciding whether the tool exists), sourcing (the lookup-backed answer discipline: the literal
 //! addressed fact beside the summons, the silent empty turn and the

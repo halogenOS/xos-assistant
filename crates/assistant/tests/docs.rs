@@ -1993,6 +1993,44 @@ fn the_session_reset_units_decisions_are_recorded() {
     }
 }
 
+/// Unit 48's own decisions are recorded, and the two unit-45 records it
+/// replaces carry dated notes saying so — never a silent edit, so a reader
+/// of the older record learns immediately that the mechanism it describes is
+/// gone.
+#[test]
+fn the_compaction_units_decisions_are_recorded_with_what_they_supersede() {
+    for record in [
+        "docs/decisions/0185-a-compaction-summarizes-the-first-half.md",
+        "docs/decisions/0186-the-thresholds-read-the-last-turns-usage.md",
+        "docs/decisions/0187-quiet-is-the-preference-and-a-warm-cache-the-constraint.md",
+        "docs/decisions/0188-the-compaction-runs-outside-the-ingestion-holds.md",
+        "docs/decisions/0189-an-answered-incident-never-refires-the-door.md",
+        "docs/decisions/0190-an-erased-digest-is-regenerated-not-edited.md",
+    ] {
+        let content = repo_file(record);
+        assert!(
+            content.contains("Date: 2026-08-31, with unit 48."),
+            "{record} carries its date"
+        );
+        assert!(
+            content.contains("## Rejected alternatives"),
+            "{record} carries its rejected alternatives"
+        );
+    }
+    let superseded = repo_file("docs/decisions/0163-a-compact-forks-and-keeps-the-recent-tail.md");
+    assert!(
+        superseded.contains("**Superseded 2026-08-31, by decision 0185 (unit 48).**"),
+        "the tail keep's record says it is superseded, with its date"
+    );
+    let amended = repo_file(
+        "docs/decisions/0165-the-unattended-compaction-rides-the-frameworks-own-signal.md",
+    );
+    assert!(
+        amended.contains("**Amended 2026-08-31, by unit 48**"),
+        "the unattended door's record says what changed under it, with its date"
+    );
+}
+
 /// The operator contract states the two session commands in the terms a
 /// moderator meets them in: who may use them where, the exact lines they
 /// answer, what a reset costs, and that the assistant may compact a broken
@@ -2024,31 +2062,21 @@ fn the_operator_contract_states_the_session_commands() {
             "the operator contract quotes the answer verbatim: {line}"
         );
     }
-    // The number a moderator reads is the kept bound itself, spelled out:
-    // moving the constant without moving the sentence fails here rather
-    // than leaving the contract quietly wrong.
-    let kept = spelled(assistant_core::commands::COMPACT_KEPT_MESSAGES);
-    assert!(
-        contract.contains(&flattened(&format!(
-            "the last {kept} lines of conversation"
-        ))),
-        "the operator contract states the kept bound as {kept}"
-    );
-}
-
-/// The English word for a small number, so a document's prose can be
-/// checked against a constant instead of against itself. A value outside
-/// the table is a deliberate change to the bound and gets its word here.
-fn spelled(number: usize) -> String {
-    match number {
-        10 => "ten",
-        15 => "fifteen",
-        20 => "twenty",
-        25 => "twenty-five",
-        30 => "thirty",
-        other => panic!("the kept bound moved to {other}; spell it here and in the contract"),
+    // What a moderator reads about `/compact` is the mechanism unit 48
+    // shipped, not the tail-keep it replaced: the conversation is cut in
+    // half, the recent half stays verbatim and the older half becomes a
+    // summary. A contract still describing a kept tail would be quietly
+    // wrong about what the command does.
+    for fact in [
+        "The conversation is cut in half",
+        "the older half is replaced by a summary of it, written by the assistant itself",
+        "A conversation running out of room in the model's context window is compacted",
+    ] {
+        assert!(
+            contract.contains(&flattened(fact)),
+            "the operator contract states the compaction as it is: {fact}"
+        );
     }
-    .to_owned()
 }
 
 /// The commands-menu design records what unit 45 built of it, so its own

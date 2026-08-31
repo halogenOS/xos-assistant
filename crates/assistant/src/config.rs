@@ -39,6 +39,16 @@ pub struct Configuration {
     /// unknown key, so a stale file fails loudly instead of implying a
     /// feature that no longer exists.
     pub model: String,
+    /// How many tokens the model's context window holds (unit 48,
+    /// 2026-08-31). No provider reports it, so it is stated here beside the
+    /// model it belongs to; a zero is refused by the type.
+    ///
+    /// Absent keeps both compaction thresholds silent: the trigger never
+    /// fires blind, and a deployment that has not said how big its window
+    /// is keeps `/compact` and the forced-turn-end door and gets no
+    /// automatic one.
+    #[serde(default)]
+    pub context_window: Option<NonZeroU32>,
     /// The endpoint overrides; omitted entries keep the real hosts.
     #[serde(default)]
     pub endpoints: Endpoints,

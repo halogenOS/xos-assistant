@@ -2,6 +2,14 @@
 
 Date: 2026-08-30, with unit 45.
 
+**Amended 2026-08-31, by unit 48**, in two places, both recorded in decisions of their own.
+The operation the signal drives is the compaction of decision 0185, not the tail keep, and it
+no longer runs under the ingestion holds — decision 0188 states which phase takes them and
+why the capture cannot. And the door's self-limit gained its other half: the forced-end
+marker now rides across with the carried history, so eligibility reads a marker recorded
+inside the thread's OWN life (decision 0189). The signal itself, its level read, its silence
+in chat, its reach into direct chats and its unbounded repetition are unchanged.
+
 ## Context
 
 When a run of tool-call window refusals ends a turn between rounds, the framework records a

@@ -1,5 +1,13 @@
 # Unit 45 — /wipe and /compact, the session reset commands
 
+**Note, 2026-08-31: the compaction half of this unit was replaced.** Unit 48 built the
+operator's own compaction design — the first half of the ledger summarized by the model, the
+second half carried forward verbatim — and the tail keep this unit shipped is gone whole,
+with its kept set, its kept bound and its nothing-to-cut check. Decision 0185 records the
+replacement; decisions 0188 and 0189 record what changed under the unattended door. `/wipe`,
+the command catalogue, the audience rows, the per-person reply window and the outbound edge's
+inherited boundary are untouched and are still this unit's.
+
 Date: 2026-08-30. The operator ordered two more slash commands — /wipe creates a brand
 new session, /compact compacts the current one — with direct chats fenced out of both,
 and the runaway design decided earlier: five consecutive rate-limit refusals force a

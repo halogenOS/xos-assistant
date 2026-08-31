@@ -27,7 +27,7 @@ use tokio::sync::{Mutex, RwLock, mpsc};
 
 use crate::acknowledgment;
 use crate::commands::{self, Command};
-use crate::compaction::CompactTrigger;
+use crate::compaction::ContextWatch;
 use crate::composing;
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::CoreError;
@@ -44,7 +44,7 @@ use crate::message::{
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::quoting;
-use crate::session::{CompactOutcome, Sessions, WipeOutcome};
+use crate::session::{CompactOutcome, SessionCoordination, Sessions, WipeOutcome};
 use crate::streams::StreamObserver;
 use crate::tools::changelog::HarnessChangelog;
 use crate::tools::mark::{self, MarkTool};
@@ -122,6 +122,14 @@ pub struct ModelBinding {
     pub model: String,
     /// The name a human reads for the model.
     pub model_display_name: String,
+    /// How many tokens the model's context window holds, as the deployment
+    /// configured it (unit 48, 2026-08-31). No provider reports it, so it
+    /// is a stated fact of the binding like the model's own name.
+    ///
+    /// Absent keeps BOTH compaction thresholds silent: the trigger never
+    /// fires blind, and a deployment that has not said how big its window is
+    /// gets the two explicit doors into the mechanism and no automatic one.
+    pub context_window: Option<NonZeroU32>,
 }
 
 /// The answering budgets the entry point enforces at the write — the flood
@@ -347,6 +355,11 @@ pub struct Assistant {
     /// The streaming state the erasure ordering reads; the observation's
     /// contract and its lossy edges are stated on the streams module.
     streams: Arc<StreamObserver>,
+    /// What the compaction thresholds and their timing read (unit 48,
+    /// 2026-08-31): the observer's per-turn measurements, the inbound
+    /// activity this entry point records, and the configured window size.
+    /// Shared with the compaction driver, which holds it weakly.
+    context: Arc<ContextWatch>,
     /// The answering budgets the stamp consults for summoned messages.
     /// Read-only after start; the budget counts themselves are derived
     /// from the ledger at every write — the reply windows below are the
@@ -516,6 +529,28 @@ fn admit_unconditional_tools(tools: &mut ToolSet, started_at: Instant) {
     );
 }
 
+/// The release lookup's own rate window (the operator's numbers, decision
+/// 0169): bound before the context is shared, and only when the embedder's
+/// set registered the tool — the builder refuses a name nothing registered,
+/// and a test assembly with no lookups is not misconfigured.
+fn with_release_window(
+    ctx: RuntimeContext<AssistantKind, CoreEvent>,
+    palette: &[String],
+) -> RuntimeContext<AssistantKind, CoreEvent> {
+    if palette
+        .iter()
+        .any(|tool| tool == crate::tools::release::NAME)
+    {
+        ctx.with_tool_window(
+            crate::tools::release::NAME,
+            crate::tools::release::WINDOW_CALLS,
+            crate::tools::release::WINDOW_SECONDS,
+        )
+    } else {
+        ctx
+    }
+}
+
 /// The two wiring checks the assembly refuses to start without, and the
 /// binding's provider instance recorded in the store.
 ///
@@ -638,24 +673,15 @@ impl Assistant {
         let ctx: RuntimeContext<AssistantKind, CoreEvent> =
             RuntimeContext::new(store, bus, providers, Arc::new(registry))
                 .without_title_derivation();
-        // The release lookup's own rate window (the operator's numbers,
-        // decision 0169): bound here, before the context is shared, and
-        // only when the embedder's set registered the tool — the builder
-        // refuses a name nothing registered, and a test assembly with no
-        // lookups is not misconfigured.
-        let ctx = if palette
-            .iter()
-            .any(|tool| tool == crate::tools::release::NAME)
-        {
-            ctx.with_tool_window(
-                crate::tools::release::NAME,
-                crate::tools::release::WINDOW_CALLS,
-                crate::tools::release::WINDOW_SECONDS,
-            )
-        } else {
-            ctx
-        };
+        let ctx = with_release_window(ctx, &palette);
         let streams = streams::spawn_observer(ctx.bus());
+        // The one home of the compaction readings, built over the observer
+        // that already consumes the bus rather than a second subscriber
+        // seeing the same events.
+        let context = Arc::new(ContextWatch::new(
+            Arc::clone(&streams),
+            binding.context_window,
+        ));
         // The two holds are handed to the sessions and kept there: every
         // path in this assembly takes them back through it, so neither has
         // a second home to drift from.
@@ -665,14 +691,18 @@ impl Assistant {
             reasoning,
             system_prompt,
             palette,
-            Arc::new(Mutex::new(())),
-            erasure_fence,
+            SessionCoordination {
+                stamp_lock: Arc::new(Mutex::new(())),
+                erasure_fence,
+                context: Arc::clone(&context),
+            },
         ));
-        // The unattended compaction watcher, beside the stream observer and
-        // on the same broadcast: a turn the framework ended over a spent
+        // The compaction's two unattended doors, beside the stream observer
+        // and on the same broadcast: a turn the framework ended over a spent
         // tool-call window has left the conversation in the shape the
-        // command exists to clear, and nobody is going to type anything.
-        session::spawn_auto_compact(&sessions, ctx.bus());
+        // mechanism exists to clear, and a conversation running out of
+        // context window needs clearing whether or not anyone notices.
+        session::spawn_compaction_driver(&sessions, ctx.bus(), &context);
         spawn_reactor(ctx.clone());
         Ok(Self {
             ctx,
@@ -681,6 +711,7 @@ impl Assistant {
             name,
             disclosure,
             streams,
+            context,
             protection,
             operators,
             direct_chats,
@@ -830,7 +861,10 @@ impl Assistant {
     /// row mid-claim. [`CoreError::Store`] if identity resolution, mapping
     /// or the append fails.
     pub async fn ingest(&self, message: InboundMessage) -> Result<IngestOutcome, CoreError> {
-        let _no_erasure_mid_message = self.sessions.erasure_fence().read().await;
+        // Named without an underscore because the compaction command below
+        // releases both holds explicitly before it runs; every other path
+        // holds them to its return.
+        let no_erasure_mid_message = self.sessions.erasure_fence().read().await;
         let tx = self.ctx.store().tx();
 
         // The channel admission runs whole before the sender is looked at;
@@ -858,7 +892,7 @@ impl Assistant {
         // concurrent ingestion may slide a block in between, and two racing
         // messages cannot both take the last budget slot. The lock's whole
         // contract is on the field it lives on, [`Sessions::stamp_lock`].
-        let _one_stamp_at_a_time = self.sessions.stamp_lock().lock().await;
+        let one_stamp_at_a_time = self.sessions.stamp_lock().lock().await;
         let conversation_id = self.conversation_under_lock(&tx, &message).await?;
         // Every under-lock drop, in one reading and behind one exemption,
         // and with it whether this row stores the revision reference the
@@ -950,12 +984,7 @@ impl Assistant {
         // skip — is the quoting module's; nothing about it reaches the
         // stamp, the windows or the answer.
         quoting::land_reply_quote(self.ctx.store(), conversation_id, &message).await?;
-        // The recorded row's own id travels to the command answer below: a
-        // `/compact` counts the conversation it FOUND, which is the rows
-        // older than this very block, and naming the row beats assuming it
-        // is the newest one.
-        let recorded_row = self
-            .ctx
+        self.ctx
             .store()
             .append_consumer_block(
                 conversation_id,
@@ -977,14 +1006,11 @@ impl Assistant {
         // not serve, answers SILENCE. No refusal line goes out, because a
         // refusal line advertises a surface the person cannot use — the
         // stamp above already took the debt out of the message.
-        let (deliver, reset) = self
+        let answered = self
             .command_answer(
                 &tx,
                 &message,
-                RecordedRow {
-                    conversation_id,
-                    block_id: recorded_row,
-                },
+                RecordedRow { conversation_id },
                 sender,
                 notice_admitted,
             )
@@ -994,6 +1020,27 @@ impl Assistant {
                 .bus()
                 .emit(CoreEvent::UnlatchRequested { conversation_id });
         }
+        // The channel's quiet window measures INBOUND traffic, and this is
+        // where inbound traffic is: recorded past the append, so a message
+        // that was refused before it reached the ledger does not count as
+        // activity on a channel it never joined.
+        self.context.record_inbound(conversation_id);
+        // The two holds are released HERE, before the one command that
+        // drives a model turn of its own runs. Holding the single ingestion
+        // lock across a model call would stall every conversation this
+        // process serves for that call's whole latency — the rules
+        // acknowledgment's own recorded reasoning, and the reason
+        // `/compact` cannot be answered from inside the lock the rest of the
+        // ingestion needs.
+        drop(one_stamp_at_a_time);
+        drop(no_erasure_mid_message);
+        let (deliver, reset) = match answered {
+            CommandAnswer::Settled(deliver, reset) => (deliver, reset),
+            CommandAnswer::Compaction => {
+                self.compaction_answer(&message, principal_id, conversation_id)
+                    .await
+            }
+        };
         Ok(IngestOutcome::Recorded {
             receipt: IngestReceipt {
                 principal_id,
@@ -1002,6 +1049,50 @@ impl Assistant {
             deliver,
             reset,
         })
+    }
+
+    /// `/compact`, run once the ingestion's holds are released: the one
+    /// mechanism, with the thresholds and their timing ignored — the person
+    /// asked for it now.
+    ///
+    /// The reply is granted exactly with the compaction, through the resets'
+    /// own window, so a withheld reply withholds the operation and a failure
+    /// hands its grant back. The line reports what happened because it is
+    /// spoken after it happened: the capture, the thread and the swap are
+    /// all behind this await.
+    async fn compaction_answer(
+        &self,
+        message: &InboundMessage,
+        principal_id: i64,
+        conversation_id: i64,
+    ) -> (Option<DeliveryItem>, ChannelReset) {
+        self.reset_reply(principal_id, Command::Compact, async {
+            Ok(
+                match self
+                    .sessions
+                    .compact(conversation_id, &message.channel, message.channel_kind)
+                    .await?
+                {
+                    // The honest answer for a ledger that does not split.
+                    // A group's conversation opens with a system prompt and
+                    // a palette — two groups before anyone speaks — so this
+                    // is not a state a served channel reaches; it is the
+                    // outcome's answer, not a line the mechanism aims at.
+                    CompactOutcome::AlreadyCompact => {
+                        Some((commands::COMPACT_ALREADY, ChannelReset::Kept))
+                    }
+                    // The compacted thread carries the second half of the
+                    // ledger, so the channel's standing observations cross
+                    // with it and the adapter has nothing to forget.
+                    CompactOutcome::Compacted => Some((commands::COMPACT_DONE, ChannelReset::Kept)),
+                    // A lost claim compacted nothing: the thread was
+                    // dropped, and the surviving session is the racer's
+                    // doing, not this command's.
+                    CompactOutcome::ClaimLost => None,
+                },
+            )
+        })
+        .await
     }
 
     /// The conversation an ingested message is written into, resolved with
@@ -1542,11 +1633,18 @@ impl Assistant {
     /// the identity rows are concluded — deleted, or emptied to the
     /// suppression stub when the opt-out flag stands (2026-08-23), so the
     /// flag survives its own person's deletion. Reports
-    /// [`ErasureOutcome::NotFound`] — touching nothing — when no identity
+    /// [`ErasureOutcome::NotFound`] — erasing nothing — when no identity
     /// row matches, an unflagged person's completed earlier erasure
     /// included; a flagged person's surviving stub keeps matching, so their
     /// repeat re-runs over emptiness and reports completion (the
     /// idempotency refinement recorded on decision 0012).
+    ///
+    /// A repeat that reports it still runs the compacted-digest scrub, and
+    /// that is the one thing such a repeat does: a scrub whose regeneration
+    /// failed leaves the erased person's words standing inside a digest, and
+    /// this call is the retry that reaches them. The lineages are read off
+    /// the BLOCKS, which keep the principal id the identity row no longer
+    /// has.
     ///
     /// A direct conversation showing an open stream — observed on the bus,
     /// or holding a stored streaming tail a gone runtime left behind — is
@@ -1554,7 +1652,7 @@ impl Assistant {
     /// out and a bounded stored-state re-read confirms the interrupt's
     /// ledger writes have finished before anything is deleted, so the
     /// stream's appends cannot race the deletion. Past the bound the erasure
-    /// fails loudly with [`CoreError::ErasureUnsettled`], deleting nothing.
+    /// fails loudly with [`CoreError::StreamUnsettled`], deleting nothing.
     /// An idle principal pays no wait.
     ///
     /// Not covered, recorded OPEN in decision 0012: a group conversation's
@@ -1566,14 +1664,14 @@ impl Assistant {
     ///
     /// # Errors
     ///
-    /// [`CoreError::ErasureUnsettled`] if an open stream did not settle
+    /// [`CoreError::StreamUnsettled`] if an open stream did not settle
     /// before the bound; [`CoreError::Store`] if a read, a write or a
     /// deletion fails.
     pub async fn erase_principal(&self, principal_id: i64) -> Result<ErasureOutcome, CoreError> {
         erase_behind_the_fence(
-            self.ctx.clone(),
+            Arc::clone(&self.sessions),
             Arc::clone(&self.streams),
-            Arc::clone(self.sessions.erasure_fence()),
+            Arc::clone(&self.context),
             principal_id,
         )
         .await
@@ -2063,11 +2161,13 @@ impl Assistant {
                 }
                 RightsCommand::Confirm => {
                     if self.pending_deletions.take(principal_id).await {
-                        let ctx = self.ctx.clone();
+                        let sessions = Arc::clone(&self.sessions);
                         let streams = Arc::clone(&self.streams);
-                        let fence = Arc::clone(self.sessions.erasure_fence());
+                        let context = Arc::clone(&self.context);
                         tokio::spawn(async move {
-                            match erase_behind_the_fence(ctx, streams, fence, principal_id).await {
+                            match erase_behind_the_fence(sessions, streams, context, principal_id)
+                                .await
+                            {
                                 Ok(outcome) => {
                                     tracing::info!(
                                         principal_id,
@@ -2130,7 +2230,7 @@ impl Assistant {
         recorded: RecordedRow,
         sender: WritingSender,
         notice_admitted: bool,
-    ) -> (Option<DeliveryItem>, ChannelReset) {
+    ) -> CommandAnswer {
         let WritingSender {
             principal_id,
             authority,
@@ -2138,11 +2238,10 @@ impl Assistant {
             ..
         } = sender;
         let RecordedRow {
-            conversation_id,
-            block_id,
+            conversation_id, ..
         } = recorded;
         let offered = command.filter(|command| command.offered(message.channel_kind, authority));
-        match offered {
+        let (deliver, reset) = match offered {
             Some(Command::Wipe) => {
                 self.reset_reply(principal_id, Command::Wipe, async {
                     Ok(
@@ -2171,40 +2270,11 @@ impl Assistant {
                 })
                 .await
             }
-            Some(Command::Compact) => {
-                self.reset_reply(principal_id, Command::Compact, async {
-                    Ok(
-                        match self
-                            .sessions
-                            .compact(
-                                conversation_id,
-                                &message.channel,
-                                message.channel_kind,
-                                CompactTrigger::Command {
-                                    invoking_row: block_id,
-                                },
-                            )
-                            .await?
-                        {
-                            CompactOutcome::AlreadyCompact => {
-                                Some((commands::COMPACT_ALREADY, ChannelReset::Kept))
-                            }
-                            // The fork keeps the newest context notes, so
-                            // the channel's standing observations cross
-                            // with it and the adapter has nothing to
-                            // forget.
-                            CompactOutcome::Compacted => {
-                                Some((commands::COMPACT_DONE, ChannelReset::Kept))
-                            }
-                            // A lost claim trimmed nothing: the fork was
-                            // dropped, and the surviving session is the
-                            // racer's doing, not this command's.
-                            CompactOutcome::ClaimLost => None,
-                        },
-                    )
-                })
-                .await
-            }
+            // The one command the ingestion cannot finish: it drives a
+            // model turn, and this runs under the holds. Answered here as
+            // the deferral it is, and run by the entry point once both are
+            // released.
+            Some(Command::Compact) => return CommandAnswer::Compaction,
             // Every other recognized command is the privacy family's, read
             // through the family's own projection so the mapping between
             // the catalogue and the family stays recorded once. The split
@@ -2223,7 +2293,8 @@ impl Assistant {
                 ChannelReset::Kept,
             ),
             None => (None, ChannelReset::Kept),
-        }
+        };
+        CommandAnswer::Settled(deliver, reset)
     }
 
     /// One session-reset command's reply, on the resets' own per-person
@@ -2563,17 +2634,34 @@ struct WritingSender {
     suppressed: bool,
 }
 
-/// Where one ingested message landed: the conversation it was written into,
-/// resolved under the stamp lock, and the id of its own recorded row.
+/// What one recognized command's answer came to: an answer the ingestion
+/// already has, or a compaction to run once the ingestion's holds are
+/// released.
 ///
-/// The two travel together because the delivery half needs both and neither
-/// answers the other's question: a `/compact` acts on the conversation and
-/// counts against the row, and a reading that inferred the row from the
-/// conversation's tail would be assuming exactly what this states.
+/// The split is not about which command it is — it is about what the answer
+/// NEEDS. Every other command is answered from stored state under the two
+/// holds, and answering it anywhere else would let an ingestion slide
+/// between a read and its write. The compaction drives a model turn, which
+/// no hold may be held across, so it says so instead of pretending to be
+/// settled.
+enum CommandAnswer {
+    /// The command is answered, with whatever the adapter must forget.
+    Settled(Option<DeliveryItem>, ChannelReset),
+    /// `/compact` was invoked and offered: the mechanism runs past the
+    /// holds, and its own reply reports what it did.
+    Compaction,
+}
+
+/// Where one ingested message landed: the conversation it was written into,
+/// resolved under the stamp lock.
+///
+/// It carries one field and stays a type because the question it answers —
+/// "which conversation did this write reach" — is not the one the caller's
+/// other ids answer, and a bare `i64` travelling beside three others is how
+/// two of them get swapped.
 #[derive(Debug, Clone, Copy)]
 struct RecordedRow {
     conversation_id: i64,
-    block_id: i64,
 }
 
 /// The one erasure body, behind the fence taken for writing: what
@@ -2587,31 +2675,88 @@ struct RecordedRow {
 /// context, the stream observer and the fence — so the task outlives the
 /// call that spawned it without borrowing the assembly.
 async fn erase_behind_the_fence(
-    ctx: RuntimeContext<AssistantKind, CoreEvent>,
+    sessions: Arc<Sessions>,
     streams: Arc<StreamObserver>,
-    fence: ErasureFence,
+    context: Arc<ContextWatch>,
     principal_id: i64,
 ) -> Result<ErasureOutcome, CoreError> {
-    let _no_ingestion_mid_erasure = fence.write().await;
+    let ctx = sessions.context().clone();
     let store = ctx.store();
-    let Some(plan) = erasure::plan(store, principal_id).await? else {
-        return Ok(ErasureOutcome::NotFound);
+    // The lineages are read under the same hold, BEFORE the nulling and
+    // before the identity is even consulted. Two things ride on that order.
+    //
+    // What a digest was written from is a fact about the blocks, and the
+    // nulling does not change which blocks a person's are — reading it here
+    // keeps the whole decision on one consistent view.
+    //
+    // And it is what makes the scrub RETRYABLE. The principal id stands on
+    // every message row the nulling leaves behind, while the identity row is
+    // what `conclude_erasure` DELETES for an unflagged person. Reading the
+    // lineages behind the plan would mean a scrub that failed could never be
+    // run again: the repeat call would find no identity, report NotFound and
+    // walk past the very prose it left standing — the failure path's own
+    // promise, unkeepable.
+    let (outcome, lineages) = {
+        let _no_ingestion_mid_erasure = sessions.erasure_fence().write().await;
+        let lineages = erasure::compacted_lineages(store, principal_id).await?;
+        match erasure::plan(store, principal_id).await? {
+            // Nothing left to erase is not nothing left to do: the scrub
+            // below runs on this answer too, which is the retry the failure
+            // path promises.
+            None => (ErasureOutcome::NotFound, lineages),
+            Some(plan) => {
+                // The plan's conversations are exactly the deletion set, so
+                // settling them is settling everything the execute step will
+                // remove.
+                for &conversation_id in plan.direct_conversations() {
+                    streams::settle_stream(store, ctx.bus(), &streams, conversation_id).await?;
+                }
+                let outcome = erasure::execute(store, plan).await?;
+                if let ErasureOutcome::Erased {
+                    deleted_conversations,
+                } = &outcome
+                {
+                    // The store reissues conversation ids: a deleted
+                    // conversation's stream observation and its context
+                    // readings must not survive to shadow the id's next
+                    // holder.
+                    for &deleted in deleted_conversations {
+                        context.forget(deleted);
+                    }
+                }
+                (outcome, lineages)
+            }
+        }
     };
-    // The plan's conversations are exactly the deletion set, so settling
-    // them is settling everything the execute step will remove.
-    for &conversation_id in plan.direct_conversations() {
-        streams::settle_for_deletion(store, ctx.bus(), &streams, conversation_id).await?;
-    }
-    let outcome = erasure::execute(store, plan).await?;
-    if let ErasureOutcome::Erased {
-        deleted_conversations,
-    } = &outcome
-    {
-        // The store reissues conversation ids: a deleted conversation's
-        // stream observation must not survive to shadow the id's next
-        // holder.
-        for &deleted in deleted_conversations {
-            streams.forget(deleted);
+    // The scrub runs PAST the fence, and past the whole data erasure, for
+    // two reasons that both point the same way. It drives a model turn, and
+    // the erasure fence is the one hold no model call may be made under —
+    // an ingestion stalled for a summary's latency is a stalled assistant.
+    // And the stored personal data is erased immediately: the scrub
+    // completes the erasure of a DIGEST, and it never delays the erasure of
+    // the data.
+    //
+    // The residual is stated rather than hidden: a scrub whose regeneration
+    // fails leaves the old digest standing, logged with the lineage it could
+    // not rewrite. A repeat erasure of the same principal reaches it — the
+    // lineages above are read off the blocks, so the retry works for a
+    // person whose identity row this call already concluded as well as for
+    // the opt-out stub that survives one.
+    for stripped in lineages {
+        let serving = stripped.serving.conversation;
+        match sessions.scrub_compacted_digest(&stripped).await {
+            Ok(true) => {}
+            Ok(false) => tracing::info!(
+                serving,
+                "the compacted lineage needed no scrub, or its channel had moved on"
+            ),
+            Err(error) => tracing::warn!(
+                serving,
+                root = stripped.root,
+                %error,
+                "a compacted digest could not be scrubbed of the erased words; it stands, \
+                 and a repeat erasure of the same principal runs the scrub again"
+            ),
         }
     }
     Ok(outcome)

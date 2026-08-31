@@ -2,6 +2,15 @@
 
 Date: 2026-08-30, with unit 45.
 
+**Superseded 2026-08-31, by decision 0185 (unit 48).** The tail keep is gone whole: a
+compaction now summarizes the first half of the ledger and carries the second half forward
+verbatim, so nothing is discarded and the older conversation reaches the model as prose
+instead of not at all. Everything below is the record of what unit 45 shipped and why, kept
+because the reasoning it states about detaching, about the bulk door, and about what a reset
+costs a pending report is the reasoning the mechanism that replaced it inherited. The kept
+set, the kept bound, the nothing-to-cut check and the invoking row's own place in the count
+no longer exist in the code.
+
 ## Context
 
 The model reads the WHOLE conversation every turn: there is no read window, no floor and no

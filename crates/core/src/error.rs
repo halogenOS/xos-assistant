@@ -69,20 +69,36 @@ pub enum CoreError {
     #[error("the channel mapping vanished mid-claim; the message was not recorded")]
     ClaimLost,
 
-    /// An erasure found a direct conversation with an open stream, emitted
-    /// the interrupt, and the stream did not settle before the bound. The
-    /// erasure deleted nothing: deleting under a still-writing stream would
-    /// race the stream's own appends. A retry can succeed even against a
-    /// provider that never answers the interrupt — the timed-out
+    /// A path that had to stop a conversation's stream before changing what
+    /// the conversation is — an erasure deleting it, a session replacement
+    /// copying its history onto a successor and unmapping it — emitted the
+    /// interrupt, and the stream did not settle before the bound. Nothing
+    /// was deleted and nothing was swapped: acting under a still-writing
+    /// stream would race the stream's own appends. A retry can succeed even
+    /// against a provider that never answers the interrupt — the timed-out
     /// observation is dropped with this failure, so the retry decides from
     /// stored state and completes once the interrupt's teardown is in the
     /// ledger.
     #[error(
-        "erasure could not settle the open stream of conversation \
-         {conversation_id} before the bound; nothing was deleted"
+        "the open stream of conversation {conversation_id} did not settle \
+         before the bound; nothing was changed"
     )]
-    ErasureUnsettled {
-        /// The direct conversation whose stream stayed open.
+    StreamUnsettled {
+        /// The conversation whose stream stayed open.
+        conversation_id: i64,
+    },
+
+    /// A compaction's temporary conversation produced no summary before its
+    /// bound: the turn failed, ended silently, or never ran. Nothing was
+    /// swapped and nothing was deleted — the conversation the channel is on
+    /// stands exactly as it did, and the next trigger re-derives the whole
+    /// operation from the ledger.
+    #[error(
+        "the compaction of conversation {conversation_id} captured no summary; \
+         nothing was changed"
+    )]
+    CompactionUnsummarized {
+        /// The conversation the compaction was for.
         conversation_id: i64,
     },
 }
@@ -118,7 +134,8 @@ impl CoreError {
             | Self::MissingContentTable { .. }
             | Self::AuthorityUnresolved
             | Self::ClaimLost
-            | Self::ErasureUnsettled { .. } => FailureKind::Transient,
+            | Self::StreamUnsettled { .. }
+            | Self::CompactionUnsummarized { .. } => FailureKind::Transient,
         }
     }
 }
@@ -150,7 +167,8 @@ mod tests {
             CoreError::MissingContentTable { table: "absent" },
             CoreError::AuthorityUnresolved,
             CoreError::ClaimLost,
-            CoreError::ErasureUnsettled { conversation_id: 1 },
+            CoreError::StreamUnsettled { conversation_id: 1 },
+            CoreError::CompactionUnsummarized { conversation_id: 1 },
         ];
         for error in errors {
             assert_eq!(

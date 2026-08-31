@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 const CORE_ERROR_VARIANTS: &[&str] = &[
     "ChannelKindMismatch",
     "ClaimLost",
-    "ErasureUnsettled",
+    "StreamUnsettled",
     "MissingContentTable",
     "UnknownVendor",
 ];
