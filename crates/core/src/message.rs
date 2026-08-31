@@ -425,9 +425,9 @@ pub struct DeliveryHandle {
     /// The conversation the sent message belongs to.
     pub(crate) conversation_id: i64,
     /// The stored block a reply to this send quotes. `None` where the
-    /// send carries no quotable block of the assistant's own: the failure
-    /// notice, which is not stored at all, a report's line, whose block
-    /// declares no quotable column, and every deterministic item.
+    /// send carries no quotable block of the assistant's own: a report's
+    /// line, whose block declares no quotable column, and every
+    /// deterministic item, which is fixed prose and stored nowhere.
     pub(crate) quotable_block: Option<i64>,
 }
 
@@ -566,18 +566,15 @@ impl IngestReceipt {
     }
 }
 
-/// What one outbound item is: the assistant's own prose, or the core's
-/// notice that a turn failed. The marker exists so an adapter can present
-/// the two differently without reading the text; the core still supplies the
+/// What one outbound item is: the assistant's own prose, or a filed
+/// report's machinery line. The marker exists so an adapter can present the
+/// two differently without reading the text; the core still supplies the
 /// text for both, because the wording is behavior and behavior stays out of
 /// adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyKind {
     /// A finalized answer from the model.
     Answer,
-    /// The failure notice: the turn did not produce an answer, said once,
-    /// with no model prose.
-    Notice,
     /// A filed report's fixed line (decided 2026-08-23): the core's own
     /// machinery text, delivered threaded onto the reported message.
     Report,
@@ -665,8 +662,7 @@ impl ReplyThread {
 /// from a model turn.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outbound {
-    /// Words to send: an answer, the failure notice, or a filed report's
-    /// line.
+    /// Words to send: an answer, or a filed report's line.
     Reply(OutboundReply),
     /// One emoji to put on a message. It carries no delivery handle: a
     /// reaction is the cheap act, and a cheap act earns no bookkeeping row
@@ -699,8 +695,7 @@ pub struct OutboundReply {
     pub channel: ChannelKey,
     /// What the assistant says.
     pub text: String,
-    /// Whether this is the assistant's answer, the core's failure notice,
-    /// or a filed report's line.
+    /// Whether this is the assistant's answer or a filed report's line.
     pub kind: ReplyKind,
     /// The message this reply threads onto and how a refused thread is
     /// recovered, where it threads at all (decided 2026-08-23, the
@@ -710,8 +705,8 @@ pub struct OutboundReply {
     /// only the first chunk. A report's delivery names the reported
     /// message's origin; an answer names the origin of the one message
     /// that addressed the assistant this turn, and `None` says the reply
-    /// goes out plain: the notice, an answer nobody or several addressed,
-    /// and an answer whose prose carries the moderation command shape
+    /// goes out plain: an answer nobody or several addressed, and an
+    /// answer whose prose carries the moderation command shape
     /// (2026-08-24).
     pub reply_target: Option<ReplyThread>,
     /// Where this reply's send is recorded (unit 38, 2026-08-30): the

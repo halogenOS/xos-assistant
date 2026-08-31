@@ -69,12 +69,21 @@
 //! the session being replaced owes its unsent products to the record, not to
 //! the chat.
 //!
-//! On a stream error the edge yields the failure notice for that turn —
-//! marked [`ReplyKind::Notice`], derived from the lossy bus event and
-//! therefore at most once. One class of failure yields nothing at all and is
-//! only written to the log; [`is_quiet_failure`] names it. The title
-//! derivation the metadata worker runs never finalizes an answer block in
-//! the conversation ledger, so it never appears here.
+//! # A failed turn is silent in the chat (unit 49, 2026-08-31)
+//!
+//! On a stream error the edge delivers what the dead turn already put on
+//! the ledger and then says nothing — for every cause, in every situation,
+//! per decision 0192. No line goes out, so nothing about the failure is
+//! addressed to the people in the chat; the latch still closes the
+//! conversation and the next addressed message still re-engages it.
+//!
+//! The record moves to the log instead: the arm writes one info line per
+//! stream error, naming the conversation and carrying the framework's own
+//! rendering of the error. That line is unconditional because one of the
+//! framework's emit sites writes nothing of its own, and a failure logged
+//! nowhere would leave no trace at all. The title derivation the metadata
+//! worker runs never finalizes an answer block in the conversation ledger,
+//! so it never appears here.
 //!
 //! # The wire text drops a leaked reasoning prefix (unit 43, 2026-08-30)
 //!
@@ -123,8 +132,8 @@
 //! the send — the disclosure module owns the resolution and the receipt,
 //! and the resolved [`Disclosure`] value arrives with the edge — and the
 //! line opens the text that goes out, which is the stored answer with any
-//! leaked reasoning prefix cut. The notice and the report line are fixed
-//! texts a person wrote and are never touched.
+//! leaked reasoning prefix cut. The report line is a fixed text a person
+//! wrote and is never touched.
 //!
 //! # An answer threads onto the one person who addressed the assistant
 //! (unit 26, 2026-08-24)
@@ -153,17 +162,16 @@
 //! since the empty-answer check below touches only [`ReplyKind::Answer`]
 //! blocks — and on BOTH stream events: with the answer on the turn's
 //! completion, where ledger order puts it before the answer text, and on
-//! the turn's failure ahead of
-//! the notice, so a turn that dies after filing still files. The failure
-//! wake runs the same stored-state read as a completion, so a dead turn's
-//! already-finalized narration delivers beside its report instead of
-//! waiting for the conversation's next wake. Noted 2026-08-23: the unit
-//! contract's failure clause names report blocks beside the notice; the
-//! full read is deliberately wider, because the cursor is one high-water
-//! mark per conversation — a failure read narrowed to reports would
-//! either pass the committed narration for good or repeat the report on
-//! the next wake, and the contract refuses re-delivered reports above
-//! all. The accepted losses are recorded plainly: a report undelivered
+//! the turn's failure, where it is the whole of what that wake sends, so a
+//! turn that dies after filing still files. The failure wake runs the same
+//! stored-state read as a completion, so a dead turn's already-finalized
+//! narration delivers beside its report instead of waiting for the
+//! conversation's next wake. That read stays the full one and is never
+//! narrowed to reports, because the cursor is one high-water mark per
+//! conversation: a read narrowed to reports would either pass the
+//! committed narration for good or repeat the report on the next wake,
+//! and the contract refuses re-delivered reports above all. The accepted
+//! losses are recorded plainly: a report undelivered
 //! when the process dies is LOST — the restart seeding stands, and
 //! re-delivering reports from history would ping every group admin
 //! at-least-once; for a moderation nudge the safer direction is fewer
@@ -199,45 +207,6 @@ use crate::message::{
     DeliveryHandle, Outbound, OutboundMark, OutboundReply, ReplyKind, ReplyThread,
 };
 use crate::tools::provenance;
-
-/// The one failure notice a failed turn yields, uniform across failure
-/// causes: the wire flattens a provider's refusal to prose before the core
-/// sees it, so wording distinctions would rest on string-matching text
-/// nobody owns. The latch already stops further spending, which is the
-/// substance; this line only makes the silence explicit. The next message
-/// that addresses the assistant re-engages it.
-///
-/// The wording stays uniform; what varies is whether the line goes out at
-/// all. One failure class yields no notice — `is_quiet_failure` in this
-/// module names it — and that classification reads a rendering the framework
-/// owns, never a provider's own prose.
-pub const FAILURE_NOTICE: &str =
-    "I could not finish that answer. Mention me or message me again and I will retry.";
-
-/// How the framework renders a provider's payment-class refusal. A
-/// non-success provider response reaches the consumer as
-/// `api error {status}: {body}` — the framework's own `Display` for that
-/// error — so the status is readable from the event's error text, and this
-/// prefix is the entire contract the classification below rests on.
-const PAYMENT_REQUIRED_RENDERING: &str = "api error 402:";
-
-/// What the log line calls a suppressed failure. The chat learns nothing, so
-/// the log is the only place the cause is recorded.
-const PAYMENT_REQUIRED_CLASS: &str = "payment required";
-
-/// Whether a failed turn passes without a word in the chat.
-///
-/// A payment-class refusal means the provider account has no balance. That
-/// condition holds until someone tops the balance up, so every mention in
-/// the meantime fails the same way and every one of them would draw its own
-/// notice — the chat fills with the same line while nothing about it is
-/// actionable by the people reading it. The operator asked for silence
-/// there (decided 2026-08-23): the log keeps the record, the chat stays
-/// quiet. Every other failure keeps its notice, the latch is unaffected, and
-/// the next addressed message re-engages exactly as before.
-fn is_quiet_failure(error: &str) -> bool {
-    error.starts_with(PAYMENT_REQUIRED_RENDERING)
-}
 
 /// The rules acknowledgment's deterministic fallback (unit 20, 2026-08-24;
 /// the fixed primary of 2026-08-23 until then). A real rules delta is
@@ -308,23 +277,21 @@ pub(crate) async fn spawn_edge(
                         tracing::error!(conversation_id, %error, "outbound delivery failed");
                     }
                 }
-                // A failed turn tells the chat once — after delivering what
-                // the dead turn already put on the ledger, a filed report
-                // above all: the failure wake runs the same stored-state
-                // read as a completion, so a turn that dies after filing
-                // still files, ahead of the notice. The notice itself
-                // derives from this event alone and the bus is lossy, so it
-                // is at most once by construction: a lagged edge may drop
-                // it, a late error from a torn-down predecessor stream may
-                // produce a spurious one — both accepted for a courtesy
-                // line. The durable record of failed turns is framework
-                // work.
+                // A failed turn tells the chat nothing (decision 0192).
+                // What the dead turn already put on the ledger still goes
+                // out, a filed report above all: the failure wake runs the
+                // same stored-state read as a completion, so a turn that
+                // dies after filing still files. Past that delivery the arm
+                // only writes its record — one line per stream error,
+                // whatever the cause, since one framework emit site logs
+                // nothing of its own and the failure would otherwise be
+                // written down nowhere.
                 Ok(CoreEvent::StreamError {
                     conversation_id,
                     error,
                     ..
                 }) => {
-                    if let Err(error) = deliver_stored_items(
+                    if let Err(failure) = deliver_stored_items(
                         &ctx,
                         &adapter,
                         &disclosure,
@@ -334,19 +301,13 @@ pub(crate) async fn spawn_edge(
                     )
                     .await
                     {
-                        tracing::error!(conversation_id, %error, "outbound delivery failed");
+                        tracing::error!(conversation_id, %failure, "outbound delivery failed");
                     }
-                    if is_quiet_failure(&error) {
-                        tracing::info!(
-                            conversation_id,
-                            class = PAYMENT_REQUIRED_CLASS,
-                            "the failed turn stays quiet in the chat"
-                        );
-                    } else if let Err(error) =
-                        deliver_notice(&ctx, &adapter, conversation_id, &items).await
-                    {
-                        tracing::error!(conversation_id, %error, "the failure notice did not deliver");
-                    }
+                    tracing::info!(
+                        conversation_id,
+                        %error,
+                        "the failed turn passes without a word in the chat"
+                    );
                 }
                 Ok(_) => {}
                 Err(RecvError::Lagged(missed)) => {
@@ -444,10 +405,9 @@ async fn deliver_stored_items(
             } => {
                 // An answer's whole path to the wire, in the order the
                 // three steps must run. Only the model's own prose takes
-                // it: the notice, the report line and every other
-                // deterministic reply is a fixed text a person wrote and
-                // passes through the other branch untouched — neither cut
-                // nor introduced.
+                // it: the report line and every other deterministic reply
+                // is a fixed text a person wrote and passes through the
+                // other branch untouched — neither cut nor introduced.
                 let text = if kind == ReplyKind::Answer {
                     // The cut comes FIRST (unit 43), and it reads the
                     // model's own prose: a block re-delivered after an
@@ -567,43 +527,6 @@ async fn inherited_boundary(tx: &StoreTx, conversation_id: i64) -> Result<i64, S
         Ok(newest.unwrap_or(0))
     })
     .await
-}
-
-/// Yield the one failure notice for a failed turn on this adapter's channel.
-/// A conversation that is not mapped, or is mapped for another adapter, is
-/// none of this edge's business — same as an answer's delivery.
-///
-/// # Errors
-///
-/// [`StoreError`] if the mapping read fails.
-async fn deliver_notice(
-    ctx: &RuntimeContext<AssistantKind, CoreEvent>,
-    adapter: &str,
-    conversation_id: i64,
-    items: &mpsc::UnboundedSender<Outbound>,
-) -> Result<(), StoreError> {
-    let tx = ctx.store().tx();
-    let Some(channel) = mapping::channel_for_conversation(&tx, conversation_id).await? else {
-        tracing::warn!(
-            conversation_id,
-            "the conversation maps to no channel; its failure notice is not delivered"
-        );
-        return Ok(());
-    };
-    if channel.adapter != adapter {
-        return Ok(());
-    }
-    let _ = items.send(Outbound::Reply(OutboundReply {
-        channel,
-        text: FAILURE_NOTICE.into(),
-        kind: ReplyKind::Notice,
-        reply_target: None,
-        // The notice records its delivery like every other send and names
-        // no quotable block: the notice is the core's fixed prose and is
-        // never stored, so a reply to it lands quoteless.
-        delivery: DeliveryHandle::in_conversation(conversation_id),
-    }));
-    Ok(())
 }
 
 /// The lag recovery: re-read this adapter's mapped conversations from stored
@@ -828,55 +751,10 @@ fn without_leaked_reasoning(text: &str) -> &str {
 mod tests {
     use std::sync::Arc;
 
-    use agent_ledger::providers::LlmError;
     use agent_ledger::{EventBus, ProviderRegistry, Store, ToolRegistry};
 
     use super::*;
 
-    /// The classification boundary, pinned against the framework's own
-    /// rendering on both sides: the payment status is quiet, the neighboring
-    /// server error is not, and an empty body keeps the prefix. A widened
-    /// predicate or a reworded framework Display attribute fails here
-    /// instead of drifting silently.
-    #[test]
-    fn the_quiet_class_is_the_payment_rendering_and_nothing_wider() {
-        let payment = LlmError::Api {
-            status: 402,
-            message: r#"{"error":{"message":"Insufficient credits"}}"#.into(),
-        };
-        assert!(
-            is_quiet_failure(&payment.to_string()),
-            "the framework-rendered payment failure stays quiet"
-        );
-        let empty_body = LlmError::Api {
-            status: 402,
-            message: String::new(),
-        };
-        assert!(
-            is_quiet_failure(&empty_body.to_string()),
-            "an empty body keeps the rendered prefix and stays quiet"
-        );
-        let server = LlmError::Api {
-            status: 500,
-            message: "upstream failed".into(),
-        };
-        assert!(
-            !is_quiet_failure(&server.to_string()),
-            "a server failure speaks; only the payment status is quiet"
-        );
-        assert!(
-            !is_quiet_failure("rate limited"),
-            "a rate-limit rendering speaks"
-        );
-        let body_collision = LlmError::Api {
-            status: 500,
-            message: "upstream billing subsystem returned 402 internally".into(),
-        };
-        assert!(
-            !is_quiet_failure(&body_collision.to_string()),
-            "the payment number inside another status's body does not quiet it"
-        );
-    }
     use crate::message::{ChannelKey, ChannelKind};
     use crate::schema::store_config;
 

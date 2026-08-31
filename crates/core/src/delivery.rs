@@ -22,9 +22,9 @@
 //! The third value is what makes a reply to her quotable. An answer's row
 //! names the answer's own block, so a reply to ANY of its chunks resolves
 //! the whole stored answer: the chunks are a transport artifact and her
-//! message is the block. A deterministic item, the failure notice and a
-//! report's line name no block — the notice is not stored, the report
-//! block declares no quotable column, and an item is fixed prose — so
+//! message is the block. A deterministic item and a report's line
+//! name no block — the report block declares no quotable column, and an
+//! item is fixed prose — so
 //! their rows carry NULL there and a reply to one of them lands quoteless.
 //!
 //! Blocks and not a side table, so the rows cascade with a deleted
@@ -147,9 +147,9 @@ impl LeafKind for Delivered {
 /// Agency-inert and frontier-transparent, the join notice's twin
 /// properties for the same reason: a receipt is appended by an independent
 /// path at an arbitrary moment — the moment the platform took a message —
-/// so the owed-turn frontier must read through it. This is load-bearing on
-/// day one: a failed turn's failure notice records its own delivery AT THE
-/// TAIL, and an opaque tail there would answer the debt walk with a
+/// so the owed-turn frontier must read through it. This matters from day
+/// one: a deterministic answer's receipt lands AT THE TAIL with no answer
+/// block, and an opaque tail there would answer the debt walk with a
 /// settled reading and bury the standing question behind it.
 impl Agency for Delivered {
     fn frontier_transparent(&self) -> bool {

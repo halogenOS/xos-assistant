@@ -6,8 +6,8 @@
 use agent_ledger::Role;
 use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::{
-    ChannelKind, DeliveryItem, ErasureOutcome, FAILURE_NOTICE, IngestOutcome, Observation,
-    ObservedFact, PRIVACY_UNPUBLISHED, composed_disclosure_line,
+    ChannelKind, DeliveryItem, ErasureOutcome, IngestOutcome, Observation, ObservedFact,
+    PRIVACY_UNPUBLISHED, composed_disclosure_line,
 };
 use serde_json::json;
 
@@ -337,11 +337,17 @@ async fn a_person_returning_after_deletion_gets_the_line_again() {
 }
 
 /// AC3: the replies outside the answer path carry no disclosure — the
-/// privacy command's fixed answer and the failure notice are texts a
-/// person wrote and arrive exactly as written, and the rules
-/// acknowledgment (model-generated since unit 20) rides the observation
-/// return, never the answer edge, so no disclosure fold ever touches it —
-/// even when its recipient was never answered before.
+/// privacy command's fixed answer is a text a person wrote and arrives
+/// exactly as written, and the rules acknowledgment (model-generated since
+/// unit 20) rides the observation return, never the answer edge, so no
+/// disclosure fold ever touches it — even when its recipient was never
+/// answered before.
+///
+/// The failed turn closes the case from the other side (unit 49): it puts
+/// no send on the channel at all, so it can carry no line and can spend no
+/// person's introduction. The asker whose first turn died is still
+/// unintroduced afterwards, and the answer that finally reaches them opens
+/// with the line.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deterministic_replies_carry_no_disclosure() {
     let fixture = support::start_assistant(None).await;
@@ -399,18 +405,48 @@ async fn deterministic_replies_carry_no_disclosure() {
         "the acknowledgment is never introduced"
     );
 
-    // The failure notice, for a person whose first turn failed: no answer
-    // exists, no introduction rides the notice.
+    // The failed turn, for a person the store has never answered: nothing
+    // reaches the channel, so no line can ride out on it and no
+    // introduction is spent. Its own room, so the two asks below stand as
+    // one user run with nothing of anyone else's between them.
+    let failing_room = support::authorized_group(&fixture.assistant, "room-fixed-lines-dead").await;
+    let mut events = fixture.bus.subscribe();
     fixture.script.fail_next_turns(1);
-    support::ingest_recorded(
+    let failed = support::ingest_recorded(
         &fixture.assistant,
-        inbound(&room, ChannelKind::Group, "fresh-2", "the ask that fails"),
+        inbound(
+            &failing_room,
+            ChannelKind::Group,
+            "fresh-2",
+            "the ask that fails",
+        ),
     )
     .await;
-    let notice = recv_reply(&mut replies).await;
-    assert_eq!(notice.text, FAILURE_NOTICE);
+    support::await_failure_latch(&mut events, failed.conversation_id).await;
     assert!(
-        !notice.text.contains(support::fixture_disclosure().line()),
-        "the notice is the core's fixed line, never introduced"
+        matches!(
+            replies.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "the failed turn put nothing on the channel to introduce anyone with"
+    );
+
+    // The same person asks again and is answered: the line is still owed
+    // to them, so the failed turn provably introduced nobody.
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
+            &failing_room,
+            ChannelKind::Group,
+            "fresh-2",
+            "the ask that lands",
+        ),
+    )
+    .await;
+    let answered = recv_reply(&mut replies).await;
+    assert_eq!(
+        answered.text,
+        first_answer_to("the ask that fails\n\nthe ask that lands"),
+        "the introduction was still owed: the dead turn spent none of it"
     );
 }

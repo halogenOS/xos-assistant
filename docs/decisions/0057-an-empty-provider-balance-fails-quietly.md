@@ -52,3 +52,8 @@ class is exactly the payment status of the one registered provider wire,
 where it means an empty balance; a provider whose quota refusals arrive as
 rate-limit renderings still speaks, which is correct — a rate limit passes,
 an empty balance does not.
+
+---
+
+Amended 2026-08-31: superseded by decision 0192. Silence is now universal, so the class
+this record singled out needs no rule of its own and the predicate is gone.

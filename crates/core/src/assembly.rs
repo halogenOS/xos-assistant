@@ -88,9 +88,9 @@ pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
     join::JOIN_NOTICE_KIND,
     // The delivery receipt (unit 38, 2026-08-30): the adapter reports one
     // the moment the platform takes a message, so a receipt can land at
-    // the tail behind anything. Load-bearing on day one — a failed turn's
-    // failure notice records its own delivery AT THE TAIL, and an opaque
-    // tail there would bury the standing question behind it.
+    // the tail behind anything. Crucial on day one — a deterministic
+    // answer's receipt can sit AT THE TAIL with no answer block, and an
+    // opaque tail there would bury the standing question behind it.
     delivery::DELIVERED_KIND,
     // The message mark (unit 39, 2026-08-30): a reaction is placed
     // precisely on turns that answer nothing, so its block is the ledger
@@ -1588,8 +1588,8 @@ impl Assistant {
     /// items. Anything already stored when the subscription is taken is
     /// history and stays off it; everything stored afterwards is delivered
     /// at least once, re-read from the ledger — the outbound module's doc
-    /// states the exact delivery contract, including the failure notice's
-    /// at-most-once nature and the mark's accepted losses.
+    /// states the exact delivery contract, including the mark's accepted
+    /// losses.
     ///
     /// Named for what it yields: [`Outbound`], whose arms are a reply of
     /// words and a reaction. It was `replies` while words were the only

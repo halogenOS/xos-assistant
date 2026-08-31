@@ -17,9 +17,9 @@ use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::report::{self};
 use assistant_core::{
-    AnsweringMode, ChannelKind, CoreError, ErasureOutcome, FAILURE_NOTICE, IngestReceipt,
-    MODERATION_TEACHING, Observation, ObserveOutcome, ObservedFact, ProtectionConfig, ReplyKind,
-    ReplyTarget, ReplyThread,
+    AnsweringMode, ChannelKind, CoreError, ErasureOutcome, IngestReceipt, MODERATION_TEACHING,
+    Observation, ObserveOutcome, ObservedFact, ProtectionConfig, ReplyKind, ReplyTarget,
+    ReplyThread,
 };
 use serde_json::json;
 use tokio::sync::{Semaphore, mpsc};
@@ -733,8 +733,8 @@ async fn a_reported_message_is_not_reported_again_when_it_re_summons() {
     let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
     let conv = offense.conversation_id;
 
-    // The dying turn still files: the report goes out threaded, ahead of
-    // the failure notice.
+    // AC2: the dying turn still files. The report goes out threaded, and
+    // it is the whole of what that failure wake sends.
     let first = recv_reply(&mut replies).await;
     assert_eq!(
         first.kind,
@@ -747,9 +747,6 @@ async fn a_reported_message_is_not_reported_again_when_it_re_summons() {
         "the report is threaded onto the offending message or not \
          delivered: its line files nothing as a plain message"
     );
-    let second = recv_reply(&mut replies).await;
-    assert_eq!(second.kind, ReplyKind::Notice);
-    assert_eq!(second.text, FAILURE_NOTICE);
 
     // The re-summon: a later message re-engages the conversation, the owed
     // offense joins the turn's assessment set again, and the repeat naming
@@ -777,9 +774,14 @@ async fn a_reported_message_is_not_reported_again_when_it_re_summons() {
         1,
         "the re-assessed message filed exactly once"
     );
-    let third = recv_reply(&mut replies).await;
-    assert_eq!(third.kind, ReplyKind::Answer, "no second report goes out");
-    assert_eq!(third.text, support::disclosed(CLOSING_ANSWER));
+    let second = recv_reply(&mut replies).await;
+    assert_eq!(
+        second.kind,
+        ReplyKind::Answer,
+        "no second report goes out, and the dead turn queued nothing \
+         ahead of this answer"
+    );
+    assert_eq!(second.text, support::disclosed(CLOSING_ANSWER));
     let extra = replies.try_recv();
     assert!(extra.is_err(), "nothing further arrives: {extra:?}");
 }
@@ -847,6 +849,12 @@ async fn two_parallel_calls_naming_the_same_origin_file_exactly_once() {
 /// The transient-failure half of the dedup: a filing whose append failed
 /// spends nothing — the dedup scan finds no stored report, so the healed
 /// re-assessment files cleanly.
+///
+/// AC1 rides along, on the sharpest shape the suite has: this turn stored
+/// nothing deliverable before it died, so the whole failure wake settles
+/// with ZERO chat sends. The settling is awaited at the latch the failed
+/// turn closes — the mechanism's own statement that the turn is over —
+/// and the channel is read only then.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transient_append_failure_leaves_the_origin_reportable() {
     let (provider, handle, _release, _started) = sequenced_provider(vec![
@@ -857,11 +865,21 @@ async fn a_transient_append_failure_leaves_the_origin_reportable() {
     ]);
     let (fixture, mut replies) =
         report_fixture_with(provider, handle, ProtectionConfig::default()).await;
+    let mut events = fixture.bus.subscribe();
     let key = support::authorized_group(&fixture.assistant, "room-sabotage").await;
 
     support::sabotage_appends(&fixture.store, report::REPORT_TABLE).await;
     let offense = record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
     let conv = offense.conversation_id;
+    support::await_failure_latch(&mut events, conv).await;
+    assert!(
+        matches!(
+            replies.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "the failed turn settles with nothing on the channel: it filed \
+         nothing, so it had nothing to deliver and says nothing of its own"
+    );
     let blocks = support::await_ledger(&fixture.store, conv, "the sabotaged turn", |blocks| {
         blocks.iter().any(|block| block.block_type == "tool_error")
     })
@@ -875,7 +893,6 @@ async fn a_transient_append_failure_leaves_the_origin_reportable() {
         error.contains("right now"),
         "the failed append is the transient error: {error}"
     );
-    assert_eq!(recv_reply(&mut replies).await.text, FAILURE_NOTICE);
 
     // Healed, the re-summoned assessment files: the failure filed nothing,
     // so the dedup has nothing to decline.

@@ -455,7 +455,7 @@ static REPORTED_NULLABLE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
 /// platform's id for one delivered message, the key of the send it
 /// belonged to, and the stored block a reply to that message quotes. The
 /// answer block is nullable because most sends carry none — a
-/// deterministic item, the failure notice, a report's line — and the two
+/// deterministic item, a report's line — and the two
 /// text columns are nullable for no reason of erasure's: the row is
 /// structure, erasure leaves it, and the conversation's own deletion
 /// removes it through the block cascade. No frozen vocabulary list: the

@@ -17,10 +17,12 @@ use assistant_core::delivery::{
 };
 use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND};
 use assistant_core::schema::{DOMAIN, store_config};
-use assistant_core::{Authority, ChannelKind, ReplyKind, ReplyTarget};
+use assistant_core::{Authority, ChannelKind, DeliveryItem, IngestOutcome, ReplyKind, ReplyTarget};
 use serde_json::json;
 
-use crate::support::{self, channel, inbound, inbound_unaddressed, recv_reply, with_reply};
+use crate::support::{
+    self, channel, inbound, inbound_unaddressed, recv_reply, with_command, with_reply,
+};
 
 /// The receipts one conversation holds, oldest first.
 async fn receipts(store: &Store, conversation_id: i64) -> Vec<Delivered> {
@@ -128,14 +130,21 @@ async fn one_send_records_a_receipt_per_message_and_shows_the_model_nothing() {
     );
 }
 
-/// AC8's load-bearing case, live: a failed turn's notice records its
-/// delivery AT THE TAIL, over a question nobody answered — and the owing
-/// walk reads straight through it, so the next resting message still
-/// carries the debt the tail owed.
+/// AC8's crucial case, live: a send whose receipt names no block of
+/// hers records its delivery AT THE TAIL, over a question nobody answered
+/// — and the owing walk reads straight through it, so the next resting
+/// message still carries the debt standing behind it.
 ///
-/// This is the day-one shape the read-through membership exists for. An
-/// opaque receipt here would answer the walk a settled tail and bury the
-/// standing question behind it.
+/// This is the shape the read-through membership exists for. An opaque
+/// receipt here would answer the walk a settled tail and bury the standing
+/// question behind it.
+///
+/// The standing question is a failed turn's, which since unit 49 puts
+/// nothing on the channel at all, and the receipt is the privacy command's
+/// deterministic answer — fixed prose the ledger never stores, so its
+/// receipt carries no answer block, exactly the row this case needs. The
+/// command draws no turn and does not re-engage the latched conversation,
+/// so the debt it carries forward is the dead turn's own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_receipt_at_the_tail_buries_no_standing_debt() {
     let fixture = support::start_assistant(None).await;
@@ -144,17 +153,42 @@ async fn a_receipt_at_the_tail_buries_no_standing_debt() {
         .outbound(support::ADAPTER)
         .await
         .expect("the outbound edge opens");
-    let key = channel("dm-delivery-debt");
+    let mut events = fixture.bus.subscribe();
+    let key = support::authorized_group(&fixture.assistant, "room-delivery-debt").await;
 
     fixture.script.fail_next_turns(1);
     let asked = support::ingest_recorded(
         &fixture.assistant,
-        inbound(&key, ChannelKind::Direct, "42", "the failing ask"),
+        inbound(&key, ChannelKind::Group, "42", "the failing ask"),
     )
     .await;
-    let notice = recv_reply(&mut replies).await;
-    assert_eq!(notice.kind, ReplyKind::Notice, "the failed turn notices");
-    support::report_delivery(&fixture.assistant, notice.delivery, &["77"]).await;
+    support::await_failure_latch(&mut events, asked.conversation_id).await;
+    assert!(
+        matches!(
+            replies.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "the failed turn says nothing, so the debt stands unanswered and \
+         unmentioned"
+    );
+
+    let outcome = fixture
+        .assistant
+        .ingest(with_command(
+            inbound_unaddressed(&key, ChannelKind::Group, "42", "/privacy"),
+            "/privacy",
+        ))
+        .await
+        .expect("the command ingests");
+    let IngestOutcome::Recorded {
+        receipt,
+        deliver: Some(DeliveryItem::CommandAnswer(_)),
+        ..
+    } = outcome
+    else {
+        panic!("non-vacuity: the command answers deterministically: {outcome:?}");
+    };
+    support::report_delivery(&fixture.assistant, receipt.delivery(), &["77"]).await;
     let tail = fixture
         .store
         .latest_block(asked.conversation_id)
@@ -163,18 +197,19 @@ async fn a_receipt_at_the_tail_buries_no_standing_debt() {
         .expect("the ledger is non-empty");
     assert_eq!(
         tail.block_type, DELIVERED_KIND,
-        "non-vacuity: the notice's receipt really is the tail"
+        "non-vacuity: the command answer's receipt really is the tail"
     );
     let rows = receipts(&fixture.store, asked.conversation_id).await;
     assert_eq!(
         rows.iter().map(|row| row.answer_block).collect::<Vec<_>>(),
         vec![None],
-        "the notice is not stored, so its receipt names no block of hers"
+        "the command answer is not stored, so its receipt names no block \
+         of hers"
     );
 
     support::ingest_recorded(
         &fixture.assistant,
-        inbound_unaddressed(&key, ChannelKind::Direct, "43", "still wondering"),
+        inbound_unaddressed(&key, ChannelKind::Group, "43", "still wondering"),
     )
     .await;
     let recorded = fixture

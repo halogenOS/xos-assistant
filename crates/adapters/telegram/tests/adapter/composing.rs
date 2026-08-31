@@ -1,8 +1,9 @@
 //! The composing indicator over the scripted wire: a model turn shows the
 //! platform's typing action before its answer, the refresh provably stops
-//! when the turn ends — watched past two refresh periods, on the answered,
-//! failed and quiet-failed endings alike — a deterministic reply shows
-//! none, and a failing action send leaves the answer's delivery untouched.
+//! when the turn ends — watched past two refresh periods, on the answered
+//! ending and on a failed one whatever its error says — a deterministic
+//! reply shows none, and a failing action send leaves the answer's
+//! delivery untouched.
 //!
 //! The determinism fixture is the provider's turn hold: a held turn has
 //! streamed its opening text — which raises the core's typing cue, keyed
@@ -114,55 +115,22 @@ async fn a_deterministic_reply_draws_no_typing_action() {
     );
 }
 
-/// A failed turn stops the refresh: its ending sends the failure notice,
-/// not an answer, and once the notice is on the wire the action count
-/// stands still past two refresh periods. Two actions are awaited before
-/// the release, so the refresh loop is provably looping — not merely
-/// showing its first action — when the stop must end it.
+/// A failed turn stops the refresh, and it sends nothing at all doing it
+/// (unit 49): the adapter's stop-on-reply backstop never fires, so only the
+/// core's own stop transition can end the refresh. No other test isolates the core's stop
+/// transition this exactly — every other ending also delivers a send that
+/// stops the refresher in passing. Two actions are awaited before the
+/// release, so the refresh loop is provably looping — not merely showing
+/// its first action — when the stop must end it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_failed_turn_stops_the_typing_refresh() {
+async fn a_failed_turn_stops_the_typing_refresh_without_a_send() {
     let fixture = start_assistant().await;
     fixture.failures.store(1, Ordering::SeqCst);
     let hold = fixture.hold_turns();
     let server = BotApiServer::start().await;
-    let person = 41_641;
-    server.push_update(private_update(1, person, "this turn fails"));
+    server.push_update(private_update(1, 41_641, "this turn fails"));
 
     let state = TempStateFile::new("composing-failed-turn");
-    let (sleep, _) = recording_sleep();
-    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
-
-    server.await_recorded("sendChatAction", 2).await;
-    hold.notify_one();
-
-    let sends = server.await_recorded("sendMessage", 1).await;
-    assert_eq!(sends[0].body["chat_id"], json!(person));
-    assert_eq!(sends[0].body["text"], json!(assistant_core::FAILURE_NOTICE));
-
-    let at_failure = server.recorded("sendChatAction").len();
-    tokio::time::sleep(PAST_TWO_REFRESH_PERIODS).await;
-    assert_eq!(
-        server.recorded("sendChatAction").len(),
-        at_failure,
-        "the refresh kept running after the turn failed"
-    );
-}
-
-/// A quiet failure — the payment rendering the core keeps out of the chat
-/// — sends nothing at all, so the adapter's stop-on-reply backstop never
-/// fires and only the core's own stop transition can end the refresh.
-/// This is the stop mechanism's sharpest pin: every other ending also
-/// delivers a send that stops the refresher in passing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_quiet_failure_stops_the_typing_refresh_without_a_send() {
-    let fixture = start_assistant().await;
-    fixture.word_failures_as("api error 402: the scripted balance is spent");
-    fixture.failures.store(1, Ordering::SeqCst);
-    let hold = fixture.hold_turns();
-    let server = BotApiServer::start().await;
-    server.push_update(private_update(1, 41_642, "this turn fails quietly"));
-
-    let state = TempStateFile::new("composing-quiet-failure");
     let (sleep, _) = recording_sleep();
     let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
 
@@ -178,12 +146,46 @@ async fn a_quiet_failure_stops_the_typing_refresh_without_a_send() {
     tokio::time::sleep(PAST_TWO_REFRESH_PERIODS).await;
     assert!(
         server.recorded("sendMessage").is_empty(),
-        "a quiet failure sends nothing"
+        "a failed turn sends nothing"
     );
     assert_eq!(
         server.recorded("sendChatAction").len(),
         settled,
-        "nothing stopped the refresh on a quiet failure"
+        "nothing stopped the refresh on the failed turn"
+    );
+}
+
+/// The same ending under a differently worded error: the stop is bound to
+/// the turn failing and to nothing the failure says. Nothing in the core
+/// reads the error text any more, and this test holds that open: a wording
+/// that changed an outcome would fail here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_differently_worded_failure_stops_the_refresh_the_same_way() {
+    let fixture = start_assistant().await;
+    fixture.word_failures_as("the scripted provider gave up mid-stream");
+    fixture.failures.store(1, Ordering::SeqCst);
+    let hold = fixture.hold_turns();
+    let server = BotApiServer::start().await;
+    server.push_update(private_update(1, 41_642, "this turn fails too"));
+
+    let state = TempStateFile::new("composing-worded-failure");
+    let (sleep, _) = recording_sleep();
+    let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+
+    server.await_recorded("sendChatAction", 2).await;
+    hold.notify_one();
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let settled = server.recorded("sendChatAction").len();
+    tokio::time::sleep(PAST_TWO_REFRESH_PERIODS).await;
+    assert!(
+        server.recorded("sendMessage").is_empty(),
+        "the wording changes nothing: the failed turn sends nothing"
+    );
+    assert_eq!(
+        server.recorded("sendChatAction").len(),
+        settled,
+        "nothing stopped the refresh on the differently worded failure"
     );
 }
 
