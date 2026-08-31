@@ -271,7 +271,8 @@ established history is ever deleted by anything but erasure.)
   unacknowledged-update redelivery converges on the next attempt. The fixed lines,
   exact copy, stored as consts beside the catalogue and pinned byte for byte:
   - Wipe, applied: `Done. This group starts a fresh session; the old one stays on record.`
-  - Compact, applied: `Done. This session was compacted: recent messages stay, old context is set aside.`
+  - Compact, applied: `Compaction finished` (the operator's copy, 2026-08-31; the
+    unit shipped a longer line describing the tail-keep it then had)
   - Compact, nothing to cut (the conversation already holds no tool-traffic
     blocks — the exact three kinds — and no more chat rows than the kept
     bound, counting only rows OLDER than the invoking command row; the

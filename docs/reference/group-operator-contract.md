@@ -223,10 +223,9 @@ re-pinning anything.
 half stays word for word, and the older half is replaced by a summary of
 it, written by the assistant itself — what was asked and answered, what was
 decided, what is still open, and the topics that came up. The group's title
-and rules ride across with the recent half. It answers `Done. This session
-was compacted: recent messages stay, old context is set aside.`, or `This
-session is already compact. Nothing changed.` when the conversation is too
-short to have two halves.
+and rules ride across with the recent half. It answers `Compaction
+finished`, or `This session is already compact. Nothing changed.` when the
+conversation is too short to have two halves.
 
 Writing the summary takes the assistant a moment, so the answer arrives
 when the work is done rather than the instant the command is typed.

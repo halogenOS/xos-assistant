@@ -71,9 +71,11 @@ pub const RESET_FLOOR: Authority = Authority::Moderator;
 /// old conversation is not gone anywhere.
 pub const WIPE_DONE: &str = "Done. This group starts a fresh session; the old one stays on record.";
 
-/// What `/compact` answers when the trim stands.
-pub const COMPACT_DONE: &str =
-    "Done. This session was compacted: recent messages stay, old context is set aside.";
+/// What `/compact` answers when the compaction stands. The operator chose
+/// this copy (2026-08-31): the act is confirmed and nothing more — what
+/// compaction does to the history is the operator contract's job to
+/// explain, not this line's.
+pub const COMPACT_DONE: &str = "Compaction finished";
 
 /// What `/compact` answers when the session does not split: a ledger too
 /// short to have two halves, or one whose whole history is a single message
@@ -349,36 +351,10 @@ mod tests {
             WIPE_DONE,
             "Done. This group starts a fresh session; the old one stays on record."
         );
-        assert_eq!(
-            COMPACT_DONE,
-            "Done. This session was compacted: recent messages stay, old context is set aside."
-        );
+        assert_eq!(COMPACT_DONE, "Compaction finished");
         assert_eq!(
             COMPACT_ALREADY,
             "This session is already compact. Nothing changed."
-        );
-    }
-
-    /// The `/compact` line still describes the tail-keep decision 0163
-    /// shipped, under which the older half simply left the model's view. The
-    /// mechanism decision 0185 replaced it with SUMMARIZES that half and
-    /// carries the summary into the thread the group keeps talking in — which
-    /// is what the doc comment on [`COMPACT_COMMAND`] above and the operator
-    /// contract's own `/compact` paragraph already say, while the line quoted
-    /// beside them does not.
-    ///
-    /// Ignored on purpose, and this is the whole disagreement: the
-    /// replacement sentence is user-facing product copy, which a fix pass
-    /// does not get to write. It is recorded here so the gap lives in the
-    /// tree rather than only in a review, and it is unignored in the same
-    /// change that lands the new line and moves the byte pin above.
-    #[test]
-    #[ignore = "the replacement line is a copy decision, not a fix; the body states it"]
-    fn the_compact_line_says_the_older_half_is_summarized() {
-        assert!(
-            COMPACT_DONE.contains("summar"),
-            "the answer says what became of the older half: it was summarized \
-             and the summary came along"
         );
     }
 
