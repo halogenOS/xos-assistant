@@ -76,16 +76,25 @@ the same way the other nineteen library kinds are. It projects nothing to the mo
 nobody. The newest one in a conversation's ledger speaks; a later one supersedes an earlier one
 by being appended.
 
-**What a turn is offered.** The dispatch reads the newest recorded choice for the conversation
-and offers exactly the definitions those names resolve to. An empty list offers nothing. No
-recorded choice at all offers the registry, which is what every conversation is offered today.
+**One resolution, two readers.** One function computes the set of tools a conversation has,
+from its newest recorded choice and the registry, and both consumers resolve through it: the
+dispatch, to decide what the model is offered, and the runner, to decide what a call resolves
+against. The two can never disagree, because neither computes anything of its own.
 
-**What a call resolves against.** The runner resolves a call name against the same recorded
-choice instead of the whole registry. A name the choice does not carry does not reach a handler.
-The sentence the model reads names the tools THIS conversation has, never the process registry,
-and the outcome's classification follows from whether a next round could succeed: with names to
-offer it is `Refusal::Failed`, because the model can correct itself; with none it is
-`Refusal::Refused`, because nothing it calls can resolve, and a run of those ends the turn.
+**What a turn is offered.** The dispatch offers exactly the definitions the resolved set names.
+An empty list offers nothing. No recorded choice at all offers the registry, which is what
+every conversation is offered today: the record is an exposure decision, and a ledger that
+carries none filters nothing. The checks that enforce — the admission hook below, a handler's
+own vetting — run regardless, so absence of a record loosens exposure, never enforcement.
+
+**What a call resolves against.** The runner resolves a call name against the same resolved
+set. A name the set does not carry does not reach a handler, and the sentence the model reads
+is the same whether the name was never registered or is registered but outside the choice — the
+distinction would disclose the registry, which is exactly what the record exists to stop. The
+sentence names the tools THIS conversation has, never the process registry, and the outcome's
+classification follows from whether a next round could succeed: with names to offer it is
+`Refusal::Failed`, because the model can correct itself; with none it is `Refusal::Refused`,
+because nothing it calls can resolve, and a run of those ends the turn.
 
 **The compaction.** `fork_temporary` records the empty choice into the temporary conversation
 itself, before the instructions block. The library owns that fork, so the library states its
@@ -135,8 +144,10 @@ Framework:
    choice does not carry never reaches its handler, even when the registry holds it. A test
    asserts the handler body did not run.
 7. The sentence the model reads on an unresolved name lists the tools the CONVERSATION has and
-   no others. A test asserts a name outside a two-name choice yields a sentence naming those two
-   and not the third registered tool.
+   no others, and is byte-identical whether the name was never registered or is registered but
+   outside the choice. A test asserts a name outside a two-name choice yields a sentence naming
+   those two and not the third registered tool, and a second test asserts the two sentences are
+   equal.
 8. An unresolved name in a conversation whose choice is empty yields a sentence naming no tool
    and is recorded `Refusal::Refused`. A test reads the classification off the stored row.
 9. An unresolved name in a conversation that HAS tools is recorded `Refusal::Failed`, unchanged
@@ -191,23 +202,24 @@ Both:
     --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`, and
     `cargo doc --workspace --no-deps` under `RUSTDOCFLAGS="-D warnings"`.
 
-## Open decisions
+## Decided 2026-09-01, after the scoping document
 
-Both are marked OPEN and neither is built on until decided. Each names what it forbids.
+Both questions were open in the first revision of this spec; the tool-scoping document the
+user supplied that day decides the first and the delete order decides the second.
 
-**OPEN-1 — a conversation with no recorded choice.** The design above offers it the registry,
-which is today's behaviour for every conversation and every framework consumer. The alternative
-is to offer it nothing, which is today's APP behaviour: a conversation with no palette admits no
-tool. Offering the registry forbids the app's present protection, that a conversation whose
-record was never written cannot reach a tool. Offering nothing forbids a consumer from using
-tools without recording a choice, and changes what every existing framework conversation is
-offered.
+**A conversation with no recorded choice is offered the registry.** The document's standing
+rule: the record is exposure, not enforcement; a ledger carrying no record filters nothing,
+deliberately, because the enforcement that never regressed still runs on every call. Here that
+enforcement is the admission hook, which fails closed on its own. The alternative — offering
+nothing — was the app's old behaviour, and it existed only because the palette was the app's
+whole admission; with admission in the framework, the record no longer has to carry that
+weight. The compaction fork is not exposed by this: the library writes its empty record before
+the fork's turn is ever summoned.
 
-**OPEN-2 — withdrawing the app's palette table.** The design above adds descriptor withdrawal to
-the framework so the app can delete its kind. The alternative is to leave `block_tool_palette`
-registered and its descriptor declared, written by nothing, so the database keeps opening.
-Leaving it forbids the deletion this unit exists to make, and leaves a dead kind in a public
-repository. Adding withdrawal enlarges the unit by one framework capability.
+**Descriptor withdrawal is added to the framework.** The order is to delete the palette and
+move the mechanism into the framework, cleanly; a database that registered `block_tool_palette`
+refuses to reopen without it, so the deletion is impossible until a consumer can state a
+withdrawal. Leaving the dead table registered was the alternative and is rejected with it.
 
 ## Rejected alternatives
 
@@ -252,6 +264,15 @@ tools entirely, and thus the framework answers accordingly."
 
 **2026-09-01, on the shape of the work.** "Delete and move into framework, CLEANLY, and
 MODULARLY, ROBUSTLY and respecting all the rules."
+
+**2026-09-01, the scoping document.** The user supplied a description of another project's
+tool scoping as inspiration. What this unit takes from it: one definition of the effective
+set, resolved by both the schema side and the admission side; the record appended only on a
+delta; absence of a record filters nothing because enforcement is elsewhere; and a name
+outside the set answered identically to a name that never existed. What this unit does not
+take: visibility tiers, deferral, namespacing, phase withholding — the recorded choice is the
+piece of the structure this unit needs, shaped so those can later sit beside it without
+reworking it.
 
 **2026-09-01, on the compaction turn's tools.** The compaction turn is offered nothing and
 admits nothing; the requirement stands from unit 51.
