@@ -1877,9 +1877,10 @@ fn fresh_handle() -> ScriptHandle {
 }
 
 /// The full registered set of a moderating deployment, sorted as the
-/// recorded choice carries it: the three production lookups, the five
+/// recorded choice carries it: the three production lookups, the seven
 /// always-registered tools — the standing lookup, privacy, the react tool,
-/// runtime facts and the harness changelog — and the report tool.
+/// runtime facts, the harness changelog and the two turn-ending tools —
+/// and the report tool.
 fn reporting_tools() -> Vec<String> {
     vec![
         assistant_core::tools::changelog::NAME.into(),
@@ -1887,10 +1888,12 @@ fn reporting_tools() -> Vec<String> {
         "lookup_release".into(),
         "lookup_wiki".into(),
         assistant_core::tools::standing::NAME.into(),
+        assistant_core::tools::no_reply_needed::NAME.into(),
         assistant_core::tools::rights::NAME.into(),
         assistant_core::tools::mark::NAME.into(),
         report::NAME.into(),
         assistant_core::tools::runtime::NAME.into(),
+        assistant_core::tools::work_is_done::NAME.into(),
     ]
 }
 
@@ -2173,9 +2176,11 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
                 "lookup_release".to_owned(),
                 "lookup_wiki".to_owned(),
                 assistant_core::tools::standing::NAME.to_owned(),
+                assistant_core::tools::no_reply_needed::NAME.to_owned(),
                 assistant_core::tools::rights::NAME.to_owned(),
                 assistant_core::tools::mark::NAME.to_owned(),
-                assistant_core::tools::runtime::NAME.to_owned()
+                assistant_core::tools::runtime::NAME.to_owned(),
+                assistant_core::tools::work_is_done::NAME.to_owned()
             ],
             "the report tool is removed; the lookups and the unconditional tools stand"
         );

@@ -634,9 +634,11 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
             assistant_core::tools::changelog::NAME.to_owned(),
             commit::NAME.to_owned(),
             assistant_core::tools::standing::NAME.to_owned(),
+            assistant_core::tools::no_reply_needed::NAME.to_owned(),
             assistant_core::tools::rights::NAME.to_owned(),
             assistant_core::tools::mark::NAME.to_owned(),
-            assistant_core::tools::runtime::NAME.to_owned()
+            assistant_core::tools::runtime::NAME.to_owned(),
+            assistant_core::tools::work_is_done::NAME.to_owned()
         ],
         "the appended choice names the registered set, the unconfigured tools included"
     );
@@ -654,8 +656,9 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
 
 /// A created conversation's tool choice names exactly the registered set —
 /// the three lookups plus the always-registered tools: the standing lookup,
-/// privacy, the react tool, runtime facts and the harness changelog — and
-/// a direct and a group conversation get the identical choice.
+/// privacy, the react tool, runtime facts, the harness changelog and the
+/// two turn-ending tools — and a direct and a group conversation get the
+/// identical choice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_created_conversation_names_exactly_the_registered_set_direct_and_group_alike() {
     let fixture = support::start_assistant(None).await;
@@ -704,11 +707,13 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
                 release::NAME.to_owned(),
                 assistant_core::tools::wiki::NAME.to_owned(),
                 assistant_core::tools::standing::NAME.to_owned(),
+                assistant_core::tools::no_reply_needed::NAME.to_owned(),
                 assistant_core::tools::rights::NAME.to_owned(),
                 assistant_core::tools::mark::NAME.to_owned(),
-                assistant_core::tools::runtime::NAME.to_owned()
+                assistant_core::tools::runtime::NAME.to_owned(),
+                assistant_core::tools::work_is_done::NAME.to_owned()
             ],
-            "the choice names the three lookups and the five always-registered tools"
+            "the choice names the three lookups and the seven always-registered tools"
         );
         recorded.push(names);
     }
