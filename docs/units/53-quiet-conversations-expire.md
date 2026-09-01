@@ -111,7 +111,10 @@ and the legitimate-interests assessment's scheduled-deletion reasoning — plus 
 decision refining 0003 with the rejected alternatives; the old decision is not rewritten.
 The parked working-tree draft is split: its retention paragraph is superseded by this
 unit's wording, and its file-storage paragraphs are NOT committed, because they promise a
-subsystem that has no implementation. The docs test moves with what ships.
+subsystem that has no implementation. The withdrawal is documented, never silent: the new
+decision document records that the draft carried file-storage wording, why it was held back
+— the media intake is a committed spec with no code — and that the wording returns with the
+unit that builds it. The docs test moves with what ships.
 
 **First activation.** The user's requirement, verbatim: "Nothing should be deleted on the
 first boot with the policy actice", given with its own reasoning: "It hasn't been 90 days
