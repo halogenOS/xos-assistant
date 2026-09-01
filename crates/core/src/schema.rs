@@ -171,20 +171,34 @@ static PROTECTION_STAMP_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// The tool palette's content table — the appended migration step of the
-/// tools unit, per decision 0026's discipline. The table shape is the
-/// palette kind's descriptor contract: the block header row is the ledger
-/// entry, this row carries the admitted-names list. Structure, not personal
-/// data: erasure leaves it, and a direct conversation's deletion removes it
-/// through the block cascade like every content row.
-static TOOL_PALETTE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+/// The withdrawn tools table, spelled in this module alone (unit 52,
+/// 2026-09-01). No kind of this assistant claims it: which tools a
+/// conversation has is the framework's record, kept in a library table of
+/// the framework's own. The name survives here because a withdrawal needs
+/// one — the step that creates the table and the step that drops it both
+/// spell it, and the store is told the table is withdrawn so a database
+/// that registered it reopens at all.
+const WITHDRAWN_TOOLS_TABLE: &str = "block_tool_palette";
+
+/// The tables this consumer has withdrawn, handed to the store at open. A
+/// database written before unit 52 registered the tools table; naming it
+/// here is what lets it reopen without a descriptor, and the withdrawal
+/// step below is what the store then verifies actually happened.
+const WITHDRAWN_TABLES: &[&str] = &[WITHDRAWN_TOOLS_TABLE];
+
+/// The withdrawn tools table's creation — the appended migration step of
+/// the tools unit, per decision 0026's discipline, kept in place and
+/// spelled exactly as it shipped. An applied step is frozen: deleting it
+/// would renumber every step behind it, and every deployed store counts
+/// versions by position. A fresh store creates the table here and drops it
+/// at [`WITHDRAWN_TOOLS_MIGRATION`] below, which is how it ends at the same
+/// schema an upgraded store does.
+static SHIPPED_TOOLS_TABLE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "CREATE TABLE {table} (
+        "CREATE TABLE {WITHDRAWN_TOOLS_TABLE} (
             block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
-            {tools}  TEXT NOT NULL
-        );",
-        table = crate::tools::palette::TOOL_PALETTE_TABLE,
-        tools = crate::tools::palette::COLUMN_TOOLS,
+            tools  TEXT NOT NULL
+        );"
     )
 });
 
@@ -615,13 +629,43 @@ static RETRACTION_MIGRATION: LazyLock<String> = LazyLock::new(|| {
 pub static RETRACTION_KEY_INDEX: LazyLock<String> =
     LazyLock::new(|| format!("idx_{}_delivery", crate::delivery::RETRACTION_TABLE));
 
+/// The tools table's withdrawal — the appended migration step of unit 52
+/// (2026-09-01). Which tools a conversation has is the framework's record,
+/// kept in a library table of the framework's own, so this table has no
+/// kind left to serve.
+///
+/// Both halves of a withdrawal are here, in one step, because they are one
+/// change: the table goes, and the registry row that made it a reopen
+/// requirement goes with it. The store verifies both after the migrations
+/// run and refuses to serve a half-done one.
+///
+/// Both halves state an OUTCOME and not an event, deliberately: a store
+/// reaches this step from a version anywhere behind it,
+/// and whether the creating step above ran on the way depends on which
+/// version it started from. What must hold afterwards is that the table and
+/// its registry row are gone, and the store checks exactly that at every
+/// open — loudly, naming the table — so a withdrawal that failed to happen
+/// is caught by the check that exists for it and not by a statement that
+/// happens to error first.
+///
+/// The recorded blocks stay. Their content rows go with the table, and
+/// their header rows are ledger history, which nothing in this assistant
+/// deletes.
+static WITHDRAWN_TOOLS_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "DROP TABLE IF EXISTS {WITHDRAWN_TOOLS_TABLE};
+         DELETE FROM content_descriptors WHERE table_name = '{WITHDRAWN_TOOLS_TABLE}';"
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
-/// descriptors and the domain migrations — the three creating steps, then
-/// every appended step in order.
+/// descriptors, the tables it has withdrawn, and the domain migrations —
+/// the three creating steps, then every appended step in order.
 #[must_use]
 pub fn store_config() -> StoreConfig {
     StoreConfig {
         descriptors: AssistantKind::DESCRIPTORS,
+        withdrawn_tables: WITHDRAWN_TABLES,
         domain_migrations: vec![DomainMigrations {
             domain: DOMAIN,
             sqls: vec![
@@ -629,7 +673,7 @@ pub fn store_config() -> StoreConfig {
                 PRINCIPALS_SCHEMA,
                 CHANNELS_SCHEMA.as_str(),
                 PROTECTION_STAMP_MIGRATION.as_str(),
-                TOOL_PALETTE_MIGRATION.as_str(),
+                SHIPPED_TOOLS_TABLE_MIGRATION.as_str(),
                 CONTEXT_NOTE_MIGRATION.as_str(),
                 GROUP_AUTHORIZATION_MIGRATION.as_str(),
                 COMMAND_STAMP_MIGRATION.as_str(),
@@ -645,6 +689,7 @@ pub fn store_config() -> StoreConfig {
                 MESSAGE_MARK_MIGRATION.as_str(),
                 REVISES_MIGRATION.as_str(),
                 RETRACTION_MIGRATION.as_str(),
+                WITHDRAWN_TOOLS_MIGRATION.as_str(),
             ],
         }],
     }

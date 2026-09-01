@@ -57,8 +57,8 @@ use std::sync::Arc;
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
 use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{
-    Agency, Block, Column, ColumnType, ContentDescriptor, CoreEvent, FromBlock, LeafKind,
-    Projection, Role, StoreError, ToolContext, ToolHandler, ToolOutcome,
+    Admission, Agency, Block, Column, ColumnType, ContentDescriptor, CoreEvent, FromBlock,
+    LeafKind, Projection, Role, StoreError, ToolContext, ToolHandler, ToolOutcome,
 };
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -654,6 +654,17 @@ impl ToolHandler<CoreEvent> for ReportTool {
         }
     }
 
+    /// The authority a call of this tool requires (decision 0043), answered
+    /// through the framework's admission hook over the ledger snapshot the
+    /// runner's admission pass already loaded.
+    fn admit<'a>(
+        &'a self,
+        ctx: &'a ToolContext<'a, CoreEvent>,
+        ledger: &'a [Block],
+    ) -> BoxFuture<'a, Admission> {
+        crate::tools::admission::at_required_authority(NAME, REQUIRED_AUTHORITY, ctx, ledger)
+    }
+
     fn execute<'a>(
         &'a self,
         input: &'a str,
@@ -749,7 +760,7 @@ mod tests {
 
     /// The exact copy of every fixed result, pinned verbatim: the filed
     /// result claims filing with this turn — never arrival — and every
-    /// decline closes with the admission wrapper's no-retry teaching,
+    /// decline closes with the admission module's no-retry teaching,
     /// while the transient failure names the moment and teaches nothing.
     #[test]
     fn the_result_wording_is_pinned_verbatim() {

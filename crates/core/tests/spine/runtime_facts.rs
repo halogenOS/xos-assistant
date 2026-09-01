@@ -17,7 +17,7 @@
 //! The byte-exact rendering, the coarse uptime, the anchor read once, the
 //! absent zone parts and the ignored input are pinned beside the rendering
 //! itself, in the tool's own module; what only the assembled core can
-//! prove is here: the registration, the palette entry, and the
+//! prove is here: the registration, the recorded choice's entry, and the
 //! conversation's own model reaching the result across a configuration
 //! change.
 //!
@@ -35,7 +35,7 @@ use assistant_core::tools::runtime;
 use assistant_core::{ChannelKind, ProtectionConfig};
 
 use crate::support::{
-    self, ToolScript, field, inbound, only, palette_names, tool_scripted_provider,
+    self, ToolScript, field, inbound, only, tool_choice_names, tool_scripted_provider,
 };
 
 /// The model id this suite assembles with: distinct from the fixture
@@ -48,7 +48,7 @@ const CONFIGURED_MODEL: &str = "vendor/model-under-test-9";
 const MODEL_BEFORE_THE_SWAP: &str = "vendor/model-before-the-swap";
 
 /// An ordinary member asks what the assistant runs on: the scripted model
-/// calls the tool, admission through the recorded palette admits the call
+/// calls the tool, the recorded choice resolves it and admission admits the call
 /// at member authority, and the recorded result is the whole fact list
 /// over the model this conversation was created on — which, for a
 /// conversation opened under the running configuration, is that
@@ -80,7 +80,7 @@ async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
     // "the reading the call took" for a clock that keeps moving.
     let before = ClockReading::now_local();
     // "A" is an ordinary member, not the configured operator: the tool is
-    // reached at member authority, through the palette, never by calling
+    // reached at member authority, through the recorded choice, never by calling
     // the handler.
     let receipt = support::ingest_recorded(
         &fixture.assistant,
@@ -107,8 +107,8 @@ async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
     let after = ClockReading::now_local();
 
     assert!(
-        palette_names(&blocks).contains(&runtime::NAME.to_owned()),
-        "the creation palette names the tool, so admission can admit it"
+        tool_choice_names(&blocks).contains(&runtime::NAME.to_owned()),
+        "the creation choice names the tool, so the call can resolve"
     );
     assert_eq!(field(&only(&blocks, "tool_call"), "name"), runtime::NAME);
     // A process seconds old renders a zero uptime, which makes the whole
@@ -249,10 +249,10 @@ async fn the_stated_model_is_the_one_the_conversation_runs_on() {
 
 /// The teaching that routes the question rides every conversation's
 /// recorded prompt: the composition is what the assembly records, and the
-/// tool it names is in the same conversation's palette — an instruction
+/// tool it names is in the same conversation's choice — an instruction
 /// and a capability that cannot drift apart.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_recorded_prompt_teaches_the_tool_the_palette_carries() {
+async fn the_recorded_prompt_teaches_the_tool_the_choice_carries() {
     let fixture = support::start_assistant_full(
         Store::in_memory_with(store_config()).expect("an in-memory store opens"),
         support::silent_provider(),
@@ -280,7 +280,7 @@ async fn the_recorded_prompt_teaches_the_tool_the_palette_carries() {
         "the recorded prompt routes identity questions to the tool"
     );
     assert!(
-        palette_names(&blocks).contains(&runtime::NAME.to_owned()),
-        "the same conversation's palette carries what the prompt teaches"
+        tool_choice_names(&blocks).contains(&runtime::NAME.to_owned()),
+        "the same conversation's choice carries what the prompt teaches"
     );
 }

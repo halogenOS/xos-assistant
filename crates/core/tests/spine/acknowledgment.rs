@@ -121,7 +121,7 @@ async fn a_real_delta_generates_the_acknowledgment_from_the_new_rules() {
     let shape: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
     assert_eq!(
         shape,
-        vec!["system_prompt", "tool_palette", "context_note"],
+        vec!["system_prompt", "tool_choice", "context_note"],
         "the acknowledgment left no message and no answer on the ledger"
     );
     assert_eq!(blocks[2].fields["text"], json!("Be kind to newcomers."));

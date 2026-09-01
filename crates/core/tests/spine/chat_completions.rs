@@ -174,7 +174,7 @@ async fn start_scripted_server(script: Script) -> (String, Arc<Mutex<Vec<Hit>>>)
 /// another copy of them.
 ///
 /// The tool set passed in is empty, which does not mean toolless: the
-/// assembly admits the runtime-facts tool on nothing, so the palette these
+/// assembly admits the runtime-facts tool on nothing, so the choice these
 /// turns record carries it and a call naming it resolves.
 async fn start_over_the_module(store: &Store, base: &str) -> Assistant {
     let mut providers = ProviderRegistry::new();
@@ -458,7 +458,7 @@ async fn an_announced_tool_round_composes_over_the_production_wire() {
         "the announced wire turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "text",
             "tool_call",

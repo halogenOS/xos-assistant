@@ -1,5 +1,5 @@
-//! The assistant's tools: the project lookups, the palette that gates their
-//! admission, and the wrapper that enforces it.
+//! The assistant's tools: the project lookups and everything else the model
+//! can reach for.
 //!
 //! Tools are product behavior and live here, in the core: the project's own
 //! forge and releases are the product, and the no-platform-vocabulary
@@ -10,29 +10,27 @@
 //! the decode helpers, the path-safety checks — lives in the `lookup`
 //! module; this module holds the tree and the [`ToolSet`].
 //!
-//! The assembly takes a [`ToolSet`] — each handler admitted at its required
-//! authority — wraps every one in the admission check (`AdmittedTool`), and
-//! writes the [`palette::ToolPalette`] block naming exactly those tools at
-//! every conversation's creation. A conversation without a palette admits
-//! nothing.
+//! The assembly takes a [`ToolSet`], registers every handler in it, and
+//! records the framework's tool choice naming exactly those tools on every
+//! conversation it creates. WHICH tools a conversation has is that recorded
+//! choice, read by the framework at the dispatch that decides what a turn is
+//! offered and at the runner that decides what a call resolves against.
 //!
-//! Required authority is enforced at the call, per decision 0043: every
-//! wrapped execute reads the turn's provenance through the call block's
-//! dispatch anchor — the `provenance` module holds the reading — and
-//! declines when it falls below the tool's required authority. Registration
-//! accepts any authority; the wrapper's check at the call is the whole
-//! enforcement.
+//! Required authority is enforced at the call, per decision 0043: every tool
+//! answers the framework's admission hook with
+//! [`admission::at_required_authority`], which reads the turn's provenance
+//! through the call block's dispatch anchor — the `provenance` module holds
+//! the reading — and declines when it falls below the bar the tool's own
+//! module declares. Registration accepts any authority; the check at the
+//! call is the whole enforcement.
 
 use agent_ledger::{CoreEvent, ToolHandler, ToolRegistry};
 
-use crate::message::Authority;
-
-pub(crate) mod admission;
+pub mod admission;
 pub mod changelog;
 pub mod commit;
 pub(crate) mod lookup;
 pub mod mark;
-pub mod palette;
 pub(crate) mod provenance;
 pub mod release;
 pub mod report;
@@ -42,19 +40,30 @@ pub mod search;
 pub mod standing;
 pub mod wiki;
 
-use admission::AdmittedTool;
 use commit::CommitLookup;
 use release::ReleaseLookup;
 use wiki::WikiLookup;
 
-/// The tools the assembly registers, each admitted at the authority its
-/// admission requires. The set is built by the embedder — the binary admits
-/// the two production lookups, a test may admit probes of its own — and the
-/// assembly derives both the registry and the palette list from it, so the
-/// two cannot name different tools.
-#[derive(Default)]
+/// The tools the assembly registers. The set is built by the embedder — the
+/// binary admits the production lookups, a test may admit probes of its own
+/// — and the assembly derives both the registry and the recorded tool choice
+/// from it, so the two cannot name different tools.
+///
+/// A handler admitted here is registered at once, so a name is claimed where
+/// it is admitted and the two derived views can never be built from
+/// different sets.
 pub struct ToolSet {
-    entries: Vec<AdmittedTool>,
+    registry: ToolRegistry<CoreEvent>,
+    names: Vec<String>,
+}
+
+impl Default for ToolSet {
+    fn default() -> Self {
+        Self {
+            registry: ToolRegistry::new(),
+            names: Vec::new(),
+        }
+    }
 }
 
 /// What the production lookups are pointed at: one named base per host,
@@ -79,7 +88,8 @@ pub struct LookupEndpoints {
 }
 
 impl ToolSet {
-    /// An empty set: nothing registered, every palette written empty.
+    /// An empty set: nothing registered, every recorded choice written
+    /// empty.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -95,51 +105,44 @@ impl ToolSet {
     #[must_use]
     pub fn production_lookups(endpoints: LookupEndpoints) -> Self {
         let mut set = Self::new();
-        set.admit(
-            commit::REQUIRED_AUTHORITY,
-            CommitLookup::new(endpoints.forge, commit::DEFAULT_TIMEOUT),
-        );
-        set.admit(
-            release::REQUIRED_AUTHORITY,
-            ReleaseLookup::new(
-                endpoints.mirror,
-                endpoints.mirror_token,
-                release::DEFAULT_TIMEOUT,
-            ),
-        );
-        set.admit(
-            wiki::REQUIRED_AUTHORITY,
-            WikiLookup::new(endpoints.wiki, endpoints.wiki_index, wiki::DEFAULT_TIMEOUT),
-        );
+        set.admit(CommitLookup::new(endpoints.forge, commit::DEFAULT_TIMEOUT));
+        set.admit(ReleaseLookup::new(
+            endpoints.mirror,
+            endpoints.mirror_token,
+            release::DEFAULT_TIMEOUT,
+        ));
+        set.admit(WikiLookup::new(
+            endpoints.wiki,
+            endpoints.wiki_index,
+            wiki::DEFAULT_TIMEOUT,
+        ));
         set
     }
 
-    /// Admit one tool at the given required authority. The registered name
-    /// is the definition's own. Any authority registers; enforcement is the
-    /// admission wrapper's provenance check at every call, never a
-    /// registration refusal (decision 0043).
-    pub fn admit(&mut self, required: Authority, handler: impl ToolHandler<CoreEvent> + 'static) {
-        self.entries.push(AdmittedTool::new(required, handler));
-    }
-
-    /// The registry the runtime resolves calls against, and the palette list
-    /// every created conversation records — one source, two readers.
+    /// Admit one tool. The registered name is the definition's own, and the
+    /// authority a call of it requires is the tool's own answer to the
+    /// framework's admission hook — stated in the module that owns the tool
+    /// and nowhere else. Registration refuses nothing on authority; the
+    /// check at the call is the whole enforcement (decision 0043).
     ///
     /// # Panics
     ///
     /// If two admitted tools share one name; the registry refuses the
     /// silent overwrite.
-    pub(crate) fn into_registry(self) -> (ToolRegistry<CoreEvent>, Vec<String>) {
-        let mut registry = ToolRegistry::new();
-        let mut names: Vec<String> = Vec::with_capacity(self.entries.len());
-        for entry in self.entries {
-            names.push(entry.name().to_owned());
-            registry.register(names.last().expect("just pushed").clone(), entry);
-        }
-        // The palette records the names in sorted order — the same order the
+    pub fn admit(&mut self, handler: impl ToolHandler<CoreEvent> + 'static) {
+        let name = handler.definition().name;
+        self.names.push(name.clone());
+        self.registry.register(name, handler);
+    }
+
+    /// The registry the runtime resolves calls against, and the tool names
+    /// every created conversation records as its choice — one source, two
+    /// readers.
+    pub(crate) fn into_registry(mut self) -> (ToolRegistry<CoreEvent>, Vec<String>) {
+        // The choice records the names in sorted order — the same order the
         // registry iterates, deterministic across registration orders.
-        names.sort_unstable();
-        (registry, names)
+        self.names.sort_unstable();
+        (self.registry, self.names)
     }
 }
 
@@ -149,9 +152,11 @@ mod tests {
     use agent_ledger::{ToolContext, ToolOutcome};
 
     use super::*;
+    use crate::message::Authority;
 
-    /// A named no-op handler for the registration pins.
-    struct Named(&'static str);
+    /// A named no-op handler for the registration pins, answering the
+    /// admission hook at the authority it was built with.
+    struct Named(&'static str, Authority);
 
     impl agent_ledger::ToolHandler<CoreEvent> for Named {
         fn definition(&self) -> ToolDefinition {
@@ -160,6 +165,13 @@ mod tests {
                 description: "a probe".into(),
                 parameters: serde_json::json!({ "type": "object" }),
             }
+        }
+        fn admit<'a>(
+            &'a self,
+            ctx: &'a ToolContext<'a, CoreEvent>,
+            ledger: &'a [agent_ledger::Block],
+        ) -> BoxFuture<'a, agent_ledger::Admission> {
+            admission::at_required_authority(self.0, self.1, ctx, ledger)
         }
         fn execute<'a>(
             &'a self,
@@ -204,32 +216,32 @@ mod tests {
     }
 
     #[test]
-    fn the_tool_set_yields_sorted_palette_names() {
+    fn the_tool_set_yields_sorted_choice_names() {
         // The names come back sorted no matter the admission order — the
-        // registry's own iteration order, so the palette and the schema
-        // list agree.
+        // registry's own iteration order, so the recorded choice and the
+        // schema list agree.
         let mut set = ToolSet::new();
-        set.admit(Authority::Member, Named("zulu"));
-        set.admit(Authority::Member, Named("alpha"));
+        set.admit(Named("zulu", Authority::Member));
+        set.admit(Named("alpha", Authority::Member));
         let (registry, names) = set.into_registry();
         assert_eq!(names, vec!["alpha".to_owned(), "zulu".to_owned()]);
         assert_eq!(
             registry.names().collect::<Vec<_>>(),
             vec!["alpha", "zulu"],
-            "the registry iterates the same order the palette records"
+            "the registry iterates the same order the choice records"
         );
     }
 
     #[test]
-    fn a_registration_above_member_reaches_the_registry_and_the_palette() {
+    fn a_registration_above_member_reaches_the_registry_and_the_choice() {
         // Registration accepts every authority (decision 0043): an
         // admin-level registration reaches both derived views, because
-        // enforcement is the admission wrapper's provenance check, which
-        // every call passes through.
+        // enforcement is each tool's own answer to the admission hook,
+        // which every call passes through.
         let mut set = ToolSet::new();
-        set.admit(Authority::Admin, Named("admin_probe"));
-        set.admit(Authority::Moderator, Named("moderator_probe"));
-        set.admit(Authority::Member, Named("member_probe"));
+        set.admit(Named("admin_probe", Authority::Admin));
+        set.admit(Named("moderator_probe", Authority::Moderator));
+        set.admit(Named("member_probe", Authority::Member));
         let (registry, names) = set.into_registry();
         assert_eq!(
             names,
@@ -238,7 +250,7 @@ mod tests {
                 "member_probe".to_owned(),
                 "moderator_probe".to_owned()
             ],
-            "every authority registers and the palette names all three"
+            "every authority registers and the choice names all three"
         );
         assert_eq!(
             registry.names().collect::<Vec<_>>(),

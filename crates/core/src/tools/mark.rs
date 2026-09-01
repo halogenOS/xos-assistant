@@ -90,8 +90,8 @@ use std::sync::Arc;
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
 use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{
-    Agency, Block, Column, ColumnType, ContentDescriptor, CoreEvent, FromBlock, LeafKind,
-    Projection, StoreError, ToolContext, ToolHandler, ToolOutcome,
+    Admission, Agency, Block, Column, ColumnType, ContentDescriptor, CoreEvent, FromBlock,
+    LeafKind, Projection, StoreError, ToolContext, ToolHandler, ToolOutcome,
 };
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -551,6 +551,17 @@ impl ToolHandler<CoreEvent> for MarkTool {
         }
     }
 
+    /// The authority a call of this tool requires (decision 0043), answered
+    /// through the framework's admission hook over the ledger snapshot the
+    /// runner's admission pass already loaded.
+    fn admit<'a>(
+        &'a self,
+        ctx: &'a ToolContext<'a, CoreEvent>,
+        ledger: &'a [Block],
+    ) -> BoxFuture<'a, Admission> {
+        crate::tools::admission::at_required_authority(NAME, REQUIRED_AUTHORITY, ctx, ledger)
+    }
+
     fn execute<'a>(
         &'a self,
         input: &'a str,
@@ -693,7 +704,7 @@ mod tests {
     /// result claims FILING and nothing past it — the arrival is the
     /// edge's, the platform's and the process's, none of which this tool
     /// hears back from — and it teaches the two rules that bound a
-    /// reaction; every decline closes with the admission wrapper's
+    /// reaction; every decline closes with the admission module's
     /// no-retry teaching; the emoji refusal names the bound in words; and
     /// the transient failure names the moment and teaches no never-again.
     #[test]

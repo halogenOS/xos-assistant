@@ -132,10 +132,10 @@ async fn the_appended_migration_adds_the_columns_and_the_index() {
 /// the appended steps would keep that test green while stranding every
 /// store the earlier binary wrote. Here a file store is rewound to the
 /// shape that binary left behind — an owing chat row on disk, neither
-/// stamp column, no index, no palette table, the domain's version at three
+/// stamp column, no index, the domain's version at three
 /// — and reopened with the shipped configuration. The appended steps must
 /// run alone (a rerun creating step would fail the open on the existing
-/// tables), add the columns, the index and the palette table, advance the
+/// tables), add the columns and the index, advance the
 /// version, and leave the pre-existing row reading the typed absence in
 /// both stamp columns.
 // The length is the upgrade story itself: write, rewind, reopen, pin every
@@ -204,7 +204,6 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN speaker;
                  ALTER TABLE {CHAT_MESSAGE_TABLE} DROP COLUMN literal_addressed;
                  ALTER TABLE principals DROP COLUMN opted_out;
-                 DROP TABLE {palette};
                  DROP TABLE {note};
                  DROP TABLE {report};
                  DROP TABLE {join};
@@ -214,7 +213,6 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                  DROP TABLE group_authorizations;
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';",
                 index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
-                palette = assistant_core::tools::palette::TOOL_PALETTE_TABLE,
                 note = assistant_core::note::CONTEXT_NOTE_TABLE,
                 report = assistant_core::tools::report::REPORT_TABLE,
                 join = assistant_core::join::JOIN_NOTICE_TABLE,
@@ -262,7 +260,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        20,
+        21,
         "the appended steps advanced the domain's version"
     );
 
@@ -315,6 +313,153 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
         rows[0].role,
         Some(Role::User),
         "the recreate-and-copy carried the stored voice"
+    );
+}
+
+/// The tools table's withdrawal over a database the PREVIOUS build wrote
+/// (unit 52, 2026-09-01): it opens, it serves, and it keeps its history.
+///
+/// Which tools a conversation has is the framework's record now, so this
+/// assistant's own table and the descriptor that claimed it are gone — and
+/// a database that REGISTERED that descriptor refuses to reopen without
+/// one, which is the state the withdrawal exists for. The disk here is
+/// rewound to exactly that state: the table back in the schema, its
+/// registry row back in the registry, a block of the withdrawn kind
+/// recorded in the conversation, and the domain's version one step back so
+/// the reopen runs the withdrawal step alone.
+///
+/// Without the withdrawal declared this open fails outright; without the
+/// step's DROP or its registry DELETE it fails too, naming the table. What
+/// it must leave standing is everything else: the conversation, its blocks,
+/// and the message the earlier binary recorded.
+// The length is the withdrawal story itself: write, rewind to the previous
+// build's disk, reopen, and read back the schema, the registry and the
+// history.
+#[allow(clippy::too_many_lines)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_database_written_before_the_withdrawal_opens_and_keeps_its_history() {
+    let db = support::TempDb::new("tools-withdrawal");
+    let conversation;
+    {
+        let store = Store::open_with(db.path(), store_config()).expect("the store opens");
+        conversation = store
+            .create_conversation(
+                "scripted-1".into(),
+                "script-model".into(),
+                "Script Model".into(),
+                support::VENDOR.into(),
+            )
+            .await
+            .expect("a conversation row");
+        store
+            .append_consumer_block(
+                conversation,
+                Some(Role::User),
+                CHAT_MESSAGE_KIND,
+                ChatMessage::stored_fields(
+                    "a message the earlier binary recorded",
+                    RecordedSender {
+                        principal_id: 1,
+                        authority: Authority::Member,
+                        speaker: None,
+                    },
+                    assistant_core::kind::RecordedOrigin {
+                        origin: Some("scripted:41"),
+                        revises: None,
+                    },
+                    None,
+                    "2026-08-21T00:00:00+00:00",
+                    Stamp {
+                        addressed: true,
+                        literal_addressed: false,
+                        limited: None,
+                        answer_due: true,
+                        debt_authority: None,
+                    },
+                ),
+                None,
+            )
+            .await
+            .expect("the pre-withdrawal row appends");
+        // The rewind to the previous build's disk: the table, its registry
+        // row, and one recorded block of the kind it served — header,
+        // junction and content row, exactly as that build wrote them.
+        agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
+            conn.execute_batch(&format!(
+                "CREATE TABLE block_tool_palette (
+                        block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+                        tools  TEXT NOT NULL
+                    );
+                    INSERT INTO content_descriptors (table_name, domain, kinds)
+                        VALUES ('block_tool_palette', '{domain}', '[\"tool_palette\"]');
+                    INSERT INTO blocks (block_type) VALUES ('tool_palette');
+                    INSERT INTO conversation_blocks (conversation_id, block_id)
+                        VALUES ({conversation}, last_insert_rowid());
+                    INSERT INTO block_tool_palette (block_id, tools)
+                        SELECT MAX(id), '[\"lookup_commit\"]' FROM blocks;",
+                domain = assistant_core::schema::DOMAIN,
+            ))?;
+            Ok(())
+        })
+        .await
+        .expect("the store rewinds to the previous build's shape");
+        rewind_domain_migration_version(&store, 20).await;
+        // The first store closes before the reopen, so the withdrawal reads
+        // the disk, not a live connection.
+    }
+
+    let reopened = Store::open_with(db.path(), store_config())
+        .expect("a database carrying the withdrawn table reopens");
+    let (tables, registry_rows): (i64, i64) =
+        agent_ledger::store::domain_run(&reopened.tx(), assistant_core::schema::DOMAIN, |conn| {
+            let tables = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                ["block_tool_palette"],
+                |row| row.get(0),
+            )?;
+            let registry_rows = conn.query_row(
+                "SELECT COUNT(*) FROM content_descriptors WHERE table_name = ?1",
+                ["block_tool_palette"],
+                |row| row.get(0),
+            )?;
+            Ok((tables, registry_rows))
+        })
+        .await
+        .expect("the schema and the registry read");
+    assert_eq!(tables, 0, "the withdrawal step dropped the table");
+    assert_eq!(
+        registry_rows, 0,
+        "the step that dropped the table took its registry row with it"
+    );
+    assert_eq!(
+        domain_migration_version(&reopened).await,
+        21,
+        "the withdrawal step ran and advanced the domain's version"
+    );
+
+    let conversations = reopened
+        .list_conversations()
+        .await
+        .expect("the conversation list reads");
+    assert_eq!(conversations.len(), 1, "the conversation is served");
+    assert_eq!(conversations[0].id, conversation);
+    let rows = messages(&reopened, conversation).await;
+    assert_eq!(rows.len(), 1, "the message history is kept");
+    assert_eq!(
+        rows[0].fields["text"],
+        json!("a message the earlier binary recorded")
+    );
+    let kinds: Vec<String> = reopened
+        .list_blocks(conversation)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .map(|block| block.block_type.clone())
+        .collect();
+    assert!(
+        kinds.iter().any(|kind| kind == "tool_palette"),
+        "the recorded block of the withdrawn kind is history, and history is not \
+         deleted: {kinds:?}"
     );
 }
 

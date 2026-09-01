@@ -44,7 +44,7 @@
 //! speaker (the username
 //! projection), erasure with its stream
 //! ordering, the end-to-end turn, tools (the lookups against the scripted
-//! forge and mirror in `lookup_wire`, the palette, the anchor gate over
+//! forge and mirror in `lookup_wire`, the recorded tool choice, the anchor gate over
 //! the turn's provenance), `privacy_rights` (the suppression drop, the
 //! self-service commands, the spawned deletion and the privacy tool),
 //! `mirror` (the deletion mirror riding the moderation bot's reply

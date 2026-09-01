@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_ledger::agency::{
-    AncestorReference, LeafKind, Status, SystemPrompt, Text, ToolCall, ToolResult,
+    AncestorReference, LeafKind, Status, SystemPrompt, Text, ToolCall, ToolChoice, ToolResult,
 };
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
 use agent_ledger::store::{BlockDestination, domain_run};
@@ -21,7 +21,6 @@ use assistant_core::kind::CHAT_MESSAGE_KIND;
 use assistant_core::note::CONTEXT_NOTE_KIND;
 use assistant_core::schema::{DOMAIN, store_config};
 use assistant_core::tools::ToolSet;
-use assistant_core::tools::palette::TOOL_PALETTE_KIND;
 use assistant_core::{
     Assistant, Authority, ChannelKey, ChannelKind, ChannelReset, ErasureOutcome, InboundMessage,
     IngestOutcome, Observation, ObservedFact, PRIVACY_REPLY_CAP, PRIVACY_UNPUBLISHED,
@@ -106,10 +105,7 @@ async fn reset_fixture_built(
 ) -> (support::Fixture, Replies) {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let mut tools = ToolSet::new();
-    tools.admit(
-        Authority::Member,
-        ProbeTool(Arc::new(AtomicBool::new(false))),
-    );
+    tools.admit(ProbeTool(Arc::new(AtomicBool::new(false))));
     let (provider, handle) = tool_scripted_provider(
         ToolScript {
             tool: PROBE.into(),
@@ -211,10 +207,15 @@ async fn kinds(store: &Store, conversation_id: i64) -> Vec<String> {
 
 /// The shape a compacted thread has, whichever door produced it, asserted
 /// against the source it came from: the current prompt, a block naming that
-/// source, the captured summary, and then a SUFFIX of the source's own
-/// ledger — the same blocks, shared by id, never copies. Both doors are held
-/// to this one reading, which is what "one mechanism, three doors" has to
-/// mean observably.
+/// source, the captured summary, the source's own tool choice carried
+/// across, and then a SUFFIX of the source's own ledger — the same blocks,
+/// shared by id, never copies. Both doors are held to this one reading,
+/// which is what "one mechanism, three doors" has to mean observably.
+///
+/// The carried choice is the library's own append (unit 52, 2026-09-01): a
+/// compacted thread continues the same session, and an inherited row may
+/// itself owe a turn, so the record has to be in place before the rows
+/// arrive.
 ///
 /// The summarized half is what is missing from the front of that suffix, and
 /// the assertion below is exactly that: the thread's inherited ids are a
@@ -227,8 +228,8 @@ async fn assert_compacted_shape(store: &Store, source: i64, thread: i64) {
         .map(|block| block.block_type.as_str())
         .collect();
     assert!(
-        blocks.len() >= 4,
-        "a compacted thread opens with three blocks and inherits at least one: {kinds:?}"
+        blocks.len() >= 5,
+        "a compacted thread opens with four blocks and inherits at least one: {kinds:?}"
     );
 
     assert_eq!(blocks[0].block_type, SystemPrompt::KINDS[0]);
@@ -268,7 +269,22 @@ async fn assert_compacted_shape(store: &Store, source: i64, thread: i64) {
         .iter()
         .map(|block| block.id)
         .collect();
-    let inherited: Vec<i64> = blocks[3..].iter().map(|block| block.id).collect();
+    assert_eq!(
+        blocks[3].block_type,
+        ToolChoice::KINDS[0],
+        "the source's tool choice is recorded ahead of the inherited rows: {kinds:?}"
+    );
+    assert_eq!(
+        support::tool_choice_names(&blocks[..4]),
+        store
+            .newest_tool_choice(source)
+            .await
+            .expect("the source's recorded choice reads")
+            .expect("the source recorded one"),
+        "the thread continues the session's own tools"
+    );
+
+    let inherited: Vec<i64> = blocks[4..].iter().map(|block| block.id).collect();
     let at = source_ids.len() - inherited.len();
     assert!(
         at > 0,
@@ -340,7 +356,7 @@ async fn flooded_group_of(
         "the tool turn",
         &[
             SystemPrompt::KINDS[0],
-            TOOL_PALETTE_KIND,
+            ToolChoice::KINDS[0],
             CONTEXT_NOTE_KIND,
             CONTEXT_NOTE_KIND,
             CHAT_MESSAGE_KIND,
@@ -377,7 +393,7 @@ async fn flooded_group_of(
 }
 
 /// AC2: a moderator's `/wipe` maps the channel to a new empty
-/// conversation — the current prompt and palette, no inherited block —
+/// conversation — the current prompt and tool choice, no inherited block —
 /// answers its exact line, carries the reset directive, and leaves the old
 /// conversation whole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -403,7 +419,7 @@ async fn a_moderators_wipe_starts_the_group_over_on_an_empty_session() {
     assert_ne!(fresh, source, "the channel points at a new conversation");
     assert_eq!(
         kinds(&fixture.store, fresh).await,
-        vec![SystemPrompt::KINDS[0], TOOL_PALETTE_KIND],
+        vec![SystemPrompt::KINDS[0], ToolChoice::KINDS[0]],
         "the fresh session is exactly what a newly admitted group gets"
     );
     let blocks = fixture
@@ -1152,7 +1168,7 @@ async fn compacted_lineage(
         "the tool turn",
         &[
             SystemPrompt::KINDS[0],
-            TOOL_PALETTE_KIND,
+            ToolChoice::KINDS[0],
             CHAT_MESSAGE_KIND,
             ToolCall::KINDS[0],
             ToolResult::KINDS[0],
@@ -1331,9 +1347,13 @@ async fn assert_lineage_retired(
 /// that boundary would be summarized AND carried forward verbatim, while a
 /// non-inherited block sitting after it would drop out of both. Both are
 /// asserted position by position here, against the boundary itself.
+///
+/// The thread's own four opening blocks — the prompt, the ancestor
+/// reference, the summary and the carried tool choice — are what the slice
+/// below steps past; everything behind them is inherited.
 fn assert_span_partitions(clone_ids: &[i64], scrubbed: &[Block], erased_ids: &[i64]) {
     let inherited: std::collections::HashSet<i64> =
-        scrubbed[3..].iter().map(|block| block.id).collect();
+        scrubbed[4..].iter().map(|block| block.id).collect();
     let boundary = clone_ids
         .iter()
         .position(|id| inherited.contains(id))
@@ -1350,9 +1370,15 @@ fn assert_span_partitions(clone_ids: &[i64], scrubbed: &[Block], erased_ids: &[i
          summarized as well as carried verbatim ({clone_ids:?} against \
          {inherited:?})"
     );
+    // The tool choice a thread opens with is a record of what the session
+    // has, not a word anybody said, and a thread compacted twice inherits
+    // the previous thread's record along with the history behind it. It
+    // belongs to no ancestor and is summarized by nobody, so it is not part
+    // of the history this partition is about.
     assert!(
-        scrubbed[3..]
+        scrubbed[4..]
             .iter()
+            .filter(|block| block.block_type != ToolChoice::KINDS[0])
             .all(|block| clone_ids.contains(&block.id)),
         "nothing the thread carries verbatim is missing from the ancestor \
          clone: the two together are the whole scrubbed history"

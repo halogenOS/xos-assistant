@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::{CoreEvent, ToolContext, ToolHandler, ToolOutcome};
+use agent_ledger::{Admission, Block, CoreEvent, ToolContext, ToolHandler, ToolOutcome};
 use serde_json::{Value, json};
 
 use crate::message::Authority;
@@ -47,8 +47,8 @@ pub const WINDOW_CALLS: usize = 6;
 /// The trailing span [`WINDOW_CALLS`] is counted over, in seconds.
 pub const WINDOW_SECONDS: i64 = 60;
 
-/// The authority this tool requires — the bar the admission wrapper's
-/// provenance gate compares each call's reading against (decision 0043).
+/// The authority this tool requires — the bar the admission hook's
+/// provenance reading is compared against at every call (decision 0043).
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 
 /// How many assets the compact result lists before summarizing the rest as
@@ -109,6 +109,17 @@ impl ToolHandler<CoreEvent> for ReleaseLookup {
                 "required": []
             }),
         }
+    }
+
+    /// The authority a call of this tool requires (decision 0043), answered
+    /// through the framework's admission hook over the ledger snapshot the
+    /// runner's admission pass already loaded.
+    fn admit<'a>(
+        &'a self,
+        ctx: &'a ToolContext<'a, CoreEvent>,
+        ledger: &'a [Block],
+    ) -> BoxFuture<'a, Admission> {
+        crate::tools::admission::at_required_authority(NAME, REQUIRED_AUTHORITY, ctx, ledger)
     }
 
     fn execute<'a>(

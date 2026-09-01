@@ -37,7 +37,7 @@
 use std::sync::Arc;
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::{CoreEvent, ToolContext, ToolHandler, ToolOutcome};
+use agent_ledger::{Admission, Block, CoreEvent, ToolContext, ToolHandler, ToolOutcome};
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
@@ -51,8 +51,8 @@ use crate::window::ReplyWindow;
 pub const NAME: &str = "privacy_request";
 
 /// The authority this tool requires — member: the rights it reaches are
-/// every member's own. The admission wrapper supplies no extra protection
-/// at this bar; the tool sits under it because every tool does.
+/// every member's own. The admission hook supplies no extra protection at
+/// this bar; the tool answers it because every tool does.
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 
 /// The action that raises the suppression flag.
@@ -240,6 +240,17 @@ impl ToolHandler<CoreEvent> for PrivacyTool {
         }
     }
 
+    /// The authority a call of this tool requires (decision 0043), answered
+    /// through the framework's admission hook over the ledger snapshot the
+    /// runner's admission pass already loaded.
+    fn admit<'a>(
+        &'a self,
+        ctx: &'a ToolContext<'a, CoreEvent>,
+        ledger: &'a [Block],
+    ) -> BoxFuture<'a, Admission> {
+        crate::tools::admission::at_required_authority(NAME, REQUIRED_AUTHORITY, ctx, ledger)
+    }
+
     fn execute<'a>(
         &'a self,
         input: &'a str,
@@ -340,52 +351,6 @@ mod tests {
             ToolOutcome::Error(decline) => assert_eq!(decline, AMBIGUOUS_RESULT),
             ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
                 panic!("an empty origin set never acts")
-            }
-        }
-    }
-
-    /// The palette governs this tool like every other: wrapped in the
-    /// admission check, a conversation whose recorded palette does not
-    /// name it declines before the body runs.
-    ///
-    /// The decline is the framework's REFUSAL and not its error (unit 51,
-    /// 2026-09-01): the call never ran, and that typed fact is what a run of
-    /// refusals counts toward the forced turn end. The wording is this app's
-    /// and is unchanged.
-    #[tokio::test]
-    async fn the_palette_governs_the_tool() {
-        let agency = fixture_agency().await;
-        agency
-            .store
-            .append_consumer_block(
-                agency.conversation_id,
-                None,
-                crate::tools::palette::TOOL_PALETTE_KIND,
-                crate::tools::palette::ToolPalette::stored_fields(&["lookup_commit".into()]),
-                None,
-            )
-            .await
-            .expect("the palette block appends");
-        let admitted =
-            crate::tools::admission::AdmittedTool::new(REQUIRED_AUTHORITY, fixture_tool());
-        let outcome = admitted
-            .execute(
-                r#"{"action":"opt_out"}"#,
-                ToolContext {
-                    agency: &agency,
-                    tool_call_id: "call-0",
-                    block_id: 0,
-                },
-            )
-            .await;
-        match outcome {
-            ToolOutcome::Refused(decline) => assert!(
-                decline.contains(NAME)
-                    && decline.contains("is not in this conversation's tool palette"),
-                "the unnamed tool draws the palette decline: {decline}"
-            ),
-            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Error(_) => {
-                panic!("a palette that does not name the tool admits nothing")
             }
         }
     }

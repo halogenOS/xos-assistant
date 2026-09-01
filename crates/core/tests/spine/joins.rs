@@ -90,16 +90,23 @@ fn projected(block: &Block) -> Option<String> {
     JoinNotice::parse(block).llm_text()
 }
 
-/// The tool names of every palette block one conversation holds, oldest
+/// The tool names of every recorded choice one conversation holds, oldest
 /// first — the supersession pins read the newest one back.
-async fn stored_palettes(store: &Store, conversation_id: i64) -> Vec<Vec<String>> {
+async fn stored_choices(store: &Store, conversation_id: i64) -> Vec<Vec<String>> {
     store
         .list_blocks(conversation_id)
         .await
         .expect("the ledger reads")
         .iter()
-        .filter(|block| block.block_type == "tool_palette")
-        .map(|block| serde_json::from_str(&field(block, "tools")).expect("the stored list parses"))
+        .filter(|block| block.block_type == "tool_choice")
+        .map(|block| {
+            block.fields["names"]
+                .as_array()
+                .expect("the recorded names are a list")
+                .iter()
+                .map(|name| name.as_str().expect("a name is a string").to_owned())
+                .collect()
+        })
         .collect()
 }
 
@@ -337,17 +344,17 @@ async fn a_redelivered_join_event_stores_nothing_new() {
     );
 }
 
-/// The palette supersession fires on an observed join like every other
+/// The tool-choice supersession fires on an observed join like every other
 /// first activity (decided 2026-08-23): a conversation carrying an older
-/// process's palette gains the current one when someone walking in is what
+/// process's choice gains the current one when someone walking in is what
 /// this process sees first — the delta append landing ahead of the join
 /// blocks, exactly as it lands ahead of a message.
 #[test]
-fn a_join_supersedes_a_stale_palette_like_any_other_first_activity() {
-    let db = support::TempDb::new("join-palette");
-    let key = channel("room-join-palette");
+fn a_join_supersedes_a_stale_choice_like_any_other_first_activity() {
+    let db = support::TempDb::new("join-choice");
+    let key = channel("room-join-choice");
 
-    // Process one, a moderating deployment: the group's palette names the
+    // Process one, a moderating deployment: the group's choice names the
     // report tool among the rest.
     let conversation = support::process_runtime().block_on(async {
         let store = Store::open_with(db.path(), store_config()).expect("the first store opens");
@@ -366,12 +373,12 @@ fn a_join_supersedes_a_stale_palette_like_any_other_first_activity() {
         )
         .await;
         assert!(
-            stored_palettes(&fixture.store, receipt.conversation_id)
+            stored_choices(&fixture.store, receipt.conversation_id)
                 .await
                 .last()
-                .expect("the creation palette stands")
+                .expect("the creation choice stands")
                 .contains(&report::NAME.to_owned()),
-            "the moderating process wrote the report tool into the palette"
+            "the moderating process wrote the report tool into the choice"
         );
         receipt.conversation_id
     });
@@ -395,28 +402,28 @@ fn a_join_supersedes_a_stale_palette_like_any_other_first_activity() {
             vec![joiner("j-p1", Some("ada"), "Ada Lovelace")],
         )
         .await;
-        let palettes = stored_palettes(&fixture.store, conversation).await;
-        assert_eq!(palettes.len(), 2, "the join's activity superseded it");
+        let choices = stored_choices(&fixture.store, conversation).await;
+        assert_eq!(choices.len(), 2, "the join's activity superseded it");
         assert!(
-            !palettes[1].contains(&report::NAME.to_owned()),
+            !choices[1].contains(&report::NAME.to_owned()),
             "the delta carries this process's registered set: {:?}",
-            palettes[1]
+            choices[1]
         );
         let blocks = fixture
             .store
             .list_blocks(conversation)
             .await
             .expect("the ledger reads");
-        let palette_at = blocks
+        let choice_at = blocks
             .iter()
-            .rposition(|block| block.block_type == "tool_palette")
-            .expect("the delta palette stands");
+            .rposition(|block| block.block_type == "tool_choice")
+            .expect("the delta choice stands");
         let join_at = blocks
             .iter()
             .position(|block| block.block_type == join::JOIN_NOTICE_KIND)
             .expect("the join stands");
         assert!(
-            palette_at < join_at,
+            choice_at < join_at,
             "the delta lands ahead of the join it was triggered by"
         );
     });
@@ -566,7 +573,7 @@ async fn a_join_alone_summons_no_turn_in_either_mode() {
         let kinds: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
         assert_eq!(
             kinds,
-            vec!["system_prompt", "tool_palette", join::JOIN_NOTICE_KIND],
+            vec!["system_prompt", "tool_choice", join::JOIN_NOTICE_KIND],
             "{answering:?}: the join is the whole of what a join writes"
         );
         assert_eq!(
@@ -784,7 +791,7 @@ async fn a_windowed_join_is_reported_against_its_event() {
         "the assessed turn over a join",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             join::JOIN_NOTICE_KIND,
             "chat_message",
             "tool_call",
@@ -863,7 +870,7 @@ async fn a_plural_join_event_files_once_and_names_no_single_person() {
         "the assessed turn over a plural join",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             join::JOIN_NOTICE_KIND,
             join::JOIN_NOTICE_KIND,
             "chat_message",
@@ -1144,7 +1151,7 @@ async fn a_filed_plural_event(room: &str, origin: &str) -> (support::Fixture, Ch
         "the filed report over a plural join",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             join::JOIN_NOTICE_KIND,
             join::JOIN_NOTICE_KIND,
             "chat_message",

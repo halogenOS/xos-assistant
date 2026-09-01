@@ -33,7 +33,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::{CoreEvent, ToolContext, ToolHandler, ToolOutcome};
+use agent_ledger::{Admission, Block, CoreEvent, ToolContext, ToolHandler, ToolOutcome};
 use serde_json::{Value, json};
 
 use crate::message::Authority;
@@ -64,8 +64,8 @@ pub const WIKI_REPOSITORY: &str = "android_manifest";
 /// construct short bounds instead of waiting production ones.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The authority this tool requires — the bar the admission wrapper's
-/// provenance gate compares each call's reading against (decision 0043).
+/// The authority this tool requires — the bar the admission hook's
+/// provenance reading is compared against at every call (decision 0043).
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 
 /// How many characters of a page the model-facing result carries before
@@ -298,6 +298,17 @@ impl ToolHandler<CoreEvent> for WikiLookup {
                 "required": []
             }),
         }
+    }
+
+    /// The authority a call of this tool requires (decision 0043), answered
+    /// through the framework's admission hook over the ledger snapshot the
+    /// runner's admission pass already loaded.
+    fn admit<'a>(
+        &'a self,
+        ctx: &'a ToolContext<'a, CoreEvent>,
+        ledger: &'a [Block],
+    ) -> BoxFuture<'a, Admission> {
+        crate::tools::admission::at_required_authority(NAME, REQUIRED_AUTHORITY, ctx, ledger)
     }
 
     fn execute<'a>(

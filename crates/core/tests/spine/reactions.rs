@@ -37,7 +37,7 @@ const CHOSEN: &str = "\u{1F389}";
 /// records, the turn closes.
 const REACTING_TURN: [&str; 7] = [
     "system_prompt",
-    "tool_palette",
+    "tool_choice",
     "chat_message",
     "tool_call",
     "message_mark",
@@ -373,7 +373,7 @@ async fn a_reaction_aimed_outside_the_turn_declines_and_files_nothing() {
         "the declined turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_error",

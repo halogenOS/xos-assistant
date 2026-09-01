@@ -23,11 +23,11 @@ use crate::support::{
     settle_shape, tool_scripted_provider,
 };
 
-/// The turn shape a search call writes: the palette, the message, the call
+/// The turn shape a search call writes: the tool choice, the message, the call
 /// and its outcome, then the model's closing answer.
 const SEARCH_TURN: [&str; 6] = [
     "system_prompt",
-    "tool_palette",
+    "tool_choice",
     "chat_message",
     "tool_call",
     "tool_result",
@@ -39,7 +39,7 @@ const SEARCH_TURN: [&str; 6] = [
 /// the call and its result between them.
 const ANNOUNCED_SEARCH_TURN: [&str; 7] = [
     "system_prompt",
-    "tool_palette",
+    "tool_choice",
     "chat_message",
     "text",
     "tool_call",
@@ -50,7 +50,7 @@ const ANNOUNCED_SEARCH_TURN: [&str; 7] = [
 /// The same turn where the call was refused or failed.
 const DECLINED_TURN: [&str; 6] = [
     "system_prompt",
-    "tool_palette",
+    "tool_choice",
     "chat_message",
     "tool_call",
     "tool_error",
@@ -590,7 +590,7 @@ async fn a_turn_holding_two_people_declines_the_spend() {
         "the two-person search turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "chat_message",
             "text",
@@ -614,7 +614,7 @@ async fn a_turn_holding_two_people_declines_the_spend() {
     recv_reply(&mut replies).await;
 }
 
-/// AC5 and AC9: a configured key puts the tool in the palette AND its
+/// AC5 and AC9: a configured key puts the tool in the recorded choice AND its
 /// teaching in the recorded prompt; no key leaves both absent, and nothing
 /// fails at startup either way. One predicate, pinned from both sides.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -639,7 +639,7 @@ async fn a_configured_key_admits_and_teaches_and_no_key_does_neither() {
     let receipt = support::ingest_recorded(
         &searching.assistant,
         inbound(
-            &channel("dm-search-palette"),
+            &channel("dm-search-choice"),
             ChannelKind::Direct,
             "42",
             "hello",
@@ -652,11 +652,10 @@ async fn a_configured_key_admits_and_teaches_and_no_key_does_neither() {
         .list_blocks(receipt.conversation_id)
         .await
         .expect("the ledger reads");
-    let names: Vec<String> =
-        serde_json::from_str(&field(&blocks[1], "tools")).expect("the stored list parses");
+    let names = support::tool_choice_names(&blocks);
     assert!(
         names.contains(&search::NAME.to_owned()),
-        "a configured key puts the search in the palette: {names:?}"
+        "a configured key puts the search in the recorded choice: {names:?}"
     );
     assert_eq!(
         field(&blocks[0], "content"),
@@ -686,11 +685,10 @@ async fn a_configured_key_admits_and_teaches_and_no_key_does_neither() {
         .list_blocks(plain_receipt.conversation_id)
         .await
         .expect("the ledger reads");
-    let plain_names: Vec<String> =
-        serde_json::from_str(&field(&plain_blocks[1], "tools")).expect("the stored list parses");
+    let plain_names = support::tool_choice_names(&plain_blocks);
     assert!(
         !plain_names.contains(&search::NAME.to_owned()),
-        "no key, no palette entry: {plain_names:?}"
+        "no key, no entry in the recorded choice: {plain_names:?}"
     );
     let plain_prompt = field(&plain_blocks[0], "content");
     assert!(
@@ -699,12 +697,12 @@ async fn a_configured_key_admits_and_teaches_and_no_key_does_neither() {
     );
     assert!(
         !plain_prompt.contains(assistant_core::SEARCH_TEACHING),
-        "the composed prompt teaches no tool the palette does not carry"
+        "the composed prompt teaches no tool the conversation does not have"
     );
 }
 
 /// AC6 end to end: nothing the run records carries a fragment of the key —
-/// not the recorded prompt, not the palette, not the call, not the result,
+/// not the recorded prompt, not the tool choice, not the call, not the result,
 /// and not the delivered reply.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_recorded_block_carries_a_fragment_of_the_key() {
@@ -850,18 +848,18 @@ async fn an_announce_ahead_of_the_search_arrives_before_the_answer() {
     );
 }
 
-// ─── The palette pins across the units that share these files ────────────
+// ─── The tool-choice pins across the units that share these files ───────
 
-/// The palette pins in the neighbouring suites name the runtime-facts tool
-/// and the harness-changelog tool beside the search tool.
+/// The tool-choice pins in the neighbouring suites name the runtime-facts
+/// tool and the harness-changelog tool beside the search tool.
 ///
-/// It is a cross-file pin because the palette is one recorded list and its
+/// It is a cross-file pin because the choice is one recorded list and its
 /// pins live in two suites: a unit that adds a tool has to reach both, and
 /// a search unit rewriting `tools.rs` from a base that predates another
 /// unit's tool would silently drop it from the recorded set. This is the
 /// cheap check that the drop did not happen.
 #[test]
-fn the_palette_pins_name_the_runtime_tool() {
+fn the_tool_choice_pins_name_the_runtime_tool() {
     for (file, pins) in [
         ("crates/core/tests/spine/tools.rs", include_str!("tools.rs")),
         (
@@ -871,13 +869,13 @@ fn the_palette_pins_name_the_runtime_tool() {
     ] {
         assert!(
             pins.contains("runtime::NAME"),
-            "{file} pins a palette that no longer names the runtime-facts tool: the \
+            "{file} pins a choice that no longer names the runtime-facts tool: the \
              recorded set is the three lookups, privacy, runtime facts, and the search \
              tool where a key is configured"
         );
         assert!(
             pins.contains("changelog::NAME"),
-            "{file} pins a palette that no longer names the harness-changelog tool: the \
+            "{file} pins a choice that no longer names the harness-changelog tool: the \
              recorded set is the three lookups, privacy, runtime facts, the harness \
              changelog, and the search tool where a key is configured"
         );

@@ -1078,6 +1078,7 @@ fn the_quotable_declaration_is_the_one_the_framework_validates_at_open() {
         .collect();
     let refused = Store::in_memory_with(StoreConfig {
         descriptors: Box::leak(misdeclared.into_boxed_slice()),
+        withdrawn_tables: store_config().withdrawn_tables,
         domain_migrations: store_config().domain_migrations,
     });
     let error = refused

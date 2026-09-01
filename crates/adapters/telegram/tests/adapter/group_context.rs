@@ -564,7 +564,7 @@ async fn a_rules_pin_appends_on_delta_and_acknowledges_each_delta_over_the_wire(
         shape,
         vec![
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "context_note",
             "context_note",
             "context_note"
