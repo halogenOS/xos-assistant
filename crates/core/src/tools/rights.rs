@@ -312,7 +312,7 @@ mod tests {
                     decline, INVALID_ACTION_RESULT,
                     "the input {input:?} answers the invalid-action result"
                 ),
-                ToolOutcome::Done(_) | ToolOutcome::Pending => {
+                ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
                     panic!("an invalid action never acts")
                 }
             }
@@ -338,7 +338,7 @@ mod tests {
             .await;
         match outcome {
             ToolOutcome::Error(decline) => assert_eq!(decline, AMBIGUOUS_RESULT),
-            ToolOutcome::Done(_) | ToolOutcome::Pending => {
+            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
                 panic!("an empty origin set never acts")
             }
         }
@@ -379,7 +379,7 @@ mod tests {
                     && decline.contains("is not in this conversation's tool palette"),
                 "the unnamed tool draws the palette decline: {decline}"
             ),
-            ToolOutcome::Done(_) | ToolOutcome::Pending => {
+            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
                 panic!("a palette that does not name the tool admits nothing")
             }
         }

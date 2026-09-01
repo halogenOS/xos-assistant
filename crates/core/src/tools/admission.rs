@@ -309,7 +309,7 @@ mod tests {
                 no_palette_decline(),
                 "the no-palette arm speaks its own recorded decline"
             ),
-            ToolOutcome::Done(_) | ToolOutcome::Pending => {
+            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
                 panic!("a conversation without a palette admits no tool")
             }
         }

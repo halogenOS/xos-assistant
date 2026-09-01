@@ -807,7 +807,7 @@ mod tests {
                     needs_handle_refusal(),
                     "the input {input:?} answers the malformed-call refusal"
                 ),
-                ToolOutcome::Done(_) | ToolOutcome::Pending => {
+                ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
                     panic!("a malformed call answers no standing")
                 }
             }
@@ -832,7 +832,7 @@ mod tests {
             .await;
         match outcome {
             ToolOutcome::Error(refusal) => assert_eq!(refusal, group_only_refusal()),
-            ToolOutcome::Done(_) | ToolOutcome::Pending => {
+            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
                 panic!("a conversation outside a group answers no standing")
             }
         }

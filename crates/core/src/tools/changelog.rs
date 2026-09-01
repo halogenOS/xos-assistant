@@ -247,7 +247,9 @@ mod tests {
                 ToolOutcome::Error(error) => {
                     panic!("the input {input:?} answers, it does not decline: {error}")
                 }
-                ToolOutcome::Pending => panic!("the tool resolves its own call"),
+                ToolOutcome::Pending | ToolOutcome::Refused(_) => {
+                    panic!("the tool resolves its own call")
+                }
             }
         }
         if option_env!("ASSISTANT_BUILD_CHANGELOG").is_none() {

@@ -769,7 +769,7 @@ mod tests {
                     facts.starts_with("model: vendor/model-9\n"),
                     "the input {input:?} answers the conversation's own facts: {facts}"
                 ),
-                ToolOutcome::Error(_) | ToolOutcome::Pending => {
+                ToolOutcome::Error(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
                     panic!("the input {input:?} answers the facts")
                 }
             }
@@ -831,7 +831,9 @@ mod tests {
             ToolOutcome::Done(facts) => {
                 panic!("a conversation nobody holds states no facts: {facts}")
             }
-            ToolOutcome::Pending => panic!("the tool resolves its own call"),
+            ToolOutcome::Pending | ToolOutcome::Refused(_) => {
+                panic!("the tool resolves its own call")
+            }
         }
     }
 }

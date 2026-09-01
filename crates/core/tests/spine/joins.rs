@@ -659,7 +659,9 @@ async fn a_join_over_an_unanswered_message_leaves_the_turn_owed() {
     };
     let outcome = ratchet::drive::<assistant_core::kind::AssistantKind, CoreEvent>(&ctx)
         .await
-        .expect("the drive runs");
+        .expect("the drive runs")
+        .outcome()
+        .expect("the conversation still exists");
     assert!(
         outcome.owes_turn,
         "the turn is still owed through the transparent join"
