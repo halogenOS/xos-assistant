@@ -183,6 +183,19 @@ subscription: the scheduler reacts through the table-blind `ctx.store.changes.wa
   `crates/core/src/streams.rs:371-390`), the conversation is NOT deleted and the compaction
   fails: deleting anyway would reopen the exact race A2 exists to close. After this unit, no
   write ever targets a retired id.
+
+  What makes a settle fail is the STORED tail, never the observation alone (added 2026-09-01,
+  found by the re-verifying correctness reader). The framework commits a turn's final text
+  before it emits the stream's terminal, so a capture that concluded from that committed text
+  reaches `retire` with the observation still marked open and the terminal already fired —
+  past the settle's own subscription, where no wait can see it. A settle that waits on the
+  observation alone spends its whole bound there and then reports a settled turn as unsettled,
+  which throws a good summary away and strands the temporary. So the settle reads the stored
+  streaming tail first: a tail present is a turn with something left to finish and the wait
+  stands, a tail absent is a turn that has committed its answer and the interrupt's own status
+  append confirms the settle directly. A provider deaf to the interrupt still holds its tail
+  and still fails the settle loudly at the bound — that outcome is unchanged, and the erasure
+  paths that depend on it are what caught the first, wider attempt at this rule.
 - **A3 — a failure just fails.** No backoff, no cooldown, no stand-down state of any kind —
   the operator's ruling, verbatim: "Failures are failures and failures just fail the
   compaction." A failed attempt logs and returns; the door stands; the next attempt happens
