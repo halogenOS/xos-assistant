@@ -103,9 +103,9 @@ pub enum CoreError {
     },
 }
 
-/// Whether retrying the same operation can come out differently. This is the
-/// statement an adapter's batch discipline reads — never the variant names,
-/// which are the core's own vocabulary and free to grow.
+/// How far a failure reaches: this message, or everything after it. This is
+/// the statement an adapter's batch discipline reads — never the variant
+/// names, which are the core's own vocabulary and free to grow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureKind {
     /// Provably deterministic: the same input fails the same way every time,
@@ -117,18 +117,35 @@ pub enum FailureKind {
     /// retryable, because dropping a message over a passing condition is the
     /// worse failure.
     Transient,
+    /// The failure is not about this message: the process cannot serve any
+    /// message from here on, and no retry of anything will change that. The
+    /// caller stops instead of retrying, leaving the message unacknowledged
+    /// so it redelivers to the replacement process (2026-09-01).
+    Fatal,
 }
 
 impl CoreError {
-    /// Terminal or transient, for the message that caused this error.
+    /// How far this failure reaches, for the message that caused it.
+    ///
+    /// The store hands a database failure back sorted into its own class and
+    /// acts on none of them — see `agent_ledger::StoreError`. This is where
+    /// the reaction is decided, because this is the first place that knows
+    /// what the failure was scoped to: one inbound message, or the process.
     #[must_use]
     pub fn failure_kind(&self) -> FailureKind {
         match self {
             // The mapping recorded the channel's kind at creation and the
             // message claims another; no retry changes either side.
             Self::ChannelKindMismatch { .. } => FailureKind::Terminal,
+            // The database is damaged, is not a database, or was used
+            // against its contract; or its one writer is gone. Every later
+            // message meets the same wall, so retrying this one would spin
+            // an intake that can never answer anything (2026-09-01).
+            Self::Store(StoreError::Unusable(_) | StoreError::ActorStopped) => FailureKind::Fatal,
             // Storage, wiring and timing failures can all pass on a retry;
-            // the start-time refusals never reach a per-message caller.
+            // the start-time refusals never reach a per-message caller. A
+            // refused write and a race with another writer are among them:
+            // both are about what this message asked for.
             Self::Store(_)
             | Self::UnknownVendor { .. }
             | Self::MissingContentTable { .. }
@@ -157,10 +174,47 @@ mod tests {
         assert_eq!(refusal.failure_kind(), FailureKind::Terminal);
     }
 
+    /// The class the store put on a database failure decides how far it
+    /// reaches: a refused write and a contended one are about the message
+    /// that made them, a damaged database and a departed writer are about
+    /// everything after it.
+    #[test]
+    fn the_stores_classes_split_the_message_from_the_process() {
+        let scripted = || {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_FOREIGNKEY),
+                Some("scripted".to_owned()),
+            )
+        };
+        for (error, expected) in [
+            (
+                CoreError::Store(StoreError::Rejected(scripted())),
+                FailureKind::Transient,
+            ),
+            (
+                CoreError::Store(StoreError::Contended(scripted())),
+                FailureKind::Transient,
+            ),
+            (
+                CoreError::Store(StoreError::Sqlite(scripted())),
+                FailureKind::Transient,
+            ),
+            (
+                CoreError::Store(StoreError::Unusable(scripted())),
+                FailureKind::Fatal,
+            ),
+            (
+                CoreError::Store(StoreError::ActorStopped),
+                FailureKind::Fatal,
+            ),
+        ] {
+            assert_eq!(error.failure_kind(), expected, "`{error}` is misjudged");
+        }
+    }
+
     #[test]
     fn every_other_variant_stays_transient() {
         let errors = [
-            CoreError::Store(StoreError::ActorStopped),
             CoreError::UnknownVendor {
                 vendor: "unregistered".into(),
             },

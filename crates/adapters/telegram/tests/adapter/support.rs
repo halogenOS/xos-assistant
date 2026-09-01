@@ -19,7 +19,7 @@ use agent_ledger::{
     Block, CoreEvent, EventBus, LlmError, ProviderModule, ProviderRegistry, ProviderRequest,
     ProviderResponse, StopReason, Store, StoreError, StreamEvent,
 };
-use assistant_adapter_telegram::{ADAPTER_NAME, Config, Sleep, TelegramAdapter};
+use assistant_adapter_telegram::{ADAPTER_NAME, AdapterError, Config, Sleep, TelegramAdapter};
 use assistant_core::delivery::Delivered;
 use assistant_core::schema::store_config;
 use assistant_core::{
@@ -744,6 +744,22 @@ pub fn spawn_adapter_named(
     }))
 }
 
+/// Start the adapter and hand back its RUN, so a test can read what the run
+/// answered. [`spawn_adapter`] asserts the run never fails, which is right
+/// for every test but the one about a core that cannot serve.
+pub fn spawn_adapter_for_outcome(
+    server: &BotApiServer,
+    state_file: &Path,
+    assistant: Arc<Assistant>,
+    sleep: Sleep,
+) -> tokio::task::JoinHandle<Result<(), AdapterError>> {
+    let mut config = Config::new(TOKEN, state_file);
+    config.api_root = server.root();
+    config.name = Some(NAME.to_owned());
+    let adapter = TelegramAdapter::with_sleep(config, sleep);
+    tokio::spawn(async move { adapter.run(assistant).await })
+}
+
 /// The public address the webhook pins configure — nothing resolves it and
 /// nothing calls it: the scripted platform only records what it was told,
 /// and the door under test is reached over loopback.
@@ -788,6 +804,45 @@ pub async fn spawn_webhook_adapter(
     sleep: Sleep,
     observer: Option<assistant_adapter_telegram::BoundListener>,
 ) -> (AdapterGuard, std::net::SocketAddr) {
+    let (run, address) =
+        spawn_webhook_adapter_for_outcome(server, state_file, assistant, sleep, observer).await;
+    // The [`AdapterGuard`] task only reads the run's outcome, so it carries
+    // the run's abort handle: dropping it ends the task that watches AND the
+    // run it watches. Every webhook test relies on that to leave no listener
+    // behind for the next one.
+    let ended = AbortOnDrop(run.abort_handle());
+    let guard = AdapterGuard(tokio::spawn(async move {
+        let _ended = ended;
+        if let Ok(outcome) = run.await {
+            outcome.expect("the adapter takes its edge and serves");
+        }
+    }));
+    (guard, address)
+}
+
+/// An abort handle that fires when it is dropped. Aborting a task that
+/// already finished does nothing, so a run that ended by itself is
+/// unaffected.
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// The same webhook start, handing back its RUN instead of asserting the run
+/// never fails: what the one test about a core that cannot serve reads.
+pub async fn spawn_webhook_adapter_for_outcome(
+    server: &BotApiServer,
+    state_file: &Path,
+    assistant: Arc<Assistant>,
+    sleep: Sleep,
+    observer: Option<assistant_adapter_telegram::BoundListener>,
+) -> (
+    tokio::task::JoinHandle<Result<(), AdapterError>>,
+    std::net::SocketAddr,
+) {
     let (reported, mut bound) = mpsc::unbounded_channel();
     let announce: assistant_adapter_telegram::BoundListener = Arc::new(move |address| {
         if let Some(observer) = &observer {
@@ -797,17 +852,12 @@ pub async fn spawn_webhook_adapter(
     });
     let config = webhook_adapter_config(server, state_file, 0);
     let adapter = TelegramAdapter::with_sleep(config, sleep).announcing_bound(announce);
-    let guard = AdapterGuard(tokio::spawn(async move {
-        adapter
-            .run(assistant)
-            .await
-            .expect("the adapter takes its edge and serves");
-    }));
+    let run = tokio::spawn(async move { adapter.run(assistant).await });
     let address = tokio::time::timeout(DEADLINE, bound.recv())
         .await
         .expect("the listener binds within the deadline")
         .expect("the bound address is announced");
-    (guard, address)
+    (run, address)
 }
 
 /// The secret the adapter generated and kept beside its state file, read

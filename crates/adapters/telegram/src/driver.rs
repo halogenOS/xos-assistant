@@ -71,9 +71,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use assistant_core::{
-    Assistant, ChannelKind, ChannelReset, ComposingState, ComposingUpdate, DeliveryHandle,
-    DeliveryItem, FailureKind, InboundMessage, IngestOutcome, Observation, ObserveOutcome,
-    ObservedFact, Outbound, OutboundMark, OutboundReply,
+    Assistant, Authority, ChannelKind, ChannelReset, ComposingState, ComposingUpdate,
+    DeliveryHandle, DeliveryItem, FailureKind, InboundMessage, IngestOutcome, Observation,
+    ObserveOutcome, ObservedFact, Outbound, OutboundMark, OutboundReply,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -243,6 +243,11 @@ pub(crate) enum Step {
     Acknowledged,
     /// A transient failure: the update is not acknowledged and redelivers.
     Halted,
+    /// The core stated that nothing it is asked from here on can succeed
+    /// (2026-09-01). The update is not acknowledged, the feeder ends, and
+    /// the run returns the failure — the process exits and its supervisor
+    /// starts a replacement, which the update redelivers to.
+    Stopped,
 }
 
 /// What handling one channel's deterministic items came to.
@@ -255,6 +260,8 @@ enum Handled {
     /// A transient core failure: the caller leaves the update
     /// unacknowledged.
     Halted,
+    /// The core cannot serve anything further: the caller ends the run.
+    Stopped,
 }
 
 impl Handled {
@@ -266,6 +273,7 @@ impl Handled {
         match self {
             Self::Proceed | Self::Withdrew => Step::Acknowledged,
             Self::Halted => Step::Halted,
+            Self::Stopped => Step::Stopped,
         }
     }
 }
@@ -319,17 +327,20 @@ pub(crate) async fn run(
     )
     .await?;
     tokio::select! {
-        () = feeder => {}
-        () = consume_outbound(outbound, &client, &typing, &assistant) => {}
-        () = consume_composing(composing, &client, &typing) => {}
+        outcome = feeder => outcome,
+        () = consume_outbound(outbound, &client, &typing, &assistant) => Ok(()),
+        () = consume_composing(composing, &client, &typing) => Ok(()),
     }
-    Ok(())
 }
 
 /// A started feeder: one future that feeds the shared step until it ends.
 /// Two of them exist — the poll loop and the webhook listener with its
 /// consumer — and the run entry above cannot tell them apart.
-pub(crate) type Feeder<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+///
+/// It answers a failure only when the core said it cannot serve anything
+/// further (2026-09-01); every other way a feeder ends is ordinary and
+/// answers `Ok`.
+pub(crate) type Feeder<'a> = Pin<Box<dyn Future<Output = Result<(), AdapterError>> + Send + 'a>>;
 
 /// Start the feeder the configuration names: the webhook listener where a
 /// webhook configuration is present, the poll loop where it is absent. One
@@ -373,9 +384,11 @@ async fn start_feeder<'a>(
     }
 }
 
-/// Long-poll and ingest until the future is dropped. Never returns on its
-/// own: a network error backs off and re-polls, a halted batch backs off
-/// and redelivers.
+/// Long-poll and ingest until the future is dropped. A network error backs
+/// off and re-polls, a halted batch backs off and redelivers, and the one
+/// way the loop ends by itself is the core stating that it cannot serve
+/// anything further (2026-09-01) — then the offset earned so far is
+/// persisted and the failure is answered, which ends the run.
 ///
 /// Any registered webhook is deleted first, unconditionally: the platform
 /// refuses to poll while one is set, so a deployment that moved back to
@@ -389,7 +402,7 @@ async fn poll_loop(
     wake: Option<&str>,
     sleep: &Sleep,
     assistant: &Assistant,
-) {
+) -> Result<(), AdapterError> {
     delete_registered_webhook(client).await;
     let me = fetch_identity(client, sleep).await;
     let mut next_offset = state::read(state_file);
@@ -404,12 +417,17 @@ async fn poll_loop(
             }
         };
         let mut halted = false;
+        let mut stopped = false;
         let offset_before = next_offset;
         for update in &updates {
             match intake.take(update).await {
                 Step::Acknowledged => next_offset = Some(update.id + 1),
                 Step::Halted => {
                     halted = true;
+                    break;
+                }
+                Step::Stopped => {
+                    stopped = true;
                     break;
                 }
             }
@@ -421,6 +439,12 @@ async fn poll_loop(
             // Not persisting is safe — the acknowledged updates redeliver
             // after a restart as accepted duplicates — so the loop goes on.
             tracing::error!(%error, "the offset did not persist");
+        }
+        if stopped {
+            // Persisting first is deliberate: the updates this batch did
+            // acknowledge are past, and the one that met the failure is not,
+            // so the replacement process starts exactly where this one gave up.
+            return Err(AdapterError::CoreCannotServe);
         }
         if halted {
             sleep(POLL_BACKOFF).await;
@@ -522,41 +546,12 @@ impl<'a> Intake<'a> {
                 // the message belongs to a channel the assistant just left.
                 Handled::Withdrew => return Step::Acknowledged,
                 Handled::Halted => return Step::Halted,
+                Handled::Stopped => return Step::Stopped,
             }
         }
-        let authority = match pending.authority {
-            Some(authority) => Some(authority),
-            // A resting withdrawal names a chat the core just refused: its
-            // messages are refused before authority is ever read, so no
-            // administrator fetch is spent on them — under a rate-limited
-            // list, a refused chat's flood would otherwise park the
-            // serial step one bounded wait per message. Delivered with
-            // authority unresolved, exactly like the failed fetch below; an
-            // admission inside the rest forgets it, so an admitted chat
-            // never waits out a stale rest.
-            None if self.memories.withdrawals.resting(pending.chat_id) => None,
-            None => match self
-                .memories
-                .admins
-                .authority_for(self.client, pending.chat_id, pending.sender_id)
-                .await
-            {
-                Ok(authority) => Some(authority),
-                Err(error) => {
-                    // Delivered unresolved, per the module doc: the core
-                    // refuses an unadmitted group before reading authority,
-                    // and its typed transient refusal for an admitted one
-                    // leaves the update unacknowledged below — never a
-                    // defaulted record, never a stranger group wedging the
-                    // intake.
-                    tracing::warn!(
-                        %error,
-                        "the administrator list did not resolve; delivered with authority unresolved"
-                    );
-                    None
-                }
-            },
-        };
+        let authority = self
+            .authority_of(pending.authority, pending.chat_id, pending.sender_id)
+            .await;
         let message = InboundMessage {
             channel: translate::channel_key(pending.chat_id),
             channel_kind: pending.channel_kind,
@@ -625,6 +620,18 @@ impl<'a> Intake<'a> {
                 tracing::error!(update_id = update.id, %refusal, "refused and acknowledged");
                 Step::Acknowledged
             }
+            // Not this message's failure: the core states that nothing it is
+            // asked from here on can succeed. Retrying would leave the intake
+            // spinning against a store that can never answer, so the run ends
+            // and the update stays unacknowledged for the next process.
+            Err(failure) if failure.failure_kind() == FailureKind::Fatal => {
+                tracing::error!(
+                    update_id = update.id,
+                    %failure,
+                    "the core cannot serve; the run ends"
+                );
+                Step::Stopped
+            }
             Err(error) => {
                 tracing::warn!(
                     update_id = update.id,
@@ -632,6 +639,48 @@ impl<'a> Intake<'a> {
                     "ingest failed; the update is not acknowledged"
                 );
                 Step::Halted
+            }
+        }
+    }
+
+    /// The sender's authority for one recorded message: what the translation
+    /// already carries, or the administrator list resolved for a group.
+    ///
+    /// It answers `None` where the platform did not: the core refuses an
+    /// unadmitted group before reading authority, and its typed transient
+    /// refusal for an admitted one leaves the update unacknowledged — never a
+    /// defaulted record, never a stranger group wedging the intake.
+    async fn authority_of(
+        &mut self,
+        carried: Option<Authority>,
+        chat_id: i64,
+        sender_id: i64,
+    ) -> Option<Authority> {
+        if let Some(authority) = carried {
+            return Some(authority);
+        }
+        // A resting withdrawal names a chat the core just refused: its
+        // messages are refused before authority is ever read, so no
+        // administrator fetch is spent on them — under a rate-limited list, a
+        // refused chat's flood would otherwise park the serial step one
+        // bounded wait per message. An admission inside the rest forgets it,
+        // so an admitted chat never waits out a stale rest.
+        if self.memories.withdrawals.resting(chat_id) {
+            return None;
+        }
+        match self
+            .memories
+            .admins
+            .authority_for(self.client, chat_id, sender_id)
+            .await
+        {
+            Ok(authority) => Some(authority),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "the administrator list did not resolve; delivered with authority unresolved"
+                );
+                None
             }
         }
     }
@@ -669,6 +718,7 @@ impl<'a> Intake<'a> {
                 Handled::Proceed => {}
                 Handled::Withdrew => return Step::Acknowledged,
                 Handled::Halted => return Step::Halted,
+                Handled::Stopped => return Step::Stopped,
             }
             return self.report(observation, chat_id).await.step();
         }
@@ -680,6 +730,7 @@ impl<'a> Intake<'a> {
             Handled::Proceed => {}
             Handled::Withdrew => return Step::Acknowledged,
             Handled::Halted => return Step::Halted,
+            Handled::Stopped => return Step::Stopped,
         }
         // The admission voids any lookup memory an earlier refused contact
         // left behind — the group's facts were withdrawn then, and the
@@ -723,6 +774,7 @@ impl<'a> Intake<'a> {
                     return Handled::Withdrew;
                 }
                 Handled::Halted => return Handled::Halted,
+                Handled::Stopped => return Handled::Stopped,
             }
         }
         self.memories.lookups.record_answered(chat_id);
@@ -755,6 +807,10 @@ impl<'a> Intake<'a> {
             Err(refusal) if refusal.failure_kind() == FailureKind::Terminal => {
                 tracing::error!(chat_id, %refusal, "observation refused and acknowledged");
                 Handled::Proceed
+            }
+            Err(failure) if failure.failure_kind() == FailureKind::Fatal => {
+                tracing::error!(chat_id, %failure, "the core cannot serve; the run ends");
+                Handled::Stopped
             }
             Err(error) => {
                 tracing::warn!(

@@ -212,8 +212,8 @@ async fn ingest_dropped(assistant: &Assistant, message: assistant_core::InboundM
     );
 }
 
-/// Install a fault that aborts every UPDATE on the named table — the seam
-/// behind the failed flag-write pin: the tool's identity update dies,
+/// Install a fault that refuses every UPDATE on the named table — the seam
+/// behind the failed flag-write proof: the tool's identity update dies,
 /// nothing is recorded, and the transient result answers. Never healed:
 /// the one test that installs it holds its own store for its whole life.
 async fn sabotage_updates(store: &Store, table: &'static str) {
@@ -228,12 +228,12 @@ async fn sabotage_updates(store: &Store, table: &'static str) {
     .expect("the sabotage trigger installs");
 }
 
-/// Install a fault that aborts every DELETE on the named table — the seam
-/// behind the failed-erasure pin, aimed at the erasure's CONCLUSION on
+/// Install a fault that refuses every DELETE on the named table — the seam
+/// behind the failed-erasure proof, aimed at the erasure's CONCLUSION on
 /// purpose: the earlier passes run and leave their positive observable
-/// (the nulled texts the pin awaits), then the conclusion dies and the
+/// (the nulled texts the proof awaits), then the conclusion dies and the
 /// identity row stands. A fault on the nulling pass itself would leave a
-/// failed run indistinguishable from one that never started, and the pin
+/// failed run indistinguishable from one that never started, and the proof
 /// would be reduced to sleeping at a race. [`heal_deletes`] removes it.
 async fn sabotage_deletes(store: &Store, table: &'static str) {
     domain_run(&store.tx(), DOMAIN, move |conn| {

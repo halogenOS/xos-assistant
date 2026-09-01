@@ -311,8 +311,8 @@ pub(crate) async fn start<'a>(
     // supervisor restarts the process.
     Ok(Box::pin(async move {
         tokio::select! {
-            () = serve(listener, door) => {}
-            () = consume(queued, intake) => {}
+            () = serve(listener, door) => Ok(()),
+            outcome = consume(queued, intake) => outcome,
         }
     }))
 }
@@ -494,7 +494,11 @@ impl Door {
         tokio::select! {
             reported = outcome => match reported {
                 Ok(Step::Acknowledged) => answered(StatusCode::OK),
-                Ok(Step::Halted) => {
+                // Halted and stopped are one answer to the platform: the
+                // update was not handled, so it redelivers. Which of the two
+                // it was decides what the consumer does next, not what this
+                // delivery is told.
+                Ok(Step::Halted | Step::Stopped) => {
                     tracing::warn!(update_id, "the ingest failed; refused for redelivery");
                     answered(StatusCode::INTERNAL_SERVER_ERROR)
                 }
@@ -522,7 +526,16 @@ impl Door {
 /// older update that redelivers after its successors were ingested appends
 /// late, the way a late-delivered message reads to a human. The ledger
 /// records arrival truth and nothing re-sorts.
-async fn consume(mut queued: mpsc::Receiver<Delivery>, mut intake: Intake<'_>) {
+///
+/// It ends by itself only when the core states that it cannot serve anything
+/// further (2026-09-01). The waiting delivery is refused before that, and
+/// where the run ends before the refusal reaches the wire the connection is
+/// cut instead — the two are the same fact to the platform, which holds an
+/// update nothing acknowledged and redelivers it to the replacement process.
+async fn consume(
+    mut queued: mpsc::Receiver<Delivery>,
+    mut intake: Intake<'_>,
+) -> Result<(), AdapterError> {
     let mut acknowledged = Acknowledged::new();
     while let Some(delivery) = queued.recv().await {
         let update_id = delivery.update.id;
@@ -545,7 +558,11 @@ async fn consume(mut queued: mpsc::Receiver<Delivery>, mut intake: Intake<'_>) {
         if delivery.answer.send(step).is_err() {
             tracing::debug!(update_id, "the delivery's answer was no longer awaited");
         }
+        if step == Step::Stopped {
+            return Err(AdapterError::CoreCannotServe);
+        }
     }
+    Ok(())
 }
 
 /// The bounded memory of acknowledged update ids: the ids in arrival order

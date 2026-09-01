@@ -1,17 +1,20 @@
 //! AC4: offset persistence — the restart that re-ingests nothing, the
 //! crash-window redelivery whose duplicate is the accepted outcome, the
-//! batch that fails midway and persists up to the last success, and the
-//! malformed state file that reads as absent.
+//! batch that fails midway and persists up to the last success, the core
+//! that can serve nothing more and so ends the run, and the malformed state
+//! file that reads as absent.
 
 use std::sync::Arc;
 
+use agent_ledger::StoreError;
+use assistant_adapter_telegram::AdapterError;
 use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
     DEADLINE, TempStateFile, authorize_group, await_chat_messages, await_conversations,
     await_state_file, group_update, private_update, recording_sleep, spawn_adapter,
-    start_assistant,
+    spawn_adapter_for_outcome, start_assistant,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -195,6 +198,58 @@ async fn a_transient_ingest_failure_halts_the_batch_and_redelivers() {
         json!("held back by the storage failure")
     );
     await_state_file(state.path(), 52).await;
+}
+
+/// AC7's third answer: a core that can serve nothing more ends the run
+/// instead of retrying against it. The store's one writer is killed, so
+/// every later call answers `ActorStopped` — which the core states as the
+/// fatal class, and which no redelivery of any message can clear. The
+/// adapter persists the offset it reached and stops, leaving the update
+/// unacknowledged for the process the supervisor starts next (2026-09-01).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_core_that_cannot_serve_ends_the_run_with_the_update_unacknowledged() {
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    let state = TempStateFile::new("core-cannot-serve");
+    server.push_update(private_update(60, 9, "recorded while the writer lives"));
+
+    let (sleep, _) = recording_sleep();
+    let run =
+        spawn_adapter_for_outcome(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
+    let conversation = await_conversations(&fixture.store, 1).await[0];
+    await_chat_messages(&fixture.store, conversation, 1).await;
+    await_state_file(state.path(), 61).await;
+
+    // Kill the one writer the way a bug would: a panic on its own thread.
+    // The thread ends, its channel closes, and every store call from here
+    // answers `ActorStopped` — including this one, whose answer never came.
+    let killed = fixture
+        .store
+        .run(|_conn| -> Result<(), StoreError> { panic!("the scripted writer death") })
+        .await;
+    assert!(
+        matches!(killed, Err(StoreError::ActorStopped)),
+        "killing the writer answers ActorStopped; answered {killed:?}"
+    );
+
+    // The next update meets a core that cannot serve it or anything after
+    // it, so the run ends instead of backing off forever.
+    server.push_update(private_update(61, 9, "meets the departed writer"));
+    let outcome = tokio::time::timeout(DEADLINE, run)
+        .await
+        .expect("the run ends before the deadline")
+        .expect("the run's task is not aborted");
+    assert!(
+        matches!(outcome, Err(AdapterError::CoreCannotServe)),
+        "the run ends stating the core cannot serve; ended {outcome:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(state.path())
+            .expect("the state file reads")
+            .trim(),
+        "61",
+        "the update the core could not take stays unacknowledged"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -195,6 +195,16 @@ pub enum AdapterError {
     /// would replace, breaking the delivery authentication across a restart.
     #[error("the webhook secret could not be kept: {0}")]
     Secret(String),
+
+    /// The core stated that nothing it is asked from here on can succeed —
+    /// its database is damaged, is not a database, or its one writer is gone
+    /// (2026-09-01). Serving on would spin the intake against a store that
+    /// can never answer, so the run ends, the process exits, and the
+    /// supervisor starts a replacement against the durable state. What the
+    /// core said is in the log line the run made where it stopped; there is
+    /// nothing to add here that a member's message could not appear in.
+    #[error("the core cannot serve any message; the run ended for a restart")]
+    CoreCannotServe,
 }
 
 /// The Telegram adapter, ready to run against a started assembly.

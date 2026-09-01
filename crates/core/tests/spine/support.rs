@@ -1501,10 +1501,10 @@ pub async fn reencode_receipts_at_utc_minus_five(store: &Store) {
 }
 
 /// The transient append fault, injected at the store: a temporary trigger
-/// aborts every INSERT into the named content table while every read stays
-/// live — the seam behind the redelivered-after-transient-failure pins,
-/// which prove no window or cap is spent before an append stands. The
-/// framework's append is one transaction, so the aborted content insert
+/// refuses every INSERT into the named content table while every read stays
+/// live — the seam behind the redelivered-after-transient-failure proofs,
+/// which show no window or cap is spent before an append stands. The
+/// framework's append is one transaction, so the refused content insert
 /// rolls the header back with it and the ledger keeps no half-written
 /// block. [`heal_appends`] removes the fault.
 pub async fn sabotage_appends(store: &Store, table: &'static str) {

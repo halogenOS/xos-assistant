@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use agent_ledger::StoreError;
 use assistant_adapter_telegram::{AdapterError, TelegramAdapter, webhook_secret_path};
 use reqwest::Method;
 use serde_json::{Value, json};
@@ -28,7 +29,8 @@ use crate::support::{
     DEADLINE, TempStateFile, WEBHOOK_PATH, WEBHOOK_PUBLIC_URL, authorize_group,
     await_chat_messages, await_conversations, deliver, group_update, kept_secret, knock,
     pending_sleep, private_update, recording_sleep, sleep_answering_first, spawn_adapter,
-    spawn_webhook_adapter, start_assistant, try_knock, webhook_adapter_config,
+    spawn_webhook_adapter, spawn_webhook_adapter_for_outcome, start_assistant, try_knock,
+    webhook_adapter_config,
 };
 
 /// The update types both intakes pin, as the poll request already names them.
@@ -633,6 +635,65 @@ async fn a_refused_delivery_redelivers_once_and_a_duplicate_is_met() {
     let messages = await_chat_messages(&fixture.store, conversation, 1).await;
     assert_eq!(messages.len(), 1, "the duplicate was not ingested again");
     assert_eq!(messages[0].fields["text"], json!("said exactly once"));
+}
+
+/// AC5's third answer, beside the acknowledgement and the refusal: a core
+/// that can serve nothing more ends the run for the supervisor to replace
+/// (2026-09-01). The delivery it was working on is never acknowledged — it
+/// is refused, or the ending run cuts the connection before the refusal is
+/// written, which the platform reads the same way — so the update is still
+/// there for the replacement process.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_core_that_cannot_serve_refuses_the_delivery_and_ends_the_run() {
+    let fixture = start_assistant().await;
+    let server = BotApiServer::start().await;
+    let state = TempStateFile::new("webhook-core-cannot-serve");
+    let (sleep, _) = pending_sleep();
+    let (run, address) = spawn_webhook_adapter_for_outcome(
+        &server,
+        state.path(),
+        Arc::clone(&fixture.assistant),
+        sleep,
+        None,
+    )
+    .await;
+    let secret = kept_secret(state.path());
+
+    // Kill the one writer the way a bug would: a panic on its own thread.
+    // Every store call from here answers `ActorStopped`, which the core
+    // states as the fatal class.
+    let killed = fixture
+        .store
+        .run(|_conn| -> Result<(), StoreError> { panic!("the scripted writer death") })
+        .await;
+    assert!(
+        matches!(killed, Err(StoreError::ActorStopped)),
+        "killing the writer answers ActorStopped; answered {killed:?}"
+    );
+
+    let update = private_update(60, 9, "meets the departed writer");
+    let answered = try_knock(
+        address,
+        Method::POST,
+        WEBHOOK_PATH,
+        Some(&secret),
+        update.to_string().into_bytes(),
+    )
+    .await;
+    assert_ne!(
+        answered,
+        Some(200),
+        "the update is never acknowledged: it is refused, or the ending run \
+         cuts the connection"
+    );
+    let outcome = tokio::time::timeout(DEADLINE, run)
+        .await
+        .expect("the run ends before the deadline")
+        .expect("the run's task is not aborted");
+    assert!(
+        matches!(outcome, Err(AdapterError::CoreCannotServe)),
+        "the run ends stating the core cannot serve; ended {outcome:?}"
+    );
 }
 
 /// AC5's deadline: with the consumer wedged, the door answers at its own
