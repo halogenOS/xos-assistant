@@ -608,7 +608,7 @@ pub fn tool_scripted_provider(
                     // A compaction's own turn, recognized by the harness
                     // message it carries: it is answered with the summary
                     // and never with the tool script, whose call the empty
-                    // palette would decline anyway. A scripted failure
+                    // tool choice would refuse anyway. A scripted failure
                     // takes it like any other turn, which is how a test
                     // drives a capture that produces nothing.
                     if is_compaction_turn(&messages) {
@@ -1420,8 +1420,8 @@ pub async fn ingest_recorded(assistant: &Assistant, message: InboundMessage) -> 
 }
 
 /// A loopback address nothing listens on: a tool constructed over it can be
-/// registered — and its palette entry recorded — without any test traffic
-/// ever succeeding against it.
+/// registered — and its name recorded in the tool choice — without any test
+/// traffic ever succeeding against it.
 pub const UNROUTABLE: &str = "http://127.0.0.1:1";
 
 /// The production tool set, exactly as the binary assembles it — the one
@@ -1923,14 +1923,26 @@ pub fn only(blocks: &[Block], kind: &str) -> Block {
     block.clone()
 }
 
-/// The stored palette names of the conversation's newest palette block.
-pub fn palette_names(blocks: &[Block]) -> Vec<String> {
+/// The tool names ONE recorded tool-choice block carries — the whole read
+/// of the block's stored shape, so every suite that reads a choice reads
+/// it the same way.
+pub fn choice_names(block: &Block) -> Vec<String> {
+    block.fields["names"]
+        .as_array()
+        .expect("the recorded names are a list")
+        .iter()
+        .map(|name| name.as_str().expect("a name is a string").to_owned())
+        .collect()
+}
+
+/// The tool names of the conversation's newest recorded tool choice.
+pub fn tool_choice_names(blocks: &[Block]) -> Vec<String> {
     let block = blocks
         .iter()
         .rev()
-        .find(|block| block.block_type == "tool_palette")
-        .expect("the conversation records a palette");
-    serde_json::from_str(&field(block, "tools")).expect("the stored list parses")
+        .find(|block| block.block_type == "tool_choice")
+        .expect("the conversation records a tool choice");
+    choice_names(block)
 }
 
 /// Await the next item on the outbound edge, or name the stall.

@@ -343,7 +343,7 @@ struct ServeInputs {
 }
 
 /// The lookup hosts the production tool set is pointed at: the configured
-/// overrides where present, the real defaults otherwise. The palette every
+/// overrides where present, the real defaults otherwise. The tool choice every
 /// new conversation records names exactly the set built over these.
 fn resolved_lookup_endpoints(
     configuration: &Configuration,

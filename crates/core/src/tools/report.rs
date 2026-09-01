@@ -654,6 +654,8 @@ impl ToolHandler<CoreEvent> for ReportTool {
         }
     }
 
+    crate::tools::admission::admits_at_required_authority!(NAME, REQUIRED_AUTHORITY);
+
     fn execute<'a>(
         &'a self,
         input: &'a str,
@@ -749,7 +751,7 @@ mod tests {
 
     /// The exact copy of every fixed result, pinned verbatim: the filed
     /// result claims filing with this turn — never arrival — and every
-    /// decline closes with the admission wrapper's no-retry teaching,
+    /// decline closes with the admission module's no-retry teaching,
     /// while the transient failure names the moment and teaches nothing.
     #[test]
     fn the_result_wording_is_pinned_verbatim() {

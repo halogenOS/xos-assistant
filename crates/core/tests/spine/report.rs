@@ -25,9 +25,9 @@ use serde_json::json;
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::support::{
-    self, CLOSING_ANSWER, MODERATION_HANDLE, ScriptHandle, ToolScript, carries, channel, field,
-    inbound, inbound_unaddressed, provider_stub, recv_reply, settle_shape, tool_scripted_provider,
-    with_origin, with_reply,
+    self, CLOSING_ANSWER, MODERATION_HANDLE, ScriptHandle, ToolScript, carries, channel,
+    choice_names, field, inbound, inbound_unaddressed, provider_stub, recv_reply, settle_shape,
+    tool_scripted_provider, with_origin, with_reply,
 };
 
 /// The outbound edge a fixture's replies arrive on.
@@ -44,7 +44,7 @@ fn fixture_line() -> String {
 /// the result records, the turn closes.
 const ASSESSED_TURN: [&str; 7] = [
     "system_prompt",
-    "tool_palette",
+    "tool_choice",
     "chat_message",
     "tool_call",
     "report",
@@ -348,7 +348,7 @@ async fn a_violating_message_is_assessed_and_the_edge_threads_the_report_before_
         "the assessed turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "context_note",
             "chat_message",
             "tool_call",
@@ -546,7 +546,7 @@ async fn an_origin_outside_the_turns_assessment_set_is_declined() {
         "the declined aim",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "text",
             "chat_message",
@@ -628,7 +628,7 @@ async fn with_several_messages_absorbed_the_model_names_the_one_violator() {
         "the absorbed assessment",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "chat_message",
             // The bystander's reply points at a message this conversation
@@ -976,7 +976,7 @@ async fn a_named_message_in_the_assistants_own_voice_is_declined() {
         "the declined probe",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "chat_message",
             "text",
@@ -1041,7 +1041,7 @@ async fn a_targetless_call_and_a_direct_conversation_are_declined() {
             "the declined call",
             &[
                 "system_prompt",
-                "tool_palette",
+                "tool_choice",
                 "chat_message",
                 "tool_call",
                 "tool_error",
@@ -1140,12 +1140,12 @@ async fn debt_propagation_reads_through_a_filed_report_at_the_stamp() {
     );
 }
 
-/// The same pin for the palette kind: a superseding palette append landing
+/// The same pin for the tool choice: a superseding choice append landing
 /// on top of an unanswered message buries nothing at the stamp. Dropping
-/// the palette entry from [`DEBT_READ_THROUGH`] fails this the same way
+/// the tool-choice entry from [`DEBT_READ_THROUGH`] fails this the same way
 /// the report pin above fails without its entry.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn debt_propagation_reads_through_a_superseding_palette_at_the_stamp() {
+async fn debt_propagation_reads_through_a_superseding_choice_at_the_stamp() {
     let fixture = support::start_assistant_full(
         Store::in_memory_with(store_config()).expect("an in-memory store opens"),
         support::silent_provider(),
@@ -1154,7 +1154,7 @@ async fn debt_propagation_reads_through_a_superseding_palette_at_the_stamp() {
         ProtectionConfig::default(),
     )
     .await;
-    let key = support::authorized_group(&fixture.assistant, "room-palette-read-through").await;
+    let key = support::authorized_group(&fixture.assistant, "room-choice-read-through").await;
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound(&key, ChannelKind::Group, "member-7", "the owed ask"),
@@ -1162,31 +1162,22 @@ async fn debt_propagation_reads_through_a_superseding_palette_at_the_stamp() {
     .await;
     fixture
         .store
-        .append_consumer_block(
-            receipt.conversation_id,
-            None,
-            assistant_core::tools::palette::TOOL_PALETTE_KIND,
-            assistant_core::tools::palette::ToolPalette::stored_fields(&reporting_palette()),
-            None,
-        )
+        .append_tool_choice(receipt.conversation_id, reporting_tools())
         .await
-        .expect("the superseding palette appends on top of the owed ask");
+        .expect("the superseding choice appends on top of the owed ask");
 
-    // Non-vacuity: the superseding palette really is the stored tail.
+    // Non-vacuity: the superseding choice really is the stored tail.
     let tail = fixture
         .store
         .latest_block(receipt.conversation_id)
         .await
         .expect("the tail reads")
         .expect("the ledger is non-empty");
-    assert_eq!(
-        tail.block_type,
-        assistant_core::tools::palette::TOOL_PALETTE_KIND
-    );
+    assert_eq!(tail.block_type, "tool_choice");
 
     support::ingest_recorded(
         &fixture.assistant,
-        inbound_unaddressed(&key, ChannelKind::Group, "B", "an aside behind the palette"),
+        inbound_unaddressed(&key, ChannelKind::Group, "B", "an aside behind the choice"),
     )
     .await;
     let blocks = fixture
@@ -1196,17 +1187,105 @@ async fn debt_propagation_reads_through_a_superseding_palette_at_the_stamp() {
         .expect("the ledger reads");
     let aside = blocks
         .iter()
-        .find(|block| block.fields.get("text") == Some(&json!("an aside behind the palette")))
+        .find(|block| block.fields.get("text") == Some(&json!("an aside behind the choice")))
         .expect("the aside is recorded");
     assert_eq!(
         aside.fields["answer_due"],
         json!(true),
-        "the debt propagates through the superseding palette"
+        "the debt propagates through the superseding choice"
     );
     assert_eq!(
         aside.fields["debt_authority"],
         json!("member"),
-        "the carried debt folds through the palette unchanged"
+        "the carried debt folds through the choice unchanged"
+    );
+}
+
+/// The stored type string of the kind unit 52 withdrew, as the previous
+/// build wrote it into the blocks table. Spelled here for the one test
+/// below, which recreates that build's row.
+const WITHDRAWN_KIND: &str = "tool_palette";
+
+/// The same question for the WITHDRAWN kind's header rows (unit 52,
+/// 2026-09-01): they read through too.
+///
+/// A database the previous build wrote keeps those rows forever. The
+/// withdrawal drops the content table and the registry row, never the
+/// recorded blocks, and the withdrawal test in the protection suite reads
+/// one back after the migration. This build knows no such kind, so without
+/// the read-through entry the row would parse as an unknown kind, and an
+/// unknown tail is a settled tail here: an unanswered ask directly behind
+/// one would stop owing its turn. The tail is reachable — the previous
+/// build appended that block ahead of a join redelivery, which then stored
+/// nothing behind it.
+///
+/// The entry costs the core's read-through set one literal string, and
+/// naming a string a previous build stored resurrects no mechanism. What it
+/// keeps is the walk's contract over history: a ledger is append-only, so
+/// what a retired kind wrote stays readable to everything that walks it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn debt_propagation_reads_through_a_withdrawn_kinds_header_row() {
+    let fixture = support::start_assistant_full(
+        Store::in_memory_with(store_config()).expect("an in-memory store opens"),
+        support::silent_provider(),
+        ScriptHandle::fresh(),
+        ToolSet::new(),
+        ProtectionConfig::default(),
+    )
+    .await;
+    let key = support::authorized_group(&fixture.assistant, "room-withdrawn-read-through").await;
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "member-7", "the owed ask"),
+    )
+    .await;
+
+    // The previous build's row, header and junction only: its content
+    // table is gone, which is exactly the shape the migration leaves.
+    let conversation = receipt.conversation_id;
+    agent_ledger::store::domain_run(
+        &fixture.store.tx(),
+        assistant_core::schema::DOMAIN,
+        move |conn| {
+            conn.execute_batch(&format!(
+                "INSERT INTO blocks (block_type) VALUES ('{WITHDRAWN_KIND}');
+                 INSERT INTO conversation_blocks (conversation_id, block_id)
+                     VALUES ({conversation}, last_insert_rowid());"
+            ))?;
+            Ok(())
+        },
+    )
+    .await
+    .expect("the previous build's header row appends on top of the owed ask");
+
+    // Non-vacuity: that row really is the stored tail the stamp reads
+    // behind.
+    let tail = fixture
+        .store
+        .latest_block(conversation)
+        .await
+        .expect("the tail reads")
+        .expect("the ledger is non-empty");
+    assert_eq!(tail.block_type, WITHDRAWN_KIND);
+
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "B", "an aside behind the old row"),
+    )
+    .await;
+    let blocks = fixture
+        .store
+        .list_blocks(conversation)
+        .await
+        .expect("the ledger reads");
+    let aside = blocks
+        .iter()
+        .find(|block| block.fields.get("text") == Some(&json!("an aside behind the old row")))
+        .expect("the aside is recorded");
+    assert_eq!(
+        aside.fields["answer_due"],
+        json!(true),
+        "the debt propagates through a header row of the withdrawn kind"
     );
 }
 
@@ -1790,12 +1869,7 @@ async fn a_filing_racing_an_erasure_waits_on_the_fence() {
     );
 }
 
-// ─── AC7: the gating, the palette, and the supersession ──────────────────
-
-/// The stored tool list of one palette block.
-fn palette_names(block: &Block) -> Vec<String> {
-    serde_json::from_str(&field(block, "tools")).expect("the stored list parses")
-}
+// ─── AC7: the gating, the tool choice, and the supersession ─────────────
 
 /// A fresh observation handle for the providers this module builds itself.
 fn fresh_handle() -> ScriptHandle {
@@ -1803,10 +1877,10 @@ fn fresh_handle() -> ScriptHandle {
 }
 
 /// The full registered set of a moderating deployment, sorted as the
-/// palette records it: the three production lookups, the five
+/// recorded choice carries it: the three production lookups, the five
 /// always-registered tools — the standing lookup, privacy, the react tool,
 /// runtime facts and the harness changelog — and the report tool.
-fn reporting_palette() -> Vec<String> {
+fn reporting_tools() -> Vec<String> {
     vec![
         assistant_core::tools::changelog::NAME.into(),
         "lookup_commit".into(),
@@ -1827,7 +1901,7 @@ fn reporting_palette() -> Vec<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_teaching_and_the_tool_gate_on_the_handle_and_helpful_mode() {
     // Handle plus helpful: the recorded prompt carries the teaching and
-    // the palette names the tool.
+    // the recorded choice names the tool.
     let (fixture, _replies) = report_fixture_with(
         support::silent_provider(),
         fresh_handle(),
@@ -1855,8 +1929,8 @@ async fn the_teaching_and_the_tool_gate_on_the_handle_and_helpful_mode() {
         "the recorded prompt carries the moderation teaching"
     );
     assert!(
-        palette_names(&blocks[1]).contains(&report::NAME.to_owned()),
-        "the palette names the report tool"
+        choice_names(&blocks[1]).contains(&report::NAME.to_owned()),
+        "the recorded choice names the report tool"
     );
 
     // Addressed with a handle: no teaching, no tool.
@@ -1886,7 +1960,7 @@ async fn the_teaching_and_the_tool_gate_on_the_handle_and_helpful_mode() {
         "addressed mode teaches no moderation even with the handle"
     );
     assert!(
-        !palette_names(&blocks[1]).contains(&report::NAME.to_owned()),
+        !choice_names(&blocks[1]).contains(&report::NAME.to_owned()),
         "addressed mode registers no report tool even with the handle"
     );
 
@@ -1915,18 +1989,18 @@ async fn the_teaching_and_the_tool_gate_on_the_handle_and_helpful_mode() {
         "no handle, no moderation teaching"
     );
     assert!(
-        !palette_names(&blocks[1]).contains(&report::NAME.to_owned()),
+        !choice_names(&blocks[1]).contains(&report::NAME.to_owned()),
         "no handle, no registered report tool"
     );
 }
 
-/// A pre-unit group conversation whose stored palette predates this unit
+/// A pre-unit group conversation whose recorded choice predates this unit
 /// gains the current tools on its first activity — and because that first
 /// activity is itself a summoned assessment, the gained report tool files
 /// in the very same turn: the delta append lands ahead of the message, so
-/// the turn's admission reads the fresh palette.
+/// the turn resolves against the fresh choice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_pre_unit_palette_gains_the_report_tool_and_files_on_first_activity() {
+async fn a_pre_unit_choice_gains_the_report_tool_and_files_on_first_activity() {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let conversation = store
         .create_conversation(
@@ -1941,25 +2015,19 @@ async fn a_pre_unit_palette_gains_the_report_tool_and_files_on_first_activity() 
         .insert_system_prompt(conversation, support::SYSTEM_PROMPT.into())
         .await
         .expect("the prompt records");
-    // The pre-unit palette: the two lookups of the tools unit.
+    // The pre-unit choice: the two lookups of the tools unit.
     store
-        .append_consumer_block(
+        .append_tool_choice(
             conversation,
-            None,
-            assistant_core::tools::palette::TOOL_PALETTE_KIND,
-            assistant_core::tools::palette::ToolPalette::stored_fields(&[
-                "lookup_commit".into(),
-                "lookup_release".into(),
-            ]),
-            None,
+            vec!["lookup_commit".into(), "lookup_release".into()],
         )
         .await
-        .expect("the pre-unit palette appends");
+        .expect("the pre-unit choice appends");
     agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
         conn.execute(
             "INSERT INTO channels (adapter, channel, kind, conversation_id) \
              VALUES (?1, ?2, 'group', ?3)",
-            (support::ADAPTER, "room-pre-unit-palette", conversation),
+            (support::ADAPTER, "room-pre-unit-choice", conversation),
         )?;
         Ok(())
     })
@@ -1974,7 +2042,7 @@ async fn a_pre_unit_palette_gains_the_report_tool_and_files_on_first_activity() 
         },
         None,
     );
-    let key = channel("room-pre-unit-palette");
+    let key = channel("room-pre-unit-choice");
     let fixture = support::start_assistant_reporting(
         store,
         provider,
@@ -1991,16 +2059,16 @@ async fn a_pre_unit_palette_gains_the_report_tool_and_files_on_first_activity() 
     support::authorize(&fixture.assistant, &key).await;
 
     // The first activity: the offense lands behind the superseding
-    // palette, summons the assessment, and the gained tool files.
+    // choice, summons the assessment, and the gained tool files.
     record_offense(&fixture, &key, "spammer-1", "origin-spam-1").await;
     let blocks = support::await_ledger(
         &fixture.store,
         conversation,
-        "the superseding palette and the filed report",
+        "the superseding choice and the filed report",
         |blocks| {
             blocks
                 .iter()
-                .filter(|block| block.block_type == "tool_palette")
+                .filter(|block| block.block_type == "tool_choice")
                 .count()
                 == 2
                 && blocks.iter().any(|block| block.block_type == "report")
@@ -2011,11 +2079,11 @@ async fn a_pre_unit_palette_gains_the_report_tool_and_files_on_first_activity() 
     let newest = blocks
         .iter()
         .rev()
-        .find(|block| block.block_type == "tool_palette")
-        .expect("the delta palette stands");
+        .find(|block| block.block_type == "tool_choice")
+        .expect("the delta choice stands");
     assert_eq!(
-        palette_names(newest),
-        reporting_palette(),
+        choice_names(newest),
+        reporting_tools(),
         "the delta append carries the full registered set, report included"
     );
     assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Report);
@@ -2026,8 +2094,8 @@ async fn a_pre_unit_palette_gains_the_report_tool_and_files_on_first_activity() 
 }
 
 /// No handle configured: the report tool is absent from a fresh
-/// conversation's palette — the wiki tool stands with the other lookups —
-/// and REMOVED from a pre-existing conversation's palette by the delta
+/// conversation's tool choice — the wiki tool stands with the other lookups
+/// — and REMOVED from a pre-existing conversation's choice by the delta
 /// append on its first activity under the handleless process.
 #[test]
 fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
@@ -2035,7 +2103,7 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
     let key = channel("room-handle-removed");
 
     // Process one, handle configured under helpful answering: the group's
-    // palette names the full set, report included.
+    // recorded choice names the full set, report included.
     let conversation = support::process_runtime().block_on(async {
         let store = Store::open_with(db.path(), store_config()).expect("the first store opens");
         let fixture = support::start_assistant_reporting(
@@ -2057,20 +2125,20 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
             .list_blocks(receipt.conversation_id)
             .await
             .expect("the ledger reads");
-        let palettes: Vec<&Block> = blocks
+        let choices: Vec<&Block> = blocks
             .iter()
-            .filter(|block| block.block_type == "tool_palette")
+            .filter(|block| block.block_type == "tool_choice")
             .collect();
-        assert_eq!(palettes.len(), 1, "one creation palette");
+        assert_eq!(choices.len(), 1, "one creation choice");
         assert_eq!(
-            palette_names(palettes[0]),
-            reporting_palette(),
-            "the handle registered the report tool into the palette"
+            choice_names(choices[0]),
+            reporting_tools(),
+            "the handle registered the report tool into the choice"
         );
         receipt.conversation_id
     });
 
-    // Process two, no handle: the pre-existing palette is superseded
+    // Process two, no handle: the pre-existing choice is superseded
     // without the report tool, and a fresh conversation never names it.
     support::process_runtime().block_on(async {
         let store = Store::open_with(db.path(), store_config()).expect("the store reopens");
@@ -2092,13 +2160,13 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
             .list_blocks(conversation)
             .await
             .expect("the ledger reads");
-        let palettes: Vec<&Block> = blocks
+        let choices: Vec<&Block> = blocks
             .iter()
-            .filter(|block| block.block_type == "tool_palette")
+            .filter(|block| block.block_type == "tool_choice")
             .collect();
-        assert_eq!(palettes.len(), 2, "the delta append superseded the palette");
+        assert_eq!(choices.len(), 2, "the delta append superseded the choice");
         assert_eq!(
-            palette_names(palettes[1]),
+            choice_names(choices[1]),
             vec![
                 assistant_core::tools::changelog::NAME.to_owned(),
                 "lookup_commit".to_owned(),
@@ -2127,15 +2195,13 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
             .list_blocks(fresh.conversation_id)
             .await
             .expect("the fresh ledger reads");
-        let palette = blocks
+        let choice = blocks
             .iter()
-            .find(|block| block.block_type == "tool_palette")
-            .expect("the creation palette stands");
+            .find(|block| block.block_type == "tool_choice")
+            .expect("the creation choice stands");
         assert!(
-            !palette_names(palette)
-                .iter()
-                .any(|name| name == report::NAME),
-            "a fresh palette never names the unconfigured report tool"
+            !choice_names(choice).iter().any(|name| name == report::NAME),
+            "a fresh choice never names the unconfigured report tool"
         );
     });
 }

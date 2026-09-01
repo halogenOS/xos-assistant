@@ -63,7 +63,6 @@ fn parsed(block: &Block) -> ChatMessage {
     match AssistantKind::from_block(block) {
         AssistantKind::ChatMessage(message) => message,
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
@@ -416,7 +415,6 @@ async fn erasure_nulls_the_speaker_and_the_handle_returns_with_the_person() {
             );
         }
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
@@ -579,7 +577,7 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
         .expect("the version-ten store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        20,
+        21,
         "the appended steps advanced the domain's version to the newest"
     );
     let blocks = support::consumer_view(
@@ -603,7 +601,6 @@ async fn a_version_ten_store_upgrades_through_the_speaker_step_alone() {
             );
         }
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)

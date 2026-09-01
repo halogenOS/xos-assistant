@@ -206,7 +206,7 @@ async fn a_really_erased_group_ledger_projects_alternating() {
     // The positive anchors first, so the clauses above cannot pass over a
     // projection that dropped everything: the six stored blocks project as
     // five messages — the prompt, A's erased opening as the marker, the
-    // first answer, B's surviving ask, the second answer, with the palette
+    // first answer, B's surviving ask, the second answer, with the tool choice
     // block contributing nothing — and B's text is in a user-voice message.
     assert_eq!(
         messages.len(),

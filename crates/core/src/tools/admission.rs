@@ -1,74 +1,54 @@
-//! The admission wrapper: the palette check, then the anchor gate, at the
-//! top of every tool's execute.
+//! The assistant's own admission for one tool call: the anchor gate of
+//! decision 0043, answered through the framework's admission hook.
 //!
-//! The framework's own admission chain offers no consumer seam with ledger
-//! access — its gate hook receives the input string alone — so the assistant
-//! enforces its rule where a consumer can: a wrapper around every registered
-//! handler whose execute first checks admission through the tool context's
-//! ledger access, and declines before the tool body runs. "Declined, never
-//! executed" means the tool's body; the wrapper itself is technically
-//! entered.
+//! The framework asks every handler whether one call may go on, and it asks
+//! over the ledger snapshot its admission pass already loaded — so the
+//! reading below costs no store round-trip of its own and can never be
+//! decided against a history the pass around it never saw. The answer is
+//! admit or a refusal sentence; the framework records a refusal as the typed
+//! fact a run of which ends the turn, and the tool's body never runs.
 //!
-//! Two checks, in order, over one ledger load. The palette first: a
-//! conversation admits only the tools its recorded palette names, failing
-//! closed. Then the anchor gate of decision 0043: the turn's provenance —
-//! the minimum authority over its debt origins and co-summoners, read
-//! from the loaded vector by [`provenance::turn_reading`] — must reach
-//! the tool's required authority. One admission path for every tool: the
-//! reading is total and answers [`provenance::FLOOR`] or higher, so a
-//! floor-level tool passes the same comparison a privileged one faces,
-//! and no second path exists to drift from it.
+//! One rule is asked here, and it is the anchor gate: the turn's provenance —
+//! the minimum authority over its debt origins and co-summoners, read from
+//! the loaded vector by the `provenance` module's `turn_reading` — must reach
+//! the authority the tool requires. The reading is total and answers that
+//! module's floor or higher, so a floor-level tool passes the same comparison
+//! a privileged one faces, and a tool that answers the hook answers it here
+//! or not at all — there is no second comparison beside this one.
 //!
-//! A decline is returned as the recorded tool error the model reads, and
-//! its wording is split on what the decline states. The palette refusal
-//! and the authority decline state facts that hold for the whole turn, so
-//! both close with the no-retry line — the palette gates admission, not
-//! exposure, and the model may be offered a tool this wrapper will
-//! decline. A ledger load failure states a transient fact: the decline
-//! says the turn's provenance could not be verified right now, and teaches
-//! nothing about retrying, because a later turn may verify fine. The
-//! authority decline records the reading in its text, per 0043.
+//! WHICH TOOLS a conversation has is not asked here. That is recorded in the
+//! ledger as the framework's own tool choice, and the framework resolves a
+//! call name against it before any handler is reached — so a tool this
+//! conversation does not have is refused without this module hearing about it.
 //!
-//! [`provenance::turn_reading`]: crate::tools::provenance::turn_reading
-//! [`provenance::FLOOR`]: crate::tools::provenance::FLOOR
+//! WHAT HOLDS THIS TOGETHER, said plainly: the framework's hook has a
+//! default, and the default ADMITS. A tool module that answers nothing
+//! compiles, serves every authority, and leaves the authority constant it
+//! declares a value nothing reads. So the check is opt-in per tool, one
+//! line each module states for itself with the
+//! `admits_at_required_authority` macro below, and what holds it for all of
+//! them is a scan over the core's production source — the admission scan
+//! in the cleanliness suite, which fails when a module implements the
+//! framework's tool handler without that line. Nothing in the type system
+//! says it; the test does, and this module is where the line it looks for
+//! is written.
+//!
+//! The bar itself is stated once per tool, in the module that owns the
+//! tool, and read once, here.
 
-use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::reactivity::ReadSignal;
-use agent_ledger::{
-    AgencyCtx, CoreEvent, FromBlock, GateDecision, ToolContext, ToolHandler, ToolOutcome,
-};
+use agent_ledger::providers::BoxFuture;
+use agent_ledger::{Admission, Block, CoreEvent, ToolContext};
 
-use crate::kind::AssistantKind;
 use crate::message::Authority;
 use crate::tools::provenance;
 
-/// The retry-teaching close of the declines that hold for the whole turn:
-/// the model may be offered a tool the palette declines, so the wording
-/// itself must stop the loop. Crate-visible because the report tool's
-/// refusals close with the same teaching — one wording, one spelling.
+/// The retry-teaching close of a decline that holds for the whole turn: the
+/// authority a turn reads is fixed for that turn, so a model that calls
+/// again spends a round on the identical answer. Crate-visible because the
+/// report tool's refusals close with the same teaching — one wording, one
+/// spelling.
 pub(crate) const NO_RETRY: &str =
     "Do not call this tool again this turn; answer from what you already have.";
-
-/// The transient decline: the ledger did not read, so neither check could
-/// run. No no-retry line — the fact may not hold beyond this failure.
-fn transient_decline() -> String {
-    "declined: the turn's provenance could not be verified right now, and admission \
-     fails closed."
-        .to_owned()
-}
-
-/// The decline for a conversation carrying no palette block at all.
-fn no_palette_decline() -> String {
-    format!(
-        "declined: this conversation has no tool palette recorded, and a \
-         conversation without one admits no tools. {NO_RETRY}"
-    )
-}
-
-/// The decline for a tool the conversation's palette does not name.
-fn outside_palette_decline(name: &str) -> String {
-    format!("declined: the tool '{name}' is not in this conversation's tool palette. {NO_RETRY}")
-}
 
 /// The authority decline, recording the reading per decision 0043.
 fn authority_decline(name: &str, required: Authority, reading: Authority) -> String {
@@ -81,214 +61,96 @@ fn authority_decline(name: &str, required: Authority, reading: Authority) -> Str
     )
 }
 
-/// One registered tool behind the admission check. The wrapper implements
-/// the framework's handler trait around the inner tool, so every handler the
-/// assembly registers passes through exactly this one rule — one rule, one
-/// place.
-pub struct AdmittedTool {
-    inner: Box<dyn ToolHandler<CoreEvent>>,
-    /// The registered name, read once from the inner definition so the
-    /// decline texts and the palette check speak the same string.
-    name: String,
-    /// The authority the turn's provenance must reach for this tool — the
-    /// anchor gate's bar, compared against the reading at every call.
+/// The answer every tool of this assistant gives the framework's admission
+/// hook: admitted when the turn's provenance reaches `required`, declined
+/// with the recorded sentence when it does not.
+///
+/// Public because [`ToolSet`](crate::tools::ToolSet) is: a tool an embedder
+/// registers states its own bar through this one function, so a tool that
+/// answers the hook has one wording to answer it with.
+///
+/// The decision is made before the future is handed back, over the snapshot
+/// the admission pass loaded — there is nothing to await, and nothing here
+/// reads the store.
+#[must_use]
+pub fn at_required_authority<'a>(
+    name: &str,
     required: Authority,
+    ctx: &ToolContext<'_, CoreEvent>,
+    ledger: &[Block],
+) -> BoxFuture<'a, Admission> {
+    let reading = provenance::turn_reading(ledger, ctx.block_id);
+    let answer = if reading < required {
+        Admission::Refuse {
+            reason: authority_decline(name, required, reading),
+        }
+    } else {
+        Admission::Admit
+    };
+    Box::pin(std::future::ready(answer))
 }
 
-impl AdmittedTool {
-    /// Wrap one handler at its required authority.
-    #[must_use]
-    pub fn new(required: Authority, inner: impl ToolHandler<CoreEvent> + 'static) -> Self {
-        let inner: Box<dyn ToolHandler<CoreEvent>> = Box::new(inner);
-        let name = inner.definition().name;
-        Self {
-            inner,
-            name,
-            required,
+/// One tool's whole answer to the framework's admission hook, written once
+/// here and invoked inside each tool's `impl ToolHandler`.
+///
+/// The ten modules used to carry the identical ten-line body and the
+/// identical doc comment; ten copies of one sentence are ten places for it
+/// to stop being true. The two arguments are the invoking module's own
+/// constants — the tool's name and the authority it requires — so the bar
+/// stays declared where the tool is, and only the reading of it lives here.
+///
+/// A macro and not a wrapping handler type: the answer belongs to the
+/// handler the tool already implements. A type that forwarded to it would
+/// be the shape unit 52 deleted, silently dropping whatever trait method is
+/// added after the forwarding was written.
+macro_rules! admits_at_required_authority {
+    ($name:expr, $required:expr) => {
+        /// The authority a call of this tool requires (decision 0043),
+        /// answered through the framework's admission hook over the ledger
+        /// snapshot the runner's admission pass already loaded.
+        fn admit<'a>(
+            &'a self,
+            ctx: &'a ::agent_ledger::ToolContext<'a, ::agent_ledger::CoreEvent>,
+            ledger: &'a [::agent_ledger::Block],
+        ) -> ::agent_ledger::providers::BoxFuture<'a, ::agent_ledger::Admission> {
+            $crate::tools::admission::at_required_authority($name, $required, ctx, ledger)
         }
-    }
-
-    /// The registered name, for the assembly building the palette list.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// The admission read: the conversation's palette, then the anchor
-    /// gate's provenance reading, both failing closed over one ledger
-    /// load. `Err` carries the decline the caller records as the tool
-    /// error.
-    async fn admit(&self, ctx: &ToolContext<'_, CoreEvent>) -> Result<(), String> {
-        let ledger = match ctx
-            .agency
-            .store
-            .list_blocks(ctx.agency.conversation_id)
-            .await
-        {
-            Ok(ledger) => ledger,
-            Err(error) => {
-                tracing::warn!(
-                    conversation_id = ctx.agency.conversation_id,
-                    %error,
-                    "tool admission: reading the ledger failed; declining"
-                );
-                return Err(transient_decline());
-            }
-        };
-        // The newest palette block speaks. Today a conversation carries at
-        // most one, written at creation; reading the newest keeps the rule
-        // stable if a later unit ever supersedes a palette by appending.
-        let palette =
-            ledger
-                .iter()
-                .rev()
-                .find_map(|block| match AssistantKind::from_block(block) {
-                    AssistantKind::ToolPalette(palette) => Some(palette),
-                    _ => None,
-                });
-        match palette {
-            None => return Err(no_palette_decline()),
-            Some(palette) if !palette.admits(&self.name) => {
-                return Err(outside_palette_decline(&self.name));
-            }
-            Some(_) => {}
-        }
-        // The anchor gate (decision 0043): the turn's provenance must reach
-        // the tool's required authority.
-        let reading = provenance::turn_reading(&ledger, ctx.block_id);
-        if reading < self.required {
-            return Err(authority_decline(&self.name, self.required, reading));
-        }
-        Ok(())
-    }
+    };
 }
 
-impl ToolHandler<CoreEvent> for AdmittedTool {
-    fn definition(&self) -> ToolDefinition {
-        self.inner.definition()
-    }
-
-    fn gated(&self) -> bool {
-        self.inner.gated()
-    }
-
-    fn interactive(&self) -> bool {
-        self.inner.interactive()
-    }
-
-    fn gate<'a>(&'a self, input: &'a str) -> BoxFuture<'a, GateDecision> {
-        self.inner.gate(input)
-    }
-
-    fn execute<'a>(
-        &'a self,
-        input: &'a str,
-        ctx: ToolContext<'a, CoreEvent>,
-    ) -> BoxFuture<'a, ToolOutcome> {
-        Box::pin(async move {
-            match self.admit(&ctx).await {
-                Ok(()) => self.inner.execute(input, ctx).await,
-                // A REFUSAL, not a failure (unit 51, 2026-09-01): the call
-                // was declined before the body ran and before any network
-                // was touched, so the model spent a round and is handed only
-                // the reason. The framework marks the outcome row a refusal
-                // and counts a run of them toward the forced turn end, which
-                // is what bounds a turn the model keeps spending on a tool
-                // this conversation admits none of. The words stay this
-                // app's; the fact is the framework's.
-                Err(decline) => ToolOutcome::Refused(decline),
-            }
-        })
-    }
-
-    fn spawn_reactor(
-        &self,
-        ctx: AgencyCtx<CoreEvent>,
-        latched: ReadSignal<bool>,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        self.inner.spawn_reactor(ctx, latched)
-    }
-}
+pub(crate) use admits_at_required_authority;
 
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
-    use agent_ledger::{EventBus, Store};
+    use agent_ledger::{AgencyCtx, EventBus, Store};
 
     use super::*;
 
-    /// The wording split, pinned where the strings are built: the palette
-    /// refusals and the authority decline close with the no-retry line —
-    /// their facts hold for the whole turn — while the transient decline
-    /// names "right now" and carries no retry teaching at all.
+    /// The decline's wording, asserted whole where the string is built: it
+    /// names the requirement, records the reading per decision 0043, and
+    /// closes with the no-retry line, because the fact it states holds for
+    /// the whole turn.
     #[test]
-    fn the_declines_split_on_the_no_retry_line() {
-        let transient = transient_decline();
-        assert!(
-            transient.contains("could not be verified right now"),
-            "the transient decline names the moment: {transient}"
+    fn the_authority_decline_names_the_bar_the_reading_and_the_no_retry_line() {
+        let decline = authority_decline("probe", Authority::Admin, Authority::Member);
+        assert_eq!(
+            decline,
+            "declined: the tool 'probe' needs admin authority and this turn's \
+             provenance reads member — the minimum over everyone who summoned it. \
+             Do not call this tool again this turn; answer from what you already have."
         );
-        assert!(
-            !transient.contains(NO_RETRY),
-            "a transient fact teaches no never-again: {transient}"
-        );
-        for durable in [
-            no_palette_decline(),
-            outside_palette_decline("probe"),
-            authority_decline("probe", Authority::Admin, Authority::Member),
-        ] {
-            assert!(
-                durable.ends_with(NO_RETRY),
-                "a whole-turn fact closes with the no-retry line: {durable}"
-            );
-        }
-        let authority = authority_decline("probe", Authority::Admin, Authority::Member);
-        assert!(
-            authority.contains("needs admin") && authority.contains("reads member"),
-            "the authority decline records the requirement and the reading: {authority}"
-        );
+        assert!(decline.ends_with(NO_RETRY));
     }
 
-    /// A handler that records whether its body ever ran — the probe behind
-    /// the fail-closed pin below.
-    struct Probe(Arc<AtomicBool>);
-
-    impl ToolHandler<CoreEvent> for Probe {
-        fn definition(&self) -> ToolDefinition {
-            ToolDefinition {
-                name: "probe".into(),
-                description: "a probe".into(),
-                parameters: serde_json::json!({ "type": "object" }),
-            }
-        }
-
-        fn execute<'a>(
-            &'a self,
-            _input: &'a str,
-            _ctx: ToolContext<'a, CoreEvent>,
-        ) -> BoxFuture<'a, ToolOutcome> {
-            self.0.store(true, Ordering::SeqCst);
-            Box::pin(async { ToolOutcome::Done("ran".into()) })
-        }
-    }
-
-    /// The fail-closed rule, behaviorally: a conversation carrying no
-    /// palette block — one the palette reconciliation never touched —
-    /// draws the recorded no-palette decline, and the wrapped body
-    /// provably never runs. The assembly's reconciliation writes a palette
-    /// before any turn, so this arm is unreachable through the full
-    /// assembly; the wrapper still refuses on its own, and this pin keeps
-    /// that refusal a behavior instead of a wording.
-    ///
-    /// The outcome is the framework's REFUSAL and not its error (unit 51):
-    /// the call was declined before it ran, and that typed fact is what the
-    /// forced turn end counts a run of. A decline recorded as an ordinary
-    /// failure would leave a toolless turn spending a paid round per call
-    /// until the conversation's whole tool-call window was gone.
+    /// The hook itself, over a ledger holding no call block at all: the
+    /// reading folds to the floor, so an above-floor tool is declined with
+    /// the recorded sentence and a floor-level one is admitted. Every
+    /// unreadable shape folds the same way, which is what makes the anchor
+    /// gate fail closed.
     #[tokio::test]
-    async fn a_conversation_without_a_palette_declines_before_the_body_runs() {
+    async fn an_unreadable_turn_declines_above_the_floor_and_admits_at_it() {
         let store =
             Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
         let conversation = store
@@ -300,33 +162,22 @@ mod tests {
             store,
             bus: Arc::new(EventBus::new()),
         };
-        let ran = Arc::new(AtomicBool::new(false));
-        let tool = AdmittedTool::new(Authority::Member, Probe(Arc::clone(&ran)));
+        let ctx = ToolContext {
+            agency: &agency,
+            tool_call_id: "call-0",
+            block_id: 0,
+        };
 
-        let outcome = tool
-            .execute(
-                "{}",
-                ToolContext {
-                    agency: &agency,
-                    tool_call_id: "call-0",
-                    block_id: 0,
-                },
-            )
-            .await;
-
-        match outcome {
-            ToolOutcome::Refused(decline) => assert_eq!(
-                decline,
-                no_palette_decline(),
-                "the no-palette arm speaks its own recorded decline"
+        match at_required_authority("probe", Authority::Admin, &ctx, &[]).await {
+            Admission::Refuse { reason } => assert_eq!(
+                reason,
+                authority_decline("probe", Authority::Admin, provenance::FLOOR)
             ),
-            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Error(_) => {
-                panic!("a conversation without a palette refuses every tool")
-            }
+            Admission::Admit => panic!("an unreadable turn admits no admin tool"),
         }
-        assert!(
-            !ran.load(Ordering::SeqCst),
-            "declined means the wrapped body never ran"
-        );
+        assert!(matches!(
+            at_required_authority("probe", provenance::FLOOR, &ctx, &[]).await,
+            Admission::Admit
+        ));
     }
 }

@@ -6,7 +6,7 @@
 //! commands, and the unattended compaction.
 //! All of them need the same four configured values — the model
 //! binding, the reasoning level, the composed system prompt and the tool
-//! palette — so those live here, once, and the assembly reads them through
+//! names — so those live here, once, and the assembly reads them through
 //! this type instead of keeping a second copy.
 //!
 //! # What a compaction is
@@ -18,9 +18,9 @@
 //! 1. The ledger is cut in half by the framework's own deterministic rule
 //!    ([`Store::compaction_cut`]), which never splits a message group and
 //!    never splits a tool lifecycle.
-//! 2. The first half is forked into a TEMPORARY conversation carrying an
-//!    empty tool palette and, last, the compaction instructions — the append
-//!    that summons its one turn.
+//! 2. The first half is forked into a TEMPORARY conversation carrying the
+//!    empty tool choice the framework's own fork door records and, last, the
+//!    compaction instructions — the append that summons its one turn.
 //! 3. That turn's answer is the summary. The temporary conversation is
 //!    retired junction-only the moment it is read — its turn interrupted and
 //!    settled first, so nothing is still writing into a conversation that is
@@ -83,8 +83,8 @@ use std::time::Duration;
 use agent_ledger::agency::{AgencyCtx, AncestorReference, LeafKind, Status, Text, ratchet};
 use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{
-    CompactedThread, ConsumerRecord, LedgerCut, ModelOverride, StoreError, StoreTx,
-    TemporaryConversation, TemporaryFork, domain_run,
+    CompactedThread, LedgerCut, ModelOverride, StoreError, StoreTx, TemporaryConversation,
+    TemporaryFork, domain_run,
 };
 use agent_ledger::{Block, CoreEvent, EventBus, Role, RuntimeContext};
 use rusqlite::OptionalExtension;
@@ -99,7 +99,6 @@ use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{ChannelKey, ChannelKind};
 use crate::streams;
-use crate::tools::palette::{TOOL_PALETTE_KIND, ToolPalette};
 
 /// The framework's own table for a status row, and the column carrying its
 /// machine key. Named here because the level read below is one indexed
@@ -171,8 +170,8 @@ pub(crate) struct Sessions {
     reasoning: ReasoningLevel,
     /// The composed system prompt every new conversation records.
     system_prompt: String,
-    /// The tool names every new conversation's palette block records.
-    palette: Vec<String>,
+    /// The tool names every new conversation records as its tool choice.
+    tool_names: Vec<String>,
     /// Serializes the answer-due stamp against other ingestions, and every
     /// session reset against both. This is the ONE home of that lock: the
     /// assembly's ingestion, observation and join paths take it through
@@ -244,7 +243,7 @@ impl Sessions {
         binding: ModelBinding,
         reasoning: ReasoningLevel,
         system_prompt: String,
-        palette: Vec<String>,
+        tool_names: Vec<String>,
         coordination: SessionCoordination,
     ) -> Self {
         Self {
@@ -252,7 +251,7 @@ impl Sessions {
             binding,
             reasoning,
             system_prompt,
-            palette,
+            tool_names,
             stamp_lock: coordination.stamp_lock,
             erasure_fence: coordination.erasure_fence,
             context: coordination.context,
@@ -341,19 +340,19 @@ impl Sessions {
         &self.system_prompt
     }
 
-    /// The tool names every new conversation's palette block records.
-    pub(crate) fn palette(&self) -> &[String] {
-        &self.palette
+    /// The tool names every new conversation records as its tool choice.
+    pub(crate) fn tool_names(&self) -> &[String] {
+        &self.tool_names
     }
 
     /// First contact on a channel: create the conversation under the
-    /// binding, record the system prompt and the tool palette as its first
+    /// binding, record the system prompt and the tool choice as its first
     /// blocks, claim the mapping, and set the winner's reasoning level.
     /// Direct and group channels take the identical path, so both get the
-    /// same palette and the same level.
+    /// same tools and the same level.
     ///
     /// Two callers can race here; the mapping's claim decides, and the
-    /// loser's conversation is deleted — its prompt and palette blocks with
+    /// loser's conversation is deleted — its prompt and choice blocks with
     /// it — before anything referenced it. Recording both before the claim
     /// is what makes them the winner's first blocks: the losing racer's
     /// message arrives in the winning conversation only after the winner's
@@ -390,13 +389,7 @@ impl Sessions {
             .insert_system_prompt(created, self.system_prompt.clone())
             .await?;
         store
-            .append_consumer_block(
-                created,
-                None,
-                TOOL_PALETTE_KIND,
-                ToolPalette::stored_fields(&self.palette),
-                None,
-            )
+            .append_tool_choice(created, self.tool_names.clone())
             .await?;
         let winner = mapping::claim(&store.tx(), channel, kind, created).await?;
         if winner != created {
@@ -500,7 +493,7 @@ impl Sessions {
     /// Replace a channel's session with an empty one: drop the mapping row
     /// and run first contact for the same channel, so the channel gets
     /// exactly what a newly admitted one gets — a fresh conversation, the
-    /// current prompt, the current palette — with no history inherited.
+    /// current prompt, the current tools — with no history inherited.
     ///
     /// The caller holds the stamp lock and the erasure fence.
     ///
@@ -572,17 +565,12 @@ impl Sessions {
                 source,
                 cut.first_half_ends,
                 TemporaryFork {
-                    // The design's "dont provide any tools", recorded as
-                    // well as offered: the empty palette admits nothing, and
-                    // the instructions block's own kind is what makes the
-                    // turn offered nothing in the first place. Recorded
-                    // AHEAD of the instructions, so the turn they summon is
-                    // already governed by it.
-                    records: vec![ConsumerRecord {
-                        kind: TOOL_PALETTE_KIND,
-                        role: None,
-                        fields: ToolPalette::stored_fields(&[]),
-                    }],
+                    // The design's "dont provide any tools" is the fork
+                    // door's own word now: the framework records the empty
+                    // tool choice into the temporary conversation ahead of
+                    // the instructions, so this consumer supplies nothing
+                    // here and cannot forget it.
+                    records: Vec::new(),
                     instructions: COMPACTION_INSTRUCTIONS.to_owned(),
                 },
             )
@@ -1403,11 +1391,7 @@ impl Sessions {
                 ancestor_clone,
                 span_ends,
                 TemporaryFork {
-                    records: vec![ConsumerRecord {
-                        kind: TOOL_PALETTE_KIND,
-                        role: None,
-                        fields: ToolPalette::stored_fields(&[]),
-                    }],
+                    records: Vec::new(),
                     instructions: COMPACTION_INSTRUCTIONS.to_owned(),
                 },
             )
@@ -1949,7 +1933,7 @@ mod tests {
     /// A source conversation with a short history, and the temporary
     /// conversation a compaction forks off it — the same door
     /// [`Sessions::compact`] takes, so the ledger under test has the fork's
-    /// own junction, palette and instructions blocks in it.
+    /// own junction, tool-choice and instructions blocks in it.
     async fn forked_temporary(store: &Store) -> TemporaryConversation {
         let source = store
             .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
@@ -1968,11 +1952,7 @@ mod tests {
                 source,
                 first,
                 TemporaryFork {
-                    records: vec![ConsumerRecord {
-                        kind: TOOL_PALETTE_KIND,
-                        role: None,
-                        fields: ToolPalette::stored_fields(&[]),
-                    }],
+                    records: Vec::new(),
                     instructions: COMPACTION_INSTRUCTIONS.to_owned(),
                 },
             )
@@ -2019,7 +1999,7 @@ mod tests {
     /// of the framework's durable-turn predicate and the whole reason these
     /// tests write one.
     ///
-    /// It is an error outcome and NOT the palette's own decline, which is a
+    /// It is an error outcome and NOT a consumer's own decline, which is a
     /// typed refusal since unit 51 and reaches the ledger marked as one. The
     /// framework's marked writer is crate-private there on purpose — a
     /// consumer's decline arrives through `ToolOutcome::Refused` and the
@@ -2147,6 +2127,55 @@ mod tests {
             .expect("the capture concludes on the change that ended the turn")
             .expect("the capture ran to its answer")
             .expect("the capture read the ledger")
+    }
+
+    /// The compaction fork's tool record is the LIBRARY's, and this
+    /// assistant supplies none of its own (unit 52, 2026-09-01): the
+    /// temporary conversation carries exactly one recorded choice, it is
+    /// empty, and it sits ahead of the instructions block whose append
+    /// summons the turn. Two of them would mean this consumer wrote one
+    /// beside the library's; a non-empty one would mean the compaction turn
+    /// was offered something to call.
+    #[tokio::test]
+    async fn the_compaction_fork_carries_exactly_the_librarys_empty_choice() {
+        let (_sessions, store, _bus, _context) = quiet_sessions();
+        let temporary = forked_temporary(&store).await;
+
+        let blocks = store
+            .list_blocks(temporary.conversation_id)
+            .await
+            .expect("the ledger reads");
+        let choices: Vec<usize> = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, block)| block.block_type == "tool_choice")
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(
+            choices.len(),
+            1,
+            "one recorded choice, the library's: {:?}",
+            blocks
+                .iter()
+                .map(|block| block.block_type.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            store
+                .newest_tool_choice(temporary.conversation_id)
+                .await
+                .expect("the recorded choice reads"),
+            Some(Vec::new()),
+            "the compaction turn has no tools"
+        );
+        let instructions_at = blocks
+            .iter()
+            .position(|block| block.id == temporary.instructions_block_id)
+            .expect("the instructions block stands");
+        assert!(
+            choices[0] < instructions_at,
+            "the record is in place before the append that summons the turn"
+        );
     }
 
     /// A message's end is not a turn's end. The turn writes prose, reaches

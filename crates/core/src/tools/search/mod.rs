@@ -623,6 +623,8 @@ impl ToolHandler<CoreEvent> for WebSearch {
         }
     }
 
+    crate::tools::admission::admits_at_required_authority!(NAME, REQUIRED_AUTHORITY);
+
     fn execute<'a>(
         &'a self,
         input: &'a str,

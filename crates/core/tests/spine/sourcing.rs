@@ -182,7 +182,7 @@ async fn an_addressed_dont_know_is_delivered_as_ordinary_text() {
         },
     )
     .await;
-    assert_eq!(blocks.len(), 4, "one turn: prompt, palette, ask, answer");
+    assert_eq!(blocks.len(), 4, "one turn: prompt, choice, ask, answer");
 }
 
 /// AC3's addressed-mode half: under addressed answering the same

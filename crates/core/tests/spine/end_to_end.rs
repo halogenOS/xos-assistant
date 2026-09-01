@@ -95,7 +95,7 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
     assert_eq!(reply.channel, key);
     assert_eq!(reply.text, answer);
 
-    // The ledger, block by block: the recorded prompt, the palette, the
+    // The ledger, block by block: the recorded prompt, the tool choice, the
     // recorded message, then the answer.
     let blocks = support::viewed_ledger(&fixture.store, conv, "the answered turn", |blocks| {
         blocks.len() == 4
@@ -105,7 +105,7 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
     })
     .await;
     assert_eq!(blocks[0].block_type, "system_prompt");
-    assert_eq!(blocks[1].block_type, "tool_palette");
+    assert_eq!(blocks[1].block_type, "tool_choice");
     assert_eq!(blocks[2].block_type, CHAT_MESSAGE_KIND);
     assert_eq!(blocks[2].role, Some(Role::User));
     assert_eq!(blocks[2].fields["text"], json!("What is the plan?"));
@@ -127,7 +127,6 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
             );
         }
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
@@ -435,7 +434,7 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
         shape,
         vec![
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             CHAT_MESSAGE_KIND,
             CHAT_MESSAGE_KIND,
             "text",
@@ -535,7 +534,7 @@ fn a_restarted_process_answers_a_known_channel() {
             shape,
             vec![
                 "system_prompt",
-                "tool_palette",
+                "tool_choice",
                 CHAT_MESSAGE_KIND,
                 "text",
                 CHAT_MESSAGE_KIND,

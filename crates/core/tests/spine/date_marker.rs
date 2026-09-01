@@ -71,8 +71,8 @@ fn shape_of(blocks: &[Block]) -> Vec<&str> {
 /// its own, behind the prompt's, and the request carries `dated_lines` of
 /// them.
 ///
-/// The consumer's ledger head is prompt, palette, marker, message: the
-/// palette projects no role, which splits the system run, so nothing joins
+/// The consumer's ledger head is prompt, choice, marker, message: the
+/// choice projects no role, which splits the system run, so nothing joins
 /// the dated line onto the prompt's message. Matched by its lead alone —
 /// the rest of the line is the framework's format, recorded there. The
 /// expected count is the caller's, because a request rendered after a run
@@ -145,7 +145,7 @@ async fn the_framework_dates_the_ledger_once_per_day_ahead_of_the_message() {
         &fixture.store,
         conv,
         "the first answered turn",
-        &["system_prompt", "tool_palette", "chat_message", "text"],
+        &["system_prompt", "tool_choice", "chat_message", "text"],
     )
     .await;
     support::recv_reply(&mut replies).await;
@@ -178,7 +178,7 @@ async fn the_framework_dates_the_ledger_once_per_day_ahead_of_the_message() {
         "the second answered turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "text",
             "chat_message",

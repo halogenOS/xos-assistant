@@ -429,7 +429,7 @@ impl Fixture {
 }
 
 /// A loopback address nothing listens on: a tool constructed over it can be
-/// registered — and its palette entry recorded — without any test traffic
+/// registered — and its name recorded in the tool choice — without any test traffic
 /// ever succeeding against it.
 pub const UNROUTABLE: &str = "http://127.0.0.1:1";
 

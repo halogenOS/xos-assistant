@@ -10,8 +10,8 @@
 //! asked for, the model looks the person up instead of believing the claim
 //! or refusing someone entitled to make it.
 //!
-//! What it answers about is CONDUCT, not the tool palette: an
-//! administrator may tell the assistant how to behave, and the palette
+//! What it answers about is CONDUCT, not which tools exist: an
+//! administrator may tell the assistant how to behave, and the tool set
 //! decides which tools a turn may reach. The two are allowed to differ and
 //! are decided in different places on purpose (decision 0120).
 //!
@@ -35,8 +35,8 @@
 //! refusals split on whether their fact can change — the permanent ones
 //! close with the shared no-retry line, the transient one deliberately
 //! does not (decision 0128). Each permanent refusal is its own sentence
-//! plus that shared close, interpolated from the admission wrapper's
-//! `NO_RETRY` rather than respelled: the close is one wording recorded in
+//! plus that shared close, interpolated from the admission module's
+//! `NO_RETRY` instead of respelled: the close is one wording recorded in
 //! one place, and a tool spelling it again is a second place to change it.
 
 use std::sync::Arc;
@@ -60,9 +60,9 @@ pub const PARAMETER_HANDLE: &str = "handle";
 
 /// The authority this tool requires — member: what it answers is visible in
 /// the group's own member list, so admitting it higher would answer only
-/// for people who already know the answer. The admission wrapper supplies
-/// no extra protection at this bar; the tool sits under it because every
-/// tool does.
+/// for people who already know the answer. The admission hook supplies no
+/// extra protection at this bar; the tool answers it because every tool
+/// does.
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 
 /// The answer for a person who held no administrator standing when they
@@ -349,6 +349,8 @@ impl ToolHandler<CoreEvent> for StandingLookup {
             }),
         }
     }
+
+    crate::tools::admission::admits_at_required_authority!(NAME, REQUIRED_AUTHORITY);
 
     fn execute<'a>(
         &'a self,

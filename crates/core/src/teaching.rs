@@ -25,7 +25,7 @@ use crate::assembly::AnsweringMode;
 /// it: one field per capability whose teaching is gated on its own
 /// mechanism existing (unit 27, 2026-08-29). Named fields instead of a row
 /// of positional booleans — two adjacent flags at a call site are one
-/// silent swap away from teaching a tool the palette does not carry, which
+/// silent swap away from teaching a tool the conversation does not have, which
 /// is the exact defect this gating exists to prevent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capabilities {
@@ -44,7 +44,7 @@ pub struct Capabilities {
 /// needs (the report line goes nowhere without a handle; only helpful
 /// answering shows the model every message it would judge). One predicate
 /// for the teaching and the registration, so the prompt can never instruct
-/// a tool the palette does not carry, and a registered tool is never left
+/// a tool the conversation does not have, and a registered tool is never left
 /// untaught (unit 15, 2026-08-24).
 #[must_use]
 pub fn moderation_taught(handle_configured: bool, answering: AnsweringMode) -> bool {
@@ -102,7 +102,7 @@ pub const MODERATION_TEACHING: &str = "You also assess each group message agains
 
 /// The web search teaching, verbatim (unit 27, 2026-08-29), composed
 /// exactly when the search tool is admitted — one predicate for both, so
-/// the prompt never teaches a tool the palette does not carry. Four
+/// the prompt never teaches a tool the conversation does not have. Four
 /// things: the heads-up line ahead of the call (unit 40, 2026-08-30); a
 /// snippet is a hint and an answer built on one says where it came from; a
 /// snippet that does not contain the claim is a miss, exactly as the

@@ -61,7 +61,6 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
             assert_eq!(message.awaiting(), Some(Awaiting::Model));
         }
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
@@ -84,34 +83,30 @@ fn the_composed_kind_parses_and_declares_one_descriptor() {
         "a framework kind resolves through the delegate, untouched"
     );
 
-    assert_eq!(AssistantKind::DESCRIPTORS.len(), 8);
+    assert_eq!(AssistantKind::DESCRIPTORS.len(), 7);
     assert_eq!(AssistantKind::DESCRIPTORS[0].table, CHAT_MESSAGE_TABLE);
     assert_eq!(
         AssistantKind::DESCRIPTORS[1].table,
-        assistant_core::tools::palette::TOOL_PALETTE_TABLE
-    );
-    assert_eq!(
-        AssistantKind::DESCRIPTORS[2].table,
         assistant_core::note::CONTEXT_NOTE_TABLE
     );
     assert_eq!(
-        AssistantKind::DESCRIPTORS[3].table,
+        AssistantKind::DESCRIPTORS[2].table,
         assistant_core::join::JOIN_NOTICE_TABLE
     );
     assert_eq!(
-        AssistantKind::DESCRIPTORS[4].table,
+        AssistantKind::DESCRIPTORS[3].table,
         assistant_core::tools::report::REPORT_TABLE
     );
     assert_eq!(
-        AssistantKind::DESCRIPTORS[5].table,
+        AssistantKind::DESCRIPTORS[4].table,
         assistant_core::delivery::DELIVERED_TABLE
     );
     assert_eq!(
-        AssistantKind::DESCRIPTORS[6].table,
+        AssistantKind::DESCRIPTORS[5].table,
         assistant_core::tools::mark::MESSAGE_MARK_TABLE
     );
     assert_eq!(
-        AssistantKind::DESCRIPTORS[7].table,
+        AssistantKind::DESCRIPTORS[6].table,
         assistant_core::delivery::RETRACTION_TABLE,
         "the newest kind's descriptor is last, as its migration step is"
     );
@@ -150,7 +145,6 @@ fn resting_and_erased_messages_summon_no_turn() {
             );
         }
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
@@ -196,7 +190,6 @@ fn resting_and_erased_messages_summon_no_turn() {
             }
         }
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
@@ -279,7 +272,6 @@ async fn a_file_backed_store_reopens_and_loads_the_stored_kind() {
             );
         }
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
@@ -339,7 +331,7 @@ async fn a_version_eleven_store_upgrades_through_the_display_name_drop() {
         .expect("the version-eleven store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        20,
+        21,
         "the appended steps advanced the domain's version"
     );
     let (columns, row): (Vec<String>, (String, String, Option<String>)) =
@@ -404,7 +396,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             Store::open_with(db.path(), store_config()).expect("the configured store opens");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            20,
+            21,
             "the domain's recorded version is the shipped step count"
         );
         // One recorded summoned message, then the rewind: drop exactly the
@@ -463,7 +455,7 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
         .expect("the version-thirteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        20,
+        21,
         "the appended step advanced the domain's version"
     );
     let blocks = support::consumer_view(
@@ -485,7 +477,6 @@ async fn a_version_thirteen_store_upgrades_through_the_literal_addressed_step() 
             );
         }
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::Report(_)
@@ -515,7 +506,7 @@ async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() 
         .expect("the version-fourteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        20,
+        21,
         "the appended steps advanced the domain's version"
     );
 
@@ -583,7 +574,6 @@ async fn a_version_fourteen_store_upgrades_through_the_reported_nullable_step() 
             );
         }
         AssistantKind::Core(_)
-        | AssistantKind::ToolPalette(_)
         | AssistantKind::ContextNote(_)
         | AssistantKind::JoinNotice(_)
         | AssistantKind::ChatMessage(_)
@@ -740,7 +730,7 @@ async fn a_version_sixteen_store_upgrades_through_the_delivery_step() {
         .expect("the version-sixteen store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        20,
+        21,
         "the appended step advanced the domain's version"
     );
 

@@ -1,5 +1,7 @@
-//! The core carries no emoji (unit 39, 2026-08-30) — two scans that can
-//! actually fail for the property they claim.
+//! Scans over the core's production source: the two that keep emoji out
+//! (unit 39, 2026-08-30) and the one that holds every tool to its own
+//! authority check (unit 52, 2026-09-01). Each can actually fail for the
+//! property it claims.
 //!
 //! The platform-vocabulary scan beside this one cannot see an emoji and
 //! cannot be made to: it matches runs of alphanumeric characters against a
@@ -26,6 +28,13 @@
 //!    enumerates them. The character scan alone would miss exactly the
 //!    form the byte-hazard rule requires an emoji to be written in, so an
 //!    emoji list smuggled into the core as escapes would pass it.
+//! 3. THE ADMISSION SCAN. Every module implementing the framework's tool
+//!    handler answers its admission hook through the one shared macro, so
+//!    the authority a call requires is checked at the call and nowhere
+//!    else (decision 0043). The hook admits by default, so a tool module
+//!    that omits its answer compiles and serves every authority in
+//!    silence: the whole check is one line each module states for itself,
+//!    and this is what states that it exists.
 //!
 //! Each scan carries a deliberately-failing fixture, run through the same
 //! predicate the scan uses, so a green run proves the scan bites.
@@ -166,6 +175,23 @@ const EMOJI_CODEPOINTS: &[Refused] = &[
         reason: "the tag block: how a subdivision flag spells its region",
     },
 ];
+
+/// How a module declares that it serves calls: the framework's tool
+/// handler, implemented for the tool's own type.
+const HANDLER_IMPL: &str = "impl ToolHandler<CoreEvent> for";
+
+/// The one line every tool answers the admission hook with: the macro the
+/// admission module spells the whole answer in. The authority itself stays
+/// the module's own constant; the shared reading of the turn that decides
+/// against it lives behind this one invocation.
+const SHARED_ADMISSION: &str = "admits_at_required_authority!(";
+
+/// Whether this production source declares a tool handler and leaves its
+/// admission hook unanswered — the admission scan's whole predicate, so
+/// the failing fixture below exercises exactly what the scan runs.
+fn declares_a_handler_without_admission(source: &str) -> bool {
+    source.contains(HANDLER_IMPL) && !source.contains(SHARED_ADMISSION)
+}
 
 /// Whether the character is outside the allowlist — the character scan's
 /// whole predicate, so the failing fixture below exercises exactly what
@@ -351,6 +377,71 @@ fn the_core_spells_no_emoji_as_an_escape() {
         "an emoji escape entered the core:\n{}\n\
          Which emoji a platform can carry is a platform fact and belongs in an adapter.",
         findings.join("\n")
+    );
+}
+
+/// The admission scan: every module that implements the framework's tool
+/// handler answers the admission hook through the shared macro, so the
+/// authority the module declares is read at every call of its tool. A
+/// module that omits the answer takes the hook's default, which admits,
+/// and its declared authority would then be a constant nothing consults.
+///
+/// The scan also asserts it reached the tools it is about: a rename that
+/// moved every handler out of reach would otherwise leave it green over an
+/// empty set.
+#[test]
+fn every_tool_module_answers_the_admission_hook() {
+    let mut handlers = 0;
+    let mut findings = Vec::new();
+    for file in production_files() {
+        let source: String = production_lines(&file)
+            .into_iter()
+            .map(|(_, line)| line + "\n")
+            .collect();
+        if source.contains(HANDLER_IMPL) {
+            handlers += 1;
+        }
+        if declares_a_handler_without_admission(&source) {
+            findings.push(file.display().to_string());
+        }
+    }
+    assert!(
+        findings.is_empty(),
+        "a tool serves calls without answering the admission hook:\n{}\n\
+         Every tool answers it with {SHARED_ADMISSION}NAME, REQUIRED_AUTHORITY), which is \
+         what enforces the authority a call requires (decision 0043). The hook's own \
+         default admits, so a module stating nothing here serves every authority.",
+        findings.join("\n")
+    );
+    assert!(
+        handlers >= 10,
+        "the scan reached {handlers} tool handlers; the core serves more than that, \
+         so the search string has stopped matching what it is about"
+    );
+}
+
+/// The admission scan bites: a handler stated without the answer is
+/// refused by the same predicate the scan runs, while a handler that
+/// answers and a module holding no handler at all pass. Without this a
+/// green scan would prove nothing about a predicate that had quietly
+/// stopped refusing anything.
+#[test]
+fn the_admission_scan_refuses_a_handler_that_answers_nothing() {
+    let unanswered = "impl ToolHandler<CoreEvent> for Probe {\n    fn execute() {}\n}\n";
+    assert!(
+        declares_a_handler_without_admission(unanswered),
+        "the deliberately-failing fixture must be refused: {unanswered}"
+    );
+    let answered = "impl ToolHandler<CoreEvent> for Probe {\n    \
+                    crate::tools::admission::admits_at_required_authority!(NAME, \
+                    REQUIRED_AUTHORITY);\n}\n";
+    assert!(
+        !declares_a_handler_without_admission(answered),
+        "a handler answering the hook passes: {answered}"
+    );
+    assert!(
+        !declares_a_handler_without_admission("fn plain_module() {}\n"),
+        "a module serving no calls passes"
     );
 }
 

@@ -118,10 +118,10 @@ fn compact_result() -> String {
 /// A tool set holding the commit lookup against the scripted forge.
 fn commit_tools(forge: &ScriptedForge) -> ToolSet {
     let mut tools = ToolSet::new();
-    tools.admit(
-        commit::REQUIRED_AUTHORITY,
-        CommitLookup::new(forge.base.clone(), commit::DEFAULT_TIMEOUT),
-    );
+    tools.admit(CommitLookup::new(
+        forge.base.clone(),
+        commit::DEFAULT_TIMEOUT,
+    ));
     tools
 }
 
@@ -169,7 +169,7 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
         conversation,
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -254,7 +254,7 @@ async fn narration_before_the_call_delivers_both_texts_to_the_chat() {
         conversation,
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "text",
             "tool_call",

@@ -551,6 +551,8 @@ impl ToolHandler<CoreEvent> for MarkTool {
         }
     }
 
+    crate::tools::admission::admits_at_required_authority!(NAME, REQUIRED_AUTHORITY);
+
     fn execute<'a>(
         &'a self,
         input: &'a str,
@@ -693,7 +695,7 @@ mod tests {
     /// result claims FILING and nothing past it — the arrival is the
     /// edge's, the platform's and the process's, none of which this tool
     /// hears back from — and it teaches the two rules that bound a
-    /// reaction; every decline closes with the admission wrapper's
+    /// reaction; every decline closes with the admission module's
     /// no-retry teaching; the emoji refusal names the bound in words; and
     /// the transient failure names the moment and teaches no never-again.
     #[test]

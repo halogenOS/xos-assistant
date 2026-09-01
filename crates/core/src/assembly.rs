@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 
+use agent_ledger::agency::{LeafKind, ToolChoice};
 use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{ProviderInstance, StoreTx};
 use agent_ledger::{
@@ -46,6 +47,7 @@ use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::quoting;
 use crate::session::{CompactOutcome, SessionCoordination, Sessions, WipeOutcome};
 use crate::streams::StreamObserver;
+use crate::tools::ToolSet;
 use crate::tools::changelog::HarnessChangelog;
 use crate::tools::mark::{self, MarkTool};
 use crate::tools::report::{self, ReportTool};
@@ -53,7 +55,6 @@ use crate::tools::rights::PrivacyTool;
 use crate::tools::runtime::RuntimeFacts;
 use crate::tools::search::{SearchConfig, WebSearch};
 use crate::tools::standing::StandingLookup;
-use crate::tools::{ToolSet, palette, palette::TOOL_PALETTE_KIND, palette::ToolPalette};
 use crate::window::{
     ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, RESET_REPLY_CAP,
     RESET_REPLY_WINDOW, ReplyWindow,
@@ -80,7 +81,19 @@ pub(crate) type ErasureFence = Arc<RwLock<()>>;
 /// the walk's contract on [`Assistant::owing_tail_debt`].
 pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
     note::CONTEXT_NOTE_KIND,
-    TOOL_PALETTE_KIND,
+    // The recorded tool choice (unit 52, 2026-09-01): the delta append
+    // lands on a conversation's first activity per process, at whatever
+    // point its history had reached — including behind an ask nobody has
+    // answered yet. That ask still owes its turn.
+    TOOL_CHOICE_KIND,
+    // The kind unit 52 withdrew, spelled as the literal string a previous
+    // build stored, because no kind of this assistant claims it any more.
+    // The withdrawal drops the content table and the registry row; the
+    // header rows in a database that build wrote are ledger history, which
+    // nothing deletes, and history stays transparent to this walk. Without
+    // the entry such a row parses as an unknown kind, and an unanswered ask
+    // directly behind one would stop owing its turn.
+    "tool_palette",
     report::REPORT_KIND,
     // The join notice (unit 36, 2026-08-29): the observation path appends
     // it whenever someone walks in, which is exactly the arbitrary moment
@@ -106,12 +119,16 @@ pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
     delivery::RETRACTION_KIND,
 ];
 
-/// The most conversations the palette-reconciliation memory holds. Past
+/// The recorded tool choice's stored type string, read from the framework's
+/// own kind so the two spellings cannot drift.
+const TOOL_CHOICE_KIND: &str = ToolChoice::KINDS[0];
+
+/// The most conversations the tool-choice reconciliation memory holds. Past
 /// the cap the memory is cleared whole — the established memory-cap shape:
 /// it only suppresses repeat comparisons, so losing it costs one bounded
-/// palette read per conversation, while an unbounded set would grow with
+/// choice read per conversation, while an unbounded set would grow with
 /// every direct chat the process ever saw.
-const PALETTE_MEMORY_CAP: usize = 4096;
+const CHOICE_MEMORY_CAP: usize = 4096;
 
 /// The model every new conversation is created under: one provider instance
 /// and one model, named by the assembly and never by a message.
@@ -311,7 +328,7 @@ pub struct AssemblyConfig {
     /// [`crate::teaching::moderation_taught`]); absent, or under addressed
     /// answering, the report tool does not register — only helpful mode
     /// shows the model every message it would judge — and the
-    /// palette-delta mechanism removes it from conversations that had it.
+    /// delta mechanism removes it from conversations that had it.
     /// One global handle: one deployment serves one community (decided
     /// 2026-08-23).
     pub moderation_handle: Option<String>,
@@ -336,7 +353,7 @@ pub struct AssemblyConfig {
 pub struct Assistant {
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
     /// The channel's conversation lifecycle: the model binding, the
-    /// reasoning level, the composed system prompt and the tool palette
+    /// reasoning level, the composed system prompt and the tool choice
     /// every new conversation is created with, plus the operations that
     /// create or replace one. Shared with the unattended compaction
     /// watcher, which holds it weakly and ends with this assembly.
@@ -411,12 +428,12 @@ pub struct Assistant {
     /// The suppression race's test seam, run between the pre-lock standing
     /// read and the stamp lock; `None` in production.
     standing_read_pause: Option<ScriptedPause>,
-    /// The conversations whose stored palette this process already
+    /// The conversations whose recorded tool choice this process already
     /// compared against the registered set — the once-per-process memory
     /// of the on-delta supersession (decided 2026-08-23), bounded by
-    /// [`PALETTE_MEMORY_CAP`] and cleared whole at the cap. Guarded by the
+    /// [`CHOICE_MEMORY_CAP`] and cleared whole at the cap. Guarded by the
     /// stamp lock's serialization: every reader holds it.
-    palette_reconciled: Mutex<HashSet<i64>>,
+    choice_reconciled: Mutex<HashSet<i64>>,
     /// Orders the deletion mirror's nulls against the tools that file a
     /// block naming a message origin — the same door those tools take
     /// around their own scan-then-append, because the fence cannot order
@@ -442,8 +459,8 @@ struct AssembledTools {
 
 /// Add the assembly's own tools to the embedder's set, in one place: each
 /// conditional registration takes exactly the predicate the prompt
-/// composition took, so the prompt can never teach a tool the palette does
-/// not carry, and the delta mechanism removes an unconfigured tool from
+/// composition took, so the prompt can never teach a tool the conversation
+/// does not have, and the delta mechanism removes an unconfigured tool from
 /// conversations that had it.
 ///
 /// - The REPORT tool needs a moderation handle AND helpful answering (unit
@@ -487,29 +504,25 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
     if let Some(handle) = moderation_handle
         && crate::teaching::moderation_taught(true, answering)
     {
-        tools.admit(
-            report::REQUIRED_AUTHORITY,
-            ReportTool::new(handle, Arc::clone(&erasure_fence), Arc::clone(&filing_door)),
-        );
+        tools.admit(ReportTool::new(
+            handle,
+            Arc::clone(&erasure_fence),
+            Arc::clone(&filing_door),
+        ));
     }
     if let Some(search) = web_search {
-        tools.admit(
-            crate::tools::search::REQUIRED_AUTHORITY,
-            WebSearch::new(search, crate::tools::search::DEFAULT_TIMEOUT),
-        );
+        tools.admit(WebSearch::new(
+            search,
+            crate::tools::search::DEFAULT_TIMEOUT,
+        ));
     }
-    tools.admit(
-        crate::tools::standing::REQUIRED_AUTHORITY,
-        StandingLookup::new(Arc::clone(&erasure_fence)),
-    );
-    tools.admit(
-        mark::REQUIRED_AUTHORITY,
-        MarkTool::new(Arc::clone(&erasure_fence), filing_door),
-    );
-    tools.admit(
-        crate::tools::rights::REQUIRED_AUTHORITY,
-        PrivacyTool::new(pending_deletions, privacy_replies, erasure_fence),
-    );
+    tools.admit(StandingLookup::new(Arc::clone(&erasure_fence)));
+    tools.admit(MarkTool::new(Arc::clone(&erasure_fence), filing_door));
+    tools.admit(PrivacyTool::new(
+        pending_deletions,
+        privacy_replies,
+        erasure_fence,
+    ));
 }
 
 /// The tools no assembly is without (unit 32, unit 47): the runtime facts
@@ -525,14 +538,8 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
 /// at the call, and the binding decides it only for the conversations
 /// this assembly goes on to create.
 fn admit_unconditional_tools(tools: &mut ToolSet, started_at: Instant) {
-    tools.admit(
-        crate::tools::runtime::REQUIRED_AUTHORITY,
-        RuntimeFacts::new(started_at),
-    );
-    tools.admit(
-        crate::tools::changelog::REQUIRED_AUTHORITY,
-        HarnessChangelog::new(),
-    );
+    tools.admit(RuntimeFacts::new(started_at));
+    tools.admit(HarnessChangelog::new());
 }
 
 /// The release lookup's own rate window (the operator's numbers, decision
@@ -541,11 +548,11 @@ fn admit_unconditional_tools(tools: &mut ToolSet, started_at: Instant) {
 /// and a test assembly with no lookups is not misconfigured.
 fn with_release_window(
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
-    palette: &[String],
+    tool_names: &[String],
 ) -> RuntimeContext<AssistantKind, CoreEvent> {
-    if palette
+    if tool_names
         .iter()
-        .any(|tool| tool == crate::tools::release::NAME)
+        .any(|name| name == crate::tools::release::NAME)
     {
         ctx.with_tool_window(
             crate::tools::release::NAME,
@@ -555,6 +562,28 @@ fn with_release_window(
     } else {
         ctx
     }
+}
+
+/// Whether a recorded tool choice already names the registered set, read
+/// as a SET and not as a sequence.
+///
+/// This assembly writes its own records sorted, but it is no longer the
+/// only writer: the framework appends choices of its own at the compaction
+/// forks, and a record this assembly did not write owes it no order. An
+/// ordered comparison would read a permutation as a delta and append a
+/// duplicate of what the ledger already says, on every process that ever
+/// serves that conversation. Duplicate names are compared too — sorted
+/// copies, not two membership tests — so a record naming one tool twice
+/// stays a delta against a registered set that names it once.
+fn names_the_same_set(recorded: &[String], registered: &[String]) -> bool {
+    if recorded.len() != registered.len() {
+        return false;
+    }
+    let mut recorded: Vec<&str> = recorded.iter().map(String::as_str).collect();
+    let mut registered: Vec<&str> = registered.iter().map(String::as_str).collect();
+    recorded.sort_unstable();
+    registered.sort_unstable();
+    recorded == registered
 }
 
 /// The two wiring checks the assembly refuses to start without, and the
@@ -669,9 +698,9 @@ impl Assistant {
         );
         admit_unconditional_tools(&mut tools, started_at);
         // One source for what tools exist: the registry the runtime resolves
-        // calls against and the palette every new conversation records are
-        // both derived from the set right here.
-        let (registry, palette) = tools.into_registry();
+        // calls against and the tool choice every new conversation records
+        // are both derived from the set right here.
+        let (registry, tool_names) = tools.into_registry();
         // Title derivation is switched off for good (decision 0077): nobody
         // reads a group chat's derived title, so no conversation excerpt is
         // ever sent anywhere for naming — zero title requests by
@@ -679,7 +708,7 @@ impl Assistant {
         let ctx: RuntimeContext<AssistantKind, CoreEvent> =
             RuntimeContext::new(store, bus, providers, Arc::new(registry))
                 .without_title_derivation();
-        let ctx = with_release_window(ctx, &palette);
+        let ctx = with_release_window(ctx, &tool_names);
         let streams = streams::spawn_observer(ctx.bus());
         // The one home of the compaction readings, built over the observer
         // that already consumes the bus rather than a second subscriber
@@ -696,7 +725,7 @@ impl Assistant {
             binding,
             reasoning,
             system_prompt,
-            palette,
+            tool_names,
             SessionCoordination {
                 stamp_lock: Arc::new(Mutex::new(())),
                 erasure_fence,
@@ -728,7 +757,7 @@ impl Assistant {
             pending_deletions,
             note_read_pause: None,
             standing_read_pause: None,
-            palette_reconciled: Mutex::new(HashSet::new()),
+            choice_reconciled: Mutex::new(HashSet::new()),
             filing_door,
         })
     }
@@ -812,13 +841,13 @@ impl Assistant {
     /// family, exempt from suppression; then, flag standing, the drop —
     /// [`IngestOutcome::Disregarded`], the full no-write claim. Only past
     /// all of that does the writing resolution run, the channel map, the
-    /// stamp lock get taken, the palette reconcile — and under the stamp
+    /// stamp lock get taken, the tool-choice reconcile — and under the stamp
     /// lock the standing is read once more for a non-command message
     /// (2026-08-23), because a peer ingestion's flag write is serialized
     /// under that very lock and can land after the pre-lock read: the
     /// re-read drops the racing message before its append, so the flag
     /// suppresses from the moment it stands. Beside it, and still ahead of
-    /// the palette reconcile, run a revision's two drops (unit T3,
+    /// the tool-choice reconcile, run a revision's two drops (unit T3,
     /// 2026-08-31): a message revising one whose newest recorded version
     /// carries the same text, and one revising a message the store holds
     /// no version of, are both disregarded with nothing written. The same
@@ -904,7 +933,7 @@ impl Assistant {
         // Every under-lock drop, in one reading and behind one exemption,
         // and with it whether this row stores the revision reference the
         // adapter reported — see [`Self::under_lock_reading`]. Placed HERE
-        // on purpose: ahead of the palette reconciliation below, which
+        // on purpose: ahead of the tool-choice reconciliation below, which
         // appends a delta block on the conversation's first activity per
         // process, so a drop taken past it would have written a block and
         // still claimed [`IngestOutcome::Disregarded`], whose documented
@@ -916,11 +945,11 @@ impl Assistant {
             UnderLock::Disregarded => return Ok(IngestOutcome::Disregarded),
             UnderLock::Recorded(link) => link,
         };
-        // The palette supersession, on the conversation's first activity
-        // per process (decided 2026-08-23): the delta append lands ahead of
-        // the message, so this very turn's admission reads the fresh
-        // palette.
-        self.reconcile_palette(conversation_id).await?;
+        // The tool-choice supersession, on the conversation's first
+        // activity per process (decided 2026-08-23): the delta append lands
+        // ahead of the message, so this very turn is offered and resolves
+        // against the fresh choice.
+        self.reconcile_tool_choice(conversation_id).await?;
         // The deletion mirror (decided 2026-08-23), past the suppression
         // and channel admissions on purpose and ahead of the tail read on
         // purpose: an administrator's reply carrying the moderation bot's
@@ -1118,7 +1147,7 @@ impl Assistant {
                 {
                     // The honest answer for a ledger that does not split.
                     // A group's conversation opens with a system prompt and
-                    // a palette — two groups before anyone speaks — so this
+                    // a tool choice — two groups before anyone speaks — so this
                     // is not a state a served channel reaches; it is the
                     // outcome's answer, not a line the mechanism aims at.
                     CompactOutcome::AlreadyCompact => {
@@ -1199,7 +1228,7 @@ impl Assistant {
     /// delta records. The read-then-append is serialized under the stamp
     /// lock, so two equal racing observations append one note; an
     /// authorized, unmapped group channel takes the same winner-only
-    /// creation path a first message does, system prompt and palette
+    /// creation path a first message does, system prompt and tool choice
     /// included. Every appended rules note carries an acknowledgment back
     /// to the adapter — since unit 20 the bounded one-shot generation's
     /// in-voice text, with the fixed line as the deterministic fallback, so
@@ -1412,11 +1441,11 @@ impl Assistant {
                             .conversation_id
                     }
                 };
-                // The palette supersession fires on observed activity too
-                // (decided 2026-08-23): a conversation whose next contact
-                // is a pin or a title change gains the current tools the
-                // same way an ingested message grants them.
-                self.reconcile_palette(conversation_id).await?;
+                // The tool-choice supersession fires on observed activity
+                // too (decided 2026-08-23): a conversation whose next
+                // contact is a pin or a title change gains the current tools
+                // the same way an ingested message grants them.
+                self.reconcile_tool_choice(conversation_id).await?;
                 let newest = note::newest_text(self.ctx.store(), conversation_id, topic).await?;
                 if let Some(pause) = &self.note_read_pause {
                     pause().await;
@@ -1520,8 +1549,8 @@ impl Assistant {
     /// instead of racing them.
     ///
     /// A join is a first activity like any other, so the conversation it
-    /// may have just created carries the current palette the same way an
-    /// ingested message's and a pin's do: the palette supersession runs
+    /// may have just created carries the current tools the same way an
+    /// ingested message's and a pin's do: the tool-choice supersession runs
     /// here, past the mapping and ahead of the appends, exactly as the
     /// note path runs it.
     ///
@@ -1530,7 +1559,7 @@ impl Assistant {
     /// origin is the platform's own id for it, shared by every joiner, so
     /// a stored notice under that origin means the event is recorded and
     /// the redelivery stores nothing at all — never a second block, never a
-    /// second principal refresh. Nothing else is skipped: the palette above
+    /// second principal refresh. Nothing else is skipped: the choice above
     /// already ran, and a redelivery is not a new fact.
     async fn record_join_event(
         &self,
@@ -1550,7 +1579,7 @@ impl Assistant {
                     .conversation_id
             }
         };
-        self.reconcile_palette(conversation_id).await?;
+        self.reconcile_tool_choice(conversation_id).await?;
         if join::event_recorded(tx, conversation_id, origin).await? {
             tracing::debug!("the join event is already recorded; the redelivery stores nothing");
             return Ok(());
@@ -1725,7 +1754,7 @@ impl Assistant {
     /// select, never a write — so the check precedes every write the
     /// ingestion path can make; then the privacy command family; then, flag
     /// standing, the drop, answered as `None` — no message row, no identity
-    /// refresh, no principal write, no conversation creation, no palette
+    /// refresh, no principal write, no conversation creation, no tool-choice
     /// append, no mapping, no answer; the adapter acknowledges and its
     /// offset advances. The family alone is exempt from the drop: an
     /// opted-out person's `/unblockprivacy` must work, or the door never
@@ -2530,50 +2559,47 @@ impl Assistant {
         }
     }
 
-    /// The palette supersession on delta (decided 2026-08-23), under the
-    /// stamp lock every caller holds: on a conversation's first activity
-    /// per process, the newest stored palette is compared against the
-    /// registered tool set, and a fresh palette block is appended when
-    /// they differ — one write per real change, the context note's
-    /// on-delta shape. A conversation created before a tool existed
-    /// admits it on its next activity; a tool the handle no longer
-    /// configures is removed the same way, because the registered set is
-    /// the comparison's one side. A palette that never parsed reads as a
-    /// delta: it admits nothing, so superseding it is the correction. The
-    /// memory is marked only after the append stands — a transiently
-    /// failed append leaves the conversation unreconciled, and the
-    /// redelivered activity retries.
-    async fn reconcile_palette(&self, conversation_id: i64) -> Result<(), CoreError> {
+    /// The tool-choice supersession on delta (decided 2026-08-23), under
+    /// the stamp lock every caller holds: on a conversation's first activity
+    /// per process, the newest recorded choice is compared against the
+    /// registered tool set, and a fresh choice is appended when they differ
+    /// — one write per real change, the context note's on-delta shape. A
+    /// conversation created before a tool existed gains it on its next
+    /// activity; a tool the handle no longer configures is removed the same
+    /// way, because the registered set is the comparison's one side. A
+    /// conversation carrying no choice at all reads as a delta, and
+    /// recording one is the correction: by the scoping decision of
+    /// 2026-09-01 the record decides EXPOSURE and the framework's admission
+    /// hook decides ENFORCEMENT, so a ledger holding no record filters
+    /// nothing and every call still faces the authority check that never
+    /// depended on the record. The memory is marked only after the append
+    /// stands — a transiently failed append leaves the conversation
+    /// unreconciled, and the redelivered activity retries.
+    async fn reconcile_tool_choice(&self, conversation_id: i64) -> Result<(), CoreError> {
         if self
-            .palette_reconciled
+            .choice_reconciled
             .lock()
             .await
             .contains(&conversation_id)
         {
             return Ok(());
         }
-        let stored = palette::newest_tools(self.ctx.store(), conversation_id).await?;
+        let recorded = self.ctx.store().newest_tool_choice(conversation_id).await?;
         let already_current =
-            stored.is_some_and(|tools| tools.as_deref() == Some(self.sessions.palette()));
+            recorded.is_some_and(|names| names_the_same_set(&names, self.sessions.tool_names()));
         if !already_current {
             self.ctx
                 .store()
-                .append_consumer_block(
-                    conversation_id,
-                    None,
-                    TOOL_PALETTE_KIND,
-                    ToolPalette::stored_fields(self.sessions.palette()),
-                    None,
-                )
+                .append_tool_choice(conversation_id, self.sessions.tool_names().to_vec())
                 .await?;
             tracing::info!(
                 conversation_id,
-                "the conversation's palette was superseded to the registered tool set"
+                "the conversation's tool choice was superseded to the registered tool set"
             );
         }
-        let mut reconciled = self.palette_reconciled.lock().await;
-        if reconciled.len() >= PALETTE_MEMORY_CAP {
-            tracing::debug!("the palette memory reached its cap and was cleared");
+        let mut reconciled = self.choice_reconciled.lock().await;
+        if reconciled.len() >= CHOICE_MEMORY_CAP {
+            tracing::debug!("the tool-choice memory reached its cap and was cleared");
             reconciled.clear();
         }
         reconciled.insert(conversation_id);
@@ -2600,8 +2626,8 @@ impl Assistant {
     ///
     /// The read walks past the consumer's own mid-history kinds exactly —
     /// context notes (refined 2026-08-23), and, widened the same day with
-    /// the report and the palette supersession, the report block and a
-    /// superseding palette ([`DEBT_READ_THROUGH`]): each is appended by an
+    /// the report and the tool-choice supersession, the report block and a
+    /// superseding choice ([`DEBT_READ_THROUGH`]): each is appended by an
     /// independent path at an arbitrary moment, so a debt behind a run of
     /// them still owes and must propagate through to the next message's
     /// stamp. Erased chat rows are transparent the same way (2026-08-23,
@@ -2668,7 +2694,6 @@ impl Assistant {
             Some(
                 AssistantKind::ChatMessage(_)
                 | AssistantKind::Core(_)
-                | AssistantKind::ToolPalette(_)
                 | AssistantKind::ContextNote(_)
                 | AssistantKind::JoinNotice(_)
                 | AssistantKind::Report(_)

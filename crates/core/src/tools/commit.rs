@@ -28,8 +28,8 @@ pub const DEFAULT_BASE_URL: &str = "https://git.halogenos.org";
 /// short bounds instead of waiting production ones.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The authority this tool requires — the bar the admission wrapper's
-/// provenance gate compares each call's reading against (decision 0043).
+/// The authority this tool requires — the bar the admission hook's
+/// provenance reading is compared against at every call (decision 0043).
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 
 /// How much of a commit subject the compact result carries.
@@ -91,6 +91,8 @@ impl ToolHandler<CoreEvent> for CommitLookup {
             }),
         }
     }
+
+    crate::tools::admission::admits_at_required_authority!(NAME, REQUIRED_AUTHORITY);
 
     fn execute<'a>(
         &'a self,

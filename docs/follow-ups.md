@@ -178,3 +178,6 @@ what resolving it takes. Resolved items move into a decision record.
   The general question stays open for stricter vendors a later deployment might
   bind: the framework-render-versus-vendor-module choice above is still the
   answer to write, but nothing forces it before this deployment moves.
+  **Unit 52, 2026-09-01:** the role-less block between the two system messages
+  is the framework's recorded tool choice now — the consumer's own kind was
+  withdrawn with the mechanism it belonged to. Same shape, same open question.

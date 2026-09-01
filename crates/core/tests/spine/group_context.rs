@@ -396,7 +396,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             .expect("the version-five store reopens under the shipped configuration");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            20,
+            21,
             "the appended steps advanced the domain's version"
         );
         let fixture = support::start_assistant_on(store.clone(), None).await;
@@ -1606,10 +1606,10 @@ async fn two_racing_equal_observations_append_one_note() {
 }
 
 /// An observation-created conversation carries the system prompt and the
-/// palette: a group's facts exist on the ledger before anyone speaks, on
+/// tool choice: a group's facts exist on the ledger before anyone speaks, on
 /// the same winner-only creation path a first message takes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_observation_created_conversation_carries_the_prompt_and_the_palette() {
+async fn an_observation_created_conversation_carries_the_prompt_and_the_choice() {
     let fixture = support::start_assistant(None).await;
     let key = channel("group-created-by-observation");
     authorize(&fixture.assistant, &key).await;
@@ -1628,12 +1628,139 @@ async fn an_observation_created_conversation_carries_the_prompt_and_the_palette(
     let shape: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
     assert_eq!(
         shape,
-        vec!["system_prompt", "tool_palette", CONTEXT_NOTE_KIND],
-        "prompt and palette first, the note behind them"
+        vec!["system_prompt", "tool_choice", CONTEXT_NOTE_KIND],
+        "prompt and choice first, the note behind them"
     );
     assert_eq!(
         blocks[0].fields["content"],
         json!(support::composed_prompt())
+    );
+}
+
+/// The tool-choice supersession on the OBSERVATION path (unit 52), and its
+/// once-per-process bound in the same run.
+///
+/// A conversation an earlier process left with a narrower recorded choice
+/// gains the current set the moment this process sees a pin — the delta
+/// append landing ahead of the note it was triggered by, exactly as it
+/// lands ahead of a message. A second observation on the same conversation
+/// appends nothing: the comparison runs once per process per conversation,
+/// and the memory is what makes the second one free.
+// The length is the sequence itself: seed an earlier process's leavings,
+// observe, read the delta, observe again, read that nothing followed.
+#[allow(clippy::too_many_lines)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_observation_supersedes_a_stale_choice_once_per_process() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    // The earlier process's leavings, written store-directly: a
+    // conversation, its prompt, its channel mapping, and a choice naming
+    // one tool this deployment registers plus one it does not.
+    let conversation = store
+        .create_conversation(
+            "scripted-1".into(),
+            "script-model".into(),
+            "Script Model".into(),
+            support::VENDOR.into(),
+        )
+        .await
+        .expect("a conversation row");
+    store
+        .insert_system_prompt(conversation, support::SYSTEM_PROMPT.into())
+        .await
+        .expect("the prompt records");
+    store
+        .append_tool_choice(conversation, vec!["lookup_commit".into(), "gone".into()])
+        .await
+        .expect("the earlier process's choice appends");
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
+        conn.execute(
+            "INSERT INTO channels (adapter, channel, kind, conversation_id) \
+             VALUES (?1, ?2, 'group', ?3)",
+            (support::ADAPTER, "room-stale-choice", conversation),
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("the earlier mapping writes");
+
+    let fixture = support::start_assistant_full(
+        store,
+        support::silent_provider(),
+        support::ScriptHandle::fresh(),
+        support::production_toolset(),
+        assistant_core::ProtectionConfig::default(),
+    )
+    .await;
+    let key = channel("room-stale-choice");
+    authorize(&fixture.assistant, &key).await;
+
+    fixture
+        .assistant
+        .observe(observed(&key, ObservedFact::Title("A titled group".into())))
+        .await
+        .expect("the title observation is judged");
+    let blocks = fixture
+        .store
+        .list_blocks(conversation)
+        .await
+        .expect("the ledger reads");
+    let choices: Vec<usize> = blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| block.block_type == "tool_choice")
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(choices.len(), 2, "the observation superseded the stale one");
+    assert_eq!(
+        support::tool_choice_names(&blocks),
+        vec![
+            assistant_core::tools::changelog::NAME.to_owned(),
+            "lookup_commit".to_owned(),
+            "lookup_release".to_owned(),
+            assistant_core::tools::wiki::NAME.to_owned(),
+            assistant_core::tools::standing::NAME.to_owned(),
+            assistant_core::tools::rights::NAME.to_owned(),
+            assistant_core::tools::mark::NAME.to_owned(),
+            assistant_core::tools::runtime::NAME.to_owned()
+        ],
+        "the delta carries this process's registered set"
+    );
+    let note_at = blocks
+        .iter()
+        .position(|block| block.block_type == CONTEXT_NOTE_KIND)
+        .expect("the note stands");
+    assert!(
+        choices[1] < note_at,
+        "the delta lands ahead of the observation it was triggered by"
+    );
+
+    // The second observation: a different fact, so the note path itself
+    // appends again — and the choice does not.
+    fixture
+        .assistant
+        .observe(observed(
+            &key,
+            ObservedFact::Title("A renamed group".into()),
+        ))
+        .await
+        .expect("the second title observation is judged");
+    let after = fixture
+        .store
+        .list_blocks(conversation)
+        .await
+        .expect("the ledger reads");
+    assert_eq!(
+        notes(&fixture.store, conversation).await.len(),
+        2,
+        "the second observation really did reach the append"
+    );
+    assert_eq!(
+        after
+            .iter()
+            .filter(|block| block.block_type == "tool_choice")
+            .count(),
+        2,
+        "the comparison runs once per process per conversation"
     );
 }
 

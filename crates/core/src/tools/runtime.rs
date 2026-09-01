@@ -328,6 +328,8 @@ impl ToolHandler<CoreEvent> for RuntimeFacts {
         }
     }
 
+    crate::tools::admission::admits_at_required_authority!(NAME, REQUIRED_AUTHORITY);
+
     fn execute<'a>(
         &'a self,
         _input: &'a str,

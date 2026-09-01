@@ -1529,9 +1529,6 @@ pub enum AssistantKind {
     Core(FrameworkKind),
     /// The assistant's recorded channel message.
     ChatMessage(ChatMessage),
-    /// The conversation's tool admission record (the tools module owns the
-    /// kind; it composes here so one parse path reads every block).
-    ToolPalette(crate::tools::palette::ToolPalette),
     /// A group's observed fact — its title or its rules (the note module
     /// owns the kind; it composes here so one parse path reads every
     /// block).

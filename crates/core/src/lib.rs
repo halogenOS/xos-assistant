@@ -51,11 +51,11 @@
 //! - [`schema`] — the store configuration and the domain tables; identity
 //!   lives apart from the ledger so erasure never touches a block.
 //! - [`tools`] — the project lookups, the react tool putting one emoji on
-//!   a message, the web search behind its own
-//!   configured key, the palette kind that gates their admission, the
-//!   provenance reading the anchor gate takes, and the admission wrapper
-//!   enforcing both; the assembly takes its [`tools::ToolSet`] and
-//!   registers every tool behind that wrapper.
+//!   a message, the web search behind its own configured key, and the
+//!   provenance reading the anchor gate takes; the assembly takes its
+//!   [`tools::ToolSet`], registers every tool in it, and records the
+//!   framework's tool choice naming exactly those tools on every
+//!   conversation it creates.
 //! - `provider` (behind the `chat_completions` feature) — the framework's
 //!   `OpenRouter` module, reused as the shared chat-completions wire against
 //!   any OpenAI-compatible endpoint, wrapped around an in-memory

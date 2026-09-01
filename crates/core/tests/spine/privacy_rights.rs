@@ -24,8 +24,8 @@ use crate::support::{
 
 /// The tables the no-write claim reads raw, one by one: the identity
 /// table, the message content table, the channel mapping, the framework's
-/// conversation and block tables with their junction, and the palette
-/// content table. A suppressed message may grow none of them.
+/// conversation and block tables with their junction, and the recorded tool
+/// choice's own table. A suppressed message may grow none of them.
 const NO_WRITE_TABLES: [&str; 7] = [
     "principals",
     "block_chat_message",
@@ -33,7 +33,7 @@ const NO_WRITE_TABLES: [&str; 7] = [
     "conversations",
     "blocks",
     "conversation_blocks",
-    "block_tool_palette",
+    "block_tool_choice",
 ];
 
 /// One raw row count, read through the domain seam.
@@ -305,7 +305,7 @@ async fn a_standing_flag_drops_the_persons_messages_with_no_write() {
     dropped.sender.username = Some("renamed".into());
     ingest_dropped(&fixture.assistant, dropped).await;
     // The fresh-channel first message: no mapping, no conversation, no
-    // palette, nothing.
+    // tool choice, nothing.
     ingest_dropped(
         &fixture.assistant,
         inbound(
@@ -764,8 +764,8 @@ async fn a_failed_erasure_leaves_the_identity_standing_and_a_re_ask_works() {
 
 // ─── AC4: the tool, end to end over the scripted model ───────────────────
 
-/// One assembled privacy-tool fixture: the tool alone in the palette
-/// besides itself — no lookups, so the ledger shapes stay minimal — over
+/// One assembled privacy-tool fixture: the tool alone in the recorded
+/// choice — no lookups, so the ledger shapes stay minimal — over
 /// the tool-scripted provider calling it with the given action.
 async fn privacy_tool_fixture(
     action: &str,
@@ -814,7 +814,7 @@ async fn a_plain_language_opt_out_calls_the_tool_and_the_system_enforces_it() {
         "the tool turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -869,7 +869,7 @@ async fn a_plain_language_deletion_ask_relays_the_confirm_token_and_confirms() {
         "the tool turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -1043,7 +1043,7 @@ async fn a_failed_flag_write_answers_the_transient_result_and_changes_nothing() 
         "the transient turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_error",
@@ -1089,7 +1089,7 @@ async fn an_invalid_tool_action_reaches_the_recorded_result_end_to_end() {
         "the invalid-action turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_error",
@@ -1354,7 +1354,7 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
         .expect("the version-twelve store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        20,
+        21,
         "the appended steps advanced the domain's version"
     );
     assert_eq!(

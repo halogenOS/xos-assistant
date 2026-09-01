@@ -1,12 +1,12 @@
 //! The standing lookup at the core's edges (unit 29, AC7): an ordinary
 //! member's question makes the scripted model call the tool, admission
-//! through the conversation's recorded palette admits it at member
+//! through the conversation's recorded choice admits it at member
 //! standing, and the recorded result is the pinned answer about the person
 //! who spoke — while the same call in a conversation that is not a group
 //! records the pinned group-only refusal instead.
 //!
 //! What only the assembled core can prove is here: the unconditional
-//! registration, the palette entry, the reach at member standing and the
+//! registration, the recorded choice's entry, the reach at member standing and the
 //! non-group refusal through the whole path. The bound, the vocabulary
 //! mapping, the freshness, the erasure outcome and every fixed string are
 //! pinned beside the resolution itself, in the tool's own module.
@@ -19,8 +19,8 @@ use assistant_core::{Authority, ChannelKind, InboundMessage, ProtectionConfig};
 use serde_json::json;
 
 use crate::support::{
-    self, ScriptHandle, ToolScript, channel, field, inbound, inbound_as, palette_names,
-    settle_shape, tool_scripted_provider, with_username,
+    self, ScriptHandle, ToolScript, channel, field, inbound, inbound_as, settle_shape,
+    tool_choice_names, tool_scripted_provider, with_username,
 };
 
 /// One assembled fixture whose scripted model calls the standing lookup
@@ -67,7 +67,7 @@ fn spoke(
 }
 
 /// An ordinary member asks about someone who spoke as an administrator: the
-/// scripted model calls the tool, the recorded palette admits it at member
+/// scripted model calls the tool, the recorded choice carries it at member
 /// standing, and the result is the pinned affirmative answer naming the
 /// stored handle — from a call that asked in a different case, with an at
 /// sign the stored form does not carry.
@@ -94,7 +94,7 @@ async fn a_member_reaches_the_lookup_in_a_group_and_reads_the_stored_standing() 
         "the standing turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "chat_message",
             "tool_call",
@@ -104,8 +104,8 @@ async fn a_member_reaches_the_lookup_in_a_group_and_reads_the_stored_standing() 
     )
     .await;
     assert!(
-        palette_names(&blocks).contains(&standing::NAME.to_owned()),
-        "the creation palette names the tool, so admission can admit it"
+        tool_choice_names(&blocks).contains(&standing::NAME.to_owned()),
+        "the creation choice names the tool, so the call can resolve"
     );
     assert_eq!(field(&blocks[4], "name"), standing::NAME);
     assert_eq!(
@@ -139,7 +139,7 @@ async fn a_member_who_holds_no_standing_answers_the_false_form() {
         "the standing turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "chat_message",
             "tool_call",
@@ -177,7 +177,7 @@ async fn a_conversation_outside_a_group_records_the_group_only_refusal() {
         "the declined lookup",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_error",
@@ -194,12 +194,12 @@ async fn a_conversation_outside_a_group_records_the_group_only_refusal() {
 
 /// The registration is unconditional: a conversation created by an
 /// assembly configured with no moderation handle, no search key and an
-/// empty embedder tool set still records the lookup in its palette, which
+/// empty embedder tool set still records the lookup in its choice, which
 /// is what lets the shipped conduct prose teach it without a predicate.
 /// The prose itself is pinned in the documentation suite, where the shipped
 /// prompt files are read.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn every_conversation_records_the_lookup_in_its_palette() {
+async fn every_conversation_records_the_lookup_in_its_choice() {
     let fixture = support::start_assistant_full(
         Store::in_memory_with(store_config()).expect("an in-memory store opens"),
         support::silent_provider(),
@@ -208,7 +208,7 @@ async fn every_conversation_records_the_lookup_in_its_palette() {
         ProtectionConfig::default(),
     )
     .await;
-    let room = support::authorized_group(&fixture.assistant, "room-standing-palette").await;
+    let room = support::authorized_group(&fixture.assistant, "room-standing-choice").await;
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound(&room, ChannelKind::Group, "A", "hello"),
@@ -222,7 +222,7 @@ async fn every_conversation_records_the_lookup_in_its_palette() {
             .expect("the ledger reads"),
     );
     assert!(
-        palette_names(&blocks).contains(&standing::NAME.to_owned()),
-        "the palette of a conversation created under no capability carries the lookup"
+        tool_choice_names(&blocks).contains(&standing::NAME.to_owned()),
+        "the choice of a conversation created under no capability carries the lookup"
     );
 }

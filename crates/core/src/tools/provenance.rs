@@ -5,9 +5,9 @@
 //! anchor is its mechanism: every block a turn writes carries the id of
 //! the summoning frontier, inherited across continuation rounds, so the
 //! call block names its summoner in round one and in round ten alike. The
-//! reading is computed over the ledger vector the admission wrapper
-//! already loads for its palette check — no store round-trips of its own,
-//! so the gate adds no failure surface beyond that one load. Block ids
+//! reading is computed over the ledger vector the runner's admission pass
+//! already loaded and handed to the hook — no store round-trips of its own,
+//! so the gate adds no failure surface at all. Block ids
 //! are monotonic within a store, and the loaded vector is one
 //! conversation's own blocks, so the ids bound the interval exactly.
 //!
@@ -96,7 +96,6 @@ pub fn turn_reading(ledger: &[Block], call_block_id: i64) -> Authority {
         .filter_map(|block| match AssistantKind::from_block(block) {
             AssistantKind::ChatMessage(message) => Some(message),
             AssistantKind::Core(_)
-            | AssistantKind::ToolPalette(_)
             | AssistantKind::ContextNote(_)
             | AssistantKind::JoinNotice(_)
             | AssistantKind::Report(_)
@@ -894,8 +893,8 @@ mod tests {
     }
 
     /// The sweep over every stored kind this build knows: the framework's
-    /// whole claimed set, the consumer's palette kind, and a kind no build
-    /// has stored, each sitting in a dead turn's window. Every one must
+    /// whole claimed set, and a kind no build has stored, each sitting in a
+    /// dead turn's window. Every one must
     /// read member — the dead turn answered nothing, whatever it wrote —
     /// so no kind, present or future, can truncate the fold and raise it.
     /// The consumer's chat-message kind is the one deliberate absence: a
@@ -904,7 +903,6 @@ mod tests {
     #[test]
     fn every_kind_in_a_dead_turns_window_is_read_through() {
         let mut kinds: Vec<&str> = <BlockKind as FromBlock>::CLAIMED_KINDS.to_vec();
-        kinds.push(crate::tools::palette::TOOL_PALETTE_KIND);
         kinds.push("a_kind_this_build_has_never_stored");
         for kind in kinds {
             let ledger = vec![

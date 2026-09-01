@@ -1,24 +1,27 @@
 //! The tools unit at the core's edges: the three lookups against scripted
-//! wires — the wiki lookup under its own section (AC2) — the palette
+//! wires — the wiki lookup under its own section (AC2) — the tool-choice
 //! supersession that folds a pre-unit conversation into the registered
 //! set, the anchor gate over the turn's provenance (AC5, lifted with the
 //! dispatch anchor), the tail-only stamp under mid-turn absorption (AC6),
 //! the budget composition (AC8), and the redispatch canary over the
-//! closed duplicate-turn window. The no-palette refusal is pinned
-//! behaviorally in the admission wrapper's own tests, beside its strings.
+//! closed duplicate-turn window.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::{Block, CoreEvent, EventBus, Store, ToolContext, ToolHandler, ToolOutcome};
+use agent_ledger::{
+    Admission, Block, CoreEvent, EventBus, Store, ToolContext, ToolHandler, ToolOutcome,
+};
 use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
 use assistant_core::tools::commit::{self, CommitLookup};
 use assistant_core::tools::release::{self, ReleaseLookup};
 use assistant_core::tools::wiki::{self, WikiLookup};
-use assistant_core::{Assistant, Authority, ChannelKind, ProtectionConfig};
+use assistant_core::{
+    Assistant, Authority, ChannelKind, Observation, ObservedFact, ProtectionConfig,
+};
 use serde_json::{Value, json};
 
 use crate::lookup_wire::{LookupAnswer, LookupServer};
@@ -54,18 +57,20 @@ fn forge_compact_result() -> String {
 }
 
 /// A probe tool: records whether its body ran, so a decline can prove the
-/// body never did.
+/// body never did, and requires the authority it was built with.
 struct ProbeTool {
     name: &'static str,
+    required: Authority,
     executed: Arc<AtomicBool>,
 }
 
 impl ProbeTool {
-    fn new(name: &'static str) -> (Self, Arc<AtomicBool>) {
+    fn new(name: &'static str, required: Authority) -> (Self, Arc<AtomicBool>) {
         let executed = Arc::new(AtomicBool::new(false));
         (
             Self {
                 name,
+                required,
                 executed: Arc::clone(&executed),
             },
             executed,
@@ -80,6 +85,19 @@ impl ToolHandler<CoreEvent> for ProbeTool {
             description: "a probe that records having run".into(),
             parameters: json!({ "type": "object" }),
         }
+    }
+
+    fn admit<'a>(
+        &'a self,
+        ctx: &'a ToolContext<'a, CoreEvent>,
+        ledger: &'a [Block],
+    ) -> BoxFuture<'a, Admission> {
+        assistant_core::tools::admission::at_required_authority(
+            self.name,
+            self.required,
+            ctx,
+            ledger,
+        )
     }
 
     fn execute<'a>(
@@ -161,10 +179,7 @@ async fn assemble(
 async fn the_commit_lookup_decodes_the_forge_answer() {
     let forge = LookupServer::start(LookupAnswer::Json(200, forge_commit_body())).await;
     let mut tools = ToolSet::new();
-    tools.admit(
-        commit::REQUIRED_AUTHORITY,
-        CommitLookup::new(forge.base(), commit::DEFAULT_TIMEOUT),
-    );
+    tools.admit(CommitLookup::new(forge.base(), commit::DEFAULT_TIMEOUT));
     let script = ToolScript {
         tool: commit::NAME.into(),
         input: COMMIT_INPUT.into(),
@@ -188,7 +203,7 @@ async fn the_commit_lookup_decodes_the_forge_answer() {
         "the tool turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -261,14 +276,11 @@ async fn the_release_lookup_decodes_the_mirror_answer_and_sends_the_token() {
     ))
     .await;
     let mut tools = ToolSet::new();
-    tools.admit(
-        release::REQUIRED_AUTHORITY,
-        ReleaseLookup::new(
-            mirror.base(),
-            Some("FAKE-MIRROR-TOKEN".into()),
-            release::DEFAULT_TIMEOUT,
-        ),
-    );
+    tools.admit(ReleaseLookup::new(
+        mirror.base(),
+        Some("FAKE-MIRROR-TOKEN".into()),
+        release::DEFAULT_TIMEOUT,
+    ));
     let script = ToolScript {
         tool: release::NAME.into(),
         input: r#"{"tag":"20260707.2230.36-rb"}"#.into(),
@@ -292,7 +304,7 @@ async fn the_release_lookup_decodes_the_mirror_answer_and_sends_the_token() {
         "the tool turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -350,10 +362,11 @@ async fn an_absent_token_sends_no_header_and_the_default_is_the_latest_release()
     ))
     .await;
     let mut tools = ToolSet::new();
-    tools.admit(
-        release::REQUIRED_AUTHORITY,
-        ReleaseLookup::new(mirror.base(), None, release::DEFAULT_TIMEOUT),
-    );
+    tools.admit(ReleaseLookup::new(
+        mirror.base(),
+        None,
+        release::DEFAULT_TIMEOUT,
+    ));
     let script = ToolScript {
         tool: release::NAME.into(),
         input: "{\"tag\":null}".into(),
@@ -384,16 +397,13 @@ async fn an_absent_token_sends_no_header_and_the_default_is_the_latest_release()
 /// the failure loop below run the same two cases against each tool.
 fn commit_tools(base: String, timeout: Duration) -> ToolSet {
     let mut tools = ToolSet::new();
-    tools.admit(commit::REQUIRED_AUTHORITY, CommitLookup::new(base, timeout));
+    tools.admit(CommitLookup::new(base, timeout));
     tools
 }
 
 fn release_tools(base: String, timeout: Duration) -> ToolSet {
     let mut tools = ToolSet::new();
-    tools.admit(
-        release::REQUIRED_AUTHORITY,
-        ReleaseLookup::new(base, None, timeout),
-    );
+    tools.admit(ReleaseLookup::new(base, None, timeout));
     tools
 }
 
@@ -456,7 +466,7 @@ async fn an_error_status_and_a_timeout_become_tool_errors_the_model_sees() {
                 "the failed-call turn",
                 &[
                     "system_prompt",
-                    "tool_palette",
+                    "tool_choice",
                     "chat_message",
                     "tool_call",
                     "tool_error",
@@ -515,7 +525,7 @@ async fn a_redirect_answer_is_a_tool_error_and_is_not_followed() {
         "the redirected-call turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_error",
@@ -538,24 +548,20 @@ async fn a_redirect_answer_is_a_tool_error_and_is_not_followed() {
     );
 }
 
-// ─── The palette: supersession on first activity, the creation set ───────
+// ─── The tool choice: supersession on first activity, the creation set ──
 
 /// A store-direct conversation modeling a pre-unit store: mapped and
-/// prompted but carrying no palette block. Under the on-delta supersession
+/// prompted but recording no tool choice. Under the on-delta supersession
 /// (2026-08-23), its first activity appends the registered set as a fresh
-/// palette block ahead of the message — so the very turn that activity
-/// summons admits the tool, and the scripted forge sees the call. The
-/// supersession makes the no-palette shape unreachable end to end, so the
-/// refusal it once drew here is pinned behaviorally on the admission
-/// wrapper, in that module's tests, where a conversation no
-/// reconciliation touched can still exist.
+/// choice ahead of the message — so the very turn that activity summons
+/// resolves the tool, and the scripted forge sees the call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let forge = LookupServer::start(LookupAnswer::Json(200, forge_commit_body())).await;
 
     // The pre-unit shape, written store-directly: conversation, prompt and
-    // channel mapping exist; no palette block does.
+    // channel mapping exist; no recorded tool choice does.
     let conversation = store
         .create_conversation(
             "scripted-1".into(),
@@ -589,10 +595,7 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
         None,
     );
     let mut tools = ToolSet::new();
-    tools.admit(
-        commit::REQUIRED_AUTHORITY,
-        CommitLookup::new(forge.base(), commit::DEFAULT_TIMEOUT),
-    );
+    tools.admit(CommitLookup::new(forge.base(), commit::DEFAULT_TIMEOUT));
     let (fixture, mut replies) =
         assemble(store, provider, handle, tools, ProtectionConfig::default()).await;
 
@@ -614,7 +617,7 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
         "the admitted first-activity turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -622,10 +625,9 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
         ],
     )
     .await;
-    // The delta append: the superseding palette lands ahead of the message
-    // and names exactly the registered set, so this very turn admits.
-    let names: Vec<String> =
-        serde_json::from_str(&field(&blocks[1], "tools")).expect("the stored list parses");
+    // The delta append: the superseding choice lands ahead of the message
+    // and names exactly the registered set, so this very turn resolves.
+    let names = support::tool_choice_names(&blocks);
     assert_eq!(
         names,
         vec![
@@ -636,7 +638,7 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
             assistant_core::tools::mark::NAME.to_owned(),
             assistant_core::tools::runtime::NAME.to_owned()
         ],
-        "the appended palette names the registered set, the unconfigured tools included"
+        "the appended choice names the registered set, the unconfigured tools included"
     );
     assert_eq!(field(&blocks[4], "content"), forge_compact_result());
     assert_eq!(
@@ -650,10 +652,10 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
     );
 }
 
-/// A created conversation's palette names exactly the registered set — the
-/// three lookups plus the always-registered tools: the standing lookup,
+/// A created conversation's tool choice names exactly the registered set —
+/// the three lookups plus the always-registered tools: the standing lookup,
 /// privacy, the react tool, runtime facts and the harness changelog — and
-/// a direct and a group conversation get the identical palette.
+/// a direct and a group conversation get the identical choice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_created_conversation_names_exactly_the_registered_set_direct_and_group_alike() {
     let fixture = support::start_assistant(None).await;
@@ -665,10 +667,10 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
 
     let direct = support::ingest_recorded(
         &fixture.assistant,
-        inbound(&channel("dm-palette"), ChannelKind::Direct, "42", "hello"),
+        inbound(&channel("dm-choice"), ChannelKind::Direct, "42", "hello"),
     )
     .await;
-    let room = support::authorized_group(&fixture.assistant, "room-palette").await;
+    let room = support::authorized_group(&fixture.assistant, "room-choice").await;
     let group = support::ingest_recorded(
         &fixture.assistant,
         inbound(&room, ChannelKind::Group, "42", "hello group"),
@@ -677,7 +679,7 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
     recv_reply(&mut replies).await;
     recv_reply(&mut replies).await;
 
-    let mut palettes = Vec::new();
+    let mut recorded = Vec::new();
     for conversation in [direct.conversation_id, group.conversation_id] {
         let blocks = fixture
             .store
@@ -686,15 +688,14 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
             .expect("the ledger reads");
         let stored: Vec<&Block> = blocks
             .iter()
-            .filter(|block| block.block_type == "tool_palette")
+            .filter(|block| block.block_type == "tool_choice")
             .collect();
-        assert_eq!(stored.len(), 1, "one palette block per conversation");
+        assert_eq!(stored.len(), 1, "one recorded choice per conversation");
         assert_eq!(
-            blocks[1].block_type, "tool_palette",
-            "the palette sits beside the prompt, before any message"
+            blocks[1].block_type, "tool_choice",
+            "the choice sits beside the prompt, before any message"
         );
-        let names: Vec<String> =
-            serde_json::from_str(&field(stored[0], "tools")).expect("the stored list parses");
+        let names = support::tool_choice_names(&blocks);
         assert_eq!(
             names,
             vec![
@@ -707,16 +708,237 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
                 assistant_core::tools::mark::NAME.to_owned(),
                 assistant_core::tools::runtime::NAME.to_owned()
             ],
-            "the palette names the three lookups and the five always-registered tools"
+            "the choice names the three lookups and the five always-registered tools"
         );
-        palettes.push(names);
+        recorded.push(names);
     }
-    assert_eq!(palettes[0], palettes[1], "direct and group get one palette");
+    assert_eq!(
+        recorded[0], recorded[1],
+        "direct and group get one recorded choice"
+    );
+}
+
+/// A recorded choice naming the registered set in ANOTHER ORDER is the same
+/// choice: the reconciliation reads a record as a set, so it appends
+/// nothing.
+///
+/// This assembly writes its own records sorted, but it is not the only
+/// writer any more — the framework appends choices of its own at the
+/// compaction forks, and a record this assembly did not write owes it no
+/// order. Read as a sequence, a permutation would be a delta, and every
+/// process that ever served the conversation would append one more copy of
+/// what the ledger already says.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recorded_choice_in_another_order_is_not_a_delta() {
+    let fixture = support::start_assistant(None).await;
+
+    // The registered set, read off a conversation this assembly created
+    // itself instead of spelled out here a second time.
+    let titled = support::authorized_group(&fixture.assistant, "room-order-source").await;
+    fixture
+        .assistant
+        .observe(Observation {
+            channel: titled,
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::Title("A titled group".into()),
+        })
+        .await
+        .expect("the title observation is judged");
+    let created = fixture
+        .store
+        .list_conversations()
+        .await
+        .expect("the conversation list reads")
+        .first()
+        .expect("the titled group has a conversation")
+        .id;
+    let registered = support::tool_choice_names(
+        &fixture
+            .store
+            .list_blocks(created)
+            .await
+            .expect("the ledger reads"),
+    );
+    let permuted: Vec<String> = registered.iter().rev().cloned().collect();
+    assert!(
+        registered.len() > 1 && permuted != registered,
+        "the permutation has to differ, or this asserts nothing: {registered:?}"
+    );
+
+    // A second channel, mapped store-directly so its recorded choice is the
+    // permutation and this process has reconciled nothing for it yet.
+    let conversation = fixture
+        .store
+        .create_conversation(
+            "scripted-1".into(),
+            "script-model".into(),
+            "Script Model".into(),
+            support::VENDOR.into(),
+        )
+        .await
+        .expect("a conversation row");
+    fixture
+        .store
+        .insert_system_prompt(conversation, support::SYSTEM_PROMPT.into())
+        .await
+        .expect("the prompt records");
+    agent_ledger::store::domain_run(
+        &fixture.store.tx(),
+        assistant_core::schema::DOMAIN,
+        move |conn| {
+            conn.execute(
+                "INSERT INTO channels (adapter, channel, kind, conversation_id) \
+                 VALUES (?1, ?2, 'group', ?3)",
+                (support::ADAPTER, "room-order-permuted", conversation),
+            )?;
+            Ok(())
+        },
+    )
+    .await
+    .expect("the mapping writes");
+    fixture
+        .store
+        .append_tool_choice(conversation, permuted.clone())
+        .await
+        .expect("the permuted choice records");
+
+    let permuted_room = channel("room-order-permuted");
+    support::authorize(&fixture.assistant, &permuted_room).await;
+    fixture
+        .assistant
+        .observe(Observation {
+            channel: permuted_room,
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::Title("A second titled group".into()),
+        })
+        .await
+        .expect("the title observation is judged");
+
+    let blocks = fixture
+        .store
+        .list_blocks(conversation)
+        .await
+        .expect("the ledger reads");
+    let choices: Vec<&Block> = blocks
+        .iter()
+        .filter(|block| block.block_type == "tool_choice")
+        .collect();
+    assert_eq!(
+        choices.len(),
+        1,
+        "the first activity appended no second copy of the same set"
+    );
+    assert_eq!(
+        support::tool_choice_names(&blocks),
+        permuted,
+        "the record stands as it was written, in the order its writer chose"
+    );
+}
+
+/// A tool the CONVERSATION does not have is refused by the framework
+/// before its handler is reached (unit 52, 2026-09-01), and the sentence
+/// the model reads names this conversation's own tools — never the process
+/// registry, whose contents are exactly what the recorded choice exists to
+/// keep out of the answer.
+///
+/// The group's first contact is an OBSERVATION: it creates the
+/// conversation, records the registered set, and marks this process's
+/// once-per-conversation memory, all without summoning a turn. A narrower
+/// choice is appended on top, and the message that follows is served
+/// against it — the delta does not run a second time, so the call meets the
+/// record as it stands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tool_outside_the_conversations_choice_is_refused_before_its_handler() {
+    let (probe, executed) = ProbeTool::new("member_probe", Authority::Member);
+    let (kept, _kept_ran) = ProbeTool::new("kept_probe", Authority::Member);
+    let (third, _third_ran) = ProbeTool::new("third_probe", Authority::Member);
+    let mut tools = ToolSet::new();
+    tools.admit(probe);
+    tools.admit(kept);
+    tools.admit(third);
+    let script = ToolScript {
+        tool: "member_probe".into(),
+        input: r#"{"ask":"run"}"#.into(),
+        narration: None,
+    };
+    let (fixture, _replies) = tool_fixture(script, None, tools).await;
+
+    let room = support::authorized_group(&fixture.assistant, "room-outside-choice").await;
+    fixture
+        .assistant
+        .observe(Observation {
+            channel: room.clone(),
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::Title("A titled group".into()),
+        })
+        .await
+        .expect("the title observation is judged");
+    let conversation = fixture
+        .store
+        .list_conversations()
+        .await
+        .expect("the conversation list reads")
+        .first()
+        .expect("one channel, one conversation")
+        .id;
+    fixture
+        .store
+        .append_tool_choice(conversation, vec!["kept_probe".into()])
+        .await
+        .expect("the narrower choice appends");
+
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&room, ChannelKind::Group, "42", "probe it"),
+    )
+    .await;
+    let blocks = support::await_ledger(
+        &fixture.store,
+        conversation,
+        "the refused call and the closing answer",
+        |blocks| {
+            blocks.iter().any(|block| block.block_type == "tool_error")
+                && blocks
+                    .last()
+                    .is_some_and(|block| block.block_type == "text")
+        },
+    )
+    .await;
+    let refused = blocks
+        .iter()
+        .find(|block| block.block_type == "tool_error")
+        .expect("the refused call stands");
+    // The sentence is the framework's, so this suite asserts its SHAPE and
+    // leaves its wording to the repository that owns it: the name of the
+    // conversation's one tool is in it, the name of the tool the process
+    // registered but this conversation does not have is not, and the called
+    // name appears once — as the name that failed to resolve, never a
+    // second time among the tools the conversation is told it has.
+    let sentence = field(refused, "error");
+    assert!(
+        sentence.contains("kept_probe"),
+        "the sentence names the tool this conversation has: {sentence}"
+    );
+    assert!(
+        !sentence.contains("third_probe"),
+        "the sentence discloses no registered tool outside the choice: {sentence}"
+    );
+    assert_eq!(
+        sentence.matches("member_probe").count(),
+        1,
+        "the called name is only the name that failed, never one of the \
+         tools offered back: {sentence}"
+    );
+    assert!(
+        !executed.load(Ordering::SeqCst),
+        "the refusal came before the handler, so its body never ran"
+    );
 }
 
 // ─── The anchor gate: admission by the turn's provenance ─────────────────
 //
-// Authority enforcement is the admission wrapper's provenance gate
+// Authority enforcement is each tool's own answer to the framework's
+// admission hook, over the turn's provenance
 // (decision 0043): the call block's dispatch anchor names the turn's
 // summoning frontier, and the reading is the minimum over the anchor's
 // debt ORIGIN SET — the own-debt-takers in the contiguous answer-due
@@ -732,9 +954,9 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
 /// its result is recorded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_call_is_admitted_for_a_member_level_tool() {
-    let (probe, executed) = ProbeTool::new("member_probe");
+    let (probe, executed) = ProbeTool::new("member_probe", Authority::Member);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Member, probe);
+    tools.admit(probe);
     let script = ToolScript {
         tool: "member_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
@@ -753,7 +975,7 @@ async fn a_member_call_is_admitted_for_a_member_level_tool() {
         "the admitted turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -775,9 +997,9 @@ async fn a_member_call_is_admitted_for_a_member_level_tool() {
 /// runs. The anchor premise is asserted on the stored call block itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_admin_summoned_turn_admits_an_admin_tool() {
-    let (probe, executed) = ProbeTool::new("admin_probe");
+    let (probe, executed) = ProbeTool::new("admin_probe", Authority::Admin);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Admin, probe);
+    tools.admit(probe);
     let script = ToolScript {
         tool: "admin_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
@@ -802,7 +1024,7 @@ async fn an_admin_summoned_turn_admits_an_admin_tool() {
         "the admitted admin turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -827,11 +1049,16 @@ async fn an_admin_summoned_turn_admits_an_admin_tool() {
 /// admin-level tool is declined by the anchor gate with the reading
 /// recorded in the error text, the body provably never runs, and the turn
 /// still closes with the model's answer.
+///
+/// The decline arrives through the framework's admission hook (unit 52,
+/// 2026-09-01) and is recorded a REFUSAL: nothing the model does inside
+/// this turn raises the reading, so a run of them ends the turn. The
+/// sentence is asserted whole, because it is what the model reads back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_summoned_turn_declines_an_admin_tool() {
-    let (probe, executed) = ProbeTool::new("admin_probe");
+    let (probe, executed) = ProbeTool::new("admin_probe", Authority::Admin);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Admin, probe);
+    tools.admit(probe);
     let script = ToolScript {
         tool: "admin_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
@@ -855,7 +1082,7 @@ async fn a_member_summoned_turn_declines_an_admin_tool() {
         "the declined turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_error",
@@ -864,17 +1091,18 @@ async fn a_member_summoned_turn_declines_an_admin_tool() {
     )
     .await;
     let decline = field(&blocks[4], "error");
-    assert!(
-        decline.contains("needs admin authority"),
-        "the decline names the requirement: {decline}"
+    assert_eq!(
+        decline,
+        "declined: the tool 'admin_probe' needs admin authority and this turn's \
+         provenance reads member — the minimum over everyone who summoned it. \
+         Do not call this tool again this turn; answer from what you already have.",
+        "the decline names the requirement, records the reading per decision 0043, \
+         and teaches the model not to retry"
     );
-    assert!(
-        decline.contains("reads member"),
-        "the decline records the reading, per decision 0043: {decline}"
-    );
-    assert!(
-        decline.contains("Do not call this tool again"),
-        "the decline teaches the model not to retry: {decline}"
+    assert_eq!(
+        blocks[4].fields["refusal"],
+        json!(true),
+        "the consumer's decline is recorded a refusal, so a run of them ends the turn"
     );
     assert!(
         !executed.load(Ordering::SeqCst),
@@ -894,9 +1122,9 @@ async fn a_member_summoned_turn_declines_an_admin_tool() {
 /// admin tool stays declined. Absorption cannot escalate a turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_admin_absorbed_mid_narration_cannot_escalate_a_member_summons() {
-    let (probe, executed) = ProbeTool::new("admin_probe");
+    let (probe, executed) = ProbeTool::new("admin_probe", Authority::Admin);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Admin, probe);
+    tools.admit(probe);
     let hold = support::TurnHold::new();
     let script = ToolScript {
         tool: "admin_probe".into(),
@@ -937,7 +1165,7 @@ async fn an_admin_absorbed_mid_narration_cannot_escalate_a_member_summons() {
         "the declined narrated turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "chat_message",
             "text",
@@ -977,9 +1205,9 @@ async fn an_admin_absorbed_mid_narration_cannot_escalate_a_member_summons() {
 /// escalation the shape used to leak.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_addressed_member_absorbed_between_rounds_lowers_an_admin_summons() {
-    let (probe, executed) = ProbeTool::new("admin_probe");
+    let (probe, executed) = ProbeTool::new("admin_probe", Authority::Admin);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Admin, probe);
+    tools.admit(probe);
     let hold = support::TurnHold::new();
     let rounds = vec![
         Round {
@@ -1028,7 +1256,7 @@ async fn an_addressed_member_absorbed_between_rounds_lowers_an_admin_summons() {
         "the declined windowed turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "text",
             "chat_message",
@@ -1068,9 +1296,9 @@ async fn an_addressed_member_absorbed_between_rounds_lowers_an_admin_summons() {
 /// member would fold in and this turn would read member instead.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_resting_member_before_the_summons_lies_outside_the_interval() {
-    let (probe, executed) = ProbeTool::new("admin_probe");
+    let (probe, executed) = ProbeTool::new("admin_probe", Authority::Admin);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Admin, probe);
+    tools.admit(probe);
     let script = ToolScript {
         tool: "admin_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
@@ -1110,7 +1338,7 @@ async fn a_resting_member_before_the_summons_lies_outside_the_interval() {
         "the admitted turn behind a resting member",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "chat_message",
             "tool_call",
@@ -1144,9 +1372,9 @@ async fn a_resting_member_before_the_summons_lies_outside_the_interval() {
 /// for context in the span as before the summons.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unaddressed_bystanders_absorbed_mid_turn_contribute_nothing() {
-    let (probe, executed) = ProbeTool::new("admin_probe");
+    let (probe, executed) = ProbeTool::new("admin_probe", Authority::Admin);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Admin, probe);
+    tools.admit(probe);
     let hold = support::TurnHold::new();
     let script = ToolScript {
         tool: "admin_probe".into(),
@@ -1189,7 +1417,7 @@ async fn unaddressed_bystanders_absorbed_mid_turn_contribute_nothing() {
         "the admitted turn behind the bystanders",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "chat_message",
             "chat_message",
@@ -1223,9 +1451,9 @@ async fn unaddressed_bystanders_absorbed_mid_turn_contribute_nothing() {
 /// provenance.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
-    let (probe, executed) = ProbeTool::new("admin_probe");
+    let (probe, executed) = ProbeTool::new("admin_probe", Authority::Admin);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Admin, probe);
+    tools.admit(probe);
     let hold = support::TurnHold::new();
     let script = ToolScript {
         tool: "admin_probe".into(),
@@ -1277,7 +1505,7 @@ async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
         "the admitted turn behind the refused line",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "chat_message",
             "text",
@@ -1314,11 +1542,11 @@ async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
 /// co-summoner but can never re-anchor the turn it joins.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_admin_absorbed_after_a_rounds_result_cannot_reanchor_the_turn() {
-    let (member_probe, member_ran) = ProbeTool::new("member_probe");
-    let (admin_probe, admin_ran) = ProbeTool::new("admin_probe");
+    let (member_probe, member_ran) = ProbeTool::new("member_probe", Authority::Member);
+    let (admin_probe, admin_ran) = ProbeTool::new("admin_probe", Authority::Admin);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Member, member_probe);
-    tools.admit(Authority::Admin, admin_probe);
+    tools.admit(member_probe);
+    tools.admit(admin_probe);
     let hold = support::TurnHold::new();
     let rounds = vec![
         Round {
@@ -1375,7 +1603,7 @@ async fn an_admin_absorbed_after_a_rounds_result_cannot_reanchor_the_turn() {
         "the declined continuation",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -1444,9 +1672,9 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
     let db = support::TempDb::new("veto-ledger");
     let key = channel("room-propagating-frontier");
     let admin_tools = || {
-        let (probe, executed) = ProbeTool::new("admin_probe");
+        let (probe, executed) = ProbeTool::new("admin_probe", Authority::Admin);
         let mut tools = ToolSet::new();
-        tools.admit(Authority::Admin, probe);
+        tools.admit(probe);
         (tools, executed)
     };
 
@@ -1520,7 +1748,7 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
             "the admitted propagated turn",
             &[
                 "system_prompt",
-                "tool_palette",
+                "tool_choice",
                 "chat_message",
                 "chat_message",
                 "tool_call",
@@ -1595,9 +1823,9 @@ async fn recv_closing(
 /// turn's provenance through the call's dispatch anchor (decision 0043).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_absorbed_message_opens_a_fresh_debt_at_its_own_authority() {
-    let (probe, _ran) = ProbeTool::new("member_probe");
+    let (probe, _ran) = ProbeTool::new("member_probe", Authority::Member);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Member, probe);
+    tools.admit(probe);
     let hold = support::TurnHold::new();
     let script = ToolScript {
         tool: "member_probe".into(),
@@ -1656,9 +1884,9 @@ async fn an_absorbed_message_opens_a_fresh_debt_at_its_own_authority() {
 /// as a third counted request replaying an already-played round.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_redispatch_window_dispatches_no_echo_turn() {
-    let (probe, _ran) = ProbeTool::new("member_probe");
+    let (probe, _ran) = ProbeTool::new("member_probe", Authority::Member);
     let mut tools = ToolSet::new();
-    tools.admit(Authority::Member, probe);
+    tools.admit(probe);
     let hold = support::TurnHold::new();
     let rounds = vec![
         Round {
@@ -1747,7 +1975,7 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
         "the whole tool turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -1826,10 +2054,7 @@ const WIKI_PAGE: &str = "# Home\n\nWelcome to the halogenOS wiki.\n";
 /// One wiki tool set over a raw host, an index host and a timeout.
 fn wiki_tools(base: String, index_base: String, timeout: Duration) -> ToolSet {
     let mut tools = ToolSet::new();
-    tools.admit(
-        wiki::REQUIRED_AUTHORITY,
-        WikiLookup::new(base, index_base, timeout),
-    );
+    tools.admit(WikiLookup::new(base, index_base, timeout));
     tools
 }
 
@@ -1867,7 +2092,7 @@ async fn the_wiki_lookup_reads_a_page_end_to_end() {
         "the wiki turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
@@ -1932,7 +2157,7 @@ async fn a_missing_wiki_page_and_a_timeout_become_tool_errors() {
             "the failed wiki turn",
             &[
                 "system_prompt",
-                "tool_palette",
+                "tool_choice",
                 "chat_message",
                 "tool_call",
                 "tool_error",
@@ -2130,7 +2355,7 @@ async fn the_wiki_enumeration_lists_every_page_end_to_end() {
         "the enumeration turn",
         &[
             "system_prompt",
-            "tool_palette",
+            "tool_choice",
             "chat_message",
             "tool_call",
             "tool_result",
