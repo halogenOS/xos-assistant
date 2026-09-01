@@ -122,18 +122,31 @@ subscription: the scheduler reacts through the table-blind `ctx.store.changes.wa
   recorded: a second consumer now needs the same fact, and matching a consumer's prose from
   the framework is the second decision path this spec rejects below. A toolless turn's
   decline loop then ends at the existing five-refusal forced end.
-- **F4 — integrity failures crash the process.** Classification happens at ONE chokepoint,
-  inside the store actor (`src/store/mod.rs:385`) where the rusqlite error is still typed
-  and its extended code still readable, never at a call site. The rule is positive and reads
-  off that code: a constraint violation (`SQLITE_CONSTRAINT*`, the incident's foreign-key
-  failure among them), a corruption or misuse code, and a `QueryReturnedNoRows` from a query
-  the design guarantees answers, are impossible state and abort the process. A busy timeout,
-  a disk-full and an I/O error are operational, stay errors, and abort nothing. Because the
-  classifier sits under every caller, no caller can swallow what it raises. The operator's
-  ruling, verbatim: "a database error should hard crash the application, not leave it running
-  in a corrupted state." The crash is an abort the supervisor restarts, never an unwinding
-  panic a runtime swallows — including on the store's own thread, whose death must abort
-  rather than close its channel and leave callers reading an ordinary-looking error.
+- **F4 — a database failure is classified where it is still typed, and propagated to the
+  code competent to judge it.** Classification happens at ONE chokepoint, inside the store
+  actor (`src/store/mod.rs`) where the rusqlite error is still typed and its extended code
+  still readable, never at a call site. The classifier reads the primary code
+  (`extended_code & 0xff`) and answers a class: `Rejected` for a constraint violation
+  (the incident's foreign-key failure among them), `Contended` for busy and locked,
+  `Unusable` for corruption, not-a-database and misuse, plain `Sqlite` for everything else,
+  and `ActorStopped` when the store's own thread is gone. Nothing ends the process inside a
+  query. The class travels to the caller, and the codepath that knows the blast radius
+  decides what it means: the app states `Unusable` and `ActorStopped` as
+  `FailureKind::Fatal`, and each intake ends its run so the supervisor starts a replacement
+  process with the message still unacknowledged. Because the classifier sits under every
+  caller, no caller can swallow what it raises. The user's words, verbatim: "There is a
+  difference between catching an expectable query error and a serious db failure. Something
+  failing on a foreign key constraint is an error while a race with another writer is
+  expected and can be retried if it makes sense. […] You aren't meant to panic inside a db
+  query but instead wrap and propagate the error properly so a codepath competent to handle
+  it can decide what to do about it." This supersedes F4's first position — that the
+  chokepoint itself aborts on the impossible-state classes, from "a database error should
+  hard crash the application, not leave it running in a corrupted state" — because an abort
+  under every caller takes the decision away from the only code that can size the damage,
+  and it makes the whole path untestable in-process. The hard crash survives as the app's
+  answer to the fatal class, one level up. A panic on the store's own thread is caught
+  there, logged, and left unresumed: the thread finishes, its channel closes, and every
+  later call answers `ActorStopped` — which is the fatal class, so the same end follows.
 - **F5 — the framework answers whether a turn is durably over.** A predicate read off the
   ledger: no streaming tail remains AND no tool outcome is awaiting a continuation
   (`ToolCall::unanswered_outcome_anchor`). It is the framework's question — the app cannot
@@ -162,9 +175,11 @@ subscription: the scheduler reacts through the table-blind `ctx.store.changes.wa
   real conversation activity and nothing else. The unbounded ruling of decision 0165 stands
   untouched.
 - **A4 — the record tells the truth.** The self-limiting claim at `session.rs:1303-1310` is
-  rewritten to name the failure case; a new decision records the crash policy and what it
-  beat; a second records the typed refusal superseding the prefix key; decision 0165 is NOT
-  amended (no bound is added).
+  rewritten to name the failure case; a new decision records the store-failure policy —
+  classify at the chokepoint, propagate the class, and let the intake end the run on the
+  fatal one — naming the abort-inside-the-store-actor shape it beat; a second records the
+  typed refusal superseding the prefix key; decision 0165 is NOT amended (no bound is
+  added).
 
 ## Acceptance criteria
 
@@ -189,21 +204,24 @@ subscription: the scheduler reacts through the table-blind `ctx.store.changes.wa
    toolless turn ends at the five-refusal forced end.
 6. A failed unattended compaction adds no retry machinery: no backoff, no cooldown, no
    stand-down; the next attempt rides the next genuine block change only.
-7. Integrity classification lives at the single store-actor chokepoint and reads off the
-   SQLite extended code: constraint, corruption, misuse and guaranteed-present-row-missing
-   abort; busy, disk-full and I/O do not. No call site classifies, and a panic on the store
-   thread aborts rather than closing its channel.
+7. Store-error classification lives at the single store-actor chokepoint and reads off the
+   SQLite primary code: constraint answers `Rejected`, busy and locked answer `Contended`,
+   corruption, not-a-database and misuse answer `Unusable`, everything else stays plain
+   `Sqlite`, and a store thread that is gone answers `ActorStopped`. No call site
+   classifies, and nothing ends the process inside a query. The app states `Unusable` and
+   `ActorStopped` as `FailureKind::Fatal` and every other class as it did before; on the
+   fatal class each intake ends its run with the message unacknowledged.
 8. Every behaviour above is covered by a test: early capture on a `ToolUse` turn, the
    lossy-bus capture path, a successful toolless capture concluding before the bound, the
    `SUMMARY_BOUND` interrupt-and-settle path, a settle failure leaving the conversation
    undeleted, the retire race, actor end-of-life on deletion, junction attribution including
    the absent-row and multi-conversation cases, the decline loop ending at the forced end,
-   and integrity classification (both the abort classes and the operational ones that must
-   NOT abort). The operator's ruling, verbatim: "Thats what tests are for you need to test
-   every scenario." Framework-side, the classifier is unit-tested and the abort itself is
-   exercised through the app's subprocess harness
-   (`crates/assistant/tests/process/support.rs`), because an `abort()` inside a library test
-   kills the runner.
+   and store-error classification (every class, and the operational ones proven NOT to be
+   fatal). The operator's ruling, verbatim: "Thats what tests are for you need to test
+   every scenario." Framework-side, the classifier is unit-tested against each primary code.
+   App-side, `failure_kind` is tested over all five store classes, and both intakes —
+   long-poll and webhook — are tested end to end against a killed store writer: the run ends
+   stating the core cannot serve, and the offset stays on the update the core could not take.
 9. Review items, not tests: no retry machinery exists anywhere in the diff (AC6); the stale
    self-limiting prose is gone; the crash-policy and typed-refusal decisions exist; 0165 is
    untouched.
@@ -231,19 +249,29 @@ subscription: the scheduler reacts through the table-blind `ctx.store.changes.wa
   in the framework; re-deriving it from prose is a second decision path. (Moot with the
   stand-down dropped, recorded so nobody re-proposes it.)
 - **Adding `.optional()` to `anchor_of`** — the first draft's requirement, withdrawn: the
-  absent row there is impossible state, which F4 aborts on. See the correction above.
+  absent row there is impossible state, and turning it into a legal `None` would hand every
+  caller a silence where an error belongs. See the correction above.
 - **Crashing on every `StoreError::Sqlite` indiscriminately** — that variant carries busy
-  timeouts and disk errors as well as constraint violations, so a wholesale sweep would abort
-  the bot on ordinary write contention. The extended code is the discriminator.
+  timeouts and disk errors as well as constraint violations, so a wholesale sweep would end
+  the bot on ordinary write contention. The primary code is the discriminator.
+- **Ending the process at the store-actor chokepoint itself** — F4's first position,
+  superseded 2026-09-01 by the user's words quoted in F4. Classifying and aborting in the
+  same place reads as tidy and is not: the store actor knows a constraint failed, and
+  nothing about whether that constraint belongs to one refused message or to the whole
+  process. Deciding there takes the judgement away from the code that has the context, and
+  it puts an `abort()` under every test, which is why the first position needed a subprocess
+  harness to be exercised at all. Classification stays at the chokepoint; the decision moves
+  out to the caller that can size the damage.
 - **Auditing every log site for swallowed integrity failures** — the first draft's AC7 asked
   for it across 210 sites in two repos with no decision procedure. The chokepoint makes every
   caller compliant by construction instead.
 
 ## Known consequences, out of scope
 
-- An abort between `fork_temporary` and `retire` leaves the temporary conversation latched
-  and unreapable — its blocks are joined, so `gc_orphan_blocks` cannot reach it. Inert, one
-  per mid-compaction abort. A reaper for latched temporaries is its own unit.
+- A process end between `fork_temporary` and `retire` leaves the temporary conversation
+  latched and unreapable — its blocks are joined, so `gc_orphan_blocks` cannot reach it.
+  Inert, one per mid-compaction process end. A reaper for latched temporaries is its own
+  unit.
 
 ## Rulings appendix (operator, verbatim)
 
@@ -261,5 +289,13 @@ subscription: the scheduler reacts through the table-blind `ctx.store.changes.wa
   / "I dont want the backoff. Failures are failures and failures just fail the compaction."
   / "Retry's own db writes get wrongly counted → sounds like an architecture problem again.
   Fix properly instead of bolton."
+- 2026-09-01, msg 1604, superseding msg 1555's placement of the crash: "There is a
+  difference between catching an expectable query error and a serious db failure. Something
+  failing on a foreign key constraint is an error while a race with another writer is
+  expected and can be retried if it makes sense." / "Instead of throwing around questions
+  like these and circling around your yapping, how about you design the architecture
+  properly and implement error handling the right way? You aren't meant to panic inside a db
+  query but instead wrap and propagate the error properly so a codepath competent to handle
+  it can decide what to do about it."
 - Standing from decision 0165 (2026-08-30), untouched by this unit: "The unattended path
   carries no repetition bound, by the operator's ruling".
