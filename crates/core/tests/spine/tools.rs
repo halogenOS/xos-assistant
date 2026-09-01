@@ -718,6 +718,123 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
     );
 }
 
+/// A recorded choice naming the registered set in ANOTHER ORDER is the same
+/// choice: the reconciliation reads a record as a set, so it appends
+/// nothing.
+///
+/// This assembly writes its own records sorted, but it is not the only
+/// writer any more — the framework appends choices of its own at the
+/// compaction forks, and a record this assembly did not write owes it no
+/// order. Read as a sequence, a permutation would be a delta, and every
+/// process that ever served the conversation would append one more copy of
+/// what the ledger already says.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_recorded_choice_in_another_order_is_not_a_delta() {
+    let fixture = support::start_assistant(None).await;
+
+    // The registered set, read off a conversation this assembly created
+    // itself instead of spelled out here a second time.
+    let titled = support::authorized_group(&fixture.assistant, "room-order-source").await;
+    fixture
+        .assistant
+        .observe(Observation {
+            channel: titled,
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::Title("A titled group".into()),
+        })
+        .await
+        .expect("the title observation is judged");
+    let created = fixture
+        .store
+        .list_conversations()
+        .await
+        .expect("the conversation list reads")
+        .first()
+        .expect("the titled group has a conversation")
+        .id;
+    let registered = support::tool_choice_names(
+        &fixture
+            .store
+            .list_blocks(created)
+            .await
+            .expect("the ledger reads"),
+    );
+    let permuted: Vec<String> = registered.iter().rev().cloned().collect();
+    assert!(
+        registered.len() > 1 && permuted != registered,
+        "the permutation has to differ, or this asserts nothing: {registered:?}"
+    );
+
+    // A second channel, mapped store-directly so its recorded choice is the
+    // permutation and this process has reconciled nothing for it yet.
+    let conversation = fixture
+        .store
+        .create_conversation(
+            "scripted-1".into(),
+            "script-model".into(),
+            "Script Model".into(),
+            support::VENDOR.into(),
+        )
+        .await
+        .expect("a conversation row");
+    fixture
+        .store
+        .insert_system_prompt(conversation, support::SYSTEM_PROMPT.into())
+        .await
+        .expect("the prompt records");
+    agent_ledger::store::domain_run(
+        &fixture.store.tx(),
+        assistant_core::schema::DOMAIN,
+        move |conn| {
+            conn.execute(
+                "INSERT INTO channels (adapter, channel, kind, conversation_id) \
+                 VALUES (?1, ?2, 'group', ?3)",
+                (support::ADAPTER, "room-order-permuted", conversation),
+            )?;
+            Ok(())
+        },
+    )
+    .await
+    .expect("the mapping writes");
+    fixture
+        .store
+        .append_tool_choice(conversation, permuted.clone())
+        .await
+        .expect("the permuted choice records");
+
+    let permuted_room = channel("room-order-permuted");
+    support::authorize(&fixture.assistant, &permuted_room).await;
+    fixture
+        .assistant
+        .observe(Observation {
+            channel: permuted_room,
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::Title("A second titled group".into()),
+        })
+        .await
+        .expect("the title observation is judged");
+
+    let blocks = fixture
+        .store
+        .list_blocks(conversation)
+        .await
+        .expect("the ledger reads");
+    let choices: Vec<&Block> = blocks
+        .iter()
+        .filter(|block| block.block_type == "tool_choice")
+        .collect();
+    assert_eq!(
+        choices.len(),
+        1,
+        "the first activity appended no second copy of the same set"
+    );
+    assert_eq!(
+        support::tool_choice_names(&blocks),
+        permuted,
+        "the record stands as it was written, in the order its writer chose"
+    );
+}
+
 /// A tool the CONVERSATION does not have is refused by the framework
 /// before its handler is reached (unit 52, 2026-09-01), and the sentence
 /// the model reads names this conversation's own tools — never the process
@@ -734,9 +851,11 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
 async fn a_tool_outside_the_conversations_choice_is_refused_before_its_handler() {
     let (probe, executed) = ProbeTool::new("member_probe", Authority::Member);
     let (kept, _kept_ran) = ProbeTool::new("kept_probe", Authority::Member);
+    let (third, _third_ran) = ProbeTool::new("third_probe", Authority::Member);
     let mut tools = ToolSet::new();
     tools.admit(probe);
     tools.admit(kept);
+    tools.admit(third);
     let script = ToolScript {
         tool: "member_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
@@ -789,10 +908,26 @@ async fn a_tool_outside_the_conversations_choice_is_refused_before_its_handler()
         .iter()
         .find(|block| block.block_type == "tool_error")
         .expect("the refused call stands");
+    // The sentence is the framework's, so this suite asserts its SHAPE and
+    // leaves its wording to the repository that owns it: the name of the
+    // conversation's one tool is in it, the name of the tool the process
+    // registered but this conversation does not have is not, and the called
+    // name appears once — as the name that failed to resolve, never a
+    // second time among the tools the conversation is told it has.
+    let sentence = field(refused, "error");
+    assert!(
+        sentence.contains("kept_probe"),
+        "the sentence names the tool this conversation has: {sentence}"
+    );
+    assert!(
+        !sentence.contains("third_probe"),
+        "the sentence discloses no registered tool outside the choice: {sentence}"
+    );
     assert_eq!(
-        field(refused, "error"),
-        "unknown tool: member_probe. This conversation's tools are: kept_probe",
-        "the sentence names this conversation's tools and nothing else the process holds"
+        sentence.matches("member_probe").count(),
+        1,
+        "the called name is only the name that failed, never one of the \
+         tools offered back: {sentence}"
     );
     assert!(
         !executed.load(Ordering::SeqCst),

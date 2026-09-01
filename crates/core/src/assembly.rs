@@ -86,6 +86,14 @@ pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
     // point its history had reached — including behind an ask nobody has
     // answered yet. That ask still owes its turn.
     TOOL_CHOICE_KIND,
+    // The kind unit 52 withdrew, spelled as the literal string a previous
+    // build stored, because no kind of this assistant claims it any more.
+    // The withdrawal drops the content table and the registry row; the
+    // header rows in a database that build wrote are ledger history, which
+    // nothing deletes, and history stays transparent to this walk. Without
+    // the entry such a row parses as an unknown kind, and an unanswered ask
+    // directly behind one would stop owing its turn.
+    "tool_palette",
     report::REPORT_KIND,
     // The join notice (unit 36, 2026-08-29): the observation path appends
     // it whenever someone walks in, which is exactly the arbitrary moment
@@ -540,9 +548,12 @@ fn admit_unconditional_tools(tools: &mut ToolSet, started_at: Instant) {
 /// and a test assembly with no lookups is not misconfigured.
 fn with_release_window(
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
-    tools: &[String],
+    tool_names: &[String],
 ) -> RuntimeContext<AssistantKind, CoreEvent> {
-    if tools.iter().any(|tool| tool == crate::tools::release::NAME) {
+    if tool_names
+        .iter()
+        .any(|name| name == crate::tools::release::NAME)
+    {
         ctx.with_tool_window(
             crate::tools::release::NAME,
             crate::tools::release::WINDOW_CALLS,
@@ -551,6 +562,28 @@ fn with_release_window(
     } else {
         ctx
     }
+}
+
+/// Whether a recorded tool choice already names the registered set, read
+/// as a SET and not as a sequence.
+///
+/// This assembly writes its own records sorted, but it is no longer the
+/// only writer: the framework appends choices of its own at the compaction
+/// forks, and a record this assembly did not write owes it no order. An
+/// ordered comparison would read a permutation as a delta and append a
+/// duplicate of what the ledger already says, on every process that ever
+/// serves that conversation. Duplicate names are compared too — sorted
+/// copies, not two membership tests — so a record naming one tool twice
+/// stays a delta against a registered set that names it once.
+fn names_the_same_set(recorded: &[String], registered: &[String]) -> bool {
+    if recorded.len() != registered.len() {
+        return false;
+    }
+    let mut recorded: Vec<&str> = recorded.iter().map(String::as_str).collect();
+    let mut registered: Vec<&str> = registered.iter().map(String::as_str).collect();
+    recorded.sort_unstable();
+    registered.sort_unstable();
+    recorded == registered
 }
 
 /// The two wiring checks the assembly refuses to start without, and the
@@ -2534,9 +2567,12 @@ impl Assistant {
     /// conversation created before a tool existed gains it on its next
     /// activity; a tool the handle no longer configures is removed the same
     /// way, because the registered set is the comparison's one side. A
-    /// conversation carrying no choice at all reads as a delta: nothing
-    /// filters what it is offered until a record says so, and recording one
-    /// is the correction. The memory is marked only after the append
+    /// conversation carrying no choice at all reads as a delta, and
+    /// recording one is the correction: by the scoping decision of
+    /// 2026-09-01 the record decides EXPOSURE and the framework's admission
+    /// hook decides ENFORCEMENT, so a ledger holding no record filters
+    /// nothing and every call still faces the authority check that never
+    /// depended on the record. The memory is marked only after the append
     /// stands — a transiently failed append leaves the conversation
     /// unreconciled, and the redelivered activity retries.
     async fn reconcile_tool_choice(&self, conversation_id: i64) -> Result<(), CoreError> {
@@ -2550,11 +2586,11 @@ impl Assistant {
         }
         let recorded = self.ctx.store().newest_tool_choice(conversation_id).await?;
         let already_current =
-            recorded.is_some_and(|names| names.as_slice() == self.sessions.tools());
+            recorded.is_some_and(|names| names_the_same_set(&names, self.sessions.tool_names()));
         if !already_current {
             self.ctx
                 .store()
-                .append_tool_choice(conversation_id, self.sessions.tools().to_vec())
+                .append_tool_choice(conversation_id, self.sessions.tool_names().to_vec())
                 .await?;
             tracing::info!(
                 conversation_id,

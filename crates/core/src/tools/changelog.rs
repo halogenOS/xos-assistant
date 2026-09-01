@@ -49,7 +49,7 @@
 //! build that passes a new value.
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::{Admission, Block, CoreEvent, ToolContext, ToolHandler, ToolOutcome};
+use agent_ledger::{CoreEvent, ToolContext, ToolHandler, ToolOutcome};
 use serde_json::json;
 
 use crate::message::Authority;
@@ -119,16 +119,7 @@ impl ToolHandler<CoreEvent> for HarnessChangelog {
         }
     }
 
-    /// The authority a call of this tool requires (decision 0043), answered
-    /// through the framework's admission hook over the ledger snapshot the
-    /// runner's admission pass already loaded.
-    fn admit<'a>(
-        &'a self,
-        ctx: &'a ToolContext<'a, CoreEvent>,
-        ledger: &'a [Block],
-    ) -> BoxFuture<'a, Admission> {
-        crate::tools::admission::at_required_authority(NAME, REQUIRED_AUTHORITY, ctx, ledger)
-    }
+    crate::tools::admission::admits_at_required_authority!(NAME, REQUIRED_AUTHORITY);
 
     fn execute<'a>(
         &'a self,

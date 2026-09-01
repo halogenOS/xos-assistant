@@ -1923,6 +1923,18 @@ pub fn only(blocks: &[Block], kind: &str) -> Block {
     block.clone()
 }
 
+/// The tool names ONE recorded tool-choice block carries — the whole read
+/// of the block's stored shape, so every suite that reads a choice reads
+/// it the same way.
+pub fn choice_names(block: &Block) -> Vec<String> {
+    block.fields["names"]
+        .as_array()
+        .expect("the recorded names are a list")
+        .iter()
+        .map(|name| name.as_str().expect("a name is a string").to_owned())
+        .collect()
+}
+
 /// The tool names of the conversation's newest recorded tool choice.
 pub fn tool_choice_names(blocks: &[Block]) -> Vec<String> {
     let block = blocks
@@ -1930,12 +1942,7 @@ pub fn tool_choice_names(blocks: &[Block]) -> Vec<String> {
         .rev()
         .find(|block| block.block_type == "tool_choice")
         .expect("the conversation records a tool choice");
-    block.fields["names"]
-        .as_array()
-        .expect("the recorded names are a list")
-        .iter()
-        .map(|name| name.as_str().expect("a name is a string").to_owned())
-        .collect()
+    choice_names(block)
 }
 
 /// Await the next item on the outbound edge, or name the stall.

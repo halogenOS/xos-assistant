@@ -1350,7 +1350,10 @@ async fn assert_lineage_retired(
 ///
 /// The thread's own four opening blocks — the prompt, the ancestor
 /// reference, the summary and the carried tool choice — are what the slice
-/// below steps past; everything behind them is inherited.
+/// below steps past. Everything behind them is inherited, bar the PREVIOUS
+/// thread's own recorded choice, which the copy brings across at the head
+/// of the run; the partition below names it and places it instead of waving
+/// every choice through.
 fn assert_span_partitions(clone_ids: &[i64], scrubbed: &[Block], erased_ids: &[i64]) {
     let inherited: std::collections::HashSet<i64> =
         scrubbed[4..].iter().map(|block| block.id).collect();
@@ -1370,18 +1373,48 @@ fn assert_span_partitions(clone_ids: &[i64], scrubbed: &[Block], erased_ids: &[i
          summarized as well as carried verbatim ({clone_ids:?} against \
          {inherited:?})"
     );
-    // The tool choice a thread opens with is a record of what the session
-    // has, not a word anybody said, and a thread compacted twice inherits
-    // the previous thread's record along with the history behind it. It
-    // belongs to no ancestor and is summarized by nobody, so it is not part
-    // of the history this partition is about.
+    // Everything past the new thread's own opening blocks is inherited from
+    // the ancestor clone, with one exemption, stated as narrowly as it can
+    // be asserted: the PREVIOUS thread's recorded tool choice, which the
+    // copy carries across at the head of the inherited run. That block is a
+    // record of what the session has, not a word anybody said; it was the
+    // previous thread's own opening, so no ancestor ever held it and nobody
+    // summarized it. Being a tool choice is not what exempts it — its
+    // POSITION is, ahead of every inherited block. A non-inherited block
+    // anywhere inside the run is a hole in the history and fails here,
+    // tool choice or not.
+    let mut first_inherited = None;
+    let mut carried_over = Vec::new();
+    for (position, block) in scrubbed[4..].iter().enumerate() {
+        if clone_ids.contains(&block.id) {
+            first_inherited.get_or_insert(position);
+        } else {
+            carried_over.push((position, block));
+        }
+    }
+    let first_inherited =
+        first_inherited.expect("the serving thread inherited part of the scrubbed ancestor");
+    let shape: Vec<(usize, &str)> = carried_over
+        .iter()
+        .map(|(position, block)| (*position, block.block_type.as_str()))
+        .collect();
     assert!(
-        scrubbed[4..]
+        carried_over
             .iter()
-            .filter(|block| block.block_type != ToolChoice::KINDS[0])
-            .all(|block| clone_ids.contains(&block.id)),
+            .all(|(_, block)| block.block_type == ToolChoice::KINDS[0]),
         "nothing the thread carries verbatim is missing from the ancestor \
-         clone: the two together are the whole scrubbed history"
+         clone, bar the previous thread's recorded choice: the two together \
+         are the whole scrubbed history ({shape:?})"
+    );
+    assert!(
+        carried_over
+            .iter()
+            .all(|(position, _)| *position < first_inherited),
+        "the exempted choices sit AHEAD of the whole inherited run, at the \
+         head of the copy, which is what makes each of them a previous \
+         thread's opening record instead of a gap in the history this one \
+         inherited ({shape:?} against the first inherited block at \
+         {first_inherited})"
     );
     assert!(
         !scrubbed.iter().any(|block| erased_ids.contains(&block.id)),

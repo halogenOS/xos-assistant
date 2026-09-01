@@ -42,7 +42,7 @@
 use std::sync::Arc;
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::{Admission, Block, CoreEvent, FromBlock, ToolContext, ToolHandler, ToolOutcome};
+use agent_ledger::{Block, CoreEvent, FromBlock, ToolContext, ToolHandler, ToolOutcome};
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
@@ -350,16 +350,7 @@ impl ToolHandler<CoreEvent> for StandingLookup {
         }
     }
 
-    /// The authority a call of this tool requires (decision 0043), answered
-    /// through the framework's admission hook over the ledger snapshot the
-    /// runner's admission pass already loaded.
-    fn admit<'a>(
-        &'a self,
-        ctx: &'a ToolContext<'a, CoreEvent>,
-        ledger: &'a [Block],
-    ) -> BoxFuture<'a, Admission> {
-        crate::tools::admission::at_required_authority(NAME, REQUIRED_AUTHORITY, ctx, ledger)
-    }
+    crate::tools::admission::admits_at_required_authority!(NAME, REQUIRED_AUTHORITY);
 
     fn execute<'a>(
         &'a self,

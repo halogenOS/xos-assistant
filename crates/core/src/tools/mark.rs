@@ -90,8 +90,8 @@ use std::sync::Arc;
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
 use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{
-    Admission, Agency, Block, Column, ColumnType, ContentDescriptor, CoreEvent, FromBlock,
-    LeafKind, Projection, StoreError, ToolContext, ToolHandler, ToolOutcome,
+    Agency, Block, Column, ColumnType, ContentDescriptor, CoreEvent, FromBlock, LeafKind,
+    Projection, StoreError, ToolContext, ToolHandler, ToolOutcome,
 };
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -551,16 +551,7 @@ impl ToolHandler<CoreEvent> for MarkTool {
         }
     }
 
-    /// The authority a call of this tool requires (decision 0043), answered
-    /// through the framework's admission hook over the ledger snapshot the
-    /// runner's admission pass already loaded.
-    fn admit<'a>(
-        &'a self,
-        ctx: &'a ToolContext<'a, CoreEvent>,
-        ledger: &'a [Block],
-    ) -> BoxFuture<'a, Admission> {
-        crate::tools::admission::at_required_authority(NAME, REQUIRED_AUTHORITY, ctx, ledger)
-    }
+    crate::tools::admission::admits_at_required_authority!(NAME, REQUIRED_AUTHORITY);
 
     fn execute<'a>(
         &'a self,

@@ -25,9 +25,9 @@ use serde_json::json;
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::support::{
-    self, CLOSING_ANSWER, MODERATION_HANDLE, ScriptHandle, ToolScript, carries, channel, field,
-    inbound, inbound_unaddressed, provider_stub, recv_reply, settle_shape, tool_scripted_provider,
-    with_origin, with_reply,
+    self, CLOSING_ANSWER, MODERATION_HANDLE, ScriptHandle, ToolScript, carries, channel,
+    choice_names, field, inbound, inbound_unaddressed, provider_stub, recv_reply, settle_shape,
+    tool_scripted_provider, with_origin, with_reply,
 };
 
 /// The outbound edge a fixture's replies arrive on.
@@ -1201,6 +1201,94 @@ async fn debt_propagation_reads_through_a_superseding_choice_at_the_stamp() {
     );
 }
 
+/// The stored type string of the kind unit 52 withdrew, as the previous
+/// build wrote it into the blocks table. Spelled here for the one test
+/// below, which recreates that build's row.
+const WITHDRAWN_KIND: &str = "tool_palette";
+
+/// The same question for the WITHDRAWN kind's header rows (unit 52,
+/// 2026-09-01): they read through too.
+///
+/// A database the previous build wrote keeps those rows forever. The
+/// withdrawal drops the content table and the registry row, never the
+/// recorded blocks, and the withdrawal test in the protection suite reads
+/// one back after the migration. This build knows no such kind, so without
+/// the read-through entry the row would parse as an unknown kind, and an
+/// unknown tail is a settled tail here: an unanswered ask directly behind
+/// one would stop owing its turn. The tail is reachable — the previous
+/// build appended that block ahead of a join redelivery, which then stored
+/// nothing behind it.
+///
+/// The entry costs the core's read-through set one literal string, and
+/// naming a string a previous build stored resurrects no mechanism. What it
+/// keeps is the walk's contract over history: a ledger is append-only, so
+/// what a retired kind wrote stays readable to everything that walks it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn debt_propagation_reads_through_a_withdrawn_kinds_header_row() {
+    let fixture = support::start_assistant_full(
+        Store::in_memory_with(store_config()).expect("an in-memory store opens"),
+        support::silent_provider(),
+        ScriptHandle::fresh(),
+        ToolSet::new(),
+        ProtectionConfig::default(),
+    )
+    .await;
+    let key = support::authorized_group(&fixture.assistant, "room-withdrawn-read-through").await;
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Group, "member-7", "the owed ask"),
+    )
+    .await;
+
+    // The previous build's row, header and junction only: its content
+    // table is gone, which is exactly the shape the migration leaves.
+    let conversation = receipt.conversation_id;
+    agent_ledger::store::domain_run(
+        &fixture.store.tx(),
+        assistant_core::schema::DOMAIN,
+        move |conn| {
+            conn.execute_batch(&format!(
+                "INSERT INTO blocks (block_type) VALUES ('{WITHDRAWN_KIND}');
+                 INSERT INTO conversation_blocks (conversation_id, block_id)
+                     VALUES ({conversation}, last_insert_rowid());"
+            ))?;
+            Ok(())
+        },
+    )
+    .await
+    .expect("the previous build's header row appends on top of the owed ask");
+
+    // Non-vacuity: that row really is the stored tail the stamp reads
+    // behind.
+    let tail = fixture
+        .store
+        .latest_block(conversation)
+        .await
+        .expect("the tail reads")
+        .expect("the ledger is non-empty");
+    assert_eq!(tail.block_type, WITHDRAWN_KIND);
+
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&key, ChannelKind::Group, "B", "an aside behind the old row"),
+    )
+    .await;
+    let blocks = fixture
+        .store
+        .list_blocks(conversation)
+        .await
+        .expect("the ledger reads");
+    let aside = blocks
+        .iter()
+        .find(|block| block.fields.get("text") == Some(&json!("an aside behind the old row")))
+        .expect("the aside is recorded");
+    assert_eq!(
+        aside.fields["answer_due"],
+        json!(true),
+        "the debt propagates through a header row of the withdrawn kind"
+    );
+}
+
 // ─── Erasure's reach and the fence ───────────────────────────────────────
 
 /// The reported person's erasure nulls the block's target while the line
@@ -1782,16 +1870,6 @@ async fn a_filing_racing_an_erasure_waits_on_the_fence() {
 }
 
 // ─── AC7: the gating, the tool choice, and the supersession ─────────────
-
-/// The recorded tool names of one tool-choice block.
-fn choice_names(block: &Block) -> Vec<String> {
-    block.fields["names"]
-        .as_array()
-        .expect("the recorded names are a list")
-        .iter()
-        .map(|name| name.as_str().expect("a name is a string").to_owned())
-        .collect()
-}
 
 /// A fresh observation handle for the providers this module builds itself.
 fn fresh_handle() -> ScriptHandle {

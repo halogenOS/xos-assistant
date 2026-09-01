@@ -13,17 +13,28 @@
 //! the loaded vector by the `provenance` module's `turn_reading` — must reach
 //! the authority the tool requires. The reading is total and answers that
 //! module's floor or higher, so a floor-level tool passes the same comparison
-//! a privileged one faces and no second path exists to drift from it.
+//! a privileged one faces, and a tool that answers the hook answers it here
+//! or not at all — there is no second comparison beside this one.
 //!
 //! WHICH TOOLS a conversation has is not asked here. That is recorded in the
 //! ledger as the framework's own tool choice, and the framework resolves a
 //! call name against it before any handler is reached — so a tool this
 //! conversation does not have is refused without this module hearing about it.
 //!
-//! Every tool of this assistant answers the framework's hook with
-//! [`at_required_authority`], naming the authority its own module declares.
-//! The bar is stated once per tool, in the module that owns the tool, and
-//! read once, here.
+//! WHAT HOLDS THIS TOGETHER, said plainly: the framework's hook has a
+//! default, and the default ADMITS. A tool module that answers nothing
+//! compiles, serves every authority, and leaves the authority constant it
+//! declares a value nothing reads. So the check is opt-in per tool, one
+//! line each module states for itself with the
+//! `admits_at_required_authority` macro below, and what holds it for all of
+//! them is a scan over the core's production source — the admission scan
+//! in the cleanliness suite, which fails when a module implements the
+//! framework's tool handler without that line. Nothing in the type system
+//! says it; the test does, and this module is where the line it looks for
+//! is written.
+//!
+//! The bar itself is stated once per tool, in the module that owns the
+//! tool, and read once, here.
 
 use agent_ledger::providers::BoxFuture;
 use agent_ledger::{Admission, Block, CoreEvent, ToolContext};
@@ -55,8 +66,8 @@ fn authority_decline(name: &str, required: Authority, reading: Authority) -> Str
 /// with the recorded sentence when it does not.
 ///
 /// Public because [`ToolSet`](crate::tools::ToolSet) is: a tool an embedder
-/// registers states its own bar through this one function, so there is no
-/// second way to answer the hook and no second wording to drift from.
+/// registers states its own bar through this one function, so a tool that
+/// answers the hook has one wording to answer it with.
 ///
 /// The decision is made before the future is handed back, over the snapshot
 /// the admission pass loaded — there is nothing to await, and nothing here
@@ -78,6 +89,36 @@ pub fn at_required_authority<'a>(
     };
     Box::pin(std::future::ready(answer))
 }
+
+/// One tool's whole answer to the framework's admission hook, written once
+/// here and invoked inside each tool's `impl ToolHandler`.
+///
+/// The ten modules used to carry the identical ten-line body and the
+/// identical doc comment; ten copies of one sentence are ten places for it
+/// to stop being true. The two arguments are the invoking module's own
+/// constants — the tool's name and the authority it requires — so the bar
+/// stays declared where the tool is, and only the reading of it lives here.
+///
+/// A macro and not a wrapping handler type: the answer belongs to the
+/// handler the tool already implements. A type that forwarded to it would
+/// be the shape unit 52 deleted, silently dropping whatever trait method is
+/// added after the forwarding was written.
+macro_rules! admits_at_required_authority {
+    ($name:expr, $required:expr) => {
+        /// The authority a call of this tool requires (decision 0043),
+        /// answered through the framework's admission hook over the ledger
+        /// snapshot the runner's admission pass already loaded.
+        fn admit<'a>(
+            &'a self,
+            ctx: &'a ::agent_ledger::ToolContext<'a, ::agent_ledger::CoreEvent>,
+            ledger: &'a [::agent_ledger::Block],
+        ) -> ::agent_ledger::providers::BoxFuture<'a, ::agent_ledger::Admission> {
+            $crate::tools::admission::at_required_authority($name, $required, ctx, ledger)
+        }
+    };
+}
+
+pub(crate) use admits_at_required_authority;
 
 #[cfg(test)]
 mod tests {

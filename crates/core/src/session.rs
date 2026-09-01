@@ -171,7 +171,7 @@ pub(crate) struct Sessions {
     /// The composed system prompt every new conversation records.
     system_prompt: String,
     /// The tool names every new conversation records as its tool choice.
-    tools: Vec<String>,
+    tool_names: Vec<String>,
     /// Serializes the answer-due stamp against other ingestions, and every
     /// session reset against both. This is the ONE home of that lock: the
     /// assembly's ingestion, observation and join paths take it through
@@ -243,7 +243,7 @@ impl Sessions {
         binding: ModelBinding,
         reasoning: ReasoningLevel,
         system_prompt: String,
-        tools: Vec<String>,
+        tool_names: Vec<String>,
         coordination: SessionCoordination,
     ) -> Self {
         Self {
@@ -251,7 +251,7 @@ impl Sessions {
             binding,
             reasoning,
             system_prompt,
-            tools,
+            tool_names,
             stamp_lock: coordination.stamp_lock,
             erasure_fence: coordination.erasure_fence,
             context: coordination.context,
@@ -341,8 +341,8 @@ impl Sessions {
     }
 
     /// The tool names every new conversation records as its tool choice.
-    pub(crate) fn tools(&self) -> &[String] {
-        &self.tools
+    pub(crate) fn tool_names(&self) -> &[String] {
+        &self.tool_names
     }
 
     /// First contact on a channel: create the conversation under the
@@ -389,7 +389,7 @@ impl Sessions {
             .insert_system_prompt(created, self.system_prompt.clone())
             .await?;
         store
-            .append_tool_choice(created, self.tools.clone())
+            .append_tool_choice(created, self.tool_names.clone())
             .await?;
         let winner = mapping::claim(&store.tx(), channel, kind, created).await?;
         if winner != created {

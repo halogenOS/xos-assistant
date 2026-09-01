@@ -99,14 +99,7 @@ async fn stored_choices(store: &Store, conversation_id: i64) -> Vec<Vec<String>>
         .expect("the ledger reads")
         .iter()
         .filter(|block| block.block_type == "tool_choice")
-        .map(|block| {
-            block.fields["names"]
-                .as_array()
-                .expect("the recorded names are a list")
-                .iter()
-                .map(|name| name.as_str().expect("a name is a string").to_owned())
-                .collect()
-        })
+        .map(support::choice_names)
         .collect()
 }
 
