@@ -76,6 +76,12 @@ read inside the same transaction — so an absent row there is impossible state,
 F4 aborts on. Nothing to change; the first draft's `.optional()` requirement was wrong and is
 withdrawn.
 
+**Also corrected:** an earlier revision of F1 said the block watcher's filter admits
+`conversations` as a wake. It does not — that filter (`src/actor.rs:1867-1872`) tests for
+`blocks`, `conversation_blocks` and the content tables only. The claim named the wrong
+subscription: the scheduler reacts through the table-blind `ctx.store.changes.watcher()`
+(`src/actor.rs:1563`), which is why the deletion wakes it. F1 now says that.
+
 ## The design
 
 **Framework (ronna-core), landed first:**
@@ -89,8 +95,13 @@ withdrawn.
   nothing about actors — the operator's ruling, verbatim: "this smells like an architecture
   issue. You are not allowed to bolt an imperative thing on it. Refactor cleanly if needed."
   The deletion is itself an observed change so an idle store does not defer the end: the
-  `conversations` table is already in the hook's allowlist (`src/store/descriptors.rs:289-295`)
-  and the block watcher's filter (`src/actor.rs:1867-1872`) admits it as a wake.
+  `conversations` table is already in the hook's allowlist (`src/store/descriptors.rs:289-295`),
+  so the delete emits a change, and the scheduler's own subscription is table-blind — it
+  reacts through `ctx.store.changes.watcher()` (`src/actor.rs:1563`, `db_changes.react()`),
+  which wakes on any change at all. The block watcher's filter
+  (`src/actor.rs:1867-1872`) is a different subscription and admits only `blocks`,
+  `conversation_blocks` and the content tables; it is not on this path and this unit does
+  not widen it.
 - **F2 — a change event's conversation comes from the row the change names.** Per branch of
   the watcher (`src/actor.rs:1873-1895`), because the three branches have different rows:
   - a `conversation_blocks` change already reads its own row to get `block_id`; it reads
