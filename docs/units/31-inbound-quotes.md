@@ -278,8 +278,8 @@ no privacy-document change, and no change to when the assistant answers or stays
 
 ## Notes for launch
 
-- Unblocked: slice 14 merged to the framework master 2026-08-29 (`f2bf250`), and this
-  workspace path-depends on that master. The branch sits on the consumer `main`
+- Unblocked: slice 14 merged to the framework main 2026-08-29 (`f2bf250`), and this
+  workspace path-depends on that main. The branch sits on the consumer `main`
   tip of its launch day (unit 29's merge included); the build's first step rebases
   again regardless.
 - The two crash-and-fork pins drive public surfaces: AC11's crash shape is built

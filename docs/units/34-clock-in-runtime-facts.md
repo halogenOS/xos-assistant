@@ -48,4 +48,4 @@ dependency for one.
 
 Branches from `main` (worktree `~/projects/halogenos-assistant-clock`, branch
 `unit/runtime-clock`). Site: `core/src/tools/runtime.rs` and its spine tests. Blocked
-on framework slice 15 merging to the framework master this workspace path-depends on.
+on framework slice 15 merging to the framework main this workspace path-depends on.

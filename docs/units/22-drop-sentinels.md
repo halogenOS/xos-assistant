@@ -1,7 +1,7 @@
 # Unit 22 — drop the abstention sentinels; the empty turn speaks for itself
 
 Date: 2026-08-24. The framework now records an empty completed turn as a real empty
-assistant text block (agent-ledger master bfcc6c7) and raises a `responding` signal when
+assistant text block (agent-ledger main bfcc6c7) and raises a `responding` signal when
 real text starts flowing. That makes the consumer's `[[abstain]]`/`[[miss]]` sentinels a
 bolted-on workaround: a magic answer string invented to represent an outcome the mechanism
 now expresses natively. This unit removes them and lets the empty turn — and the model's own
@@ -146,7 +146,7 @@ dependency.
 ## Notes for launch
 
 - Branches from `main` (worktree `~/projects/halogenos-assistant-noresponse`, branch
-  `unit/drop-sentinels`); builds against agent-ledger master bfcc6c7 (the empty block + the
+  `unit/drop-sentinels`); builds against agent-ledger main bfcc6c7 (the empty block + the
   `responding` signal). Confirmed to compile against it.
 - The mechanism is grounded (receipts above) — do NOT re-cold-probe; verify against the tree and
   build. The one open product choice (turn-id keying) is flagged in the decisions and does not

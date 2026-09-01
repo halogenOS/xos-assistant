@@ -6,7 +6,7 @@ role-less framework record, ordered before the append that tripped it, rendered 
 dated system line (`Current date: 2026-07-12 (Sunday)…`). The consumer was written
 against marker-less ledgers: 63 tests fail (60 spine, 2 adapter, 1 core lib), and one of
 those failures is a production defect, not an expectation drift. This unit makes the
-consumer correct and green against framework master. Everything else in the queue merges
+consumer correct and green against framework main. Everything else in the queue merges
 behind it, and the deployment repository's framework pin (out of this tree) must not
 move before it lands — the deployment breaks the same way.
 
@@ -168,7 +168,7 @@ joins), `erasure.rs:160-186` (per-block `ChatMessage` matches),
 
 ## The unit's contract
 
-The consumer is green against agent-ledger master 02b79a9. One recorded fact — a
+The consumer is green against agent-ledger main 02b79a9. One recorded fact — a
 framework date record never settles a debt walk — feeds both the tail condition and
 the past-erased read, so a debt behind any run of markers, erased rows, notes,
 palettes and reports is still found, and a stranded marker tail neither hides a debt
@@ -185,7 +185,7 @@ beyond restoring the debt the marker was swallowing.
 ## Acceptance criteria
 
 - **AC1** The full workspace suite is green in both answering modes against framework
-  master; clippy, fmt, doc under denied warnings; vocabulary and secret scans clean;
+  main; clippy, fmt, doc under denied warnings; vocabulary and secret scans clean;
   no new dependency.
 - **AC2** The read is transparent to markers for every caller: the core lib test at
   `kind.rs:1520` passes as written — its assertion and its caller-supplied list
