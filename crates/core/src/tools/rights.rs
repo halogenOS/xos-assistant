@@ -347,6 +347,11 @@ mod tests {
     /// The palette governs this tool like every other: wrapped in the
     /// admission check, a conversation whose recorded palette does not
     /// name it declines before the body runs.
+    ///
+    /// The decline is the framework's REFUSAL and not its error (unit 51,
+    /// 2026-09-01): the call never ran, and that typed fact is what a run of
+    /// refusals counts toward the forced turn end. The wording is this app's
+    /// and is unchanged.
     #[tokio::test]
     async fn the_palette_governs_the_tool() {
         let agency = fixture_agency().await;
@@ -374,12 +379,12 @@ mod tests {
             )
             .await;
         match outcome {
-            ToolOutcome::Error(decline) => assert!(
+            ToolOutcome::Refused(decline) => assert!(
                 decline.contains(NAME)
                     && decline.contains("is not in this conversation's tool palette"),
                 "the unnamed tool draws the palette decline: {decline}"
             ),
-            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
+            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Error(_) => {
                 panic!("a palette that does not name the tool admits nothing")
             }
         }

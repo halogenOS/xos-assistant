@@ -22,9 +22,10 @@
 //!    empty tool palette and, last, the compaction instructions — the append
 //!    that summons its one turn.
 //! 3. That turn's answer is the summary. The temporary conversation is
-//!    retired junction-only the moment it is read; its two own blocks are all
-//!    that is left for the collector, and every block of the first half lives
-//!    on in the source.
+//!    retired junction-only the moment it is read — its turn interrupted and
+//!    settled first, so nothing is still writing into a conversation that is
+//!    about to go — and its two own blocks are all that is left for the
+//!    collector, while every block of the first half lives on in the source.
 //! 4. Whatever turn the source still had open is settled, so the ledger
 //!    about to be copied has stopped moving.
 //! 5. A new thread opens with the current prompt, a block naming the
@@ -79,7 +80,7 @@
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use agent_ledger::agency::{AncestorReference, LeafKind, Status, Text};
+use agent_ledger::agency::{AgencyCtx, AncestorReference, LeafKind, Status, Text, ratchet};
 use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{
     CompactedThread, ConsumerRecord, LedgerCut, ModelOverride, StoreError, StoreTx,
@@ -259,16 +260,30 @@ impl Sessions {
         }
     }
 
-    /// Delete one conversation and drop what was measured for it, which is
-    /// ONE act here and never two: the store reissues conversation ids, so a
-    /// measurement left behind hands the id's next holder a stranger's token
-    /// count and its dispatch time, and both threshold arms can arm on it
-    /// before that conversation's own first turn ever reports.
+    /// Stop whatever turn is still writing into this conversation, delete
+    /// it, and drop what was measured for it.
+    ///
+    /// The settle comes FIRST and that ordering is the point (unit 51,
+    /// 2026-09-01): a conversation deleted under a running turn takes every
+    /// later write of that turn with it — each one funnels through a
+    /// junction insert that references the row now gone — and the writes
+    /// keep coming, because nothing told the turn. A settle that FAILS
+    /// deletes nothing and fails the caller: deleting anyway would reopen
+    /// exactly the race the settle exists to close.
+    ///
+    /// The forget is the third step and is never separate from the deletion:
+    /// the store reissues conversation ids, so a measurement left behind
+    /// hands the id's next holder a stranger's token count and its dispatch
+    /// time, and both threshold arms can arm on it before that
+    /// conversation's own first turn ever reports.
     ///
     /// # Errors
     ///
-    /// [`CoreError::Store`] if the deletion fails.
+    /// [`CoreError::StreamUnsettled`] if the conversation's turn did not
+    /// settle before its bound — nothing is deleted; [`CoreError::Store`] if
+    /// the deletion fails.
     async fn retire(&self, conversation_id: i64) -> Result<(), CoreError> {
+        self.settle(conversation_id).await?;
         self.ctx
             .store()
             .delete_conversation(conversation_id)
@@ -352,7 +367,11 @@ impl Sessions {
     /// # Errors
     ///
     /// [`CoreError::ClaimLost`] if the mapping row is gone again by the read
-    /// back; [`CoreError::Store`] if a write fails.
+    /// back; [`CoreError::StreamUnsettled`] if the loser's conversation did
+    /// not settle before its deletion, which leaves it standing — it was
+    /// created moments ago and has run no turn, so nothing can be writing
+    /// into it, and the variant is here because the retirement raises it;
+    /// [`CoreError::Store`] if a write fails.
     pub(crate) async fn map_new_channel(
         &self,
         channel: &ChannelKey,
@@ -534,8 +553,10 @@ impl Sessions {
     ///
     /// [`CoreError::CompactionUnsummarized`] if the temporary conversation
     /// produced no summary — nothing is swapped and nothing is deleted;
-    /// [`CoreError::ClaimLost`] if the re-claim finds no winner;
-    /// [`CoreError::Store`] if a read or a write fails.
+    /// [`CoreError::StreamUnsettled`] if the temporary turn did not settle,
+    /// which leaves that conversation standing, or if the source's own
+    /// stream did not; [`CoreError::ClaimLost`] if the re-claim finds no
+    /// winner; [`CoreError::Store`] if a read or a write fails.
     pub(crate) async fn compact(
         &self,
         source: i64,
@@ -566,20 +587,7 @@ impl Sessions {
                 },
             )
             .await?;
-        let captured = self.capture_summary(temporary).await;
-        // Retired junction-only the moment its answer has been read,
-        // whatever the answer was: the first half's blocks all live on in
-        // the source, and the two blocks this conversation owns — the
-        // instructions and the captured answer — are all the collector is
-        // left.
-        if let Err(error) = self.retire(temporary.conversation_id).await {
-            tracing::warn!(
-                temporary = temporary.conversation_id,
-                %error,
-                "the compaction's temporary conversation was not retired; it holds no mapping and nothing serves it"
-            );
-        }
-        let Some(summary) = captured? else {
+        let Some(summary) = self.capture_and_retire(temporary).await? else {
             return Err(CoreError::CompactionUnsummarized {
                 conversation_id: source,
             });
@@ -588,53 +596,199 @@ impl Sessions {
             .await
     }
 
+    /// Capture a temporary conversation's summary and retire the
+    /// conversation, in that order, answering what was captured.
+    ///
+    /// The two steps are one method because the second is what makes the
+    /// first safe to have run: the capture drives a model turn inside a
+    /// conversation nothing else will ever serve, and the retirement is what
+    /// stops that turn and takes the conversation away. Both doors that fork
+    /// a temporary conversation come through here, so the ordering is
+    /// decided once.
+    ///
+    /// A retirement that FAILS is what the caller hears, even when the
+    /// capture failed too (unit 51, 2026-09-01): the conversation is still
+    /// standing with a turn that may still be writing into it, and nothing
+    /// may be built on top of that.
+    ///
+    /// This is also where the capture's outer bound is stated, once.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::StreamUnsettled`] if the temporary turn did not settle,
+    /// at the capture's bound or at the retirement;
+    /// [`CoreError::Store`] if a read or a write fails.
+    async fn capture_and_retire(
+        &self,
+        temporary: TemporaryConversation,
+    ) -> Result<Option<String>, CoreError> {
+        let captured = self
+            .capture_summary(temporary, tokio::time::Instant::now() + SUMMARY_BOUND)
+            .await;
+        // The retirement runs even when the capture's own settle at the bound
+        // FAILED, and the deletion that follows is still sound. That settle
+        // dropped its observation as it failed, and its interrupt latched the
+        // conversation's writes and swept its streaming tails — the framework
+        // discards a provider response arriving while latched — so this
+        // second settle reads a conversation nothing can write into and
+        // returns at once. If the tail is somehow still there, this settle
+        // fails in turn and deletes nothing, which is A2's rule holding.
+        match self.retire(temporary.conversation_id).await {
+            Ok(()) => captured,
+            Err(retirement) => {
+                if let Err(error) = captured {
+                    tracing::warn!(
+                        temporary = temporary.conversation_id,
+                        %error,
+                        "the compaction's capture failed as well; the retirement's failure is what is reported"
+                    );
+                }
+                Err(retirement)
+            }
+        }
+    }
+
     /// Run the temporary conversation's one turn and read its answer.
     ///
     /// The conversation was born latched like every other, so nothing has
     /// driven it: the unlatch below is what starts the turn, and subscribing
-    /// BEFORE it is what keeps a fast turn's end signal from being missed.
+    /// BEFORE it is what keeps a change the turn fires at once from being
+    /// missed.
     ///
-    /// The answer is read from the LEDGER, never from the event: the wait is
-    /// there to spare the read its polling, and a lagged or dropped signal
-    /// costs nothing because the blocks decide. What counts as the answer is
-    /// the newest assistant-voiced text past the instructions block — past
-    /// it, because everything before it is the inherited history the turn
-    /// was asked ABOUT, including the source's own earlier answers.
+    /// The capture is over when the summary is DURABLE (unit 51,
+    /// 2026-09-01), which is two stored facts and needs both. The framework
+    /// answers the first — the turn is durably over: nothing streaming, and
+    /// no tool outcome awaiting the round it summons. The ledger answers the
+    /// second — prose is there. Neither alone is the answer: the predicate
+    /// reads true over a conversation whose turn has not started, because a
+    /// forked history is all durable, and prose is there at every MESSAGE
+    /// end, while a tool-use stop's lifecycles arrive after one and the turn
+    /// carries on.
+    ///
+    /// A turn that ends having written NO prose is over too, and saying so
+    /// takes a THIRD fact: that a stream terminal for this conversation has
+    /// been seen since the unlatch, which is [`CaptureWakes`]'s. Without it
+    /// the two stored facts cannot tell "the turn ran and wrote nothing" from
+    /// "the turn has not started" — a freshly forked temporary conversation
+    /// is all durable and owes no outcome — and the capture would conclude
+    /// every compaction before its turn ran. With it, the incident's own
+    /// shape ends the capture in milliseconds: a provider error ends the turn
+    /// writing nothing, and this method runs INLINE in the one shared
+    /// compaction driver, so parking that case to the bound would stall every
+    /// other conversation's door for three minutes.
+    ///
+    /// This does not make a stream event the answer. The terminal decides
+    /// nothing by itself — over a tool-use stop the predicate is false, and
+    /// over a turn with prose the ledger answers — and a terminal a lagged
+    /// subscription drops costs only the bound, which is the wait the capture
+    /// would have spent anyway.
+    ///
+    /// Every read is a level read off the store, woken by the changes this
+    /// conversation's own writes emit — the compaction driver's own pattern.
+    /// A lagged or dropped wake costs no CORRECTNESS, because the next one
+    /// re-reads the same standing facts; it is not free of WORK, which is why
+    /// a burst of wakes collapses into one read ([`CaptureWakes::next`]).
+    ///
+    /// `deadline` is the outer bound. On its expiry the turn is interrupted
+    /// and that interrupt's own settle is awaited before anything else
+    /// happens, so a turn nothing ended is STOPPED instead of left writing
+    /// into a conversation the caller is about to retire; whatever prose the
+    /// ledger holds by then is the answer.
+    ///
+    /// What counts as the answer is the newest assistant-voiced text past
+    /// the instructions block — past it, because everything before it is the
+    /// inherited history the turn was asked ABOUT, including the source's
+    /// own earlier answers.
     ///
     /// `None` is a turn that produced no prose: it failed, it was silent, or
     /// it never ran. The caller changes nothing on that answer.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::StreamUnsettled`] if the interrupt at the bound did not
+    /// settle; [`CoreError::Store`] if a read fails.
     async fn capture_summary(
         &self,
         temporary: TemporaryConversation,
+        deadline: tokio::time::Instant,
     ) -> Result<Option<String>, CoreError> {
-        let mut events = self.ctx.bus().subscribe();
+        // Subscribed BEFORE the unlatch below, which is what starts the turn,
+        // so a change or a terminal the turn fires at once is already in this
+        // queue.
+        let mut wakes = CaptureWakes::subscribed(self.ctx.bus(), temporary.conversation_id);
         self.ctx.bus().emit(CoreEvent::UnlatchRequested {
             conversation_id: temporary.conversation_id,
         });
-        let deadline = tokio::time::Instant::now() + SUMMARY_BOUND;
-        let ended =
-            streams::await_stream_end(&mut events, temporary.conversation_id, deadline).await;
-        if !ended {
-            tracing::warn!(
-                temporary = temporary.conversation_id,
-                "the compaction's turn did not end before its bound; the ledger decides what it wrote"
-            );
+        loop {
+            match self.captured_turn(temporary).await? {
+                CapturedTurn::Wrote(summary) => return Ok(Some(summary)),
+                CapturedTurn::Silent if wakes.turn_ended() => {
+                    tracing::warn!(
+                        temporary = temporary.conversation_id,
+                        "the compaction's turn ended having written nothing; the capture answers with no summary"
+                    );
+                    return Ok(None);
+                }
+                CapturedTurn::Silent | CapturedTurn::Running => {}
+            }
+            if !wakes.next(deadline).await {
+                break;
+            }
+        }
+        tracing::warn!(
+            temporary = temporary.conversation_id,
+            "the compaction's turn was not durably over at its bound; it is interrupted and settled, and the ledger decides what it wrote"
+        );
+        self.settle(temporary.conversation_id).await?;
+        let blocks = self
+            .ctx
+            .store()
+            .list_blocks(temporary.conversation_id)
+            .await?;
+        Ok(summary_of(&blocks, temporary.instructions_block_id))
+    }
+
+    /// What the temporary conversation's ledger says about its turn right
+    /// now: the framework's durable-turn predicate first — prose that is
+    /// there before the turn ends is prose the turn may still add to — and
+    /// then, only past it, what the turn wrote.
+    ///
+    /// Three answers, not two, because the caller acts differently on each
+    /// and one `Option` cannot carry them: a predicate that reads false and a
+    /// turn that is over having written nothing are the same silence to a
+    /// reader that only asks for a summary, and the second is a conclusion
+    /// while the first is a wait.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Store`] if a read fails.
+    async fn captured_turn(
+        &self,
+        temporary: TemporaryConversation,
+    ) -> Result<CapturedTurn, CoreError> {
+        let agency = self.agency(temporary.conversation_id);
+        if !ratchet::turn_durably_over::<AssistantKind, _>(&agency).await? {
+            return Ok(CapturedTurn::Running);
         }
         let blocks = self
             .ctx
             .store()
             .list_blocks(temporary.conversation_id)
             .await?;
-        Ok(blocks
-            .iter()
-            .rev()
-            .take_while(|block| block.id != temporary.instructions_block_id)
-            .filter(|block| {
-                block.role == Some(Role::Assistant)
-                    && Text::KINDS.contains(&block.block_type.as_str())
-            })
-            .map(|block| Text::parse(block).content.trim().to_owned())
-            .find(|content| !content.is_empty()))
+        Ok(match summary_of(&blocks, temporary.instructions_block_id) {
+            Some(summary) => CapturedTurn::Wrote(summary),
+            None => CapturedTurn::Silent,
+        })
+    }
+
+    /// One conversation's framework collaborators, for the ledger questions
+    /// only the framework can answer.
+    fn agency(&self, conversation_id: i64) -> AgencyCtx<CoreEvent> {
+        AgencyCtx {
+            conversation_id,
+            store: self.ctx.store().clone(),
+            bus: Arc::clone(self.ctx.bus()),
+        }
     }
 
     /// Open the compacted thread and hand it the channel, both under the two
@@ -741,6 +895,10 @@ impl Sessions {
     /// # Errors
     ///
     /// [`CoreError::ClaimLost`] if the claim finds no winner;
+    /// [`CoreError::StreamUnsettled`] if the loser's conversation did not
+    /// settle before its deletion, which leaves it standing unmapped — a
+    /// successor is latched and has run no turn, so nothing can be writing
+    /// into it, and the variant is here because the retirement raises it;
     /// [`CoreError::Store`] if a read or a write fails.
     pub(crate) async fn swap_channel(
         &self,
@@ -819,9 +977,11 @@ impl Sessions {
     /// # Errors
     ///
     /// [`CoreError::CompactionUnsummarized`] if a regeneration captured
-    /// nothing; [`CoreError::StreamUnsettled`] if the serving thread's own
-    /// stream did not settle; [`CoreError::Store`] if a read or a write
-    /// fails.
+    /// nothing; [`CoreError::StreamUnsettled`] if a stream did not settle —
+    /// the serving thread's own before the rebuild, or, since unit 51, a
+    /// retired lineage member's after the swap, which stops the retirement
+    /// walk with the swap already verified and the members past it standing
+    /// unmapped; [`CoreError::Store`] if a read or a write fails.
     pub(crate) async fn strip_from_view(
         &self,
         serving: i64,
@@ -943,9 +1103,11 @@ impl Sessions {
     /// # Errors
     ///
     /// [`CoreError::CompactionUnsummarized`] if a regeneration captured
-    /// nothing; [`CoreError::StreamUnsettled`] if the serving thread's own
-    /// stream did not settle; [`CoreError::Store`] if a read or a write
-    /// fails.
+    /// nothing; [`CoreError::StreamUnsettled`] if a stream did not settle —
+    /// the serving thread's own before the rebuild, or, since unit 51, a
+    /// retired lineage member's after the swap, which stops the retirement
+    /// walk with the swap already verified and the members past it standing
+    /// unmapped; [`CoreError::Store`] if a read or a write fails.
     pub(crate) async fn scrub_compacted_digest(
         &self,
         stripped: &StrippedLineage,
@@ -1159,9 +1321,12 @@ impl Sessions {
     /// whose swap failed with its thread already open. Junction-only, like
     /// every other retirement here: the blocks they share live on in what
     /// they were cloned from, and their own fresh appends are left to the
-    /// collector. A deletion that itself fails is logged rather than raised:
-    /// the caller is already reporting why nothing was installed, and an
-    /// unmapped clone nothing serves is not a second failure to hand back.
+    /// collector. A retirement that itself fails is logged and not
+    /// raised, and it fails two ways now (unit 51, 2026-09-01): the settle
+    /// ahead of the deletion can fail, in which case nothing is deleted and
+    /// the conversation stands, or the deletion can. Neither is raised — the
+    /// caller is already reporting why nothing was installed, and an unmapped
+    /// conversation nothing serves is not a second failure to hand back.
     ///
     /// Every door that opens a conversation it may not hand over ends here.
     /// A thread built and neither mapped nor retired is a latched
@@ -1174,7 +1339,7 @@ impl Sessions {
                 tracing::warn!(
                     conversation_id,
                     %error,
-                    "a scrub's unused clone was not retired; it holds no mapping and nothing serves it"
+                    "an unused conversation was not retired; it holds no mapping and nothing serves it, and a settle that failed leaves it standing"
                 );
             }
         }
@@ -1200,7 +1365,9 @@ impl Sessions {
     /// # Errors
     ///
     /// [`CoreError::CompactionUnsummarized`] if the capture produced
-    /// nothing; [`CoreError::Store`] if a read or a write fails.
+    /// nothing; [`CoreError::StreamUnsettled`] if the temporary turn did not
+    /// settle, which leaves that conversation standing;
+    /// [`CoreError::Store`] if a read or a write fails.
     async fn regenerated_digest(
         &self,
         ancestor_clone: i64,
@@ -1245,24 +1412,13 @@ impl Sessions {
                 },
             )
             .await?;
-        let captured = self.capture_summary(temporary).await;
-        if let Err(error) = self.retire(temporary.conversation_id).await {
-            tracing::warn!(
-                temporary = temporary.conversation_id,
-                %error,
-                "the regeneration's temporary conversation was not retired"
-            );
-        }
-        match captured {
-            Ok(Some(summary)) => Ok(Some(summary)),
-            captured => {
-                // Capture-first: nothing established has been touched yet, and
-                // the clones built so far go with the failure at the caller.
-                captured?;
-                Err(CoreError::CompactionUnsummarized {
-                    conversation_id: successor,
-                })
-            }
+        match self.capture_and_retire(temporary).await? {
+            Some(summary) => Ok(Some(summary)),
+            // Capture-first: nothing established has been touched yet, and
+            // the clones built so far go with the failure at the caller.
+            None => Err(CoreError::CompactionUnsummarized {
+                conversation_id: successor,
+            }),
         }
     }
 
@@ -1304,10 +1460,30 @@ impl Sessions {
     /// it is mapped to none.
     ///
     /// Read from durable state, never from an event, so a wake the lossy bus
-    /// dropped costs nothing. It is also what makes the operation
-    /// self-limiting from the other side: a compacted source is unmapped
-    /// from the moment its successor claims the channel, so however many
-    /// late appends wake it, it is never compacted again.
+    /// dropped costs nothing.
+    ///
+    /// It is also HALF of what limits the unattended operation, and saying
+    /// so plainly is the point (unit 51, 2026-09-01). A compaction that
+    /// SUCCEEDS unmaps its source the moment the successor claims the
+    /// channel, so however many late appends wake that conversation, it is
+    /// never compacted again. A compaction that FAILS changes nothing: the
+    /// source keeps its mapping and its history, the door it came through
+    /// still stands, and the next block change on it starts another attempt.
+    /// That repetition is unbounded by decision 0165 and carries no backoff,
+    /// no cooldown and no stand-down; what keeps it from spinning is that a
+    /// wake now means real activity in the conversation.
+    ///
+    /// One failure DOES leave something behind that wakes the driver, and
+    /// this read is what makes it cost a read and nothing more. When the
+    /// temporary conversation's turn will not settle, that conversation is
+    /// deliberately not deleted — deleting under a live turn is the race the
+    /// settle exists to close — so it stands unmapped but unlatched, and a
+    /// turn deaf to the interrupt keeps writing into it. Every one of those
+    /// writes wakes the driver on the TEMPORARY's id, and a temporary
+    /// conversation is mapped to no channel, so this read answers `None` and
+    /// the attempt ends there. The source is untouched by any of it: it keeps
+    /// its mapping and its history, and its own next genuine change is what
+    /// starts the next attempt.
     async fn mapped_channel(
         &self,
         conversation_id: i64,
@@ -1505,6 +1681,153 @@ pub(crate) struct StrippedHop {
     pub stripped: Vec<i64>,
 }
 
+/// The captured summary in one temporary conversation's ledger: the newest
+/// non-empty assistant-voiced text past the instructions block, or `None`
+/// when the turn wrote no prose.
+///
+/// Past the instructions block, because everything before it is the
+/// inherited history the turn was asked ABOUT, including the source's own
+/// earlier answers.
+fn summary_of(blocks: &[Block], instructions_block_id: i64) -> Option<String> {
+    blocks
+        .iter()
+        .rev()
+        .take_while(|block| block.id != instructions_block_id)
+        .filter(|block| {
+            block.role == Some(Role::Assistant) && Text::KINDS.contains(&block.block_type.as_str())
+        })
+        .map(|block| Text::parse(block).content.trim().to_owned())
+        .find(|content| !content.is_empty())
+}
+
+/// What one temporary conversation's ledger says about its turn.
+enum CapturedTurn {
+    /// The turn is not durably over: something is still streaming, or an
+    /// outcome is awaiting the round it summons.
+    Running,
+    /// The turn is durably over, and this is the prose it wrote.
+    Wrote(String),
+    /// The turn is durably over and there is no prose past the instructions.
+    /// Read alone this is also what a conversation whose turn never started
+    /// looks like, which is why the capture needs [`CaptureWakes`] beside it.
+    Silent,
+}
+
+/// The capture's subscription to the bus, and the one fact it carries across
+/// wakes: whether a stream terminal for this conversation has been seen since
+/// the unlatch.
+///
+/// A wake is a WAKEUP and nothing else — what it carries is never the answer,
+/// because the capture re-reads stored state either way — with one exception
+/// that is a fact and not a decision: a terminal for this conversation says
+/// the turn RAN, and no ledger row records that for a turn that wrote
+/// nothing. So the terminals are folded in as they pass, and the capture
+/// still concludes on the store.
+///
+/// Two kinds of event wake the capture: a block change on this conversation,
+/// which is new stored state to read, and a terminal, which is the third fact
+/// changing. The waiting itself — and what a lag or a closed bus costs — is
+/// [`streams::event_before`]'s, shared with the settle's own wait.
+struct CaptureWakes {
+    events: tokio::sync::broadcast::Receiver<CoreEvent>,
+    conversation_id: i64,
+    turn_ended: bool,
+}
+
+impl CaptureWakes {
+    /// Subscribe. The caller unlatches AFTER this, so nothing the turn fires
+    /// can arrive before the queue exists.
+    fn subscribed(bus: &EventBus<CoreEvent>, conversation_id: i64) -> Self {
+        Self {
+            events: bus.subscribe(),
+            conversation_id,
+            turn_ended: false,
+        }
+    }
+
+    /// Whether a stream terminal for this conversation has been seen since
+    /// the unlatch — done, error or closed, the same terminal set the stream
+    /// observer keys on, because they are the three ways a turn can end.
+    ///
+    /// A terminal lost to a lagged subscription leaves this `false`, so the
+    /// capture waits out its bound: the cost of a dropped wake is the wait,
+    /// never a wrong answer.
+    fn turn_ended(&self) -> bool {
+        self.turn_ended
+    }
+
+    /// Wait for the next wake, then take every wake already queued behind it,
+    /// answering whether one arrived before the deadline.
+    ///
+    /// The second half is what keeps the cost off the store (unit 51,
+    /// 2026-09-01). Every streamed delta is a block change, so a turn writing
+    /// prose wakes this once per delta, and each read materializes the whole
+    /// forked ledger — thousands of blocks — on the store's single thread,
+    /// queued behind every other conversation's traffic. The wake is
+    /// level-triggered, so a burst carries no more information than its last
+    /// event does: taking the queue empty here turns the burst into ONE read.
+    /// Nothing about the level read weakens — the read still happens, still
+    /// off stored state — and a wake dropped inside the drain costs what a
+    /// lagged wake costs, which is nothing.
+    async fn next(&mut self, deadline: tokio::time::Instant) -> bool {
+        let woken = {
+            let Self {
+                events,
+                conversation_id,
+                turn_ended,
+            } = self;
+            let conversation_id = *conversation_id;
+            streams::event_before(events, deadline, |event| {
+                Self::wakes_on(event, conversation_id, turn_ended)
+            })
+            .await
+        };
+        if woken {
+            self.take_queued();
+        }
+        woken
+    }
+
+    /// Take every event already queued, without waiting for one.
+    fn take_queued(&mut self) {
+        loop {
+            match self.events.try_recv() {
+                Ok(event) => {
+                    Self::wakes_on(&event, self.conversation_id, &mut self.turn_ended);
+                }
+                // A lag inside the drain drops events the caller's own read
+                // covers, so the drain simply carries on from what is left.
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(
+                    tokio::sync::broadcast::error::TryRecvError::Empty
+                    | tokio::sync::broadcast::error::TryRecvError::Closed,
+                ) => return,
+            }
+        }
+    }
+
+    /// Fold one event into `turn_ended`, answering whether it wakes the
+    /// capture.
+    ///
+    /// Which event is a stream's terminal is asked of `streams`, never
+    /// matched here: the stream protocol's event identity is that module's
+    /// one answer, and a copy of it in this one would drift from the
+    /// settle's reading of the same set.
+    fn wakes_on(event: &CoreEvent, conversation_id: i64, turn_ended: &mut bool) -> bool {
+        if streams::is_stream_terminal(event, conversation_id) {
+            *turn_ended = true;
+            return true;
+        }
+        matches!(
+            event,
+            CoreEvent::BlocksChanged {
+                conversation_id: id,
+                ..
+            } if *id == conversation_id
+        )
+    }
+}
+
 /// The next threshold sweep, or a future that never completes when this
 /// process has no sweep — which is what lets the driver's one loop carry a
 /// door that may not exist without a second loop beside it.
@@ -1570,4 +1893,745 @@ async fn exhausted_turn_since_the_thread_opened(
         Ok(found.is_some())
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_ledger::event::stream_status;
+    use agent_ledger::store::ToolCallInsert;
+    use agent_ledger::{ProviderRegistry, Store, ToolRegistry};
+
+    use super::*;
+    use crate::schema::store_config;
+
+    /// A sessions object over an in-memory store, a bus of this test's own
+    /// and nothing registered: no provider, no tool, no reactor. Every event
+    /// on this bus is one the test emitted and every block in the ledger is
+    /// one the test wrote, which is what makes the capture's reads below
+    /// readings of stored state and of nothing else.
+    fn quiet_sessions() -> (
+        Arc<Sessions>,
+        Store,
+        Arc<EventBus<CoreEvent>>,
+        Arc<ContextWatch>,
+    ) {
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let bus = Arc::new(EventBus::new());
+        let ctx = RuntimeContext::new(
+            store.clone(),
+            Arc::clone(&bus),
+            Arc::new(ProviderRegistry::new()),
+            Arc::new(ToolRegistry::new()),
+        );
+        let context = Arc::new(ContextWatch::new(streams::spawn_observer(&bus), None));
+        let sessions = Sessions::new(
+            ctx,
+            ModelBinding {
+                provider_instance: "p".into(),
+                provider_display_name: "P".into(),
+                vendor: "v".into(),
+                model: "m".into(),
+                model_display_name: "M".into(),
+                context_window: None,
+            },
+            ReasoningLevel::Low,
+            "the system prompt".into(),
+            Vec::new(),
+            SessionCoordination {
+                stamp_lock: Arc::new(Mutex::new(())),
+                erasure_fence: Arc::new(tokio::sync::RwLock::new(())),
+                context: Arc::clone(&context),
+            },
+        );
+        (Arc::new(sessions), store, bus, context)
+    }
+
+    /// A source conversation with a short history, and the temporary
+    /// conversation a compaction forks off it — the same door
+    /// [`Sessions::compact`] takes, so the ledger under test has the fork's
+    /// own junction, palette and instructions blocks in it.
+    async fn forked_temporary(store: &Store) -> TemporaryConversation {
+        let source = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let first = store
+            .insert_final_text_block(source, Role::User, "the first half".into(), None)
+            .await
+            .expect("the first half stores");
+        store
+            .insert_final_text_block(source, Role::Assistant, "an earlier answer".into(), None)
+            .await
+            .expect("the earlier answer stores");
+        store
+            .fork_temporary(
+                source,
+                first,
+                TemporaryFork {
+                    records: vec![ConsumerRecord {
+                        kind: TOOL_PALETTE_KIND,
+                        role: None,
+                        fields: ToolPalette::stored_fields(&[]),
+                    }],
+                    instructions: COMPACTION_INSTRUCTIONS.to_owned(),
+                },
+            )
+            .await
+            .expect("the temporary conversation forks")
+    }
+
+    /// Record a block's dispatch anchor — the turn it belongs to. The
+    /// anchored destination is the framework's own writer surface, so a test
+    /// writes the same header through the domain seam, as this crate's other
+    /// suites do.
+    async fn anchor_on(store: &Store, block_id: i64, anchor: i64) {
+        domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
+            conn.execute(
+                "UPDATE blocks SET dispatch_anchor = ?2 WHERE id = ?1",
+                [block_id, anchor],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the anchor writes");
+    }
+
+    /// Assistant prose in the temporary conversation's turn — anchored on
+    /// the instructions block, which is what the runtime anchors a summoned
+    /// turn's products on.
+    async fn answer(store: &Store, temporary: TemporaryConversation, content: &str) -> i64 {
+        let block = store
+            .insert_final_text_block(
+                temporary.conversation_id,
+                Role::Assistant,
+                content.to_owned(),
+                None,
+            )
+            .await
+            .expect("the prose stores");
+        anchor_on(store, block, temporary.instructions_block_id).await;
+        block
+    }
+
+    /// A tool call and an error outcome answering it, under the same turn.
+    /// The outcome copies the call's anchor at the resolution write and
+    /// leaves the model owed the round it summons, which is the second half
+    /// of the framework's durable-turn predicate and the whole reason these
+    /// tests write one.
+    ///
+    /// It is an error outcome and NOT the palette's own decline, which is a
+    /// typed refusal since unit 51 and reaches the ledger marked as one. The
+    /// framework's marked writer is crate-private there on purpose — a
+    /// consumer's decline arrives through `ToolOutcome::Refused` and the
+    /// runner sets the fact — so a test outside the framework has no door to
+    /// the refused shape and writes the unmarked one. Nothing here reads that
+    /// mark: a turn is owed its continuation over either shape, which is what
+    /// the capture asks.
+    async fn failed_call(store: &Store, temporary: TemporaryConversation) {
+        let call = store
+            .insert_tool_call_block(
+                temporary.conversation_id,
+                Role::Assistant,
+                ToolCallInsert {
+                    tool_call_id: "call-0".into(),
+                    name: "probe".into(),
+                    input: "{}".into(),
+                    interactive: false,
+                },
+                None,
+            )
+            .await
+            .expect("the call stores");
+        anchor_on(store, call, temporary.instructions_block_id).await;
+        store
+            .fail_tool_call_block(
+                temporary.conversation_id,
+                "call-0".into(),
+                "the tool call failed".into(),
+                call,
+            )
+            .await
+            .expect("the decline stores");
+    }
+
+    /// The block-change wake the runtime fires after a write, which is what
+    /// the capture listens for.
+    fn wake(bus: &EventBus<CoreEvent>, conversation_id: i64) {
+        bus.emit(CoreEvent::BlocksChanged {
+            conversation_id,
+            block_id: 0,
+        });
+    }
+
+    /// The runtime's own answer to an interrupt, spawned: the streaming tail
+    /// is swept and the interrupt records itself, which is the stored state
+    /// every settle confirms. One helper because both settle paths under test
+    /// need the identical answer, and two hand-rolled copies would eventually
+    /// answer differently.
+    ///
+    /// `takes` is how long the answer takes about it, so a caller that
+    /// emitted the interrupt without awaiting its settle would answer while
+    /// the tail still stands — which is what a test asserting on stored state
+    /// afterwards reads.
+    ///
+    /// `tail` is `None` for a turn that already committed its text and so has
+    /// no tail left to sweep: the runtime's interrupt still records itself
+    /// there, which is exactly the case where the status block alone carries
+    /// the settle.
+    ///
+    /// The task answers whether the conversation still existed at the moment
+    /// the interrupt arrived: it is read before either write, so it is read
+    /// before any settle can return and before any deletion can follow one.
+    /// It panics if the interrupt never arrives, because a settle nobody
+    /// asked for is the failure these tests are about.
+    fn answers_the_interrupt(
+        store: &Store,
+        bus: &EventBus<CoreEvent>,
+        temporary: TemporaryConversation,
+        tail: Option<i64>,
+        takes: Duration,
+    ) -> tokio::task::JoinHandle<bool> {
+        let store = store.clone();
+        let mut events = bus.subscribe();
+        tokio::spawn(async move {
+            while let Ok(event) = events.recv().await {
+                if !matches!(
+                    event,
+                    CoreEvent::InterruptRequested { conversation_id }
+                        if conversation_id == temporary.conversation_id
+                ) {
+                    continue;
+                }
+                let stood = store
+                    .find_conversation(temporary.conversation_id)
+                    .await
+                    .expect("the conversation table reads")
+                    .is_some();
+                tokio::time::sleep(takes).await;
+                if let Some(tail) = tail {
+                    store
+                        .discard_streaming_block(tail)
+                        .await
+                        .expect("the tail is swept");
+                }
+                store
+                    .insert_status_block(
+                        temporary.conversation_id,
+                        Status::TURN_ENDED_CLOSED.to_owned(),
+                        None,
+                    )
+                    .await
+                    .expect("the interrupt records itself");
+                return stood;
+            }
+            panic!("nothing ever asked the turn to stop");
+        })
+    }
+
+    /// Give a spawned capture room to run and assert it has NOT concluded.
+    async fn still_open(capture: &tokio::task::JoinHandle<Result<Option<String>, CoreError>>) {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !capture.is_finished(),
+            "the capture concluded over a turn that is not durably over"
+        );
+    }
+
+    /// What a spawned capture came to, under a bound short enough that a
+    /// capture waiting for [`SUMMARY_BOUND`] fails this instead of passing.
+    async fn concluded(
+        capture: tokio::task::JoinHandle<Result<Option<String>, CoreError>>,
+    ) -> Option<String> {
+        tokio::time::timeout(Duration::from_secs(10), capture)
+            .await
+            .expect("the capture concludes on the change that ended the turn")
+            .expect("the capture ran to its answer")
+            .expect("the capture read the ledger")
+    }
+
+    /// A message's end is not a turn's end. The turn writes prose, reaches
+    /// for a tool, gets an outcome back, and carries on — and the capture must be open
+    /// at the end of the first message and answer with what the SECOND one
+    /// wrote. This is the early capture the unit fixes: the old capture ended
+    /// on `StreamDone` and took the half-written prose.
+    #[tokio::test]
+    async fn a_message_end_mid_tool_round_does_not_conclude_the_capture() {
+        let (sessions, store, bus, _context) = quiet_sessions();
+        let temporary = forked_temporary(&store).await;
+        answer(&store, temporary, "half of what was asked for").await;
+        failed_call(&store, temporary).await;
+
+        let capture = tokio::spawn({
+            let sessions = Arc::clone(&sessions);
+            async move {
+                sessions
+                    .capture_summary(
+                        temporary,
+                        tokio::time::Instant::now() + Duration::from_secs(30),
+                    )
+                    .await
+            }
+        });
+
+        bus.emit(CoreEvent::StreamDone {
+            conversation_id: temporary.conversation_id,
+            usage: None,
+            stop_reason: None,
+            generation: None,
+        });
+        wake(&bus, temporary.conversation_id);
+        still_open(&capture).await;
+
+        answer(&store, temporary, "the whole summary").await;
+        wake(&bus, temporary.conversation_id);
+        assert_eq!(
+            concluded(capture).await,
+            Some("the whole summary".to_owned()),
+            "the capture answers with what the turn wrote after its tool round"
+        );
+    }
+
+    /// The bus drops events under load, and a dropped one may be the very
+    /// change that ended the turn. A lag wakes the capture into another level
+    /// read and decides nothing itself: over a turn still owed a round it
+    /// concludes nothing, and the capture is still there to answer the next
+    /// real change.
+    #[tokio::test]
+    async fn a_lagged_wake_concludes_nothing_and_leaves_the_capture_running() {
+        let (sessions, store, bus, _context) = quiet_sessions();
+        let temporary = forked_temporary(&store).await;
+        answer(&store, temporary, "half of what was asked for").await;
+        failed_call(&store, temporary).await;
+
+        let mut watch = bus.subscribe();
+        let capture = tokio::spawn({
+            let sessions = Arc::clone(&sessions);
+            async move {
+                sessions
+                    .capture_summary(
+                        temporary,
+                        tokio::time::Instant::now() + Duration::from_secs(30),
+                    )
+                    .await
+            }
+        });
+        // The capture's own unlatch is the signal that it has subscribed, so
+        // the flood below overruns a subscription that exists.
+        loop {
+            match watch.recv().await {
+                Ok(CoreEvent::UnlatchRequested { conversation_id })
+                    if conversation_id == temporary.conversation_id =>
+                {
+                    break;
+                }
+                Ok(_) => {}
+                Err(error) => panic!("the capture never asked for its turn: {error}"),
+            }
+        }
+
+        // More events than the bus holds, emitted without yielding: every
+        // subscription that was parked misses some of them.
+        for _ in 0..300 {
+            bus.emit(CoreEvent::UnlatchRequested {
+                conversation_id: -1,
+            });
+        }
+        assert!(
+            matches!(watch.recv().await, Err(RecvError::Lagged(_))),
+            "the flood has to overrun a subscription for this test to read anything"
+        );
+        still_open(&capture).await;
+
+        answer(&store, temporary, "the whole summary").await;
+        wake(&bus, temporary.conversation_id);
+        assert_eq!(
+            concluded(capture).await,
+            Some("the whole summary".to_owned()),
+            "a capture that lagged still answers on the next change"
+        );
+    }
+
+    /// A compaction whose turn finished writing is over: the capture
+    /// concludes on the stored facts and the conversation is retired at once,
+    /// nowhere near [`SUMMARY_BOUND`].
+    #[tokio::test]
+    async fn a_finished_toolless_turn_is_captured_and_retired_before_the_bound() {
+        let (sessions, store, _bus, _context) = quiet_sessions();
+        let temporary = forked_temporary(&store).await;
+        answer(&store, temporary, "the whole summary").await;
+
+        let captured = tokio::time::timeout(
+            Duration::from_secs(10),
+            sessions.capture_and_retire(temporary),
+        )
+        .await
+        .expect("a durable summary ends the capture at once, not at the bound")
+        .expect("the capture and the retirement both succeed");
+
+        assert_eq!(captured, Some("the whole summary".to_owned()));
+        assert!(
+            store
+                .find_conversation(temporary.conversation_id)
+                .await
+                .expect("the conversation table reads")
+                .is_none(),
+            "a captured temporary conversation is retired"
+        );
+    }
+
+    /// A turn that has not started yet must NOT end the capture, and that is
+    /// the whole reason the empty-turn answer below needs a third fact. The
+    /// ledger here is a fresh fork: every block durable, no outcome owed, no
+    /// prose past the instructions — which is bit for bit what a turn that
+    /// ran and wrote nothing looks like. No terminal has been seen, so the
+    /// capture waits, and it is still there to answer when the turn writes.
+    #[tokio::test]
+    async fn a_turn_that_has_not_started_does_not_conclude_the_capture() {
+        let (sessions, store, bus, _context) = quiet_sessions();
+        let temporary = forked_temporary(&store).await;
+
+        let capture = tokio::spawn({
+            let sessions = Arc::clone(&sessions);
+            async move {
+                sessions
+                    .capture_summary(
+                        temporary,
+                        tokio::time::Instant::now() + Duration::from_secs(30),
+                    )
+                    .await
+            }
+        });
+
+        // Block changes, and plenty of them, with no terminal among them: a
+        // wake is not evidence that the turn ran.
+        for _ in 0..5 {
+            wake(&bus, temporary.conversation_id);
+        }
+        still_open(&capture).await;
+
+        answer(&store, temporary, "the whole summary").await;
+        wake(&bus, temporary.conversation_id);
+        assert_eq!(
+            concluded(capture).await,
+            Some("the whole summary".to_owned()),
+            "the capture that waited out the empty ledger answers what the turn wrote"
+        );
+    }
+
+    /// A turn that ENDS having written nothing ends the capture at once, and
+    /// this is the incident's own shape: the provider errors, the framework
+    /// discards the streaming tails and stores no prose, and from then on the
+    /// ledger reads durably over and empty forever. The three facts are all
+    /// in — the predicate true, no prose, a terminal seen — so the capture
+    /// answers `None` and the compaction fails unsummarized.
+    ///
+    /// The capture's own bound here is [`SUMMARY_BOUND`], three minutes, and
+    /// the whole compaction is awaited under five seconds: a capture that
+    /// parked this turn to its bound fails this test instead of passing it
+    /// slowly. The stall is the point — the capture runs inline in the one
+    /// shared compaction driver, so three minutes here is three minutes of
+    /// every other conversation's door.
+    #[tokio::test]
+    async fn a_turn_that_ends_writing_nothing_fails_the_compaction_at_once() {
+        let (sessions, store, bus, _context) = quiet_sessions();
+        let source = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        for turn in 0..3 {
+            store
+                .insert_final_text_block(source, Role::User, format!("question {turn}"), None)
+                .await
+                .expect("the question stores");
+            store
+                .insert_final_text_block(source, Role::Assistant, format!("answer {turn}"), None)
+                .await
+                .expect("the answer stores");
+        }
+
+        // Subscribed before the compaction starts, so the unlatch that names
+        // the temporary conversation cannot be missed.
+        let mut watch = bus.subscribe();
+        let compaction = tokio::spawn({
+            let sessions = Arc::clone(&sessions);
+            async move {
+                sessions
+                    .compact(
+                        source,
+                        &ChannelKey {
+                            adapter: "test".into(),
+                            channel: "c".into(),
+                        },
+                        ChannelKind::Group,
+                    )
+                    .await
+            }
+        });
+
+        let temporary = loop {
+            match watch.recv().await {
+                Ok(CoreEvent::UnlatchRequested { conversation_id }) => break conversation_id,
+                Ok(_) => {}
+                Err(error) => panic!("the compaction never asked for its turn: {error}"),
+            }
+        };
+        // What the framework does to a turn its provider fails: the error IS
+        // the turn's end, the streaming tails are discarded, and no prose is
+        // ever written.
+        bus.emit(CoreEvent::StreamError {
+            conversation_id: temporary,
+            error: "the provider failed the turn".into(),
+            generation: None,
+        });
+
+        let failure = tokio::time::timeout(Duration::from_secs(5), compaction)
+            .await
+            .expect("the capture answers on the turn's end, not at SUMMARY_BOUND")
+            .expect("the compaction ran to its answer")
+            .expect_err("a turn that wrote nothing fails the compaction");
+        assert!(
+            matches!(
+                failure,
+                CoreError::CompactionUnsummarized { conversation_id }
+                    if conversation_id == source
+            ),
+            "the failure names the conversation nothing could be summarized for: {failure}"
+        );
+        assert!(
+            store
+                .find_conversation(temporary)
+                .await
+                .expect("the conversation table reads")
+                .is_none(),
+            "the temporary conversation is retired even though its turn wrote nothing"
+        );
+    }
+
+    /// A turn nothing ended reaches the bound, and the bound STOPS it: the
+    /// capture interrupts and waits for that interrupt's own settle before it
+    /// answers, so the conversation the caller retires next is not still
+    /// being written into. Whatever prose the ledger holds by then is the
+    /// answer.
+    #[tokio::test]
+    async fn the_bound_interrupts_the_turn_and_awaits_its_settle() {
+        let (sessions, store, bus, _context) = quiet_sessions();
+        let temporary = forked_temporary(&store).await;
+        answer(&store, temporary, "what the turn managed to write").await;
+        let tail = store
+            .insert_streaming_block(temporary.conversation_id, Role::Assistant)
+            .await
+            .expect("the streaming tail stores");
+
+        // The answer takes its time, so a capture that emitted the interrupt
+        // without awaiting the settle would answer while the tail still
+        // stands — which is what the assertions below read.
+        let interrupted = answers_the_interrupt(
+            &store,
+            &bus,
+            temporary,
+            Some(tail),
+            Duration::from_millis(150),
+        );
+
+        let captured = sessions
+            .capture_summary(
+                temporary,
+                tokio::time::Instant::now() + Duration::from_millis(100),
+            )
+            .await
+            .expect("the interrupt settles");
+
+        assert_eq!(
+            captured,
+            Some("what the turn managed to write".to_owned()),
+            "the ledger's prose at the bound is the answer"
+        );
+
+        // The stored state the settle waits for, read at the moment the
+        // capture answered: a capture that emitted the interrupt without
+        // awaiting its settle would have answered before either write.
+        assert!(
+            !streams::has_streaming_tail(&store, temporary.conversation_id)
+                .await
+                .expect("the ledger reads"),
+            "the capture answers only once the interrupt has swept the streaming tail"
+        );
+        let blocks = store
+            .list_blocks(temporary.conversation_id)
+            .await
+            .expect("the ledger reads");
+        assert!(
+            blocks
+                .iter()
+                .any(|block| Status::KINDS.contains(&block.block_type.as_str())),
+            "the capture answers only once the interrupt has recorded itself"
+        );
+        let _stood = interrupted.await.expect("the interrupt was answered");
+    }
+
+    /// The retirement's ordering, watched from inside: when the turn is told
+    /// to stop, the conversation it writes into is still there. That is what
+    /// makes it impossible for a stopping turn's own writes to target a
+    /// deleted conversation id.
+    #[tokio::test]
+    async fn a_retirement_settles_the_turn_before_it_deletes_the_conversation() {
+        let (sessions, store, bus, _context) = quiet_sessions();
+        let temporary = forked_temporary(&store).await;
+        let tail = store
+            .insert_streaming_block(temporary.conversation_id, Role::Assistant)
+            .await
+            .expect("the streaming tail stores");
+
+        let interrupted =
+            answers_the_interrupt(&store, &bus, temporary, Some(tail), Duration::ZERO);
+
+        sessions
+            .retire(temporary.conversation_id)
+            .await
+            .expect("a settled turn retires");
+
+        assert!(
+            interrupted.await.expect("the interrupt was answered"),
+            "the turn is told to stop while its conversation still stands"
+        );
+        assert!(
+            store
+                .find_conversation(temporary.conversation_id)
+                .await
+                .expect("the conversation table reads")
+                .is_none(),
+            "a settled conversation is deleted"
+        );
+    }
+
+    /// A capture that beat the terminal still retires. The framework commits
+    /// a turn's final text BEFORE it emits the stream's terminal, so a
+    /// capture concluding off that committed text reaches the retirement
+    /// while the observation can still read open — and the terminal it would
+    /// wait for has already fired, before the settle subscribed, where no
+    /// subscription can ever see it. Nothing here is a lag: it is the plain
+    /// order of two writes.
+    ///
+    /// Scripted as that order leaves things: the observation is open, no
+    /// terminal is ever emitted on this bus, and the runtime answers the
+    /// interrupt for a turn with no tail left to sweep. A settle deciding
+    /// from its wait spends the whole settle bound and then throws the good
+    /// summary away; the settle reads the missing tail, takes no wait, and
+    /// confirms from stored state — so the summary comes back, promptly, and
+    /// the conversation is gone.
+    #[tokio::test]
+    async fn a_capture_that_beat_the_streams_terminal_still_retires() {
+        let (sessions, store, bus, context) = quiet_sessions();
+        let temporary = forked_temporary(&store).await;
+        answer(&store, temporary, "the whole summary").await;
+
+        bus.emit(CoreEvent::StreamStatus {
+            conversation_id: temporary.conversation_id,
+            label: stream_status::WAITING_FOR_RESPONSE.to_owned(),
+            subtitle: None,
+        });
+        // The observation has to be in before the settle reads it; the
+        // measurement the same event records is what says it is.
+        while context
+            .streams()
+            .last_dispatch(temporary.conversation_id)
+            .is_none()
+        {
+            tokio::task::yield_now().await;
+        }
+
+        let interrupted = answers_the_interrupt(&store, &bus, temporary, None, Duration::ZERO);
+
+        let summary = sessions
+            .capture_and_retire(temporary)
+            .await
+            .expect("a committed summary survives an observation left open")
+            .expect("the capture read the committed prose");
+        assert_eq!(summary, "the whole summary");
+
+        assert!(
+            interrupted.await.expect("the interrupt was answered"),
+            "the turn is told to stop while its conversation still stands"
+        );
+        assert!(
+            store
+                .find_conversation(temporary.conversation_id)
+                .await
+                .expect("the conversation table reads")
+                .is_none(),
+            "the retired conversation is deleted"
+        );
+    }
+
+    /// A settle that FAILS deletes nothing. The compaction fails with the
+    /// unsettled stream, the temporary conversation is still standing, and a
+    /// write from the turn nobody could stop still has a live conversation to
+    /// write into — which is the failure this ordering exists to prevent,
+    /// read from the store instead of argued.
+    ///
+    /// The stream is observed open and no end signal ever arrives, so the
+    /// settle spends its whole bound before failing; that wait is this test's
+    /// running time.
+    #[tokio::test]
+    async fn a_stream_that_never_settles_leaves_the_conversation_standing() {
+        let (sessions, store, bus, context) = quiet_sessions();
+        let temporary = forked_temporary(&store).await;
+        answer(&store, temporary, "the whole summary").await;
+
+        let mut events = bus.subscribe();
+        bus.emit(CoreEvent::StreamStatus {
+            conversation_id: temporary.conversation_id,
+            label: stream_status::WAITING_FOR_RESPONSE.to_owned(),
+            subtitle: None,
+        });
+        // The observation has to be in before the settle reads it; the
+        // measurement the same event records is what says it is.
+        while context
+            .streams()
+            .last_dispatch(temporary.conversation_id)
+            .is_none()
+        {
+            tokio::task::yield_now().await;
+        }
+
+        let failure = sessions
+            .capture_and_retire(temporary)
+            .await
+            .expect_err("a stream that never settles fails the compaction");
+        assert!(
+            matches!(
+                failure,
+                CoreError::StreamUnsettled { conversation_id }
+                    if conversation_id == temporary.conversation_id
+            ),
+            "the failure names the unsettled stream: {failure}"
+        );
+
+        let mut interrupted = false;
+        while let Ok(event) = events.try_recv() {
+            interrupted |= matches!(
+                event,
+                CoreEvent::InterruptRequested { conversation_id }
+                    if conversation_id == temporary.conversation_id
+            );
+        }
+        assert!(interrupted, "the retirement asked the turn to stop");
+        assert!(
+            store
+                .find_conversation(temporary.conversation_id)
+                .await
+                .expect("the conversation table reads")
+                .is_some(),
+            "a conversation whose turn would not settle is not deleted"
+        );
+        store
+            .insert_final_text_block(
+                temporary.conversation_id,
+                Role::Assistant,
+                "a late write from the turn nobody stopped".into(),
+                None,
+            )
+            .await
+            .expect("the turn's late write still has a live conversation to write into");
+    }
 }

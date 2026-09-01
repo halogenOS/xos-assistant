@@ -273,20 +273,30 @@ pub(crate) fn spawn_observer(bus: &Arc<EventBus<CoreEvent>>) -> Arc<StreamObserv
 /// id-compared: deleting the streaming tail frees the newest ids, so the
 /// append can arrive on a reissued id at or below the old tail's.
 ///
-/// An observed-open stream first awaits the stream's end signal — the same
-/// terminal set the observer closes on: the turn's done, its error, or the
-/// stream's close. An errored turn emits no close at all (the framework ends
-/// the turn on the error itself), so a wait keyed on the close alone would
-/// burn the whole bound for a stream that already ended. A provider deaf to
-/// the interrupt emits none of the three and therefore still fails the
-/// settle loudly at the bound; the timed-out observation is dropped as the
-/// failure returns, so a retry decides from stored state — the interrupt's
-/// teardown has swept the tail by then — instead of failing forever. A
-/// stored tail with no observed stream is a leftover from a runtime that is
-/// gone (a crash's residue), so no end signal can ever arrive and the
-/// stored-state confirmation alone decides; the interrupt is still emitted
-/// first, because its handling is what sweeps the tail and latches any
-/// stream the observation might have missed.
+/// A stream observed open AND holding a stored tail first awaits its end
+/// signal — the terminal set [`is_stream_terminal`] names. An errored turn
+/// emits no close at all (the framework ends the turn on the error itself),
+/// so a wait keyed on the close alone would burn the whole bound for a
+/// stream that already ended. A provider deaf to the interrupt emits none of
+/// the terminals and therefore still fails the settle loudly at the bound;
+/// the timed-out observation is dropped as the failure returns, so a retry
+/// decides from stored state — the interrupt's teardown has swept the tail
+/// by then — instead of failing forever.
+///
+/// The stored tail is what gives the wait something to wait for, and reading
+/// it is what keeps an ALREADY-ENDED turn out of that wait (2026-09-01,
+/// unit 51).
+/// The framework commits a turn's final text before it emits the terminal,
+/// so a caller that concluded from the committed text arrives here to an
+/// observation still open and a terminal already fired — past this
+/// subscription, unobservable, and no tail left in the ledger. Waiting there
+/// spends the whole bound and then calls a settled turn unsettled, so with
+/// no tail the interrupt is emitted and the stored-state confirmation
+/// decides directly. That is the same answer a stored tail with no observed
+/// stream gets — a leftover from a runtime that is gone, a crash's residue,
+/// where no end signal can ever arrive either. The interrupt is emitted
+/// first in every case, because its handling is what sweeps the tail and
+/// latches any stream the observation might have missed.
 ///
 /// # Errors
 ///
@@ -302,13 +312,25 @@ pub(crate) async fn settle_stream(
     // between the read and the wait below still reaches the wait.
     let mut events = bus.subscribe();
     let observed_open = observer.is_open(conversation_id);
-    if !observed_open && !has_streaming_tail(store, conversation_id).await? {
+    // Read whatever the observation says (2026-09-01, unit 51). The stored
+    // tail is what says there is anything to WAIT for: the framework's final
+    // text commit replaces the tail and the terminal follows it, so a turn
+    // that has committed its answer has no tail here and its terminal may
+    // already be past — fired before the subscription above opened, where no
+    // wait can ever see it. Waiting on the observation alone burns the whole
+    // bound for that turn and then calls it unsettled, which is a settled
+    // turn reported as a failure.
+    let stored_tail = has_streaming_tail(store, conversation_id).await?;
+    if !observed_open && !stored_tail {
         return Ok(());
     }
     let deadline = tokio::time::Instant::now() + STREAM_SETTLE_BOUND;
     let statuses_before = count_status_blocks(store, conversation_id).await?;
     bus.emit(CoreEvent::InterruptRequested { conversation_id });
-    if observed_open && !await_stream_end(&mut events, conversation_id, deadline).await {
+    if stored_tail
+        && observed_open
+        && !await_stream_end(&mut events, conversation_id, deadline).await
+    {
         // The observation is dropped with the failure: a provider deaf to
         // the interrupt emits no end signal ever, so the entry would
         // otherwise stay open forever and every retry would burn the bound
@@ -322,42 +344,83 @@ pub(crate) async fn settle_stream(
     confirm_settled(store, conversation_id, statuses_before, deadline).await
 }
 
-/// Await one conversation's stream-end signal — done, error or closed, the
-/// terminal set the observer keys on — answering whether it arrived before
-/// the deadline.
+/// Whether this event ends the named conversation's stream: its done, its
+/// error, or its close.
 ///
-/// Two callers wait on a turn ending and they wait the same way (widened to
-/// crate visibility 2026-08-31, unit 48): the erasure's settle, which then
-/// confirms from stored state, and the compaction's capture, which then
-/// reads the answer off the ledger. Both decide from the LEDGER afterwards
-/// and use this only to spare that read its polling, so a second wait loop
-/// would be a second reading of the same signal set.
+/// The one reading of the terminal set, for the same reason
+/// [`has_streaming_tail`] is the one reading of the stored tail — a second
+/// reading elsewhere is a second answer to the same question, and the two
+/// would drift the moment the framework gains or renames a terminal. Both
+/// facts anyone asks of a stream's end are this predicate's: the settle's
+/// wait below, and the compaction capture's own record of having seen the
+/// turn end. An errored turn emits no close at all (the framework ends the
+/// turn on the error itself), which is why the error belongs in the set and
+/// a reading keyed on the close alone would wait out its bound for a stream
+/// that already ended.
+pub(crate) fn is_stream_terminal(event: &CoreEvent, conversation_id: i64) -> bool {
+    matches!(
+        event,
+        CoreEvent::StreamDone {
+            conversation_id: ended,
+            ..
+        }
+        | CoreEvent::StreamError {
+            conversation_id: ended,
+            ..
+        }
+        | CoreEvent::StreamClosed {
+            conversation_id: ended,
+            ..
+        } if *ended == conversation_id
+    )
+}
+
+/// Await one conversation's stream-end signal, answering whether it arrived
+/// before the deadline.
 ///
-/// A LAGGED subscriber answers `true`: the end signal may have been dropped
-/// inside the lag, and the caller's stored-state read is the check that
-/// decides. A closed bus and the deadline both answer `false`.
-pub(crate) async fn await_stream_end(
+/// The settle is the one caller (narrowed again 2026-09-01, unit 51): it
+/// spares [`confirm_settled`] its polling and then decides from
+/// stored state. The compaction's capture used to wait here too and no
+/// longer does — a message's end is not a turn's end, so the capture reads
+/// the framework's durable-turn predicate off the ledger instead.
+///
+/// This says only WHEN the wait ends; which event is a terminal is
+/// [`is_stream_terminal`]'s, and how long the wait lasts and what a lag or a
+/// closed bus costs is [`event_before`]'s.
+async fn await_stream_end(
     events: &mut tokio::sync::broadcast::Receiver<CoreEvent>,
     conversation_id: i64,
     deadline: tokio::time::Instant,
 ) -> bool {
+    event_before(events, deadline, |event| {
+        is_stream_terminal(event, conversation_id)
+    })
+    .await
+}
+
+/// Wait for a bus event the caller recognizes through `wanted`, answering
+/// whether one arrived before the deadline.
+///
+/// Every waiter on this bus treats an event as a WAKEUP and reads stored
+/// state afterwards, so they all want the same policy and it is stated here
+/// once (unit 51, 2026-09-01): a LAGGED subscriber answers `true`, because
+/// the event may have been dropped inside the lag and the caller's own read
+/// is the check that decides; a closed bus is every wake there will ever be,
+/// gone, so it answers like the deadline. Which event is the wake is the
+/// caller's question and stays with the caller.
+///
+/// `wanted` is `FnMut` because every event passes through it, wake or not: a
+/// caller that keeps a fact about what it has SEEN — the capture's own
+/// turn-ended fact — folds it in here instead of running a second
+/// subscription over the same bus.
+pub(crate) async fn event_before(
+    events: &mut tokio::sync::broadcast::Receiver<CoreEvent>,
+    deadline: tokio::time::Instant,
+    mut wanted: impl FnMut(&CoreEvent) -> bool,
+) -> bool {
     loop {
-        let event = tokio::time::timeout_at(deadline, events.recv()).await;
-        match event {
-            Ok(Ok(
-                CoreEvent::StreamDone {
-                    conversation_id: ended,
-                    ..
-                }
-                | CoreEvent::StreamError {
-                    conversation_id: ended,
-                    ..
-                }
-                | CoreEvent::StreamClosed {
-                    conversation_id: ended,
-                    ..
-                },
-            )) if ended == conversation_id => return true,
+        match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(event)) if wanted(&event) => return true,
             Ok(Ok(_)) => {}
             Ok(Err(RecvError::Lagged(_))) => return true,
             Ok(Err(RecvError::Closed)) | Err(_) => return false,
@@ -396,7 +459,19 @@ async fn confirm_settled(
 
 /// Whether the conversation's ledger holds an unfinalized streaming tail
 /// right now — the stored trace of an in-flight turn.
-async fn has_streaming_tail(store: &Store, conversation_id: i64) -> Result<bool, CoreError> {
+///
+/// Crate-visible so a caller's own test can read this exact fact through
+/// this exact query: the stored type strings are matched by the prefix above
+/// and a second reading of them elsewhere would be a second answer to the
+/// same question.
+///
+/// # Errors
+///
+/// [`CoreError::Store`] if the read fails.
+pub(crate) async fn has_streaming_tail(
+    store: &Store,
+    conversation_id: i64,
+) -> Result<bool, CoreError> {
     Ok(store
         .list_blocks(conversation_id)
         .await?

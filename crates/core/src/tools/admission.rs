@@ -188,10 +188,15 @@ impl ToolHandler<CoreEvent> for AdmittedTool {
         Box::pin(async move {
             match self.admit(&ctx).await {
                 Ok(()) => self.inner.execute(input, ctx).await,
-                // The recorded tool error, before the body ran and before
-                // any network was touched — the runner records it and the
-                // model reads it.
-                Err(decline) => ToolOutcome::Error(decline),
+                // A REFUSAL, not a failure (unit 51, 2026-09-01): the call
+                // was declined before the body ran and before any network
+                // was touched, so the model spent a round and is handed only
+                // the reason. The framework marks the outcome row a refusal
+                // and counts a run of them toward the forced turn end, which
+                // is what bounds a turn the model keeps spending on a tool
+                // this conversation admits none of. The words stay this
+                // app's; the fact is the framework's.
+                Err(decline) => ToolOutcome::Refused(decline),
             }
         })
     }
@@ -276,6 +281,12 @@ mod tests {
     /// before any turn, so this arm is unreachable through the full
     /// assembly; the wrapper still refuses on its own, and this pin keeps
     /// that refusal a behavior instead of a wording.
+    ///
+    /// The outcome is the framework's REFUSAL and not its error (unit 51):
+    /// the call was declined before it ran, and that typed fact is what the
+    /// forced turn end counts a run of. A decline recorded as an ordinary
+    /// failure would leave a toolless turn spending a paid round per call
+    /// until the conversation's whole tool-call window was gone.
     #[tokio::test]
     async fn a_conversation_without_a_palette_declines_before_the_body_runs() {
         let store =
@@ -304,13 +315,13 @@ mod tests {
             .await;
 
         match outcome {
-            ToolOutcome::Error(decline) => assert_eq!(
+            ToolOutcome::Refused(decline) => assert_eq!(
                 decline,
                 no_palette_decline(),
                 "the no-palette arm speaks its own recorded decline"
             ),
-            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Refused(_) => {
-                panic!("a conversation without a palette admits no tool")
+            ToolOutcome::Done(_) | ToolOutcome::Pending | ToolOutcome::Error(_) => {
+                panic!("a conversation without a palette refuses every tool")
             }
         }
         assert!(
