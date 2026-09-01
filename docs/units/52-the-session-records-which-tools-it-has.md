@@ -199,9 +199,15 @@ Framework:
 App:
 
 19. `ToolPalette`, its content table, its descriptor, `newest_tools`, `reconcile_palette` and
-    `AdmittedTool` no longer exist. A grep for each identifier returns nothing, and a
-    case-insensitive grep for `palette` over the app's source and test trees returns nothing —
-    the module prose that described the mechanism goes with the mechanism.
+    `AdmittedTool` no longer exist. A grep for each identifier returns nothing. A
+    case-insensitive grep for `palette` over the app's source and test trees returns hits only
+    where criterion 25 forces the withdrawn table's name to survive — the one schema constant,
+    the withdrawal migration built from it, the fixture that recreates the previous build's
+    disk — plus history and unrelated subjects (a dated decision document's filename, prompt
+    copy about the emoji palette). The module prose that described the mechanism goes with the
+    mechanism, and a scan test enumerates the surviving hits with each one's reason, so a new
+    hit fails the suite. As first written this criterion demanded zero hits, which criterion 25
+    makes unsatisfiable: the migration must name what it drops.
 20. A channel's first contact records a framework tool choice naming exactly the registered set,
     in the position the palette held. A test reads the created conversation's ledger.
 21. A registered-set delta appends a fresh tool choice on the same three paths that reconciled
