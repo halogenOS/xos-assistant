@@ -51,27 +51,31 @@ module and asserted by test, so the ledger reads why the turn ended:
 `Turn ended: the actions taken are the whole answer.` The model reads that row on the next
 turn's replay, so the sentence addresses the model.
 
-**The teaching becomes one rule with three arms, in precedence order.** When a turn has
-nothing to say: react if one reaction honestly answers chatter; otherwise call
-`work_is_done` if the turn took actions and those actions are the whole answer — a mark
-placed, a report filed, a lookup run for the assistant's own orientation and found to need
-no telling; otherwise call `no_reply_needed` if the turn took no action and nothing was
-asked of the assistant. The qualifier is part of the rule everywhere it is written: a search
-or lookup run TO ANSWER someone still ends in the written answer, so the search and sourcing
-teaching sentences stand unchanged and collide with neither arm. The closing call is the
-turn's only output — prose written before a tool call is posted to the group as its own
-message, by the mechanism the heads-up line rides, so a narrated close would repeat the
-production failure with extra steps; the teaching says to call the tool bare, and the
-mechanism is stated here because no machinery can forbid it. Never post a message whose only
-content is that the assistant is not participating. The empty turn stays valid and stays
-taught as the fallback.
+**The teaching pushes nothing.** The tools are a safety net against the loop that spends
+money, never a taught behaviour. The recorded sentence, kept on the user's order: the loop
+protection works because a model that must do SOMETHING now has a something that costs
+nothing. That is the whole protection, and it works by existing. So the system
+prompt gains NO directive to call either tool. What each tool is for lives in its own
+model-facing description, nowhere else. Ending the turn with plain silence stays the taught
+default, exactly as today. Two sentences do join the teaching, both prohibitions, neither a
+push: never post a message whose only content is that the assistant is not participating,
+and the closing call is made bare — prose written ahead of any tool call is posted to the
+group as its own message by the standing mechanism, so a narrated close is the production
+failure with extra steps. The search and sourcing sentences stand byte-unchanged.
 
-**Both answering modes teach both tools.** A registered tool is never left untaught, and the
-recorded tool choice names the pair in every conversation. The helpful-mode teaching carries
-the full three-arm rule; the addressed-mode silence sentence extends to name the pair for
-its own two shapes — an addressed message that leaves nothing useful to say ends through
-`no_reply_needed`, an addressed request completed by actions ends through `work_is_done`.
-Each mode's wording stays its own; neither imports the other's triggers.
+**The reaction becomes the terminal-message action.** The user's definition replaces the
+chatter wording the reaction teaching carries today ("a share, a milestone, a joke"): a
+response to the assistant that needs no further response can be stamped off with a reaction.
+The recorded example:
+
+> A: Xenia how does x and y work
+> Xenia: this and that way
+> A: Thanks
+> Xenia reacts with ✌️
+
+The sentence stays permissive — can, never should — and the standing bounds survive
+untouched: words and a reaction never land on one message, one message takes at most one
+reaction, most messages deserve none, silence stays the default.
 
 **What the tools do not do.** They take no parameters, read nothing, write nothing beyond
 their resolution, and their `admit` answers the same authority hook every tool answers.
@@ -88,19 +92,19 @@ assistant's own turn.
    carries the framework's ends-turn stamp, no continuation is dispatched, and nothing is
    delivered to the channel. A spine test runs a narration-free scripted turn through each
    tool and asserts all three. Prose streamed ahead of the call delivers as its own message
-   by the standing mechanism; that shape is taught against, not forbidden, and criterion 5's
-   teaching assertions carry the sentence.
+   by the standing mechanism; that shape is prohibited in the teaching, not forbidden by
+   machinery, and criterion 5's teaching assertions carry the sentence.
 3. Each tool's stored result text is its module's byte-fixed sentence. A test asserts both
    sentences whole.
 4. Both tools ride the registered set: a created conversation's recorded tool choice names
    them, and the compaction fork's empty choice keeps them out of a summary turn. Tests
    read both ledgers.
-5. The helpful-mode teaching presents the three-arm rule in its precedence order with the
-   orientation qualifier and the call-it-bare sentence; the addressed-mode silence sentence
-   names the pair for its two shapes; the never-announce-silence sentence is present; and
-   under the qualified wording no remaining teaching sentence tells the model to write when
-   an arm applies — the search and sourcing sentences stand unchanged and are asserted
-   unchanged. The teaching tests cover each mode's new wording.
+5. The teaching contains NO directive to call either tool — a test asserts neither tool's
+   name appears in any teaching constant — and carries the two prohibitions: the
+   never-announce sentence and the bare-call sentence. The reaction teaching's chatter
+   wording is replaced by the terminal-message wording, permissive voice, standing bounds
+   intact. The search and sourcing sentences stand byte-unchanged and are asserted
+   unchanged. The teaching tests cover the new wording in both answering modes.
 6. The two tools register in the assembly's unconditional-tools home, beside the react and
    report tools, never in the lookups set. The test fixtures see them wherever they see the
    unconditional tools, and existing tests that count or enumerate registered tools pass
@@ -120,14 +124,27 @@ assistant's own turn.
   is the point of recording decisions. The framework slice named the pair.
 - **Retiring the empty turn now that tools exist.** Rejected: the empty turn is the
   framework's honest record of a model that ended with nothing, tool or no tool, and
-  deleting a working mechanism to force another is churn. The teaching orders them; the
-  machinery keeps both.
+  deleting a working mechanism to force another is churn. The machinery keeps both and the
+  teaching keeps the empty turn as the default.
 - **A parameter carrying the reason.** Rejected: the tool's identity is the reason, and a
   free-text parameter invites the model to write the very prose the tool exists to replace.
+- **A taught rule directing the model to the tools.** This spec's own first design, rejected
+  by the user: a rule that pushes an action gets the action stamped on everything, and the
+  tools are a drain protection that works by existing, not a behaviour to encourage. The
+  teaching pushes nothing; the descriptions carry the meaning.
 
 ## Decisions on record
 
 **2026-09-02, the order (verbatim):** "Before the idea please implement these two tools."
+
+**2026-09-02, the safety-net correction (verbatim):** "dont tell the model to call a
+no-action tool. These are only safety nets so it can fall back. Its not a message
+protection, it's a model-needs-to-do-something-so-it-will-endlessly-loop-and-drain-my-money
+protection"
+
+**2026-09-02, the reaction (verbatim):** "Call it a terminal-message action. If a response
+to the assistant needs no further response it can be stamped off with a reaction." — and,
+asked whether this replaces the chatter wording: "My thing replaces that yes"
 
 **2026-08-30, the framework slice:** "The consumer registers concrete tools on the
 capability (a do-nothing, a no-reply-needed — its choice); the framework knows only the
