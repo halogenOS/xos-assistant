@@ -162,6 +162,21 @@ subscription: the scheduler reacts through the table-blind `ctx.store.changes.wa
   lossy-bus-safe pattern — never on `StreamDone`, never on a lagged subscription.
   `SUMMARY_BOUND` remains the outer bound; on expiry the temporary turn is interrupted and
   the interrupt's own settle awaited before anything else happens.
+
+  A turn that ends WITHOUT prose ends the capture too, and it needs a second fact to say so
+  (added 2026-09-01, after three readers found the same hole). The predicate alone cannot
+  tell "the turn ran and wrote nothing" from "the turn has not started": a freshly forked
+  temporary is all durable and owes no outcome, so the predicate reads true over it before
+  anything runs. The second fact is that a stream terminal for this conversation has been
+  seen since the unlatch — the turn demonstrably ran. Only all three together answer `None`
+  at once: the predicate true, no prose in the ledger, and the turn seen to have ended. This
+  does not concede A1's rule. `StreamDone` still concludes nothing by itself — over a
+  tool-use stop the predicate is false and over a turn with prose the ledger answers — and a
+  terminal a lagged subscription drops costs only the bound, which is what the capture would
+  have waited anyway. Without this the incident's own shape regresses: a provider error ends
+  the turn writing nothing, and the capture sits out the full three minutes inside the one
+  shared compaction driver, stalling every other conversation's door for the same three
+  minutes, where the code this unit replaces failed in milliseconds.
 - **A2 — retire settles first, and a settle that fails stops the deletion.** `retire`
   interrupts the temporary conversation and awaits its settle before `delete_conversation`.
   If the settle fails (`streams::confirm_settled` at its deadline,
@@ -187,6 +202,11 @@ subscription: the scheduler reacts through the table-blind `ctx.store.changes.wa
    no streaming tail, no outcome awaiting a continuation — or on the unit's own awaited
    interrupt after `SUMMARY_BOUND`; never on `StreamDone`, a lagged bus, or a bare timeout.
    A successful toolless compaction concludes as soon as its prose lands, not at the bound.
+   A turn that ends with NO prose concludes at once as well, answering `None`, on the three
+   facts A1 names: the predicate true, the ledger holding no prose, and a stream terminal
+   for this conversation seen since the unlatch. Parking such a turn to the bound is a
+   failure of this criterion, not a slow pass — the capture runs inline in the one shared
+   compaction driver.
 2. `retire` settles (interrupt + awaited end) before deletion; a settle that fails leaves the
    conversation undeleted and fails the compaction. After a failed compaction no framework
    write targets a deleted id — no FK violation, no scheduler `Query returned no rows`.
@@ -272,6 +292,20 @@ subscription: the scheduler reacts through the table-blind `ctx.store.changes.wa
   latched and unreapable — its blocks are joined, so `gc_orphan_blocks` cannot reach it.
   Inert, one per mid-compaction process end. A reaper for latched temporaries is its own
   unit.
+- A2's settle failure leaves one behind the same way, and more often than the line above
+  accounts for: once per settle-failed attempt, not once per process end. It is not inert
+  either — the temporary stands unmapped but unlatched, so a provider deaf to the interrupt
+  keeps writing into it and its block changes keep waking the driver. The reaper unit above
+  covers the deletion; what it cannot cover is the writing, and that is the price A2 accepts
+  for never deleting a conversation still being written to.
+- F5's predicate is not monotone across a tool-use turn, so A1's capture can still conclude
+  early as a RACE. The framework trails a tool-use stop's call blocks after the message end
+  (`src/ingestion.rs`, the drain phase), and in the window between the text finalization's
+  commit and that insert the ledger reads durably over with prose present. The wake the
+  finalization emits is exactly the one the capture reads on, so the read races the insert.
+  It is a narrow window against the certainty this unit removes — the code it replaces
+  concluded at every message end, always — but it is real, and closing it needs a
+  framework-side fact the app cannot see. Its own unit.
 
 ## Rulings appendix (operator, verbatim)
 
