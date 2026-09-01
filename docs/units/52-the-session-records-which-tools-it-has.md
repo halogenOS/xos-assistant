@@ -7,9 +7,9 @@ conversation that has no tools, and the compaction fork records exactly that, wr
 library that owns the fork.
 
 The repositories: the framework (`ronna-core`, checkout `~/projects/agent-ledger`, HEAD
-`8f8a2d1`; paths below rooted at `crates/agent-ledger/`) and the app (this repo, HEAD
-`713d68c`). Both change. The framework changes first; the app consumes it by path from the
-sibling checkout.
+`8f8a2d1`; paths below rooted at `crates/agent-ledger/`) and the app (this repo; the code
+claims below were read at `713d68c`, and only documents have changed since). Both change. The
+framework changes first; the app consumes it by path from the sibling checkout.
 
 ## What is true today
 
@@ -72,14 +72,20 @@ Every claim was read from the two trees at the stated heads.
 **The recorded choice.** A framework block kind, stored string `tool_choice`, carries the list
 of tool names a conversation has. It is a library kind, stored in the library's own table
 `block_tool_choice` through an appended core migration step and read through the blocks query,
-the same way the other nineteen library kinds are. It projects nothing to the model and awaits
-nobody. The newest one in a conversation's ledger speaks; a later one supersedes an earlier one
-by being appended.
+the same way the other nineteen library kinds are. It projects nothing to the model, awaits
+nobody, and is transparent to the frontier walk: the record is appended at arbitrary points in
+a conversation's history — the delta paths, the compacted thread's opening — and an opaque
+block there would bury an unanswered message behind it forever. The app's palette records
+exactly this reading for its own supersession. The newest one in a conversation's ledger
+speaks; a later one supersedes an earlier one by being appended.
 
-**One resolution, two readers.** One function computes the set of tools a conversation has,
-from its newest recorded choice and the registry, and both consumers resolve through it: the
-dispatch, to decide what the model is offered, and the runner, to decide what a call resolves
-against. The two can never disagree, because neither computes anything of its own.
+**One resolution, two readers.** One function computes the set of tools a conversation has —
+the intersection of its newest recorded choice with the registry — and both consumers resolve
+through it: the dispatch, to decide what the model is offered, and the runner, to decide what
+a call resolves against. The two can never disagree, because neither computes anything of its
+own. The intersection is the whole rule for a recorded name the registry no longer holds: it
+resolves to nothing and is offered to nobody, until the next delta append corrects the record.
+The state is reachable — a restart can register fewer tools than a persisted record names.
 
 **What a turn is offered.** The dispatch offers exactly the definitions the resolved set names.
 An empty list offers nothing. No recorded choice at all offers the registry, which is what
@@ -94,7 +100,11 @@ distinction would disclose the registry, which is exactly what the record exists
 sentence names the tools THIS conversation has, never the process registry, and the outcome's
 classification follows from whether a next round could succeed: with names to offer it is
 `Refusal::Failed`, because the model can correct itself; with none it is `Refusal::Refused`,
-because nothing it calls can resolve, and a run of those ends the turn.
+because nothing it calls can resolve, and a run of those ends the turn. The empty set's
+sentence states that this conversation has no tools; today's empty-registry sentence, "no
+tools are registered", folds into it and disappears, because it would assert a registry fact
+that is false for a conversation whose choice is empty against a populated registry — an empty
+registry is just one way the resolved set is empty.
 
 **The compaction.** `fork_temporary` records the empty choice into the temporary conversation
 itself, before the instructions block. The library owns that fork, so the library states its
@@ -109,7 +119,12 @@ and the runner.
 **The consumer's own admission.** `ToolHandler` gains one hook, consulted inside the runner's
 admission pass over the snapshot that pass already loaded: it receives the tool context and the
 ledger, and answers admit or refuse with a sentence. A refusal is recorded `Refusal::Refused`.
-`gate` keeps its present meaning, the human's clearance, and is unchanged.
+`gate` keeps its present meaning, the human's clearance, and is unchanged. When the snapshot's
+load itself fails, the admission pass keeps its present behaviour: it logs and stands down
+without resolving the call, the hook is never consulted, and the unresolved call keeps the
+turn's identity until a later tick answers it. The app's transient decline — "could not be
+verified right now" — is deleted with the wrapper; the stand-down is what covers its case, and
+recording that here is what makes the deletion a decision instead of a silent loss.
 
 **The app.** `ToolPalette`, `newest_tools`, `reconcile_palette` and `AdmittedTool` are deleted.
 The app records the framework's `tool_choice` at a channel's first contact and appends a fresh
@@ -132,7 +147,9 @@ Framework:
 
 1. A block kind with stored string `tool_choice` exists, carries a list of tool names, is stored
    in a library table created by an appended core migration step, and is read back through the
-   blocks query with its names intact. It projects nothing to the model and awaits nobody.
+   blocks query with its names intact. It projects nothing to the model, awaits nobody, and is
+   transparent to the frontier walk: a test appends a choice over an unanswered message and
+   asserts the message is still owed a turn.
 2. `Store` exposes a way to append a tool choice to a conversation and a way to read the newest
    one, both covered by tests.
 3. The dispatch offers exactly the definitions named by the conversation's newest recorded
@@ -140,65 +157,73 @@ Framework:
 4. An empty recorded choice offers no definitions. A test asserts it.
 5. A conversation with no recorded choice is offered every registered definition, unchanged from
    today. A test asserts it.
-6. The runner resolves a call name against the conversation's newest recorded choice. A name the
+6. The resolved set is the intersection of the newest recorded choice with the registry, and one
+   function computes it for both readers. A test records a choice naming a tool the registry
+   does not hold and asserts the name is neither offered at the dispatch nor resolvable at the
+   runner.
+7. The runner resolves a call name against the conversation's newest recorded choice. A name the
    choice does not carry never reaches its handler, even when the registry holds it. A test
    asserts the handler body did not run.
-7. The sentence the model reads on an unresolved name lists the tools the CONVERSATION has and
+8. The sentence the model reads on an unresolved name lists the tools the CONVERSATION has and
    no others, and is byte-identical whether the name was never registered or is registered but
    outside the choice. A test asserts a name outside a two-name choice yields a sentence naming
    those two and not the third registered tool, and a second test asserts the two sentences are
    equal.
-8. An unresolved name in a conversation whose choice is empty yields a sentence naming no tool
-   and is recorded `Refusal::Refused`. A test reads the classification off the stored row.
-9. An unresolved name in a conversation that HAS tools is recorded `Refusal::Failed`, unchanged
-   from today. A test reads the classification off the stored row.
-10. Consecutive unresolved calls in a conversation with an empty choice reach the forced turn end
+9. An unresolved name in a conversation whose resolved set is empty yields a sentence stating
+   this conversation has no tools — one that names no tool and asserts nothing about the
+   registry — and is recorded `Refusal::Refused`. A test reads the sentence and the
+   classification off the stored row, against a registry that HAS tools.
+10. An unresolved name in a conversation that HAS tools is recorded `Refusal::Failed`, unchanged
+    from today. A test reads the classification off the stored row.
+11. Consecutive unresolved calls in a conversation with an empty choice reach the forced turn end
     at the configured consecutive limit. A test asserts the turn stands down.
-11. `Agency::offers_tools` no longer exists, and neither does the `HarnessMessage` override or
+12. `Agency::offers_tools` no longer exists, and neither does the `HarnessMessage` override or
     the tests that read it. A grep for the identifier across both repositories returns nothing.
-12. `fork_temporary` records an empty tool choice into the temporary conversation, before the
+13. `fork_temporary` records an empty tool choice into the temporary conversation, before the
     instructions block, with no consumer input. A test reads the temporary conversation's ledger
     and finds it.
-13. `open_compacted_thread` records the source conversation's newest tool choice into the new
+14. `open_compacted_thread` records the source conversation's newest tool choice into the new
     thread. A test asserts the new thread's newest choice equals the source's.
-14. `ToolHandler` has one hook that receives the tool context and the ledger snapshot the
+15. `ToolHandler` has one hook that receives the tool context and the ledger snapshot the
     admission pass loaded, and answers admit or refuse with a sentence. Its refusal resolves the
     call with that sentence and the classification `Refusal::Refused`, and the handler body does
     not run. A test asserts all three.
-15. The admission pass loads the conversation's ledger exactly once per call, and the new hook
+16. The admission pass loads the conversation's ledger exactly once per call, and the new hook
     receives that snapshot. A test with a counting store asserts one load.
-16. A consumer can withdraw a content descriptor: a database that registered a table reopens
+17. A consumer can withdraw a content descriptor: a database that registered a table reopens
     after the consumer declares that table withdrawn and its domain migration drops it, and the
     registry row is gone afterwards. A test opens, writes, withdraws, reopens and asserts.
-17. Withdrawing a table that was never registered, and reopening twice after a withdrawal, both
+18. Withdrawing a table that was never registered, and reopening twice after a withdrawal, both
     succeed unchanged. A test asserts both.
 
 App:
 
-18. `ToolPalette`, its content table, its descriptor, `newest_tools`, `reconcile_palette` and
-    `AdmittedTool` no longer exist. A grep for each identifier returns nothing.
-19. A channel's first contact records a framework tool choice naming exactly the registered set,
+19. `ToolPalette`, its content table, its descriptor, `newest_tools`, `reconcile_palette` and
+    `AdmittedTool` no longer exist. A grep for each identifier returns nothing, and a
+    case-insensitive grep for `palette` over the app's source and test trees returns nothing —
+    the module prose that described the mechanism goes with the mechanism.
+20. A channel's first contact records a framework tool choice naming exactly the registered set,
     in the position the palette held. A test reads the created conversation's ledger.
-20. A registered-set delta appends a fresh tool choice on the same three paths that reconciled
+21. A registered-set delta appends a fresh tool choice on the same three paths that reconciled
     the palette, once per process per conversation, with the same memory bound. Tests cover each
     path.
-21. Neither compaction fork writes a tool choice of its own: the framework's fork writes the
+22. Neither compaction fork writes a tool choice of its own: the framework's fork writes the
     empty one. A test asserts the temporary conversation carries exactly one, and it is empty.
-22. The authority check of decision 0043 runs through the framework's new hook, refuses with the
+23. The authority check of decision 0043 runs through the framework's new hook, refuses with the
     same sentence today's `authority_decline` produces, byte for byte, and is recorded
     `Refusal::Refused`. A test asserts the sentence and the classification.
-23. The two palette declines are gone, and a tool the conversation does not have is refused by
+24. The two palette declines are gone, and a tool the conversation does not have is refused by
     the framework before the handler. A test asserts the handler body did not run and the
     sentence names the conversation's own tools.
-24. A domain migration drops `block_tool_palette` and its registry row, and a database written
+25. A domain migration drops `block_tool_palette` and its registry row, and a database written
     by the previous build opens, serves and keeps its message history. A test opens a fixture
     database carrying palette rows, migrates, and reads the conversations back.
-25. Every existing app test that named the palette either names the tool choice or is deleted
+26. Every existing app test that named the palette either names the tool choice or is deleted
     with its subject. No test asserts a behaviour this unit removed.
 
 Both:
 
-26. Every check runs clean in both repositories: `cargo fmt --all -- --check`, `cargo clippy
+27. Every check runs clean in both repositories: `cargo fmt --all -- --check`, `cargo clippy
     --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`, and
     `cargo doc --workspace --no-deps` under `RUSTDOCFLAGS="-D warnings"`.
 
