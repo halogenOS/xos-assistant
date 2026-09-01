@@ -33,7 +33,8 @@ changes no framework code.
 ## The design
 
 **Two tools, one capability.** Both declare `ends_turn`, both at member authority, both
-registered unconditionally beside the production set:
+registered in the assembly's unconditional-tools home — where the react, report and standing
+tools already join, never the lookups set, whose three-name assertion stands:
 
 - `no_reply_needed` — the turn was asked nothing. The absorbed messages are someone else's
   conversation, a question aimed at a named person who is not the assistant, or chatter that
@@ -50,13 +51,27 @@ module and asserted by test, so the ledger reads why the turn ended:
 `Turn ended: the actions taken are the whole answer.` The model reads that row on the next
 turn's replay, so the sentence addresses the model.
 
-**The teaching becomes one rule with three arms.** When a turn has nothing to say: react if
-one reaction honestly answers chatter, call `no_reply_needed` if nothing was asked, call
-`work_is_done` if actions completed the turn — and never post a message whose only content
-is that the assistant is not participating. The empty turn stays valid and stays taught as
-the fallback; the tools are the explicit form of the same decision, and a model that would
-rather act than write now has an action to take. No teaching sentence contradicts another;
-the reaction arm keeps its current wording.
+**The teaching becomes one rule with three arms, in precedence order.** When a turn has
+nothing to say: react if one reaction honestly answers chatter; otherwise call
+`work_is_done` if the turn took actions and those actions are the whole answer — a mark
+placed, a report filed, a lookup run for the assistant's own orientation and found to need
+no telling; otherwise call `no_reply_needed` if the turn took no action and nothing was
+asked of the assistant. The qualifier is part of the rule everywhere it is written: a search
+or lookup run TO ANSWER someone still ends in the written answer, so the search and sourcing
+teaching sentences stand unchanged and collide with neither arm. The closing call is the
+turn's only output — prose written before a tool call is posted to the group as its own
+message, by the mechanism the heads-up line rides, so a narrated close would repeat the
+production failure with extra steps; the teaching says to call the tool bare, and the
+mechanism is stated here because no machinery can forbid it. Never post a message whose only
+content is that the assistant is not participating. The empty turn stays valid and stays
+taught as the fallback.
+
+**Both answering modes teach both tools.** A registered tool is never left untaught, and the
+recorded tool choice names the pair in every conversation. The helpful-mode teaching carries
+the full three-arm rule; the addressed-mode silence sentence extends to name the pair for
+its own two shapes — an addressed message that leaves nothing useful to say ends through
+`no_reply_needed`, an addressed request completed by actions ends through `work_is_done`.
+Each mode's wording stays its own; neither imports the other's triggers.
 
 **What the tools do not do.** They take no parameters, read nothing, write nothing beyond
 their resolution, and their `admit` answers the same authority hook every tool answers.
@@ -65,26 +80,35 @@ assistant's own turn.
 
 ## Acceptance criteria
 
-1. Both tools exist, declare `ends_turn`, take no parameters, require member authority, and
-   answer the admission hook the way every registered tool does. A test reads the
-   definitions and the flags off the registry.
-2. Calling either tool ends the turn: the resolution row carries the framework's ends-turn
-   stamp, no continuation is dispatched, and nothing is delivered to the channel. A spine
-   test runs a scripted turn through each tool and asserts all three.
+1. Both tools exist, declare `ends_turn`, take no parameters, and answer the admission hook
+   at member authority through the same macro every tool module carries — the admission scan
+   test is what holds that, since a member-level answer is behaviorally identical to the
+   default. A test reads the definitions and the `ends_turn` flag off the registry.
+2. Calling either tool bare — no prose ahead of the call — ends the turn: the resolution row
+   carries the framework's ends-turn stamp, no continuation is dispatched, and nothing is
+   delivered to the channel. A spine test runs a narration-free scripted turn through each
+   tool and asserts all three. Prose streamed ahead of the call delivers as its own message
+   by the standing mechanism; that shape is taught against, not forbidden, and criterion 5's
+   teaching assertions carry the sentence.
 3. Each tool's stored result text is its module's byte-fixed sentence. A test asserts both
    sentences whole.
 4. Both tools ride the registered set: a created conversation's recorded tool choice names
    them, and the compaction fork's empty choice keeps them out of a summary turn. Tests
    read both ledgers.
-5. The teaching presents the three-arm rule and the never-announce-silence sentence, and no
-   remaining teaching sentence tells the model to write when one of the arms applies. The
-   teaching tests cover the new wording.
-6. The production set registers both unconditionally, and the test fixtures see them
-   wherever they see the production tools. Existing tests that count or enumerate
-   registered tools pass updated.
+5. The helpful-mode teaching presents the three-arm rule in its precedence order with the
+   orientation qualifier and the call-it-bare sentence; the addressed-mode silence sentence
+   names the pair for its two shapes; the never-announce-silence sentence is present; and
+   under the qualified wording no remaining teaching sentence tells the model to write when
+   an arm applies — the search and sourcing sentences stand unchanged and are asserted
+   unchanged. The teaching tests cover each mode's new wording.
+6. The two tools register in the assembly's unconditional-tools home, beside the react and
+   report tools, never in the lookups set. The test fixtures see them wherever they see the
+   unconditional tools, and existing tests that count or enumerate registered tools pass
+   updated, the three-lookup assertion untouched.
 7. A turn that calls `no_reply_needed` while a sibling tool call of the same round is still
-   unresolved follows the framework's rule (the stamped outcome does not hold the turn, the
-   sibling's resolution still lands). A test covers the pair in one round.
+   unresolved follows the framework's rule: the stamped outcome does not hold the turn, the
+   sibling's resolution still lands, and the sibling's continuation round is still summoned.
+   A test covers the pair in one round and asserts all three.
 8. Every check runs clean: `cargo fmt --all -- --check`, `cargo clippy --workspace
    --all-targets --all-features -- -D warnings`, `cargo test --workspace`, and `cargo doc
    --workspace --no-deps` under `RUSTDOCFLAGS="-D warnings"`.
