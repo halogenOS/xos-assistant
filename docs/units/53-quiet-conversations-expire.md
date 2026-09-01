@@ -2,10 +2,12 @@
 
 Date: 2026-09-02. The assistant gains its one retention rule: a conversation whose newest
 ledger entry is older than ninety days is deleted — the conversation, the blocks nothing else
-still holds, the files nothing else still references, and the identity rows no message names
-any more. Activity refreshes the whole conversation, so a living group never loses history;
-what expires is what nobody has touched in three months. The privacy policy's new retention
-wording ships in this unit, because a policy must describe only what the code does.
+still holds, and the identity rows nothing anywhere names any more. Activity refreshes the
+whole conversation, so a living group never loses history; what expires is what nobody has
+touched in three months. The privacy policy's new retention wording ships in this unit,
+because a policy must describe only what the code does. Stored media files are OUT of this
+unit's scope for the same reason: file reception is a committed spec with no implementation,
+so there are no files to collect and no file promise may be committed.
 
 The repository: this one, at `9ff182e` (spec commits sit above it; no source has moved). The
 framework at `b7c0c45` is consumed by path and does not change in this unit.
@@ -27,7 +29,7 @@ Every claim was read from the trees at the stated heads.
    rows, drafts and metadata, nulls unshared dispatch anchors, and leaves block headers and
    content for `gc_orphan_blocks`, which deletes blocks nothing references, looping until a
    pass deletes nothing (`agent-ledger/src/store/messages.rs:1085-1154`).
-4. **A missing ancestor is already survivable.** `ancestor_reference` carries no foreign key
+4. **A missing ancestor is already survivable.** `block_ancestor_reference` carries no foreign key
    on purpose (framework migrations v5); `serving_lineage` and `stripped_lineage` stop the
    walk at an ancestor whose ledger reads empty, log it, and treat the hop as the root
    (`crates/core/src/lineage.rs:78-95`, `crates/core/src/erasure.rs:430-457`). Quoting is
@@ -42,9 +44,11 @@ Every claim was read from the trees at the stated heads.
    and keeps the flag (`crates/core/src/identity.rs:207-225`).
 7. **One periodic job exists as the precedent.** The compaction driver: a spawned task on a
    30-second `tokio::time::interval` with skipped missed ticks (`session.rs:1508-1585`).
-   Wall-clock time comes only from the framework's `ClockReading`; a test enforces that the
-   app holds no clock of its own. Block rows carry `created_at` written by SQLite's
-   `datetime('now')`, UTC.
+   The app's only wall-clock read is the framework's `ClockReading::now_local()`, which
+   carries a LOCAL date and minute-level time and no UTC instant; a test bans every clock
+   crate from the app. Block rows carry `created_at` written by SQLite's `datetime('now')`,
+   UTC. So the one place that can compare a stored timestamp against now correctly is the
+   store itself — the same clock wrote both sides.
 8. **The config file is where deployment numbers live.** `Configuration` (TOML,
    `deny_unknown_fields`) already carries `context_window` and the protection windows in
    seconds, each with a default and zero disabling (`crates/assistant/src/config.rs`).
@@ -53,24 +57,45 @@ Every claim was read from the trees at the stated heads.
 
 **The rule.** A conversation expires when its newest ledger entry — the newest block its
 junction holds, by that block's stored UTC `created_at` — is older than the configured
-retention span. Every conversation is measured by the same rule: serving, replaced, ancestor,
-direct. There is no second clock and no per-kind carve-out; a compacted ancestor stops
-growing at its cut, so it expires ninety days later while its living descendant, refreshed by
-every message, does not.
+retention span. The comparison runs INSIDE the store, in SQL, against the store's own
+`datetime('now')`: the clock that wrote every `created_at` answers the age question, the app
+reads no wall clock, and no clock crate enters the tree. Every conversation is measured by
+the same rule: serving, replaced, ancestor, direct. There is no second clock and no per-kind
+carve-out; a compacted ancestor stops growing at its cut, so it expires ninety days later
+while its living descendant, refreshed by every message, does not. A conversation whose
+junction holds no blocks never expires by this rule — emptiness is a transient creation
+state, raced by the mapping claim, and sweeping it would delete a conversation mid-birth;
+crash residue in that shape is bounded and already cleaned by the lost-claim and startup
+paths.
 
 **The span is configuration.** `retention_days` in the TOML, default 90, zero disables the
 sweep entirely. The default is the decision; the field exists so a deployment can be told
 apart from the code, the shape `principal_window_seconds` already set.
 
-**The sweep.** A spawned task beside the compaction driver, on an interval, reading the span
-from configuration and the current moment from the framework's clock. Each tick it lists the
-expired conversations and, for each one: delete the channel mapping row if one names it, then
-retire through the one existing door — settle, delete, forget. After the conversations, one
-`gc_orphan_blocks` pass; then the media files whose stored references are gone; then the
-unflagged principals no message row names any more. A tick that finds nothing does nothing.
-Failures follow the standing rule: a store error inside one conversation's retirement fails
-that conversation's deletion and the sweep moves on, logging it; the next tick retries it,
-because the conversation is still expired. Nothing about a failed sweep touches serving.
+**The sweep.** A spawned task beside the compaction driver, on a one-hour
+`tokio::time::interval` with missed ticks skipped and the first tick at spawn — a boot is a
+tick like any other, and every tick is idempotent, so the cadence carries no meaning beyond
+freshness of enforcement. Each tick it asks the store for the expired conversations and, for
+each one: delete the channel mapping row if one names it, then retire through the one
+existing door — settle, delete, forget. After the conversations, one `gc_orphan_blocks`
+pass; then the unflagged principals nothing names any more. A tick that finds nothing does
+nothing. Failures follow the standing rule: a store error inside one conversation's
+retirement fails that conversation's deletion and the sweep moves on, logging it; the next
+tick retries it, because the conversation is still expired. Nothing about a failed sweep
+touches serving.
+
+**The sweep and an erasure never race.** The deletion phase of every tick runs under the
+erasure fence, the arbiter the erasure and reset paths already hold; whichever holds the
+fence runs whole, and the other waits its turn. A deletion request never waits for the
+schedule in the other direction either: erasure takes the fence on demand and the sweep's
+next tick simply finds less to do.
+
+**Which rows name a principal.** The erasure module already enumerates every row family that
+reaches a principal — messages, join notices, report copies, mark blocks, reaction records —
+and that enumeration is the ONE answer. The sweep's principal collection reads the same
+enumeration from the same place erasure does, factored so a family added later is added
+once; a principal named by any row in any surviving conversation is kept, and flagged
+(opted-out) principals are kept unconditionally, exactly as erasure keeps them.
 
 **A swept serving channel.** Deleting a mapped conversation unmaps the channel; the next
 message finds no mapping and creates a fresh session, the path that already exists and is
@@ -79,24 +104,32 @@ what refreshes it.
 
 **The policy and the records.** The policy's retention section states the rule in member
 words: messages are kept while the conversation they sit in stays in use; a conversation
-untouched for ninety days is deleted whole, with its files; a deletion request never waits
-for the schedule. The records-of-processing row and the docs test move with it. Decision
-0003's no-expiry statement is refined by a new dated decision recording the ninety-day rule
-and what it beat; the old decision is not rewritten.
+untouched for ninety days is deleted whole; a deletion request never waits for the schedule.
+The no-expiry statement has five committed homes and every one moves: the policy's retention
+section, the records-of-processing rows D1/D3 and D11, the impact assessment's expiry line,
+and the legitimate-interests assessment's scheduled-deletion reasoning — plus a new dated
+decision refining 0003 with the rejected alternatives; the old decision is not rewritten.
+The parked working-tree draft is split: its retention paragraph is superseded by this
+unit's wording, and its file-storage paragraphs are NOT committed, because they promise a
+subsystem that has no implementation. The docs test moves with what ships.
 
 **First activation.** The user's requirement, verbatim: "Nothing should be deleted on the
-first boot with the policy actice". It holds by the rule itself — the oldest data any
-deployment carries is weeks old, so no conversation reaches the threshold — and the sweep
-has no catch-up behaviour to make first boot special: a boot is a tick like any other, and a
-tick deletes only what the rule names.
+first boot with the policy actice", given with its own reasoning: "It hasn't been 90 days
+yet so we are still in the clear any way." At this activation the requirement holds by that
+calendar fact — no stored conversation is near the threshold — and durably by the sweep
+having no catch-up behaviour: a boot is a tick like any other, and a tick deletes only what
+the rule names. Stated plainly for the record: a future activation over a store that already
+holds conversations past the span would delete them on its first tick, because the rule is
+the only mechanism and that is what the rule says.
 
 ## Acceptance criteria
 
 1. `retention_days` exists in the configuration with default 90; zero disables the sweep and
    spawns no task. Tests cover the default, an explicit value, and zero.
 2. The expiry reading is the newest junctioned block's `created_at` per conversation,
-   compared in UTC against the framework clock's now. A test builds conversations either
-   side of the threshold and asserts exactly the stale one is named.
+   compared inside the store against the store's own `datetime('now')`; a conversation with
+   an empty junction is never named. A test builds conversations either side of the
+   threshold, plus an empty one, and asserts exactly the stale one is named.
 3. The sweep retires an expired conversation through the existing door: mapping row deleted
    first when one exists, then settle-delete-forget. A test asserts the conversation, its
    junction rows and its mapping are gone.
@@ -107,10 +140,11 @@ tick deletes only what the rule names.
    walkers behave as already specified: the lineage ends at the deleted hop with the warning,
    and a retraction aimed above the cut resolves as it does today for a pre-cut message. A
    test compacts, ages the ancestor past the span, sweeps, and asserts all three.
-6. After the conversations, the sweep runs one orphan collection, deletes every stored media
-   file whose referencing rows are gone, and deletes every unflagged principal no message row
-   names; flagged principals survive. Tests cover a collected file, a surviving shared file,
-   a collected principal and a surviving flagged one.
+6. After the conversations, the sweep runs one orphan collection and deletes every unflagged
+   principal that no row of the shared reference enumeration names; the enumeration is the
+   same one erasure reads, recorded once. Tests cover a collected principal, a principal
+   kept because only a mark or join notice in a surviving conversation names it, and a
+   flagged principal kept unconditionally.
 7. A swept serving channel's next message creates a fresh session and is answered. A spine
    test sweeps a mapped conversation and sends the next message.
 8. A store failure inside one conversation's retirement leaves that conversation for the next
@@ -118,15 +152,20 @@ tick deletes only what the rule names.
    of two expired conversations and asserts the second is swept and the first survives to be
    swept when the failure clears.
 9. A database whose every conversation is fresher than the span sweeps nothing: no deletion,
-   no mapping change, no file removed. A test asserts it against a populated store — the
-   first-boot requirement, held by rule.
-10. The sweep uses the framework clock for now and the stored UTC timestamps for age; no new
-    clock enters the app. The existing clock-source test still passes.
-11. The policy's retention section states the any-conversation rule, the policy test asserts
-    the new wording, the records-of-processing row matches, and a new dated decision refines
-    0003 with the rejected alternatives. The uncommitted draft's replaced-only paragraph is
-    replaced by this wording; no committed document promises what the code does not do.
-12. Every check runs clean: `cargo fmt --all -- --check`, `cargo clippy --workspace
+   no mapping change, no principal removed. A test asserts it against a populated store —
+   the mechanical half of the first-boot requirement; the calendar half is recorded in the
+   design.
+10. The deletion phase of a tick runs under the erasure fence. A test holds the fence and
+    asserts the tick's deletions wait for its release.
+11. The app reads no wall clock for the sweep: the store answers the expiry question with
+    its own clock, and the existing clock-source test still passes unchanged.
+12. Every committed home of the no-expiry statement moves: the policy's retention section,
+    records-of-processing D1/D3 and D11, the impact assessment's expiry line, the
+    legitimate-interests reasoning, and a new dated decision refining 0003 with rejected
+    alternatives. The policy test asserts the new wording. The parked draft's file-storage
+    paragraphs are not committed, and a grep of the committed documents finds no promise of
+    stored files or of a no-expiry rule.
+13. Every check runs clean: `cargo fmt --all -- --check`, `cargo clippy --workspace
     --all-targets --all-features -- -D warnings`, `cargo test --workspace`, and `cargo doc
     --workspace --no-deps` under `RUSTDOCFLAGS="-D warnings"`.
 
