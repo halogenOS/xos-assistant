@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "assistant"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "agent-ledger",
  "assistant-adapter-telegram",
@@ -68,7 +68,7 @@ dependencies = [
 
 [[package]]
 name = "assistant-adapter-telegram"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "agent-ledger",
  "assistant-core",
@@ -86,7 +86,7 @@ dependencies = [
 
 [[package]]
 name = "assistant-core"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "agent-ledger",
  "chrono",
