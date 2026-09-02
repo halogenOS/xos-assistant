@@ -48,19 +48,24 @@ and the existing one-prompt rule stays beside it. A ledger can then never carry 
 forbidden shape, and a door that tries to build one fails loudly at the door — at deploy
 time, before any paid turn.
 
-**A fork that replaces the prompt is a clone with the prompt first.** The framework's fork
-door gains the prompt-replacing form: create the conversation, insert the given system
-prompt, then copy the source's junction rows up to the boundary minus the blocks the caller
-names — the inherited prompts. The successor's ledger reads prompt, then the shared history,
-exactly as a compacted thread's does. `forked_with_current_prompt` takes that door and does
-nothing after it. `open_compacted_thread` keeps its shape and, with the invariant in place,
-never meets a late prompt; its post-cut copy still copies no `system_prompt` kind, so a
-database written before this build compacts too.
+**The fork knows nothing about prompts.** The user's words: "The system prompt is a row like
+any other. The fork mechanism shouldnt care about this at all. The only case is when the
+prompt changed and we purposefully SKIP the ledger-saved prompt, it means we have to append
+the system prompt first then copy all from offset 1." So the framework offers plain row
+copies and no prompt-aware door: a public way to create an empty conversation under a model
+and to copy a source's junction rows into it by range — from a row onward, or up to a row.
+The prompt change is composed by the caller, in the app: create the successor, append the
+current prompt, copy the source's rows from offset 1. Row 0 is the old prompt, by the store's
+rule, and skipping it is the whole replacement; nothing is detached afterwards.
+`forked_with_current_prompt` becomes that composition. `open_compacted_thread` keeps its
+shape — it already appends the prompt and copies after the cut — and its post-cut copy
+copies no `system_prompt` kind, so a database written before this build compacts too.
 
 **The databases already in the forbidden shape are repaired at startup.** Every deployed
 conversation carries its prompt last. The startup walk's condition widens: a mapped
-conversation is re-forked when its prompt moved OR when its prompt is not its first block,
-and the fork is the prompt-first door. One walk, once, before serving; no paid turn.
+conversation is re-forked when its prompt moved OR when its prompt is not its first row,
+and the repair is the same composition with the range the caller chooses — append the
+prompt, copy the rows before the misplaced one. One walk, once, before serving; no paid turn.
 
 **A refused statement is fatal.** `StoreError::Rejected` classifies `FailureKind::Fatal`: the
 database applied a rule the code violated, the ledger is in a shape the code cannot
@@ -78,10 +83,11 @@ Framework:
    `StoreError::Rejected`; appending one to an empty conversation succeeds; a second prompt is
    still refused. Tests cover all three, the first through the app's own door shape (fork,
    detach, then insert — asserted refused).
-2. The prompt-replacing fork door exists: given a source, a boundary, the blocks to leave
-   behind and a prompt, it yields a conversation whose first block is that prompt and whose
-   remaining blocks are the source's junction rows to the boundary minus the named ones, in
-   order. A test asserts the ledger shape and that the history is shared, not copied.
+2. The plain row copies are public: create an empty conversation under a model; copy a
+   source's junction rows into it from a given row onward; copy them up to a given row. None
+   of them reads a block's kind. A test composes append-prompt-then-copy-from-offset-1 and
+   asserts the successor's first row is the prompt and the rest is the source's history in
+   order, shared through the junction, not copied.
 3. `open_compacted_thread` on a source whose newest block is a `system_prompt` past the cut
    yields a thread with exactly one prompt, its own, every other post-cut block copied in
    order. A test builds that source directly in SQL — the door can no longer build it — and
@@ -92,11 +98,13 @@ Framework:
 
 App:
 
-5. `forked_with_current_prompt` uses the prompt-first door; a test asserts the successor's
-   first block is the prompt and the old prompt is absent.
-6. The startup walk re-forks a mapped conversation whose prompt is not its first block, prompt
-   moved or not; a test builds the forbidden shape directly in SQL, runs the walk, and asserts
-   the channel serves a conversation with the prompt first and the same shared history.
+5. `forked_with_current_prompt` is the composition — create, append the current prompt, copy
+   from offset 1 — with no detach step; a test asserts the successor's first row is the prompt
+   and the old prompt is absent.
+6. The startup walk re-forks a mapped conversation whose prompt is not its first row, prompt
+   moved or not, through the composition with the caller-chosen range; a test builds the
+   forbidden shape directly in SQL, runs the walk, and asserts the channel serves a
+   conversation with the prompt first and the same shared history.
 7. `StoreError::Rejected` classifies `FailureKind::Fatal`; `StoreError::Contended` stays
    `Transient`. The classification test asserts both.
 8. A compaction failing with a fatal error ends the process the way every fatal store error
@@ -124,6 +132,11 @@ App:
   successor takes.
 
 ## Decisions on record
+
+**2026-09-02, the composition (msg 1727, verbatim):** "The system prompt is a row like any
+other. The fork mechanism shouldnt care about this at all. The only case is whent he prompt
+changed and we purposefully SKIP the ledger-saved prompt, it means we have to append the
+system prompt first then copy all from offset 1."
 
 **2026-09-02, the shape (msg 1722, verbatim):** "System prompt at the end of the ledger is a
 forbidden shape and should have errored hard instead of retrying. System messages are fine
