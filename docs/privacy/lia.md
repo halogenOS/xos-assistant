@@ -104,7 +104,7 @@ the exchange is proportionate and not a widening of who knows what about the per
 
 **Keeping history while it is in use.** The one point where necessity deserves real
 scepticism, and it is assessed on its own in section 4 of the impact assessment.
-Re-weighed 2026-09-02, with the retention span (decision 0197): a window over MESSAGES
+Re-weighed 2026-09-02, with the retention span (decision 0198): a window over MESSAGES
 would delete the whole community's memory on a schedule to reach the small part one person
 wanted removed, would not remove the need for deletion on request, and would take away
 purpose 2 — so that design stays rejected. What ships instead expires a whole conversation
@@ -122,7 +122,7 @@ against. So each distinct version is stored beside the first, and the assistant 
 later one as what the person now means. The bound is stated honestly rather than
 overstated: every distinct version a person writes is kept, and the added volume is bounded
 only by the conversation's own life (corrected 2026-09-02: this said decision 0003 set no
-retention timer, which decision 0197 changed). What the drops remove is only the
+retention timer, which decision 0198 changed). What the drops remove is only the
 platform's own repeated deliveries of unchanged text — a link preview attaching to a
 message nobody touched — never a version a person wrote.
 

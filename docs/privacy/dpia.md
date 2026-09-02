@@ -294,7 +294,7 @@ in the EU may be read without it. The public policy carries the same qualificati
 
 ### 3.6 Storage and deletion
 
-Message history expires per conversation (decision 0197, 2026-09-02, refining decision
+Message history expires per conversation (decision 0198, 2026-09-02, refining decision
 0003): a conversation whose newest stored entry is more than 90 days old is deleted whole,
 with the blocks and the identity rows nothing else still holds. Any entry refreshes the
 whole conversation, so the span measures disuse and not the age of one message; the
@@ -396,7 +396,7 @@ function and forbid collection beyond that, in particular the building of datase
 models from group content: nothing here is used to train anything, and the project keeps
 the material for its own conversations only.
 
-**Is the retention span proportionate?** Rewritten 2026-09-02 with decision 0197. The
+**Is the retention span proportionate?** Rewritten 2026-09-02 with decision 0198. The
 counter-design decision 0003 rejected was a window over MESSAGES: a schedule deleting
 individual messages guts a conversation the group is still using, destroys the long memory
 that is purpose 2, and leaves the deletion mechanism necessary anyway. That objection
@@ -1029,7 +1029,7 @@ keeping a knowingly stale record of someone's words when the correction is in ha
 
 - *More rows for one message.* Every distinct version a person writes is kept. The volume
   this adds is bounded only by the conversation's own life (corrected 2026-09-02 with the
-  retention unit: this said the store set no retention timer, which decision 0197 changed —
+  retention unit: this said the store set no retention timer, which decision 0198 changed —
   the versions go with their conversation 90 days after its newest entry). What the drops
   above remove is only the platform's own repeated deliveries of unchanged text, never a
   version a person wrote.
@@ -1092,7 +1092,7 @@ high in the meaning of Article 36(1).
 ## 17. Addendum, 2026-09-02: the retention span
 
 The review trigger "a change to retention" fired: message history gained an expiry. The
-decision behind it is 0197, which refines decision 0003 without reversing it.
+decision behind it is 0198, which refines decision 0003 without reversing it.
 
 **What changes.** A conversation whose newest stored entry is more than 90 days old is
 deleted whole: its messages, the lookups and reactions and reports recorded in it, the

@@ -117,7 +117,7 @@ and R1's list of what a request carries is unchanged.
 
 | # | Data | Time limit |
 |---|---|---|
-| D1, D3 | Message content and circumstance | Changed 2026-09-02 (unit 53): kept while the conversation holding them is in use, and deleted whole 90 days after that conversation's newest entry. Any entry refreshes the whole conversation, so the span measures disuse and never the age of a single message. Erasure on request is unchanged and never waits for the span. The reasoning is recorded in decision 0003 as refined by decision 0197, and assessed in the impact assessment. |
+| D1, D3 | Message content and circumstance | Changed 2026-09-02 (unit 53): kept while the conversation holding them is in use, and deleted whole 90 days after that conversation's newest entry. Any entry refreshes the whole conversation, so the span measures disuse and never the age of a single message. Erasure on request is unchanged and never waits for the span. The reasoning is recorded in decision 0003 as refined by decision 0198, and assessed in the impact assessment. |
 | D2 | Identity | Deleted on erasure of the person. Widened 2026-09-02 (unit 53): also deleted when the retention sweep leaves no stored row naming that person at all — no message, no join announcement, no report, no reaction — because identity kept for records that are gone is identity kept for nothing. A row whose suppression flag stands is not reached by the sweep, for the reason under D9: remembering the objection is what honoring it takes. The username is refreshed from the platform on each later message and never accumulates a history; no display name is stored as identity data (decision 0077), and the shown name a join announcement carried is erased with the person under D10 (unit 36, 2026-08-29). Qualified 2026-08-23: for a person whose suppression flag stands, the refresh stops with the flag, and erasure empties the row to the flag-bearing remnant described under D9 instead of deleting it — remembering the objection is what honoring it takes. |
 | D4 | Group facts | Kept while the group is served. A note is superseded when the group's rules are pinned anew. |
 | D5 | Derived state | Answering counters age out of their window by use. Conversation state follows the messages it derives from. A direct conversation is removed whole on erasure. |
@@ -205,7 +205,7 @@ revised for it (sections 3, 6, 7, 9 and 10), and the impact assessment's addendu
 the same date carries the assessment.
 
 Trigger fired and answered 2026-09-02: "a change to retention" — message history gained a
-90-day expiry per conversation, recorded in decision 0197. The time limits in section 8
+90-day expiry per conversation, recorded in decision 0198. The time limits in section 8
 were revised for it (D1, D2, D3 and D11), and the impact assessment's addendum of the same
 date carries the assessment.
 

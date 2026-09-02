@@ -2479,9 +2479,9 @@ fn the_retention_span_ships_its_four_document_updates() {
 
     let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
     for marker in [
-        "Message history expires per conversation (decision 0197, 2026-09-02, refining \
+        "Message history expires per conversation (decision 0198, 2026-09-02, refining \
          decision 0003)",
-        "**Is the retention span proportionate?** Rewritten 2026-09-02 with decision 0197.",
+        "**Is the retention span proportionate?** Rewritten 2026-09-02 with decision 0198.",
         "## 17. Addendum, 2026-09-02: the retention span",
         "The retention half FIRED on 2026-09-02",
         "switching the mechanism on over a store that already held conversations past the \
@@ -2496,7 +2496,7 @@ fn the_retention_span_ships_its_four_document_updates() {
     let lia = flattened(&repo_file("docs/privacy/lia.md"));
     assert!(
         lia.contains(&flattened(
-            "Re-weighed 2026-09-02, with the retention span (decision 0197)"
+            "Re-weighed 2026-09-02, with the retention span (decision 0198)"
         )),
         "the balancing carries the performed re-weigh with its date"
     );
@@ -2513,7 +2513,7 @@ fn the_retention_span_ships_its_four_document_updates() {
 /// the earlier record still reads as it was written.
 #[test]
 fn the_retention_decision_is_recorded_and_leaves_0003_standing() {
-    let record = repo_file("docs/decisions/0197-a-quiet-conversation-expires-after-ninety-days.md");
+    let record = repo_file("docs/decisions/0198-a-quiet-conversation-expires-after-ninety-days.md");
     assert!(
         record.contains("Date: 2026-09-02, with unit 53."),
         "the record is dated"
