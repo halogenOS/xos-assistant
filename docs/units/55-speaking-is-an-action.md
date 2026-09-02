@@ -1,9 +1,10 @@
 # Unit 55 — speaking is an action
 
-Date: 2026-09-02. The assistant stops relaying the model's text to the group. A message reaches
-the chat only through two tools — `send_message`, and `reply_message` with a `reply_to`
-naming the message it answers — so one turn can post several messages, answer specific
-messages, or post nothing, and the model's written text becomes its own private notes. Every
+Date: 2026-09-02. The assistant stops relaying the model's text to the group. The model's
+messages reach the chat only through two tools — `send_message`, and `reply_message` with a
+`reply_to` naming the message it answers — so one turn can post several messages, answer
+specific messages, or post nothing, and the model's written text becomes its own private
+notes. Every
 message the model reads carries a small envelope naming who wrote it, when the platform says
 it was sent, and its id, so the model can aim a reply.
 
@@ -54,8 +55,11 @@ Every claim was read from the two trees at the stated heads.
    169-180`); the app's windows are single-span (`crates/core/src/window.rs`). A spent
    window is a `Refusal::Refused`; five consecutive refusals end the turn.
 8. **The typing cue keys on text.** `RESPONDING` fires at the first non-empty text delta
-   (`crates/core/src/composing.rs:138-161`); the framework raises no status for a tool call
-   starting.
+   (`crates/core/src/composing.rs:138-161`). The framework raises `RUNNING_TOOLS` when a
+   stream STOPS for tool use — execution beginning, after the whole call streamed
+   (`src/ingestion.rs:1015-1021`) — and handles the per-call moment a tool call begins
+   streaming in `tool_use_start`, which inserts the streaming call block and raises no
+   status (`src/ingestion.rs:1110-1136`). Nothing names the tool while its arguments stream.
 9. **The budget refund keys on an empty answer.** `COUNTED_DEBT_SQL` counts a debt unless
    the anchored assistant text is empty (`kind.rs:1322-1334`).
 10. **A changed prompt reaches old sessions by a startup fork.** `retire_stale_channels`
@@ -82,19 +86,43 @@ unresolved send stays open until the send is settled, by the framework's standin
 system-owed call. Both tools require member authority through the admission macro and ride
 the recorded tool choice like every tool.
 
+**A send never outlives the process that made it.** The outgoing block records the call
+block it answers (`call_block`), and the tool body is idempotent on it: a re-run of the same
+call after a restart finds its outgoing block and appends no second one. A pending send the
+process died with is not delivered late: at startup, before serving, every outgoing block
+whose call is still unresolved is failed with a recorded sentence saying the process
+restarted before the platform confirmed the send, so the model may send again on its next
+turn — the same trade decision 0014 made for a redelivered update, a possible duplicate over
+a possible silence. The outbound edge's startup seed therefore never meets an undelivered
+outgoing block. Retiring a conversation settles it first, and the settle fails any pending
+send it holds with a sentence naming the retirement.
+
+**A send that posted partly is a failure that names what posted.** The adapter reports every
+delivery with its outcome — whole, or cut short after some chunks — and the receipt door
+records the delivered ids either way. A whole send completes the call with its ids; a
+cut-short send fails the call with a sentence carrying the ids that did post and the
+platform's reason for the rest, so the model can answer a member replying to the chunk that
+posted.
+
 **The relay ends.** The outbound edge no longer classifies an assistant text block as a
 reply; the model's text is stored as today and delivered nowhere. `answer_target` and the
 derived threading are deleted. What the relay carried moves onto the outgoing block: the
-leaked-reasoning cut, the first-interaction disclosure line (composed into the outgoing
-block's stored text before the send, idempotent, on the first message to a never-introduced
-co-summoner), chunking (adapter, unchanged), and the reply-command protection (an outgoing
-text carrying a reply-acted shape goes out unthreaded, the same rule at the same edge).
+leaked-reasoning cut, which narrows the WIRE text only and leaves the stored text as the
+model wrote it (unit 43's contract, unchanged); the first-interaction disclosure line,
+composed into the outgoing block's STORED text before the send, idempotent, on the first
+message to a never-introduced co-summoner; chunking (adapter, unchanged); and the
+reply-command protection (an outgoing text carrying a reply-acted shape goes out unthreaded,
+the same rule at the same edge). The report tool's fixed line keeps its own arm of the edge:
+it is the tool's deterministic effect, like a reaction, and never the model's text.
 
 **The reply target.** `reply_to` must name an id the conversation's ledger holds — a member
 message's origin or revision, a join notice, or one of the assistant's own delivered ids —
 of any age. An id the ledger does not hold is refused with a sentence saying so
 (`Refusal::Failed`: the model can correct it), never sent plain, because a silently dropped
-thread hides a hallucinated id. The platform's own tolerance for a vanished target
+thread hides a hallucinated id. "Holds" means the serving conversation's own ledger: an id
+compacted below the cut, or one whose message an erasure nulled, is no longer held and is
+refused with the same sentence — the model never saw either under an envelope it could
+still name. The platform's own tolerance for a vanished target
 (`allow_sending_without_reply`) stays as it is.
 
 **The envelope.** A user-voiced message projects as a YAML front matter and the text:
@@ -120,13 +148,17 @@ and a result carrying the ids the platform assigned.
 a fork of the ledger and none a rewrite:
 
 - the startup walk forks every mapped conversation onto the new system prompt;
-- the tool-choice reconcile appends a choice naming the two tools on first activity, and at
-  that same append — the ledger's own record of the moment the contract changed — the app
-  appends one system-voiced `contract_notice` block stating that the assistant's written
-  answers above it were posted to the group as they stand, and that from there on its text
-  is private and a message reaches the group only through the two tools. This is the user's
-  "inject a block that tells the model the format changed", written once per conversation
-  at the exact boundary, as a stored fact;
+- the tool-choice reconcile appends a choice naming the two tools on first activity. When
+  that append is a DELTA — the conversation's newest prior choice existed and lacked the two
+  tools — the app appends, in the same act, one system-voiced `contract_notice` block
+  stating that the assistant's written answers above it were posted to the group as they
+  stand, and that from there on its text is private and a message reaches the group only
+  through the two tools. A first recording (a conversation born under this build) is not a
+  delta and gets no notice. This is the user's "inject a block that tells the model the
+  format changed", written once per conversation at the exact boundary, as a stored fact.
+  Under compaction the notice sits after every raw answer it explains, so any cut that keeps
+  a raw pre-contract answer in view keeps the notice with it, and a cut that summarizes the
+  notice summarizes those answers too;
 - member messages re-render under the envelope everywhere, old and new alike, because
   rendering is a request-time projection of stored columns.
 
@@ -136,19 +168,26 @@ right for some answers and silently absent for others. The notice draws one hone
 instead.
 
 **The caps.** Per conversation, shared by both tools, three tiers: 5 sends per minute, 30
-per hour, 100 per day, counted over the conversation's outgoing blocks in the trailing span.
+per hour, 100 per day, counted over the conversation's outgoing blocks in the trailing span
+whose call completed with delivered ids or is still pending — a failed send posted nothing
+and burns no tier.
 The check runs in the tools' admission answer over the ledger the runner already loaded — the
 framework's single-tier per-name window cannot express a shared three-tier bound. A spent
 tier refuses with `Refusal::Refused` and a sentence naming the tier that is spent and when it
 reopens, so the model stops and resumes on a later turn; a run of five such refusals ends the
 turn by the framework's rule.
 
-**The typing cue.** The framework raises a stream status when a tool call begins streaming,
-carrying the tool's name; the app lights the cue for the two sending tools and stops it on
-the send's resolution. Text deltas no longer light it, because text is notes.
+**The typing cue.** The framework raises a stream status at `tool_use_start`, once per
+call, carrying the tool's name — the moment the model begins composing the call's
+arguments; `RUNNING_TOOLS` keeps its own meaning (execution began) and is untouched. The
+app lights the cue on that status for the two sending tools. The stop keeps its existing
+carriers: the adapter stops the chat's refresher ahead of the actual send, a failed
+resolution raises the stop cue through the receipt door, and the composing edge's lifetime
+sweeper stays the backstop. Text deltas no longer light it, because text is notes.
 
-**The budget.** A counted debt is one whose turn produced at least one outgoing message; the
-empty-answer clause is replaced, not extended. A turn of notes and no send costs the person
+**The budget.** A counted debt is one whose turn DELIVERED at least one message — an
+outgoing block whose call completed with ids; the empty-answer clause is replaced, not
+extended. A turn of notes and no send costs the person
 nothing, exactly as an empty turn does today.
 
 **Everything that handled an answer handles the outgoing block.** Quoting a reply to the
@@ -159,7 +198,9 @@ assistant's words; the compaction cut's rule that a tool lifecycle is never spli
 covers a send.
 
 **The teaching.** The system prompt states the contract plainly: written text is private
-notes and never reaches the group; a message reaches the group only through the two tools;
+notes and never reaches the group; the model's messages reach the group only through the two
+tools (the report tool's fixed line and a reaction stay what they are, the tools' own
+effects);
 silence is still the default, and a turn ending without a send posts nothing. Every sentence
 that presupposed relayed text is rewritten: the silence sentences say "end the turn without
 sending"; the heads-up before slow work is sent with `send_message`; unit 54's bare-call
@@ -171,9 +212,9 @@ The moderation and reaction teaching keep their meaning with "answer" read as "s
 
 Framework:
 
-1. A tool call that begins streaming raises a stream status carrying the tool's name, once
-   per call, never for text or reasoning. A test asserts it and asserts the text status is
-   unchanged.
+1. `tool_use_start` raises a stream status carrying the tool's name, once per call, never
+   for text or reasoning; `RUNNING_TOOLS` and `RESPONDING` are unchanged. A test asserts the
+   new status, its name, and that the two existing statuses still fire where they did.
 2. A consumer can resolve a pending tool call out of band by its block id, completing it with
    a result or failing it with an error, through a public store door; the resolution carries
    the handler's ends-turn stamp the same way the runner's does. A test covers both outcomes
@@ -182,43 +223,55 @@ Framework:
 App:
 
 3. `send_message` and `reply_message` exist, carry the admission macro at member authority,
-   append one `outgoing_message` block each, and return pending. A test reads the
-   definitions and the appended block.
+   append one `outgoing_message` block each recording `call_block`, and return pending. A
+   re-run of the same call appends nothing and returns pending again. Tests read the
+   definitions, the appended block, and the idempotent re-run.
 4. The outbound edge delivers an outgoing block and never an assistant text block; the
    delivery receipt records `answer_block` as the outgoing block and resolves the pending
-   call with the platform ids; a failed send fails the call with the reason. Spine tests
-   cover a send, a reply, a failed send, and a turn whose text is non-empty and delivers
-   nothing.
+   call with the platform ids; a failed send fails the call with the reason; a cut-short send
+   fails it with a sentence carrying the ids that posted. Spine tests cover a send, a reply,
+   a failed send, a cut-short send, and a turn whose text is non-empty and delivers nothing.
+   A startup test: an outgoing block with an unresolved call at process start is failed with
+   the restart sentence before serving and is never delivered; a retire test: a pending send
+   in a retired conversation is failed with the retirement sentence.
 5. `reply_to` accepts any id the ledger holds — a member message by origin or revision, a
    join notice, an assistant delivered id — and refuses an id it does not hold with the
    recorded sentence, `Refusal::Failed`. Tests cover each accepted kind and the refusal.
 6. `answer_target` and the derived threading no longer exist; a grep returns nothing.
-7. The leaked-reasoning cut, the disclosure line and the reply-command protection apply to
-   the outgoing block's text; the disclosure line is composed into the stored block once.
-   Tests cover each on an outgoing block.
+7. The leaked-reasoning cut narrows the wire text of an outgoing block and leaves its stored
+   text untouched; the disclosure line is composed into the stored text once; the
+   reply-command protection sends such a text unthreaded. Tests cover each on an outgoing
+   block, asserting the stored text after each.
 8. The envelope renders exactly as specified for a plain message, a message without a
    stored speaker, a revision (`edited: true` under the revised id), an erased row (marker
    only), and a join notice; the `date` is the stored `sent_at` byte for byte. A test per
    shape, and a test that a member message carrying a `---` line renders without breaking
    the envelope.
-9. PROJECTION EQUIVALENCE: a fixture database written by the previous build — real member
-   rows with speaker, origin, revision, erasure and `sent_at` — renders, under the new
-   format, byte-identical to the same messages freshly ingested by this build. A test
-   asserts the equality row by row over the fixture.
-10. The `contract_notice` block is appended exactly once per conversation, at the tool-choice
-    append that first names the two tools, projects in the system voice with the recorded
-    sentence, and never appears in a conversation created under this build. Tests cover an
-    old conversation's first activity and a fresh conversation.
+9. PROJECTION EQUIVALENCE: a committed fixture database at
+   `crates/core/tests/fixtures/previous-build.sqlite`, generated once by a committed example
+   binary run at the previous build's commit (`4d56841`) and carrying real member rows with
+   speaker, origin, revision, erasure and `sent_at`, opens under this build's migrations and
+   renders byte-identical to the same messages freshly ingested by this build. The test
+   asserts the equality row by row and asserts the fixture's recorded domain version
+   predates this unit, so a regenerated fixture cannot silently become a new-build one. The
+   example binary and the generating command are committed beside the fixture.
+10. The `contract_notice` block is appended exactly once per conversation, in the same act
+    as a tool-choice DELTA whose prior choice lacked the two tools, projects in the system
+    voice with the recorded sentence, and never appears in a conversation whose first
+    recorded choice already names them. Tests cover an old conversation's first activity, a
+    fresh conversation, and a second activity appending no second notice.
 11. The caps: 5 per minute, 30 per hour, 100 per day per conversation, shared across both
-    tools, counted over outgoing blocks; the sixth send in a minute is refused
+    tools, counted over outgoing blocks that delivered or are pending — a failed send counts
+    for nothing; the sixth send in a minute is refused
     `Refusal::Refused` with the recorded sentence naming the tier and its reopening; the
     tiers are checked from the loaded ledger inside the admission answer. Tests cover each
     tier's edge and the sentence.
-12. The typing cue lights on a sending tool's call start and stops on its resolution; a text
-    delta no longer lights it. Tests cover both.
-13. `COUNTED_DEBT_SQL` counts a debt when its turn holds an outgoing block and not otherwise;
-    the per-person and per-channel budgets read it. Tests cover a turn of notes only and a
-    turn with a send.
+12. The typing cue lights on a sending tool's call-start status and stops on the adapter's
+    send or on a failed resolution's stop cue; a text delta no longer lights it. Tests cover
+    the light, both stops, and the text delta.
+13. `COUNTED_DEBT_SQL` counts a debt when its turn holds an outgoing block that delivered,
+    and not otherwise; the per-person and per-channel budgets read it. Tests cover a turn of
+    notes only, a turn with a delivered send, and a turn whose only send failed.
 14. Quoting, the take-back command, the erasure scrub and the retraction fork all reach an
     outgoing block as they reached an answer. One test each.
 15. The teaching contains the contract sentences, no sentence presupposing relayed text (a
