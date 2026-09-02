@@ -873,10 +873,17 @@ fn the_retraction_ships_its_four_document_updates() {
         )),
         "the storage section states what a retraction does to the store"
     );
+    // Re-pointed 2026-09-02 (unit 53): the answer this pin guards is
+    // unchanged — the identifiers stay for the reason stated, and the
+    // storage-limitation question is answered rather than left open — but
+    // the half of the sentence that named the store's own end date became
+    // false when the retention span shipped, so the pin reads the corrected
+    // sentence.
     assert!(
         dpia.contains(&flattened(
             "Their only use expires after 48 hours, when the platform stops allowing the \
-             deletion, while the store carries no expiry timer at all"
+             deletion, while the store keeps them for as long as it keeps the conversation \
+             they sit in"
         )),
         "the storage section answers the storage-limitation question the unit creates"
     );
@@ -1211,10 +1218,10 @@ fn the_web_search_ships_its_five_privacy_edits() {
         policy.contains("We do not reach lookup records — including a web search's query"),
         "the deletion section names the query among what erasure does not reach"
     );
-    assert!(
-        policy.contains("Last updated: 29 August 2026"),
-        "the policy carries the date of this change"
-    );
+    // The policy's "Last updated" line is not checked here. It carries the
+    // date of the LATEST change to the document, so every later edit would
+    // fail a test about this one; what dates this change is the "(added
+    // 2026-08-29)" note on each edit above, which is checked.
 
     let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
     for marker in [
@@ -2329,12 +2336,17 @@ fn the_editing_unit_ships_its_five_document_changes() {
         )),
         "the legitimate-interest assessment states the replacement necessity"
     );
+    // Re-pointed 2026-09-02 (unit 53): the claim this pin guards is
+    // unchanged — every version a person writes is kept, and the assessment
+    // says what bounds the volume instead of overstating a safeguard — but
+    // the bound itself changed when the retention span shipped, so the pin
+    // reads the corrected sentence.
     assert!(
         lia.contains(&flattened(
-            "every distinct version a person writes is kept, decision 0003 sets no \
-             retention timer, and the added volume is not bounded"
+            "every distinct version a person writes is kept, and the added volume is \
+             bounded only by the conversation's own life"
         )),
-        "the assessment states the unbounded volume instead of overstating a safeguard"
+        "the assessment states what bounds the volume instead of overstating a safeguard"
     );
     assert!(
         !lia.contains("Edits are not collected."),
@@ -2407,5 +2419,182 @@ fn the_editing_units_decisions_are_recorded_and_the_three_it_narrows_are_amended
             "## Amended 2026-08-31 — \"the target row\" is every version of it"
         )),
         "decision 0085 records the amended row-count wording"
+    );
+}
+
+// ─── The retention unit's pins (AC12, 2026-09-02) ────────────────────────
+
+/// Every committed home of the no-expiry statement moved, and each one now
+/// states the rule the code runs: the policy's retention section in member
+/// words, the record of processing's time limits for message content, for
+/// identity and for the reaction record, the impact assessment's storage
+/// section and its proportionality question, and the legitimate-interests
+/// assessment's re-weighed necessity paragraph.
+#[test]
+fn the_retention_span_ships_its_four_document_updates() {
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    assert!(
+        policy.contains(&flattened(
+            "a conversation nobody has written in for 90 days is then deleted whole"
+        )),
+        "the policy states the rule in days and in member words"
+    );
+    assert!(
+        policy.contains(&flattened(
+            "Any message refreshes the whole conversation, so a group that is still \
+             talking keeps its history"
+        )),
+        "the policy states what freshness means, which is what keeps a living group whole"
+    );
+    assert!(
+        policy.contains(&flattened(
+            "Asking us to delete never waits for that date: a request is acted on when it \
+             arrives."
+        )),
+        "the policy states that a deletion request does not wait for the schedule"
+    );
+    assert!(
+        policy.contains(&flattened(
+            "everything named in this paragraph is deleted anyway when the conversation \
+             holding it expires"
+        )),
+        "the policy gives the residuals a request leaves behind an end date of their own"
+    );
+
+    let records = flattened(&repo_file("docs/privacy/records-of-processing.md"));
+    for marker in [
+        "Changed 2026-09-02 (unit 53): kept while the conversation holding them is in use, \
+         and deleted whole 90 days after that conversation's newest entry",
+        "Widened 2026-09-02 (unit 53): also deleted when the retention sweep leaves no \
+         stored row naming that person at all",
+        "deleted with that conversation 90 days after its newest entry (changed 2026-09-02, \
+         unit 53)",
+        "Trigger fired and answered 2026-09-02: \"a change to retention\"",
+    ] {
+        assert!(
+            records.contains(&flattened(marker)),
+            "the record of processing carries: {marker}"
+        );
+    }
+
+    let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
+    for marker in [
+        "Message history expires per conversation (decision 0197, 2026-09-02, refining \
+         decision 0003)",
+        "**Is the retention span proportionate?** Rewritten 2026-09-02 with decision 0197.",
+        "## 17. Addendum, 2026-09-02: the retention span",
+        "The retention half FIRED on 2026-09-02",
+        "switching the mechanism on over a store that already held conversations past the \
+         span would delete them on the first tick",
+    ] {
+        assert!(
+            dpia.contains(&flattened(marker)),
+            "the impact assessment carries: {marker}"
+        );
+    }
+
+    let lia = flattened(&repo_file("docs/privacy/lia.md"));
+    assert!(
+        lia.contains(&flattened(
+            "Re-weighed 2026-09-02, with the retention span (decision 0197)"
+        )),
+        "the balancing carries the performed re-weigh with its date"
+    );
+    assert!(
+        lia.contains(&flattened(
+            "Keeping history is therefore necessary only while the conversation is in use"
+        )),
+        "and states the necessity it now rests on"
+    );
+}
+
+/// The unit's decision is recorded, dated and carrying its rejected
+/// alternatives — and it refines decision 0003 instead of rewriting it, so
+/// the earlier record still reads as it was written.
+#[test]
+fn the_retention_decision_is_recorded_and_leaves_0003_standing() {
+    let record = repo_file("docs/decisions/0197-a-quiet-conversation-expires-after-ninety-days.md");
+    assert!(
+        record.contains("Date: 2026-09-02, with unit 53."),
+        "the record is dated"
+    );
+    assert!(
+        record.contains("## Rejected alternatives"),
+        "the record carries its rejected alternatives"
+    );
+    assert!(
+        flattened(&record).contains(&flattened(
+            "Refines decision 0003, which is not reversed and not rewritten."
+        )),
+        "the record states what it does to the decision it refines"
+    );
+    assert!(
+        flattened(&record).contains(&flattened(
+            "The working draft of the privacy policy carried paragraphs promising that \
+             pictures, documents and voice messages are stored"
+        )) && flattened(&record).contains(&flattened(
+            "The wording returns with the unit that builds the intake."
+        )),
+        "the withheld file-storage wording is documented, with what it was and when it returns"
+    );
+
+    let earlier = repo_file("docs/decisions/0003-personal-data-and-retention.md");
+    assert!(
+        earlier.contains("**History is kept as long as it can be.** There is no scheduled expiry"),
+        "decision 0003 still reads as it was written; the refinement rides its own record"
+    );
+}
+
+/// The published documents promise neither of the two things the code does
+/// not do: they claim no no-expiry rule any more, and they claim no stored
+/// files at all.
+///
+/// The scan reads the four privacy documents, which are what a member and an
+/// authority read as promises — a unit specification and a dated decision
+/// are the historical record and say what was true when they were written.
+/// Each sentence below is quoted whole, so a dated correction naming the old
+/// claim in order to withdraw it is not mistaken for the claim itself.
+#[test]
+fn the_privacy_documents_promise_no_no_expiry_rule_and_no_stored_files() {
+    for document in [
+        "docs/privacy/bot-assistant-privacy-policy.md",
+        "docs/privacy/dpia.md",
+        "docs/privacy/lia.md",
+        "docs/privacy/records-of-processing.md",
+    ] {
+        let content = flattened(&repo_file(document));
+        for promise in [
+            "We set no automatic expiry",
+            "No scheduled expiry. Kept until erasure is requested",
+            "no scheduled expiry, erased on request",
+            "Message history has no expiry timer",
+            "Is keeping it without a timer proportionate?",
+            "Keeping history without a timer.",
+            "decision 0003 sets no retention timer, and nothing here introduces one",
+            "while the store carries no expiry timer at all",
+            "lookup records with no time limit",
+        ] {
+            assert!(
+                !content.contains(&flattened(promise)),
+                "{document} still promises no expiry: {promise}"
+            );
+        }
+        for promise in [
+            "we now store the file itself",
+            "a voice message becomes a written transcript",
+            "a picture becomes a rough text rendering",
+            "We keep a file for as long as the conversation it was sent in",
+            "the pictures and files you sent in that conversation",
+        ] {
+            assert!(
+                !content.contains(&flattened(promise)),
+                "{document} promises stored files, which no code implements: {promise}"
+            );
+        }
+    }
+    assert!(
+        flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"))
+            .contains(&flattened("We do not store the media itself")),
+        "and the policy still says plainly that media is not stored"
     );
 }

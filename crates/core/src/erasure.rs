@@ -74,23 +74,52 @@ use crate::mapping;
 use crate::message::ChannelKind;
 use crate::session::{StrippedHop, StrippedLineage};
 
+/// Where one kind records the person a row is ABOUT: the content table it
+/// owns, and the column holding that person's principal id.
+///
+/// Each kind that records a person exports one of these, so the pair is
+/// written once per kind and every reach into it — the erasure passes, the
+/// retention sweep's principal collection — reads the same two names.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrincipalReference {
+    /// The content table the kind owns.
+    pub table: &'static str,
+    /// The column holding the recorded person's principal id.
+    pub principal_column: &'static str,
+}
+
+/// EVERY row family that reaches a person, in the order they were added:
+/// the chat message, the join notice, the report's reported person and the
+/// reaction's marked person.
+///
+/// This is the ONE answer to "which rows name a principal". Erasure reads it
+/// to find the copies other people's rows hold, and the retention sweep
+/// reads it to decide which identity rows nothing names any more; a family
+/// added later joins here and both reaches follow it, because there is
+/// nowhere else to change.
+pub(crate) const PRINCIPAL_REFERENCES: &[PrincipalReference] = &[
+    kind::PRINCIPAL_REFERENCE,
+    join::PRINCIPAL_REFERENCE,
+    crate::tools::report::PRINCIPAL_REFERENCE,
+    crate::tools::mark::PRINCIPAL_REFERENCE,
+];
+
 /// Where one kind records a person under a platform id — what the
 /// target-keyed reply pass joins against to find the copies OTHER people's
 /// rows hold of an erased person's own message ids.
 ///
 /// Each kind that records a person beside an origin exports one of these;
 /// the composition below names the whole set, so no kind knows another's
-/// table and adding a third source is a data change here rather than a
-/// second spelling of the join. The names are the kinds' own column
-/// constants, never literals.
+/// table and adding a third source is a data change here instead of a
+/// second spelling of the join. The person half is the kind's own
+/// [`PrincipalReference`], so the table and the principal column are named
+/// in one place for both reaches.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OriginSource {
-    /// The content table the kind owns.
-    pub table: &'static str,
+    /// The table and principal column of the kind that records the person.
+    pub reference: PrincipalReference,
     /// The column holding the platform's own id for the record.
     pub origin_column: &'static str,
-    /// The column holding the recorded person's principal id.
-    pub principal_column: &'static str,
 }
 
 /// Every place a person's own platform ids are recorded, in the order they
@@ -162,8 +191,8 @@ pub(crate) async fn null_references_naming(
                        AND author.{origin} = {table}.{column} \
                        AND acb.conversation_id = rcb.conversation_id\
                      )",
-                    source_table = source.table,
-                    principal = source.principal_column,
+                    source_table = source.reference.table,
+                    principal = source.reference.principal_column,
                     origin = source.origin_column,
                     table = site.table,
                     column = site.column,
@@ -357,6 +386,29 @@ pub(crate) async fn execute(
     Ok(ErasureOutcome::Erased {
         deleted_conversations: plan.direct_conversations,
     })
+}
+
+/// Delete every identity row no surviving row names any more, the
+/// retention sweep's last step (unit 53, 2026-09-02). Answers how many rows
+/// went.
+///
+/// Which rows name a person is [`PRINCIPAL_REFERENCES`], the same
+/// enumeration the passes above reach through, so a family added later is
+/// added once and both reaches follow it. A row whose suppression flag
+/// stands is kept whatever it names: the flag is what stops collection for
+/// that person, and forgetting it would start collecting them again.
+///
+/// The caller runs this AFTER the orphan collection, and the order is the
+/// whole of what makes the reading true: a deleted conversation's content
+/// rows live on under blocks nothing holds until that pass takes them, so a
+/// collection run before it would find a person still named by rows that are
+/// on their way out.
+///
+/// # Errors
+///
+/// [`StoreError`] if the delete fails or the store's actor has stopped.
+pub(crate) async fn collect_unnamed_principals(store: &Store) -> Result<usize, StoreError> {
+    identity::delete_unnamed(&store.tx(), PRINCIPAL_REFERENCES).await
 }
 
 /// Every compacted lineage this principal's words reach, and what each

@@ -188,6 +188,7 @@ async fn start_over_the_module(store: &Store, base: &str) -> Assistant {
         Arc::new(providers),
         ToolSet::new(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: ModelBinding {

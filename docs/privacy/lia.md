@@ -102,12 +102,16 @@ choice of model belongs in this assessment and not only in the impact assessment
 transmitted identifier is the one the group already sees on every message, which is why
 the exchange is proportionate and not a widening of who knows what about the person.
 
-**Keeping history without a timer.** The one point where necessity deserves real
-scepticism, and it is assessed on its own in section 4 of the impact assessment. In short:
-a retention window would delete the whole community's memory on a schedule to reach the
-small part one person wanted removed, would not remove the need for deletion on request,
-and would take away purpose 2. The absence of a timer is necessary for purpose 2 only in
-combination with an effective deletion path, which is why the two decisions were taken
+**Keeping history while it is in use.** The one point where necessity deserves real
+scepticism, and it is assessed on its own in section 4 of the impact assessment.
+Re-weighed 2026-09-02, with the retention span (decision 0197): a window over MESSAGES
+would delete the whole community's memory on a schedule to reach the small part one person
+wanted removed, would not remove the need for deletion on request, and would take away
+purpose 2 — so that design stays rejected. What ships instead expires a whole conversation
+90 days after anyone last wrote in it, which purpose 2 does not need: a group that is still
+talking refreshes its history with every message, and what goes is what nobody has come
+back to. Keeping history is therefore necessary only while the conversation is in use, and
+only in combination with an effective deletion path, which is why the decisions were taken
 together.
 
 **Recording a member's edit is necessary, added 2026-08-31.** Storing only the first
@@ -116,8 +120,9 @@ corrected, and answering a question its author has already withdrawn — which p
 and 2 are both worse for, and which the accuracy principle in Article 5(1)(d) argues
 against. So each distinct version is stored beside the first, and the assistant reads the
 later one as what the person now means. The bound is stated honestly rather than
-overstated: every distinct version a person writes is kept, decision 0003 sets no
-retention timer, and the added volume is not bounded. What the drops remove is only the
+overstated: every distinct version a person writes is kept, and the added volume is bounded
+only by the conversation's own life (corrected 2026-09-02: this said decision 0003 set no
+retention timer, which decision 0197 changed). What the drops remove is only the
 platform's own repeated deliveries of unchanged text — a link preview attaching to a
 message nobody touched — never a version a person wrote.
 

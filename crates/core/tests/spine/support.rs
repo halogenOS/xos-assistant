@@ -1111,6 +1111,7 @@ pub async fn start_assistant_operators(
         script,
         tools,
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: binding(),
@@ -1144,6 +1145,7 @@ pub async fn start_assistant_answering(
         script,
         production_toolset(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: binding(),
@@ -1205,6 +1207,7 @@ pub async fn start_assistant_reporting_as(
         script,
         tools,
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: binding(),
@@ -1276,6 +1279,13 @@ pub fn composed_searching_prompt() -> String {
 /// that assembles by hand and varies nothing.
 pub fn assembly_config() -> assistant_core::AssemblyConfig {
     assistant_core::AssemblyConfig {
+        // Unstated on purpose, exactly as the binding leaves the context
+        // window unstated: a fixture that configured a retention span would
+        // start the sweep's hourly timer, which perturbs every paused-clock
+        // test in this suite for no coverage gained. The retention module's
+        // own suite drives the sweep, and the retention spine tests state
+        // their span themselves.
+        retention: assistant_core::RetentionConfig::disabled(),
         started_at: std::time::Instant::now(),
         reasoning: assistant_core::ReasoningLevel::Low,
         binding: binding(),
@@ -1478,6 +1488,32 @@ pub async fn age_receipts(store: &Store, seconds: i64) {
     })
     .await
     .expect("the receipt times age");
+}
+
+/// The retention seam: age the blocks of ONE conversation by whole days,
+/// through the same encoding rewrite [`age_receipts`] performs. The
+/// retention sweep measures a conversation by its newest stored block, so a
+/// case that ages one conversation and not its neighbour is how a span is
+/// crossed without waiting for one.
+///
+/// Blocks a compaction shares between an ancestor and the thread standing on
+/// it are reached by either conversation's name, which is what makes them
+/// shared; a thread's OWN blocks keep their times.
+pub async fn age_conversation_days(store: &Store, conversation_id: i64, days: i64) {
+    agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
+        conn.execute(
+            "UPDATE blocks SET created_at = \
+             strftime('%Y-%m-%dT%H:%M:%f', substr(created_at, 1, 23), ?2) \
+             || substr(created_at, 24) \
+             WHERE id IN (\
+               SELECT block_id FROM conversation_blocks WHERE conversation_id = ?1\
+             )",
+            rusqlite::params![conversation_id, format!("-{days} days")],
+        )?;
+        Ok(())
+    })
+    .await
+    .expect("the conversation's blocks age");
 }
 
 /// The seam's other encoding move: re-express every stored receipt time at

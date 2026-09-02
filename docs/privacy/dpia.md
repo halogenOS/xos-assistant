@@ -294,7 +294,11 @@ in the EU may be read without it. The public policy carries the same qualificati
 
 ### 3.6 Storage and deletion
 
-Message history has no expiry timer (decision 0003), for the reason set out in section 4.
+Message history expires per conversation (decision 0197, 2026-09-02, refining decision
+0003): a conversation whose newest stored entry is more than 90 days old is deleted whole,
+with the blocks and the identity rows nothing else still holds. Any entry refreshes the
+whole conversation, so the span measures disuse and not the age of one message; the
+reasoning is in section 4. Deletion on request never waits for it.
 Deletion on request is one operation with three steps (decisions 0011, 0012): the person's
 message text, send time and reply reference are emptied in every conversation; their
 direct conversations are removed whole, mappings included; their identity rows are
@@ -325,11 +329,13 @@ empties no stored column of anybody's.
 The identifiers of the assistant's own sent messages raise the storage-limitation
 question this unit creates, and it is answered, not left open. Their only use
 expires after 48 hours, when the platform stops allowing the deletion, while the store
-carries no expiry timer at all (decision 0003). They stay: an identifier names a message
-the assistant wrote and carries nothing of anybody, an expired one is inert, and adding a
-timer for a structural field would be new machinery with no benefit to anyone's rights.
-They are removed with the conversation that holds them, and a person's erasure leaves
-them because there is nothing of that person in them.
+keeps them for as long as it keeps the conversation they sit in (corrected 2026-09-02 with
+the retention unit: the store used to carry no expiry at all). They stay that long: an
+identifier names a message the assistant wrote and carries nothing of anybody, an expired
+one is inert, and a timer of their own for a structural field would be new machinery with
+no benefit to anyone's rights. They are removed with the conversation that holds them —
+which now happens on the retention span as well as on a deletion — and a person's erasure
+leaves them because there is nothing of that person in them.
 
 ### 3.7 Measures in place
 
@@ -390,16 +396,19 @@ function and forbid collection beyond that, in particular the building of datase
 models from group content: nothing here is used to train anything, and the project keeps
 the material for its own conversations only.
 
-**Is keeping it without a timer proportionate?** The counter-design is a retention window.
-It was rejected in decision 0003 and the reasoning holds under this assessment: a window
-deletes the entire community's history on a schedule to reach the part one person wanted
-removed, it destroys the long memory that is purpose 2, and it leaves the deletion
-mechanism necessary anyway. What makes the absence of a timer proportionate is the pairing
-with the rest: separation of personal data, deletion that reaches the prose, a single
-identifier crossing to the processor and nothing more, no profiling, no action taken
-against anybody. The proportionality rests on
-that pairing, not on the storage alone. If any part of the pairing were removed, this
-conclusion would have to be taken again.
+**Is the retention span proportionate?** Rewritten 2026-09-02 with decision 0197. The
+counter-design decision 0003 rejected was a window over MESSAGES: a schedule deleting
+individual messages guts a conversation the group is still using, destroys the long memory
+that is purpose 2, and leaves the deletion mechanism necessary anyway. That objection
+stands and the design does not meet it: what expires is a whole conversation nobody has
+touched in 90 days, so a group that is still talking loses nothing, and the part one
+person wanted removed still goes through the deletion path on request. Storage limitation
+under Article 5(1)(e) is served by an actual end date, and purpose 2 is served by the
+measurement being disuse. What makes the span proportionate is the pairing with the rest:
+separation of personal data, deletion that reaches the prose, a single identifier crossing
+to the processor and nothing more, no profiling, no action taken against anybody. The
+proportionality rests on that pairing, not on the span alone. If any part of the pairing
+were removed, this conclusion would have to be taken again.
 
 **Is the amount minimal?** Text only, no media, no anonymous stand-in senders. Each
 distinct version of an edited message is stored (amended 2026-08-31, unit T3): storing
@@ -683,7 +692,9 @@ Any one of these triggers a review, and none of them is optional:
   posting into it stops being publication to the public. Added 2026-08-23 with that claim.
 - Any moderation capability shipping, in particular the held-out warn, report and ban
   lines.
-- A change to retention, or the introduction of any secondary use of the history.
+- A change to retention, or the introduction of any secondary use of the history. The
+  retention half FIRED on 2026-09-02, when message history gained a 90-day expiry per
+  conversation; section 17 is the review it demanded.
 - Closure of either deletion gap, or discovery of a third.
 - A personal data breach, or a near miss.
 - A complaint or an objection that this assessment did not anticipate.
@@ -1017,9 +1028,11 @@ keeping a knowingly stale record of someone's words when the correction is in ha
 **What is new for the people concerned.**
 
 - *More rows for one message.* Every distinct version a person writes is kept. The volume
-  this adds is NOT bounded: decision 0003 sets no retention timer, and nothing here
-  introduces one. What the drops above remove is only the platform's own repeated
-  deliveries of unchanged text, never a version a person wrote.
+  this adds is bounded only by the conversation's own life (corrected 2026-09-02 with the
+  retention unit: this said the store set no retention timer, which decision 0197 changed —
+  the versions go with their conversation 90 days after its newest entry). What the drops
+  above remove is only the platform's own repeated deliveries of unchanged text, never a
+  version a person wrote.
 - *One further stored reference.* The identifier of the message a version revises, listed
   as D12 in the records of processing. It is the author's own data — the identifier of a
   message they sent — and their erasure empties it beside the text, the origin, the send
@@ -1075,3 +1088,51 @@ collects for a reply, plus more rows for a message a person chose to say more th
 with no new recipient, no new transfer, no new model input, and a deletion path that
 reaches every version. The overall judgment of section 8 stands: the residual risk is not
 high in the meaning of Article 36(1).
+
+## 17. Addendum, 2026-09-02: the retention span
+
+The review trigger "a change to retention" fired: message history gained an expiry. The
+decision behind it is 0197, which refines decision 0003 without reversing it.
+
+**What changes.** A conversation whose newest stored entry is more than 90 days old is
+deleted whole: its messages, the lookups and reactions and reports recorded in it, the
+rules text it served under, the blocks nothing else still holds, and the identity rows of
+anyone no stored row names any more. Any entry refreshes the whole conversation, so the
+span measures disuse, never the age of one message. The span is a configured number with
+90 days as the stated default, and a deployment can set it to zero, which switches the
+mechanism off. Nothing about deletion on request changes: a request is acted on when it
+arrives and never waits for the schedule, and the sweep and a request never run at the same
+time, because both take the same arbiter.
+
+**What this is for.** Storage limitation under Article 5(1)(e) had no answer here beyond
+"until somebody asks", which section 4 defended on the strength of purpose 2 and of the
+deletion path. It now has an end date that costs purpose 2 nothing: what expires is
+conversation nobody has come back to in three months, and a group that is still talking
+keeps everything.
+
+**What it is not.** It is not a per-message timer. Decision 0003 rejected one for a reason
+that still holds — a schedule deleting individual messages guts a conversation the group is
+still using — and the objection does not reach a rule that expires quiet conversations
+whole. It is also not a moderation or profiling effect: nothing is judged, nobody is told,
+and the mechanism reads a timestamp.
+
+**What people concerned gain and lose.** They gain an end date for everything stored about
+them in a conversation that stopped being used, including the residuals a deletion request
+does not reach: the assistant's own answers quoting them, a lookup's stored query, a rules
+text naming them, and the copy of one of their message identifiers on a stranger's reply.
+They lose the assistant's memory of that conversation, which nobody has drawn on for three
+months by construction. The one identity row the sweep does not touch is the opt-out
+stub, for the reason recorded under D9 in the record of processing: remembering the
+objection is what honoring it takes.
+
+**First activation.** A conversation is deleted the first time a tick finds it past the
+span, and a boot is a tick like any other — there is no grace period and no catch-up. At
+this activation nothing is near the threshold, because the assistant has not been running
+for 90 days. Stated plainly for the record: switching the mechanism on over a store that
+already held conversations past the span would delete them on the first tick, because the
+rule is the whole mechanism.
+
+**Judgment.** A change in the direction of less stored data, with the deletion path
+unchanged beside it and the long memory the assistant is for left intact. The overall
+judgment of section 8 stands: the residual risk is not high in the meaning of Article
+36(1).

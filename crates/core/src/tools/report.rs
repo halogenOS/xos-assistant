@@ -194,6 +194,17 @@ pub(crate) const TARGET_ORIGIN_SITE: crate::erasure::ReferenceSite =
         column: COLUMN_TARGET_ORIGIN,
     };
 
+/// Where this kind records the person a filing is about: the table it owns
+/// and the column holding the reported principal, named once for every
+/// person-wide reach the consumer runs. The column is nullable, so a filing
+/// several people share names nobody here — which is what the target-keyed
+/// pass above exists for.
+pub(crate) const PRINCIPAL_REFERENCE: crate::erasure::PrincipalReference =
+    crate::erasure::PrincipalReference {
+        table: REPORT_TABLE,
+        principal_column: COLUMN_REPORTED_PRINCIPAL_ID,
+    };
+
 /// Null the filed target of every report that names one of this
 /// principal's own records (unit 36, 2026-08-29) — the target-keyed reach,
 /// beside the reply target's. A report filed against a join event several

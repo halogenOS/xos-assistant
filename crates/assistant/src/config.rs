@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use assistant_core::tools::search::{self, SearchConfig};
 use assistant_core::{
     AnsweringMode, Budget, DirectChats, OperatorConfig, ProtectionConfig, ReasoningLevel,
+    RetentionConfig,
 };
 use serde::Deserialize;
 
@@ -55,6 +56,16 @@ pub struct Configuration {
     /// The answering budgets; omitted fields keep the stated defaults.
     #[serde(default)]
     pub protection: Protection,
+    /// How many days a conversation may lie untouched before the retention
+    /// sweep deletes it whole (unit 53, 2026-09-02). Absent means the stated
+    /// default of ninety days; zero switches the sweep off, and a process
+    /// running with it off deletes nothing on any schedule.
+    ///
+    /// The number is the deployment's, not the code's, which is why it sits
+    /// in the file at all — the protection windows' own shape, where zero
+    /// disables the budget it names.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u32,
     /// The operators table — who may admit the assistant into a group.
     /// Absent by default, under which every group add fails closed.
     #[serde(default)]
@@ -378,6 +389,13 @@ pub struct Search {
 /// The language the search asks for when the configuration names none.
 pub const DEFAULT_SEARCH_LANGUAGE: &str = "en";
 
+/// The retention span a file that names none gets: the core's stated
+/// default, read from there so the file and the code cannot disagree about
+/// what unconfigured means.
+fn default_retention_days() -> u32 {
+    RetentionConfig::DEFAULT_DAYS
+}
+
 /// The protection table: the answering budgets, four fields with per-field
 /// defaults, so a partial table overrides only what it names. A window of
 /// zero disables that budget explicitly; an answer count of zero is refused
@@ -436,6 +454,15 @@ impl Protection {
 }
 
 impl Configuration {
+    /// The retention span the sweep runs on: the configured number of days,
+    /// with zero resolving to the switched-off configuration. No error is
+    /// possible — zero is a choice the file may state, not a
+    /// misconfiguration, exactly as a zero protection window is.
+    #[must_use]
+    pub fn resolve_retention(&self) -> RetentionConfig {
+        RetentionConfig::of_days(self.retention_days)
+    }
+
     /// The privacy address the command answers with, `None` when the key
     /// is absent.
     ///
@@ -938,6 +965,40 @@ mod tests {
             panic!("the table spelling decodes as a file destination");
         };
         assert_eq!(file.path(), Path::new("stderr"));
+    }
+
+    // ─── The retention span ──────────────────────────────────────────────
+
+    fn resolved_retention(extra: &str) -> RetentionConfig {
+        loaded("log = \"stderr\"", extra).resolve_retention()
+    }
+
+    #[test]
+    fn an_absent_retention_key_takes_the_stated_default() {
+        assert_eq!(
+            resolved_retention("").days.map(NonZeroU32::get),
+            Some(RetentionConfig::DEFAULT_DAYS),
+            "a file that names no span gets the core's stated ninety days"
+        );
+    }
+
+    #[test]
+    fn a_stated_retention_span_is_the_span() {
+        assert_eq!(
+            resolved_retention("retention_days = 30")
+                .days
+                .map(NonZeroU32::get),
+            Some(30),
+            "the deployment's number is what the sweep measures against"
+        );
+    }
+
+    #[test]
+    fn a_zero_retention_span_switches_the_sweep_off() {
+        assert!(
+            resolved_retention("retention_days = 0").days.is_none(),
+            "zero is how a deployment says nothing ever expires"
+        );
     }
 
     // ─── The protection table ────────────────────────────────────────────

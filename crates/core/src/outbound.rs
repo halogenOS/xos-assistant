@@ -54,6 +54,17 @@
 //! conversation created fresh shares nothing with anybody and seeds at zero,
 //! so first contact delivers its first answer normally.
 //!
+//! # A conversation id its previous holder left behind (unit 53, 2026-09-02)
+//!
+//! The store reissues conversation ids, and since the retention sweep a
+//! process can delete a mapped conversation while it runs — so an id whose
+//! cursor this edge holds can come back as somebody else's fresh session. A
+//! conversation never loses a block while it lives, so a cursor standing
+//! above everything its conversation holds is the previous holder's, and it
+//! re-seeds at the inherited boundary like a conversation this edge has
+//! never seen. The check is a level read of stored state, not a moment to
+//! catch: no deletion has to tell this edge anything.
+//!
 //! The durable ratchet cursor is deliberately NOT the seed. It is the
 //! frontier of what the model has been driven through, it moves with every
 //! turn, and by the time a completed stream wakes this edge it already
@@ -384,10 +395,7 @@ async fn deliver_stored_items(
         return Ok(());
     }
     let mut blocks = ctx.store().list_blocks(conversation_id).await?;
-    let cursor = match cursors.entry(conversation_id) {
-        Entry::Occupied(entry) => entry.into_mut(),
-        Entry::Vacant(entry) => entry.insert(inherited_boundary(&tx, conversation_id).await?),
-    };
+    let cursor = seated_cursor(&tx, cursors, conversation_id, &blocks).await?;
     for index in 0..blocks.len() {
         let block_id = blocks[index].id;
         if block_id <= *cursor {
@@ -497,6 +505,49 @@ async fn deliver_stored_items(
         *cursor = block_id;
     }
     Ok(())
+}
+
+/// This conversation's delivery position in the map, seated against what it
+/// actually holds.
+///
+/// A conversation with no entry starts at its inherited boundary, which is
+/// zero for a session created fresh. An entry standing ABOVE everything the
+/// conversation holds cannot be this conversation's: the store reissues
+/// conversation ids after a deletion, and a conversation never loses a block
+/// while it lives, so the entry belongs to the id's previous holder and is
+/// re-seeded the same way (unit 53, 2026-09-02). Without that, the id's new
+/// holder would have its first answers swallowed as history somebody else
+/// made.
+///
+/// The position compared against is the highest block ID, never the last in
+/// ledger order: a compacted thread's own opening carries the highest ids and
+/// sits at the FRONT of its ledger, so the two readings part company there.
+///
+/// # Errors
+///
+/// [`StoreError`] if the boundary read fails or the store's actor has
+/// stopped.
+async fn seated_cursor<'a>(
+    tx: &StoreTx,
+    cursors: &'a mut DeliveryCursors,
+    conversation_id: i64,
+    blocks: &[Block],
+) -> Result<&'a mut i64, StoreError> {
+    let newest = blocks.iter().map(|block| block.id).max().unwrap_or(0);
+    match cursors.entry(conversation_id) {
+        Entry::Occupied(entry) => {
+            let cursor = entry.into_mut();
+            if *cursor > newest {
+                tracing::info!(
+                    conversation_id,
+                    "the conversation id was reissued; the delivery cursor re-seeds"
+                );
+                *cursor = inherited_boundary(tx, conversation_id).await?;
+            }
+            Ok(cursor)
+        }
+        Entry::Vacant(entry) => Ok(entry.insert(inherited_boundary(tx, conversation_id).await?)),
+    }
 }
 
 /// The newest block of this conversation that another conversation also

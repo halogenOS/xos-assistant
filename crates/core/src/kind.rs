@@ -969,13 +969,21 @@ pub(crate) const REPLY_TARGET_SITE: crate::erasure::ReferenceSite = crate::erasu
     column: COLUMN_REPLY_TARGET,
 };
 
+/// Where this kind records the person a message is from: the table it owns
+/// and the column holding their principal id. Named once here, read by every
+/// person-wide reach the consumer runs.
+pub(crate) const PRINCIPAL_REFERENCE: crate::erasure::PrincipalReference =
+    crate::erasure::PrincipalReference {
+        table: CHAT_MESSAGE_TABLE,
+        principal_column: COLUMN_PRINCIPAL_ID,
+    };
+
 /// This kind's own recorded platform ids, for the target-keyed reply pass:
 /// a reply stores the replied-to MESSAGE's origin, and this names where
 /// that origin is recorded against its author.
 pub(crate) const ORIGIN_SOURCE: crate::erasure::OriginSource = crate::erasure::OriginSource {
-    table: CHAT_MESSAGE_TABLE,
+    reference: PRINCIPAL_REFERENCE,
     origin_column: COLUMN_ORIGIN,
-    principal_column: COLUMN_PRINCIPAL_ID,
 };
 
 /// Null the reply-target reference of every message that replies to one of

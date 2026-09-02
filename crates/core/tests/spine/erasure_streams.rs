@@ -182,6 +182,7 @@ async fn a_stream_that_never_settles_fails_the_erasure_loudly_deleting_nothing()
         support::registry_of(deaf_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),
@@ -288,6 +289,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
             support::registry_of(deaf_provider()),
             assistant_core::tools::ToolSet::new(),
             assistant_core::AssemblyConfig {
+                retention: assistant_core::RetentionConfig::disabled(),
                 started_at: std::time::Instant::now(),
                 reasoning: assistant_core::ReasoningLevel::Low,
                 binding: support::binding(),
@@ -329,6 +331,7 @@ async fn a_crash_left_streaming_tail_settles_from_stored_state() {
         support::registry_of(deaf_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),

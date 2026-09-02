@@ -418,6 +418,7 @@ async fn an_unanswered_question_behind_a_reaction_still_owes_its_turn() {
         support::ScriptHandle::fresh(),
         ToolSet::new(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             answering: assistant_core::AnsweringMode::Addressed,
             ..support::assembly_config()
         },

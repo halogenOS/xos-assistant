@@ -23,7 +23,8 @@
 //!   the [`OperatorConfig`]), the observation entry point (answering with an
 //!   [`ObserveOutcome`]), the per-adapter outbound subscription, the
 //!   per-adapter composing subscription (yielding [`ComposingUpdate`]
-//!   transitions), and erasure with its [`ErasureOutcome`].
+//!   transitions), erasure with its [`ErasureOutcome`], and the retention
+//!   sweep enforcing the [`RetentionConfig`] span.
 //! - [`CoreError`] — what a core operation fails with.
 //!
 //! The public modules stay addressable by path, because their items read by
@@ -86,6 +87,7 @@ pub mod privacy;
 pub mod provider;
 mod quoting;
 mod reply_commands;
+mod retention;
 pub mod schema;
 mod session;
 mod streams;
@@ -112,6 +114,7 @@ pub use message::{
     SenderIdentity,
 };
 pub use outbound::{PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT};
+pub use retention::RetentionConfig;
 pub use teaching::{
     Capabilities, MODERATION_TEACHING, REACT_TEACHING, SEARCH_TEACHING, composed_system_prompt,
     moderation_taught,

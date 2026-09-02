@@ -124,6 +124,12 @@ file path per secret — and never appear in the file itself:
     #country = "de"
     #language = "de"
 
+    # Optional: how many days a conversation may lie untouched before it is
+    # deleted whole, together with the blocks and the identity rows nothing
+    # else still holds. Any message in a conversation refreshes all of it.
+    # 90 is the default; 0 switches the sweep off and nothing expires.
+    #retention_days = 90
+
     # Optional; the values shown are the defaults.
     [protection]
     principal_answers = 6

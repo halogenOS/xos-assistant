@@ -227,10 +227,18 @@ impl Projection for JoinNotice {
 /// reachable from that pass exactly as their messages are. The erasure
 /// composition names both sources; neither kind knows the other's table.
 pub(crate) const ORIGIN_SOURCE: OriginSource = OriginSource {
-    table: JOIN_NOTICE_TABLE,
+    reference: PRINCIPAL_REFERENCE,
     origin_column: COLUMN_ORIGIN,
-    principal_column: COLUMN_PRINCIPAL_ID,
 };
+
+/// Where this kind records the person a notice is about: the table it owns
+/// and the column holding their principal id, named once for every
+/// person-wide reach the consumer runs.
+pub(crate) const PRINCIPAL_REFERENCE: crate::erasure::PrincipalReference =
+    crate::erasure::PrincipalReference {
+        table: JOIN_NOTICE_TABLE,
+        principal_column: COLUMN_PRINCIPAL_ID,
+    };
 
 /// The row's personal columns — the shown name, the handle, the event
 /// origin and the platform send time. The principal id is deliberately
