@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+// `LeafKind` carries the `KINDS` constant this file reads off `SystemPrompt`,
+// so the trait has to be in scope for the type to answer it.
 use agent_ledger::agency::{LeafKind, SystemPrompt};
 use agent_ledger::{CoreEvent, EventBus, Role, Store};
 use assistant_core::schema::store_config;

@@ -54,3 +54,10 @@ one of them and read what each intake does with it.
 - **Auditing every log site for swallowed integrity failures.** Proposed as a sweep across
   hundreds of sites in two repositories with no procedure for deciding any of them. The
   chokepoint makes every caller compliant by construction instead.
+
+---
+
+Amended 2026-09-02: the class list above is refined by decision 0199. A refused statement is
+fatal now, beside the two classes this record names, and an unattended compaction that meets
+one ends the process instead of retrying. Contention and the plain storage class stay what
+this record states, as does everything else in it.

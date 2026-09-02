@@ -1563,13 +1563,13 @@ fn unattended_failure(
     fatal: &FatalExit,
     conversation_id: i64,
     door: &'static str,
-    standing: &'static str,
+    warning: &'static str,
 ) -> ControlFlow<()> {
     if failure.failure_kind() == FailureKind::Fatal {
         fatal.raise(failure);
         return ControlFlow::Break(());
     }
-    tracing::warn!(conversation_id, door, %failure, "{standing}");
+    tracing::warn!(conversation_id, door, %failure, "{warning}");
     ControlFlow::Continue(())
 }
 
