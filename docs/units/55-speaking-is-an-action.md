@@ -178,8 +178,10 @@ reopens, so the model stops and resumes on a later turn; a run of five such refu
 turn by the framework's rule.
 
 **The typing cue.** The framework raises a stream status at `tool_use_start`, once per
-call, carrying the tool's name — the moment the model begins composing the call's
-arguments; `RUNNING_TOOLS` keeps its own meaning (execution began) and is untouched. The
+recorded call, carrying the tool's name — when the reader records the call's start, which
+is as early as the wire allows; on the shipped wires the arguments have already arrived by
+then, so the cue precedes the send by little, and that is the honest bound. `RUNNING_TOOLS`
+keeps its own meaning (execution began) and is untouched. The
 app lights the cue on that status for the two sending tools. The stop keeps its existing
 carriers: the adapter stops the chat's refresher ahead of the actual send, a failed
 resolution raises the stop cue through the receipt door, and the composing edge's lifetime
