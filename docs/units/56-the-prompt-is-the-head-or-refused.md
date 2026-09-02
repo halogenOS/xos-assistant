@@ -51,11 +51,12 @@ time, before any paid turn.
 **The fork knows nothing about prompts.** The user's words: "The system prompt is a row like
 any other. The fork mechanism shouldnt care about this at all. The only case is when the
 prompt changed and we purposefully SKIP the ledger-saved prompt, it means we have to append
-the system prompt first then copy all from offset 1." So the framework offers plain row
-copies and no prompt-aware door: a public way to create an empty conversation under a model
-and to copy a source's junction rows into it by range — from a row onward, or up to a row.
-The prompt change is composed by the caller, in the app: create the successor, append the
-current prompt, copy the source's rows from offset 1. Row 0 is the old prompt, by the store's
+the system prompt first then copy all from offset 1." So the framework offers plain join-row
+clones and no prompt-aware door: a public way to create an empty conversation under a model
+and to clone a source's join rows into it by range — from a row onward, or up to a row. The
+blocks themselves are never copied: a fork is copy-on-write, and only the join table gains
+rows, each pointing at the shared block. The prompt change is composed by the caller, in the
+app: create the successor, append a fresh prompt, clone the source's join rows from offset 1. Row 0 is the old prompt, by the store's
 rule, and skipping it is the whole replacement; nothing is detached afterwards.
 `forked_with_current_prompt` becomes that composition. `open_compacted_thread` keeps its
 shape — it already appends the prompt and copies after the cut — and its post-cut copy
@@ -65,7 +66,7 @@ copies no `system_prompt` kind, so a database written before this build compacts
 conversation carries its prompt last. The startup walk's condition widens: a mapped
 conversation is re-forked when its prompt moved OR when its prompt is not its first row,
 and the repair is the same composition with the range the caller chooses — append the
-prompt, copy the rows before the misplaced one. One walk, once, before serving; no paid turn.
+prompt, clone the join rows before the misplaced one. One walk, once, before serving; no paid turn.
 
 **A refused statement is fatal.** `StoreError::Rejected` classifies `FailureKind::Fatal`: the
 database applied a rule the code violated, the ledger is in a shape the code cannot
@@ -83,9 +84,9 @@ Framework:
    `StoreError::Rejected`; appending one to an empty conversation succeeds; a second prompt is
    still refused. Tests cover all three, the first through the app's own door shape (fork,
    detach, then insert — asserted refused).
-2. The plain row copies are public: create an empty conversation under a model; copy a
-   source's junction rows into it from a given row onward; copy them up to a given row. None
-   of them reads a block's kind. A test composes append-prompt-then-copy-from-offset-1 and
+2. The plain join-row clones are public: create an empty conversation under a model; clone a
+   source's join rows into it from a given row onward; clone them up to a given row. None of
+   them reads a block's kind, and none copies a block: the blocks stay shared. A test composes append-prompt-then-copy-from-offset-1 and
    asserts the successor's first row is the prompt and the rest is the source's history in
    order, shared through the junction, not copied.
 3. `open_compacted_thread` on a source whose newest block is a `system_prompt` past the cut
@@ -98,8 +99,8 @@ Framework:
 
 App:
 
-5. `forked_with_current_prompt` is the composition — create, append the current prompt, copy
-   from offset 1 — with no detach step; a test asserts the successor's first row is the prompt
+5. `forked_with_current_prompt` is the composition — create, append a fresh prompt, clone the
+   join rows from offset 1 — with no detach step; a test asserts the successor's first row is the prompt
    and the old prompt is absent.
 6. The startup walk re-forks a mapped conversation whose prompt is not its first row, prompt
    moved or not, through the composition with the caller-chosen range; a test builds the
