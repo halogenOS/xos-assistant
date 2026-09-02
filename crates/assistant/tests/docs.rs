@@ -31,7 +31,7 @@
 //! unit's two decision records — and the standing lookup's AC11 and AC13
 //! pins: the four privacy documents carrying standing as data that reaches
 //! the model provider, each at the sites the old claim appears, dated in the
-//! three internal assessments and undated in the published policy, which
+//! three internal records and undated in the published policy, which
 //! dates only itself; the unit's thirteen decision records, and the conduct
 //! prose that routes a claimed authority to the tool and bounds what an
 //! override reaches — and the published policy's single-date pin: a year
@@ -2617,31 +2617,40 @@ fn the_privacy_documents_drop_the_expiry_free_claim_and_promise_no_stored_files(
     );
 }
 
-// ─── The published policy's single date ──────────────────────────────────
+// ─── The published policy's single date (unit 57, 2026-09-02) ─────────────
 
 /// The policy is a member-facing document, not a change log: it says what
 /// the assistant does now, and it carries a date in exactly one place, the
 /// footer. Every clause dated inside the text is a sentence about the
 /// project's history in a document a member reads for the present rule, so
 /// the scan below fails on the first year a later edit writes back into the
-/// prose. The internal assessments are the opposite case and keep their
-/// dated audit notes; they are not scanned here.
+/// prose. The internal records are the opposite case and keep their dated
+/// audit notes; they are not scanned here.
 ///
-/// A year is any of 2020 through 2039 written out. The controller's postal
-/// code and the authority's are outside that range, so an address line is
-/// no false hit.
+/// A year is a run of exactly four digits opening with "20", bounded by
+/// non-digits on both sides: a five-digit postal code is one longer run and
+/// is no year, whatever digits it opens with.
+fn lines_stating_a_year(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| {
+            line.split(|c: char| !c.is_ascii_digit())
+                .any(|run| run.len() == 4 && run.starts_with("20"))
+        })
+        .collect()
+}
+
 #[test]
 fn the_policy_carries_one_date_and_it_is_the_footer() {
     let policy = repo_file("docs/privacy/bot-assistant-privacy-policy.md");
-    let years: Vec<String> = (2020..=2039).map(|year| year.to_string()).collect();
-    let dated: Vec<&str> = policy
-        .lines()
-        .filter(|line| years.iter().any(|year| line.contains(year.as_str())))
-        .collect();
+    let dated = lines_stating_a_year(&policy);
+    assert!(
+        !dated.is_empty(),
+        "the policy states no year at all: the footer's date is missing"
+    );
     assert_eq!(
         dated.len(),
         1,
-        "the policy states a year more than once: {dated:?}"
+        "the policy states a year in more than one place: {dated:?}"
     );
     assert!(
         dated[0].starts_with("Last updated: "),
