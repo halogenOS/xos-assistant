@@ -145,10 +145,15 @@ pub(crate) enum InheritedRows {
     /// prompt is the head: the history comes across and the wording being
     /// replaced does not.
     After(i64),
-    /// Every row up to and including this one. The row before a system
-    /// prompt that is NOT the head: everything written ahead of that prompt
-    /// comes across, and the prompt row itself is what the successor's own
-    /// first block replaces.
+    /// Every row up to and including this one: an inclusive upper bound the
+    /// caller names, with no prompt implied anywhere in it.
+    ///
+    /// It serves the two sources whose history is a PREFIX. One carries a
+    /// system prompt that is not its head, and the bound is the row before
+    /// that prompt: everything written ahead of it comes across and the
+    /// prompt row itself is what the successor's own first block replaces.
+    /// The other carries no prompt row at all, and the bound is its last
+    /// row: the whole ledger rides across behind the fresh prompt.
     UpTo(i64),
 }
 
@@ -471,6 +476,13 @@ impl Sessions {
     /// a session, and a session replaced under the current prompt but the
     /// previous model is half a replacement.
     ///
+    /// The three steps are three statements and not one transaction, so a
+    /// failure past the first would leave a successor nothing maps and
+    /// nothing serves — an empty conversation, or one holding a prompt and
+    /// no history. It is retired through the same discard door every other
+    /// door here ends at, and only then does the failure reach the caller:
+    /// what the caller gets back is a store where this call never happened.
+    ///
     /// # Errors
     ///
     /// [`CoreError::Store`] if the fork, the prompt insert or the row clone
@@ -480,8 +492,35 @@ impl Sessions {
         source: i64,
         inherited: InheritedRows,
     ) -> Result<i64, CoreError> {
+        let successor = self
+            .ctx
+            .store()
+            .fork_empty(source, self.current_model())
+            .await?;
+        if let Err(failure) = self.compose_successor(source, successor, inherited).await {
+            self.discard(&[successor]).await;
+            return Err(failure);
+        }
+        Ok(successor)
+    }
+
+    /// The two writes that make a bare successor the source's replacement:
+    /// the current prompt as its first block, then the source's join rows in
+    /// the caller's range.
+    ///
+    /// Its own method so the caller has one failure to answer for both, and
+    /// so the successor it cleans up after is named in exactly one place.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Store`] if the prompt insert or the row clone fails.
+    async fn compose_successor(
+        &self,
+        source: i64,
+        successor: i64,
+        inherited: InheritedRows,
+    ) -> Result<(), CoreError> {
         let store = self.ctx.store();
-        let successor = store.fork_empty(source, self.current_model()).await?;
         store
             .insert_system_prompt(successor, self.system_prompt.clone())
             .await?;
@@ -497,7 +536,7 @@ impl Sessions {
                     .await?;
             }
         }
-        Ok(successor)
+        Ok(())
     }
 
     /// Clone a conversation minus a named set of blocks: every other

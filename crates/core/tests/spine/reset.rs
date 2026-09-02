@@ -939,6 +939,15 @@ async fn a_refused_compaction_ends_the_process_and_is_not_retried() {
 
     // Every later wake is the loop this ends: the watch stopped, so the
     // marker still standing summons nothing.
+    //
+    // The wake is proven DELIVERED instead of waited out. This test
+    // subscribes to the very broadcast the driver watches, and its own
+    // receipt of the late block change is that fan-out happening — the event
+    // a driver still watching would have taken. The harness offers no
+    // synchronous door into the driver, nothing that awaits its reaction, so
+    // this is the strongest observable there is here; what it replaces is a
+    // sleep that would have passed whether or not the watch had stopped.
+    let mut wakes = fixture.bus.subscribe();
     fixture
         .store
         .insert_status_block(
@@ -948,7 +957,22 @@ async fn a_refused_compaction_ends_the_process_and_is_not_retried() {
         )
         .await
         .expect("a late marker wakes the watch again");
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    tokio::time::timeout(support::DEADLINE, async {
+        loop {
+            let event = wakes
+                .recv()
+                .await
+                .expect("the bus delivers the late change");
+            if matches!(
+                event,
+                CoreEvent::BlocksChanged { conversation_id, .. } if conversation_id == source
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the late marker reaches the subscribers of the driver's own bus");
     assert_eq!(
         requests() - requests_before,
         paid,
@@ -996,12 +1020,25 @@ async fn a_channel_the_walk_re_forked_compacts_with_one_prompt_at_its_head() {
         .await
         .expect("the channel is mapped");
     assert_ne!(successor, source, "the walk moved the channel");
-    let prompt = support::block_text(
-        &store
-            .list_blocks(successor)
-            .await
-            .expect("the successor reads")[0],
-        "content",
+    // What the walk installed is read from the successor's head, so the head
+    // is asserted before it is read from: a successor whose first row was
+    // anything else would otherwise hand this test a string and pass.
+    let head = store
+        .list_blocks(successor)
+        .await
+        .expect("the successor reads")
+        .into_iter()
+        .next()
+        .expect("the successor holds a block");
+    assert_eq!(
+        head.block_type,
+        SystemPrompt::KINDS[0],
+        "the walk's successor opens with its prompt"
+    );
+    let prompt = support::block_text(&head, "content");
+    assert!(
+        prompt.contains("a different system prompt entirely"),
+        "and it carries the edited wording, not the one the source opened with: {prompt}"
     );
 
     // The unattended door, on the conversation the walk built.

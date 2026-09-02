@@ -190,10 +190,23 @@ impl FatalExit {
 
     /// State that this process cannot go on, naming the failure in the log
     /// — the one record of what it was, since nothing downstream carries the
-    /// error itself. Raising an already raised signal changes nothing.
+    /// error itself.
+    ///
+    /// The FIRST raise is the whole event: it writes the record and wakes
+    /// every wait. A later one changes nothing at all, logging included — the
+    /// process is already ending, and a second line about a second failure on
+    /// the way out reads like a second incident. The log is written under the
+    /// signal's own lock, ahead of the wake, so the record is in the log
+    /// before anything waiting on the exit can act on it.
     pub(crate) fn raise(&self, failure: &CoreError) {
-        tracing::error!(%failure, "the core cannot serve; the process ends for a restart");
-        self.0.send_replace(true);
+        self.0.send_if_modified(|raised| {
+            if *raised {
+                return false;
+            }
+            tracing::error!(%failure, "the core cannot serve; the process ends for a restart");
+            *raised = true;
+            true
+        });
     }
 
     /// Resolves once the signal is raised, at once when it already is.
@@ -201,6 +214,11 @@ impl FatalExit {
         let mut listener = self.0.subscribe();
         // The wait reads the current value before it waits for a change,
         // which is what makes an earlier raise answer this call.
+        //
+        // The discarded result is the closed channel, which cannot happen
+        // here: the sender is this very object and the caller is holding it
+        // borrowed for the whole await, so the only way the wait ends is the
+        // raise it is waiting for.
         let _ = listener.wait_for(|raised| *raised).await;
     }
 }

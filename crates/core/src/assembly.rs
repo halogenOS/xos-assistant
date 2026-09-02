@@ -374,8 +374,10 @@ pub struct Assistant {
     sessions: Arc<Sessions>,
     /// The signal an unattended path raises when its failure is the whole
     /// process's: read through [`Assistant::cannot_serve`], which the binary
-    /// waits on beside the termination signal. Shared with the compaction
-    /// driver, the one path here that has no caller to fail.
+    /// waits on beside the termination signal. Shared with both paths here
+    /// that have no caller to fail — the compaction driver and the retention
+    /// sweep — because each of them would otherwise meet a refused statement
+    /// again on its next wake and never get past it.
     fatal: Arc<FatalExit>,
     /// How group messages summon a turn. Read-only after start; consulted
     /// at exactly one place, the ingest entry point's summons resolution.
@@ -770,9 +772,9 @@ impl Assistant {
         // monotonic time serving context pressure, and retention is
         // wall-clock days. A deployment that configured no span gets no task
         // here at all.
-        // The handle is dropped: the task ends with the assembly, which is
-        // the only end it has.
-        drop(retention::spawn_sweep(&sessions, retention));
+        // The handle is dropped: the task ends with the assembly, or with the
+        // exit signal it raises on a fatal failure of its own.
+        drop(retention::spawn_sweep(&sessions, retention, &fatal));
         spawn_reactor(ctx.clone());
         Ok(Self {
             ctx,
@@ -1359,9 +1361,11 @@ impl Assistant {
                         ))) => Some((row, prompt.content)),
                         _ => None,
                     });
-            // An absent prompt retires too: a mapped conversation that never
-            // recorded one cannot be serving the current wording either, and
-            // leaving it mapped would keep that silence permanent.
+            // A ledger with blocks but no prompt row among them retires too:
+            // it cannot be serving the current wording either, and leaving it
+            // mapped would keep that silence permanent. A ledger with no
+            // blocks at all is the other case, and the `last` read below is
+            // where it is answered.
             let prompt_current = recorded.as_ref().map(|(_, content)| content.as_str())
                 == Some(self.sessions.system_prompt());
             // The position is a reason of its own: a prompt anywhere but the
@@ -1392,6 +1396,13 @@ impl Assistant {
             else {
                 continue;
             };
+            // A conversation whose junction holds nothing keeps its mapping:
+            // there is no history to carry and no prompt row to lift out, so
+            // a successor of it would be another empty conversation and the
+            // channel would gain nothing by moving. No door here builds that
+            // shape — every one of them writes the prompt before the channel
+            // is ever claimed — and the dispatch's head check is what answers
+            // for it if a foreign ledger ever brings one.
             let Some(last) = blocks.last().map(|block| block.id) else {
                 continue;
             };
@@ -1399,14 +1410,22 @@ impl Assistant {
             // context every answer is built from, and a prompt edit is not a
             // reason to forget what was said — the successor inherits the
             // history through the junction, so nothing is copied and nothing
-            // is lost. Everything else about the fork — the current binding,
-            // the current prompt at its head, the configured reasoning level
-            // — is the session module's one recording of what a fork under
-            // the current deployment is.
+            // is lost. Everything else about the fork — the current prompt at
+            // its head, and the current model binding, whose reasoning level
+            // travels with it into the successor's stored settings — is the
+            // session module's one recording of what a fork under the current
+            // deployment is.
             //
             // The range is what this walk knows and that module does not:
             // where the old prompt sits, and therefore which rows are the
             // history it is being lifted out of.
+            //
+            // The two indexed reads below are safe by the arm ORDER and
+            // nothing else: `blocks[0]` is reached only where a prompt was
+            // found at row 0, so the ledger has that row, and `blocks[row-1]`
+            // only after the `Some((0, _))` arm above has taken every row
+            // that would underflow. Both indices come from the enumeration
+            // over `blocks` itself, so neither can run past its end.
             let inherited = match recorded {
                 // The prompt is the head: the history is everything past it.
                 Some((0, _)) => InheritedRows::After(blocks[0].id),

@@ -58,11 +58,19 @@
 //! the rule no longer names, so the one reading sits where nothing can move
 //! what it names.
 //!
-//! A failure inside one conversation's retirement fails that conversation
-//! and nothing else. The sweep logs it and moves on, and the next tick
-//! retries it, because the conversation is still expired.
+//! A TRANSIENT failure inside one conversation's retirement fails that
+//! conversation and nothing else. The sweep logs it and moves on, and the
+//! next tick retries it, because the conversation is still expired.
+//!
+//! A FATAL one ends the sweep for good. The database refused a statement by
+//! a rule this code violated, or it can no longer answer at all, and no
+//! later tick gets past either: the sweep has no caller to fail, so it
+//! raises the process's exit signal and stops, exactly as the compaction
+//! driver does. A sweep that warned and ticked again would be the hourly
+//! version of the loop unit 56 exists to end.
 
 use std::num::NonZeroU32;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,6 +78,7 @@ use agent_ledger::store::domain_run;
 use agent_ledger::{Store, StoreError};
 
 use crate::erasure;
+use crate::error::{CoreError, FailureKind, FatalExit};
 use crate::session::Sessions;
 
 /// How often the sweep runs. The cadence carries no meaning beyond freshness
@@ -126,13 +135,16 @@ impl Default for RetentionConfig {
 /// sweep has no catch-up behaviour and no first-run grace, because the rule
 /// is the whole mechanism and a tick deletes only what the rule names. The
 /// task holds the sessions weakly and ends with the assembly, the compaction
-/// driver's own shape, so a caller with no use for the handle drops it.
+/// driver's own shape, so a caller with no use for the handle drops it — or
+/// with the exit signal a fatal failure inside a tick raises.
 pub(crate) fn spawn_sweep(
     sessions: &Arc<Sessions>,
     retention: RetentionConfig,
+    fatal: &Arc<FatalExit>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let days = retention.days?;
     let weak = Arc::downgrade(sessions);
+    let fatal = Arc::clone(fatal);
     let mut ticks = tokio::time::interval(SWEEP_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     Some(tokio::spawn(async move {
@@ -141,18 +153,23 @@ pub(crate) fn spawn_sweep(
             let Some(sessions) = weak.upgrade() else {
                 break;
             };
-            sweep(&sessions, days).await;
+            if sweep(&sessions, days, &fatal).await.is_break() {
+                break;
+            }
         }
     }))
 }
 
 /// One tick: retire what expired, collect what nothing holds, and say so in
-/// the log.
+/// the log. Answers whether the sweep keeps ticking.
 ///
-/// Nothing here fails a caller. A sweep is unattended enforcement of a
-/// standing rule, and every way it can go wrong leaves the store exactly as
-/// it was for the next tick to find.
-async fn sweep(sessions: &Sessions, days: NonZeroU32) {
+/// Nothing here fails a caller — a sweep is unattended enforcement of a
+/// standing rule — so a failure comes to one of two things. A transient one
+/// leaves the store exactly as it was for the next tick to find. A fatal one
+/// is not about the conversation it happened on: it raises the process's
+/// exit signal and ends the sweep, because every later tick would meet the
+/// same wall and there is nobody to hand the failure to.
+async fn sweep(sessions: &Sessions, days: NonZeroU32, fatal: &FatalExit) -> ControlFlow<()> {
     let store = sessions.context().store();
     // The fence comes before the reading, and the tick holds it whole. A
     // reading taken ahead of it answers for a moment already past: a message
@@ -169,18 +186,21 @@ async fn sweep(sessions: &Sessions, days: NonZeroU32) {
     let expired = match expired_conversations(store, days).await {
         Ok(expired) => expired,
         Err(error) => {
+            let failure = CoreError::Store(error);
+            ends_the_sweep(&failure, fatal)?;
             tracing::warn!(
-                %error,
+                failure = %failure,
                 "the retention reading failed; the next sweep reads again"
             );
             Vec::new()
         }
     };
     for conversation_id in expired {
-        if let Err(error) = sessions.retire_expired(conversation_id).await {
+        if let Err(failure) = sessions.retire_expired(conversation_id).await {
+            ends_the_sweep(&failure, fatal)?;
             tracing::warn!(
                 conversation_id,
-                %error,
+                %failure,
                 "an expired conversation did not retire; the next sweep finds it expired still"
             );
             continue;
@@ -191,21 +211,42 @@ async fn sweep(sessions: &Sessions, days: NonZeroU32) {
     // an earlier tick failed to collect is still orphaned, and nothing else
     // in the process will ever name it.
     if let Err(error) = store.gc_orphan_blocks().await {
+        let failure = CoreError::Store(error);
+        ends_the_sweep(&failure, fatal)?;
         tracing::warn!(
             retired,
-            %error,
+            failure = %failure,
             "the orphan collection failed after a sweep; the next sweep collects"
         );
-        return;
+        return ControlFlow::Continue(());
     }
     match erasure::collect_unnamed_principals(store).await {
         Ok(collected) => tracing::info!(retired, collected, "the retention sweep ran"),
-        Err(error) => tracing::warn!(
-            retired,
-            %error,
-            "the principal collection failed after a sweep; the next sweep collects"
-        ),
+        Err(error) => {
+            let failure = CoreError::Store(error);
+            ends_the_sweep(&failure, fatal)?;
+            tracing::warn!(
+                retired,
+                failure = %failure,
+                "the principal collection failed after a sweep; the next sweep collects"
+            );
+        }
     }
+    ControlFlow::Continue(())
+}
+
+/// What one sweep failure comes to, and the one place that decides it: a
+/// fatal one raises the process's exit and breaks the tick out of the sweep,
+/// and every other one is the caller's to log and carry on from.
+///
+/// Answers in [`ControlFlow`] so each failure site states the decision with
+/// one `?` instead of keeping its own copy of the rule.
+fn ends_the_sweep(failure: &CoreError, fatal: &FatalExit) -> ControlFlow<()> {
+    if failure.failure_kind() == FailureKind::Fatal {
+        fatal.raise(failure);
+        return ControlFlow::Break(());
+    }
+    ControlFlow::Continue(())
 }
 
 /// The conversations whose newest ledger entry is older than the span,
@@ -299,6 +340,17 @@ mod tests {
 
     /// The span every test measures against.
     const SPAN: NonZeroU32 = NonZeroU32::new(90).expect("the test span is nonzero");
+
+    /// One tick over a store whose failures are none, asserting the sweep
+    /// goes on. Every test but the fatal one below sweeps through this, so a
+    /// tick that quietly ended the sweep fails where it happened instead of
+    /// somewhere later.
+    async fn one_tick(sessions: &Sessions, days: NonZeroU32) {
+        assert!(
+            sweep(sessions, days, &FatalExit::new()).await.is_continue(),
+            "the tick met no fatal failure"
+        );
+    }
 
     /// A conversation with one stored block, answering its id.
     async fn conversation_with_a_block(store: &Store) -> i64 {
@@ -575,7 +627,7 @@ mod tests {
             .await
             .expect("the fresh line stores");
 
-        sweep(&sessions, SPAN).await;
+        one_tick(&sessions, SPAN).await;
 
         assert_eq!(
             surviving(&store).await,
@@ -602,7 +654,7 @@ mod tests {
             .expect("the channel claims the conversation");
         age(&store, conversation, 91).await;
 
-        sweep(&sessions, SPAN).await;
+        one_tick(&sessions, SPAN).await;
 
         assert!(
             surviving(&store).await.is_empty(),
@@ -638,7 +690,7 @@ mod tests {
         message_from(&store, conversation, speaker).await;
         age(&store, conversation, 89).await;
 
-        sweep(&sessions, SPAN).await;
+        one_tick(&sessions, SPAN).await;
 
         assert_eq!(
             surviving(&store).await,
@@ -686,7 +738,7 @@ mod tests {
             "the residue is there to collect: the deletion left every block standing"
         );
 
-        sweep(&sessions, SPAN).await;
+        one_tick(&sessions, SPAN).await;
 
         assert_eq!(
             surviving(&store).await,
@@ -727,7 +779,7 @@ mod tests {
             .expect("the flag rises");
         age(&store, quiet, 91).await;
 
-        sweep(&sessions, SPAN).await;
+        one_tick(&sessions, SPAN).await;
 
         assert_eq!(
             surviving(&store).await,
@@ -764,7 +816,7 @@ mod tests {
         report_of(&store, living, reported).await;
         age(&store, quiet, 91).await;
 
-        sweep(&sessions, SPAN).await;
+        one_tick(&sessions, SPAN).await;
 
         assert_eq!(
             surviving(&store).await,
@@ -797,7 +849,7 @@ mod tests {
         let held = sessions.erasure_fence().read().await;
         let ticking = tokio::spawn({
             let sessions = Arc::clone(&sessions);
-            async move { sweep(&sessions, SPAN).await }
+            async move { one_tick(&sessions, SPAN).await }
         });
         wait_until_the_tick_stands_at_the_fence(&sessions).await;
         // The entry an ingestion writes into the window the wait opens.
@@ -821,9 +873,17 @@ mod tests {
         );
     }
 
-    /// AC8: a store failure inside one conversation's retirement fails that
-    /// conversation alone. The second expired conversation is swept, the
+    /// AC8 of unit 53, in the classes unit 56 sorts a database failure into:
+    /// a TRANSIENT store failure inside one conversation's retirement fails
+    /// that conversation alone. The second expired conversation is swept, the
     /// first stands, and the tick after the failure clears takes it.
+    ///
+    /// The fault is an ordinary statement failure — malformed JSON evaluated
+    /// inside the deletion — and deliberately not a `RAISE`. A refusal is a
+    /// rule this code violated, which classifies fatal since 2026-09-02, and
+    /// what the sweep owes THAT is the test below: raise the exit and stop.
+    /// The two halves of unit 53's eighth criterion split along that line,
+    /// and this half is the one it keeps.
     #[tokio::test]
     async fn a_failed_retirement_leaves_its_conversation_for_the_next_sweep() {
         let (sessions, store) = quiet_sessions();
@@ -831,22 +891,22 @@ mod tests {
         let other = conversation_with_a_block(&store).await;
         age(&store, obstructed, 91).await;
         age(&store, other, 91).await;
-        // The injected fault: the first conversation's junction refuses to
-        // be deleted, which is a store error raised from inside the
-        // framework's own deletion.
+        // The injected fault: deleting the first conversation's junction
+        // rows evaluates a statement that fails, so the failure comes out of
+        // the framework's own deletion the way an I/O or a full disk would.
         domain_run(&store.tx(), DOMAIN, move |conn| {
             conn.execute_batch(&format!(
                 "CREATE TRIGGER obstruct_retirement \
                  BEFORE DELETE ON conversation_blocks \
                  WHEN OLD.conversation_id = {obstructed} \
-                 BEGIN SELECT RAISE(ABORT, 'injected deletion failure'); END;"
+                 BEGIN SELECT json('{{ the injected failure'); END;"
             ))?;
             Ok(())
         })
         .await
         .expect("the trigger installs");
 
-        sweep(&sessions, SPAN).await;
+        one_tick(&sessions, SPAN).await;
 
         assert_eq!(
             surviving(&store).await,
@@ -860,7 +920,7 @@ mod tests {
         })
         .await
         .expect("the trigger drops");
-        sweep(&sessions, SPAN).await;
+        one_tick(&sessions, SPAN).await;
 
         assert!(
             surviving(&store).await.is_empty(),
@@ -885,7 +945,7 @@ mod tests {
         let held = sessions.erasure_fence().read().await;
         let ticking = tokio::spawn({
             let sessions = Arc::clone(&sessions);
-            async move { sweep(&sessions, SPAN).await }
+            async move { one_tick(&sessions, SPAN).await }
         });
         wait_until_the_tick_stands_at_the_fence(&sessions).await;
         assert_eq!(
@@ -929,8 +989,9 @@ mod tests {
         // The spawn answers what it did, so the absence is read from the
         // mechanism itself and not from a task count the whole runtime
         // shares with every unrelated task.
+        let fatal = Arc::new(FatalExit::new());
         assert!(
-            spawn_sweep(&sessions, RetentionConfig::of_days(0)).is_none(),
+            spawn_sweep(&sessions, RetentionConfig::of_days(0), &fatal).is_none(),
             "a disabled span spawns no task"
         );
         assert_eq!(
@@ -940,7 +1001,7 @@ mod tests {
         );
 
         assert!(
-            spawn_sweep(&sessions, RetentionConfig::default()).is_some(),
+            spawn_sweep(&sessions, RetentionConfig::default(), &fatal).is_some(),
             "a stated span spawns the task"
         );
         // The first tick is at spawn, so the conversation goes without any
@@ -952,5 +1013,55 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("the spawned sweep's first tick never took the expired conversation");
+    }
+
+    /// A tick the database REFUSES ends the sweep: the exit signal is raised
+    /// and the task is gone, so no later tick meets the same refusal.
+    ///
+    /// The loop unit 56 exists to end, in its hourly form. A refused
+    /// statement is a rule this code violated and is refused the same way
+    /// every hour, so a sweep that warned and ticked again would retry it
+    /// until the process was restarted for some other reason. The refusal is
+    /// scripted as a trigger over the conversation delete a retirement runs,
+    /// so the tick fails at a statement of its own and not at a seam.
+    ///
+    /// The task's OWN end is what proves no further tick runs: the join
+    /// handle resolving is the loop being gone, read from the mechanism
+    /// instead of waited out on a clock that would pass either way.
+    #[tokio::test]
+    async fn a_refused_tick_raises_the_exit_and_ends_the_sweep() {
+        let (sessions, store) = quiet_sessions();
+        let conversation = conversation_with_a_block(&store).await;
+        age(&store, conversation, 91).await;
+        store
+            .run(|conn| {
+                conn.execute_batch(
+                    "CREATE TRIGGER scripted_refusal
+                          BEFORE DELETE ON conversations
+                      BEGIN
+                          SELECT RAISE(ABORT, 'the scripted refusal');
+                      END;",
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("the refusal is scripted");
+
+        let fatal = Arc::new(FatalExit::new());
+        let sweeping = spawn_sweep(&sessions, RetentionConfig::default(), &fatal)
+            .expect("a stated span spawns the task");
+
+        tokio::time::timeout(Duration::from_secs(10), fatal.raised())
+            .await
+            .expect("the refused statement raises the process's exit");
+        tokio::time::timeout(Duration::from_secs(10), sweeping)
+            .await
+            .expect("the sweep task ends instead of ticking again")
+            .expect("the sweep task ends without panicking");
+        assert_eq!(
+            surviving(&store).await,
+            vec![conversation],
+            "the refused retirement changed nothing"
+        );
     }
 }
