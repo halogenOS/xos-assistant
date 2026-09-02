@@ -30,6 +30,7 @@ async fn start_assistant_reasoning(level: ReasoningLevel) -> support::Fixture {
         script,
         support::production_toolset(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             binding: support::binding(),
             reasoning: level,

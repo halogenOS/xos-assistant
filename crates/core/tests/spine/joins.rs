@@ -137,6 +137,7 @@ async fn silent_fixture(
         support::ScriptHandle::fresh(),
         support::production_toolset(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             answering,
             protection,
             ..support::assembly_config()

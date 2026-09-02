@@ -27,6 +27,7 @@ async fn a_binding_with_an_unregistered_vendor_is_refused_at_start() {
         support::registry_of(provider),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding,
@@ -67,6 +68,7 @@ async fn a_store_opened_without_the_configuration_is_refused_at_start() {
         support::registry_of(provider),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),

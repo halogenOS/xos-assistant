@@ -137,15 +137,24 @@ We store messages on a server in Germany. Data leaves the EU/EEA in four places
 
 **Retention and deletion**
 
-We keep messages until somebody asks us to delete them. We set no automatic expiry,
-deliberately: the assistant answers questions about discussions from months ago, and a
-schedule would delete everyone's history to reach the part one person wanted gone. We keep
+We keep the messages of a conversation while that conversation is in use. Changed 2
+September 2026: a conversation nobody has written in for 90 days is then deleted whole. Any
+message refreshes the whole conversation, so a group that is still talking keeps its
+history for as long as it goes on talking, and what expires is what nobody has touched in
+three months. Everything stored inside a conversation goes with it: the messages, what the
+assistant looked up in it, the reactions and reports recorded there, and the rules text it
+was serving under. Your identity data goes too, once nothing kept anywhere else names you
+any more. The assistant also starts a fresh conversation at times — when a thread grows too
+long to send in full it writes a summary of the older part and carries on from that — and
+the conversation it left behind is deleted 90 days later under the same rule, while the
+fresh one holds the summary and everything since. Asking us to delete never waits for that
+date: a request is acted on when it arrives. Until a conversation expires we keep
 identity data and circumstances as long as the message; the pinned rules while the
 assistant serves the group, each replaced by the next; answer counters until they fall
 out of their window; a report with its message reference emptied when the reported person is
 deleted; a reaction record for exactly as long as the message it sits on, its message
-reference emptied on the same deletion (added 2026-08-30); lookup records with no time
-limit. Deleting a message in your chat app does not
+reference emptied on the same deletion (added 2026-08-30); and the assistant's lookups with
+no limit of their own. Deleting a message in your chat app does not
 reach us, and neither your leaving a group nor the assistant leaving it deletes anything:
 ask, and it goes. One exception: when the group's administrators delete a message through
 the moderation bot's reply command, that message is removed from our store as well. Only
@@ -182,7 +191,9 @@ keeps no message, and a model provider behind it may keep a request under its ow
 beyond our reach. We do not reach lookup records — including a web search's query — the pinned rules
 text, or the
 copy of your message's identifier on somebody else's reply where it matches nothing of
-yours, and a query or a rules text can quote your words or name you. If you opted out, we
+yours, and a query or a rules text can quote your words or name you. Added 2 September
+2026: everything named in this paragraph is deleted anyway when the conversation holding it
+expires, so what a request leaves behind has an end date of its own. If you opted out, we
 keep your account identifier with the opt-out mark on purpose, because forgetting it would
 mean collecting your messages again. Opt back in and ask for deletion once more, and that
 mark goes too.
@@ -228,4 +239,4 @@ Promenade 18, 91522 Ansbach\
 We update this policy as the assistant changes. The current version is always at this
 address, and the assistant answers `/privacy` with it.
 
-Last updated: 29 August 2026
+Last updated: 2 September 2026

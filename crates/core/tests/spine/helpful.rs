@@ -339,6 +339,7 @@ async fn an_absorbed_question_and_the_intervening_answer_reach_the_model() {
         script,
         support::production_toolset(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),

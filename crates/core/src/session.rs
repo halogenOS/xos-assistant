@@ -291,6 +291,30 @@ impl Sessions {
         Ok(())
     }
 
+    /// Retire one conversation the retention rule has named: unmap the
+    /// channel that points at it, then settle, delete and forget through the
+    /// one door above (unit 53, 2026-09-02).
+    ///
+    /// The mapping row goes FIRST, ahead of the settle and the deletion
+    /// both: while those run, a message arriving on that channel must not
+    /// resolve into the conversation this tick is about to delete, and a
+    /// channel left mapped after the deletion resolves every later message
+    /// into a conversation that is not there. An unmapped channel's next
+    /// message creates a fresh session on the path that already exists. A
+    /// conversation nothing maps deletes no row here and retires the same
+    /// way.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::StreamUnsettled`] if the conversation's turn did not
+    /// settle before its bound — the mapping is already gone and the
+    /// conversation stands, which the next tick finds still expired;
+    /// [`CoreError::Store`] if the unmapping or the deletion fails.
+    pub(crate) async fn retire_expired(&self, conversation_id: i64) -> Result<(), CoreError> {
+        mapping::delete_by_conversation(&self.ctx.store().tx(), conversation_id).await?;
+        self.retire(conversation_id).await
+    }
+
     /// Install the reset claim race's test seam: the given pause runs
     /// between a reset's mapping delete and its claim, which is exactly the
     /// window a suite needs to make a concurrent racer win the channel.

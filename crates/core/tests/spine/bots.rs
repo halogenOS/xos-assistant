@@ -41,6 +41,7 @@ async fn withholding_assistant() -> (Assistant, Store) {
         support::registry_of(support::silent_provider()),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),

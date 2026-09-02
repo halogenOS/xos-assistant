@@ -224,6 +224,53 @@ pub(crate) async fn conclude_erasure(tx: &StoreTx, principal_id: i64) -> Result<
     .await
 }
 
+/// Delete every unflagged identity row that no row of the given enumeration
+/// names, answering how many went — the retention sweep's principal
+/// collection (unit 53, 2026-09-02). An identity kept for messages that are
+/// gone is identity kept for nothing.
+///
+/// The enumeration arrives from the caller, which is the erasure
+/// composition: this module owns the identity table and its SQL, and WHICH
+/// rows name a person is a fact about the whole consumer. An empty
+/// enumeration says nothing records a person, and this answers by touching
+/// nothing instead of reading a predicate out of emptiness that would take
+/// every row.
+///
+/// A flagged row is never reached: the suppression stub outlives its
+/// person's own messages on purpose, because forgetting the objection would
+/// mean collecting that person again. Deleting an already-absent row changes
+/// nothing, so the step is idempotent.
+///
+/// # Errors
+///
+/// [`StoreError`] if the delete fails or the store's actor has stopped.
+pub(crate) async fn delete_unnamed(
+    tx: &StoreTx,
+    references: &'static [crate::erasure::PrincipalReference],
+) -> Result<usize, StoreError> {
+    if references.is_empty() {
+        return Ok(0);
+    }
+    domain_run(tx, DOMAIN, move |conn| {
+        let unnamed = references
+            .iter()
+            .map(|reference| {
+                format!(
+                    "NOT EXISTS (SELECT 1 FROM {table} WHERE {table}.{column} = principals.id)",
+                    table = reference.table,
+                    column = reference.principal_column,
+                )
+            })
+            .collect::<Vec<String>>()
+            .join(" AND ");
+        Ok(conn.execute(
+            &format!("DELETE FROM principals WHERE {COLUMN_OPTED_OUT} = 0 AND {unnamed}"),
+            [],
+        )?)
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use agent_ledger::Store;

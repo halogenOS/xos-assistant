@@ -247,6 +247,7 @@ async fn a_lookup_that_does_not_answer_closes_with_the_plain_dont_know() {
         script,
         support::production_toolset(),
         assistant_core::AssemblyConfig {
+            retention: assistant_core::RetentionConfig::disabled(),
             started_at: std::time::Instant::now(),
             reasoning: assistant_core::ReasoningLevel::Low,
             binding: support::binding(),

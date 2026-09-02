@@ -45,6 +45,7 @@ use crate::message::{
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::quoting;
+use crate::retention::{self, RetentionConfig};
 use crate::session::{CompactOutcome, SessionCoordination, Sessions, WipeOutcome};
 use crate::streams::StreamObserver;
 use crate::tools::ToolSet;
@@ -314,6 +315,10 @@ pub struct AssemblyConfig {
     pub disclosure: Option<String>,
     /// The answering budgets the stamp consults for summoned messages.
     pub protection: ProtectionConfig,
+    /// How long a conversation may lie untouched before the retention sweep
+    /// deletes it (unit 53, 2026-09-02). An absent span runs no sweep at
+    /// all: nothing expires, and the assembly spawns no task for it.
+    pub retention: RetentionConfig,
     /// The operator wiring: who may admit the assistant into a group.
     pub operators: OperatorConfig,
     /// Whether direct channels are served at all; off refuses them
@@ -665,6 +670,7 @@ impl Assistant {
             name,
             disclosure,
             protection,
+            retention,
             operators,
             direct_chats,
             privacy_policy_address,
@@ -749,6 +755,14 @@ impl Assistant {
         // mechanism exists to clear, and a conversation running out of
         // context window needs clearing whether or not anyone notices.
         session::spawn_compaction_driver(&sessions, ctx.bus(), &context);
+        // The retention rule's own task, beside the compaction driver and
+        // deliberately not inside it: the driver's tick is thirty seconds of
+        // monotonic time serving context pressure, and retention is
+        // wall-clock days. A deployment that configured no span gets no task
+        // here at all.
+        // The handle is dropped: the task ends with the assembly, which is
+        // the only end it has.
+        drop(retention::spawn_sweep(&sessions, retention));
         spawn_reactor(ctx.clone());
         Ok(Self {
             ctx,

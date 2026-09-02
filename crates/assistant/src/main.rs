@@ -519,6 +519,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
             name,
             disclosure,
             protection,
+            retention: configuration.resolve_retention(),
             operators,
             direct_chats: configuration.direct_chats.resolve(),
             privacy_policy_address: privacy_policy,

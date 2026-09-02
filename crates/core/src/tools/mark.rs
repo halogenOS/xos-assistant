@@ -228,6 +228,15 @@ pub(crate) const TARGET_ORIGIN_SITE: crate::erasure::ReferenceSite =
         column: COLUMN_TARGET_ORIGIN,
     };
 
+/// Where this kind records the person a reaction is about: the table it owns
+/// and the column holding the marked principal, named once for every
+/// person-wide reach the consumer runs.
+pub(crate) const PRINCIPAL_REFERENCE: crate::erasure::PrincipalReference =
+    crate::erasure::PrincipalReference {
+        table: MESSAGE_MARK_TABLE,
+        principal_column: COLUMN_MARKED_PRINCIPAL_ID,
+    };
+
 /// Null the target origin of every mark naming this principal as the
 /// marked person — erasure's whole reach into this kind. The reaction
 /// already visible in the chat is not withdrawn: doing so would need a

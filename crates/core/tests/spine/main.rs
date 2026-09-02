@@ -55,6 +55,9 @@
 //! delivery, the fork that takes the answer out of the model's view with
 //! every quote of it, the in-flight turn settled first, and the lineage
 //! scrub for an answer below a compaction boundary),
+//! retention (the sweep that deletes a conversation nobody has touched for
+//! the configured span: the swept channel's fresh session, and the expired
+//! ancestor whose living thread serves on),
 //! reset (the session-reset commands: the wipe's empty session,
 //! the compaction's summarized half and its verbatim one, the erasure scrub
 //! that replaces a compacted lineage, the outbound edge's inherited
@@ -107,6 +110,7 @@ mod reactions;
 mod reasoning;
 mod report;
 mod reset;
+mod retention;
 mod retraction;
 mod runtime_facts;
 mod search;
