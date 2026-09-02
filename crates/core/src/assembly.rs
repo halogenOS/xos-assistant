@@ -31,7 +31,7 @@ use crate::commands::{self, Command};
 use crate::compaction::ContextWatch;
 use crate::composing;
 use crate::erasure::{self, ErasureOutcome};
-use crate::error::CoreError;
+use crate::error::{CoreError, FatalExit};
 use crate::filing::{self, FilingDoor};
 use crate::join::JoinNotice;
 use crate::kind::{
@@ -46,7 +46,7 @@ use crate::note::{self, ContextNote, NoteTopic};
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::quoting;
 use crate::retention::{self, RetentionConfig};
-use crate::session::{CompactOutcome, SessionCoordination, Sessions, WipeOutcome};
+use crate::session::{CompactOutcome, InheritedRows, SessionCoordination, Sessions, WipeOutcome};
 use crate::streams::StreamObserver;
 use crate::tools::ToolSet;
 use crate::tools::changelog::HarnessChangelog;
@@ -372,6 +372,13 @@ pub struct Assistant {
     /// [`Sessions::stamp_lock`] and [`Sessions::erasure_fence`] instead of
     /// this type keeping a second handle to each.
     sessions: Arc<Sessions>,
+    /// The signal an unattended path raises when its failure is the whole
+    /// process's: read through [`Assistant::cannot_serve`], which the binary
+    /// waits on beside the termination signal. Shared with both paths here
+    /// that have no caller to fail — the compaction driver and the retention
+    /// sweep — because each of them would otherwise meet a refused statement
+    /// again on its next wake and never get past it.
+    fatal: Arc<FatalExit>,
     /// How group messages summon a turn. Read-only after start; consulted
     /// at exactly one place, the ingest entry point's summons resolution.
     answering: AnsweringMode,
@@ -749,24 +756,30 @@ impl Assistant {
                 context: Arc::clone(&context),
             },
         ));
+        // What an unattended path raises instead of failing a caller, and
+        // what the binary waits on: the driver below has no message to
+        // leave unacknowledged, so a fatal failure there ends the process
+        // through this.
+        let fatal = Arc::new(FatalExit::new());
         // The compaction's two unattended doors, beside the stream observer
         // and on the same broadcast: a turn the framework ended over a spent
         // tool-call window has left the conversation in the shape the
         // mechanism exists to clear, and a conversation running out of
         // context window needs clearing whether or not anyone notices.
-        session::spawn_compaction_driver(&sessions, ctx.bus(), &context);
+        session::spawn_compaction_driver(&sessions, ctx.bus(), &context, &fatal);
         // The retention rule's own task, beside the compaction driver and
         // deliberately not inside it: the driver's tick is thirty seconds of
         // monotonic time serving context pressure, and retention is
         // wall-clock days. A deployment that configured no span gets no task
         // here at all.
-        // The handle is dropped: the task ends with the assembly, which is
-        // the only end it has.
-        drop(retention::spawn_sweep(&sessions, retention));
+        // The handle is dropped: the task ends with the assembly, or with the
+        // exit signal it raises on a fatal failure of its own.
+        drop(retention::spawn_sweep(&sessions, retention, &fatal));
         spawn_reactor(ctx.clone());
         Ok(Self {
             ctx,
             sessions,
+            fatal,
             answering,
             name,
             disclosure,
@@ -785,6 +798,25 @@ impl Assistant {
             choice_reconciled: Mutex::new(HashSet::new()),
             filing_door,
         })
+    }
+
+    /// Resolves when this assembly can no longer serve anything: a failure
+    /// on a path with no caller reached a class no retry gets past, so the
+    /// process has to end and the supervisor has to start a replacement over
+    /// the durable state.
+    ///
+    /// The per-message paths need nothing like this. Their fatal failures
+    /// travel as [`CoreError`] to the intake that asked, and the intake ends
+    /// its run with the message unacknowledged. The compaction's unattended
+    /// doors have nobody to answer, and a failure their next wake would
+    /// simply repeat is what this states instead. What it was is in the log
+    /// line raised where it happened; nothing rides on this signal but the
+    /// fact.
+    ///
+    /// It resolves once and then always: a raise before anybody waits is
+    /// answered by the next wait.
+    pub async fn cannot_serve(&self) {
+        self.fatal.raised().await;
     }
 
     /// Install the observation race's test seam: the given pause runs
@@ -1279,6 +1311,18 @@ impl Assistant {
     /// The next message on that channel then takes the ordinary unmapped
     /// path and creates a fresh conversation carrying the current prompt.
     ///
+    /// A channel is re-forked for a third reason: its conversation's prompt
+    /// is not its FIRST row, whether or not the wording moved. A system
+    /// prompt joins a conversation that holds nothing yet and is refused
+    /// anywhere else, so a ledger carrying one further in can be neither
+    /// compacted nor dispatched, and it is what every conversation forked
+    /// before that rule existed carries. The successor is the same
+    /// composition the other two reasons take, with the range chosen around
+    /// the misplaced row: everything written ahead of it comes across, the
+    /// row itself does not, and the fresh prompt is the head. One walk, once,
+    /// before anything is served — no message, no model turn, nothing paid
+    /// for.
+    ///
     /// Nothing is rewritten and nothing is deleted. The old conversation
     /// stays in the ledger exactly as it was — readable, exportable, and
     /// reachable by erasure through the same principal it always was — and
@@ -1307,18 +1351,28 @@ impl Assistant {
         let mut retired = 0;
         for record in mapping::all(&tx).await? {
             let blocks = store.list_blocks(record.conversation_id).await?;
-            let recorded = blocks
-                .iter()
-                .find_map(|block| match AssistantKind::from_block(block) {
-                    AssistantKind::Core(kind::FrameworkKind(BlockKind::SystemPrompt(prompt))) => {
-                        Some(prompt.content)
-                    }
-                    _ => None,
-                });
-            // An absent prompt retires too: a mapped conversation that never
-            // recorded one cannot be serving the current wording either, and
-            // leaving it mapped would keep that silence permanent.
-            let prompt_current = recorded.as_deref() == Some(self.sessions.system_prompt());
+            let recorded =
+                blocks
+                    .iter()
+                    .enumerate()
+                    .find_map(|(row, block)| match AssistantKind::from_block(block) {
+                        AssistantKind::Core(kind::FrameworkKind(BlockKind::SystemPrompt(
+                            prompt,
+                        ))) => Some((row, prompt.content)),
+                        _ => None,
+                    });
+            // A ledger with blocks but no prompt row among them retires too:
+            // it cannot be serving the current wording either, and leaving it
+            // mapped would keep that silence permanent. A ledger with no
+            // blocks at all is the other case, and the `last` read below is
+            // where it is answered.
+            let prompt_current = recorded.as_ref().map(|(_, content)| content.as_str())
+                == Some(self.sessions.system_prompt());
+            // The position is a reason of its own: a prompt anywhere but the
+            // head is a shape no door builds any more and no compaction and
+            // no dispatch accepts, so the channel takes a successor whatever
+            // the wording says.
+            let prompt_first = matches!(recorded, Some((0, _)));
             // The stored model is what the dispatch actually sends, and a
             // conversation keeps the binding it was created with — so a
             // configured swap reaches an existing channel only through this
@@ -1334,7 +1388,7 @@ impl Assistant {
                 }
                 None => true,
             };
-            if prompt_current && model_current {
+            if prompt_current && model_current && prompt_first {
                 continue;
             }
             let Some(channel) =
@@ -1342,32 +1396,50 @@ impl Assistant {
             else {
                 continue;
             };
+            // A conversation whose junction holds nothing keeps its mapping:
+            // there is no history to carry and no prompt row to lift out, so
+            // a successor of it would be another empty conversation and the
+            // channel would gain nothing by moving. No door here builds that
+            // shape — every one of them writes the prompt before the channel
+            // is ever claimed — and the dispatch's head check is what answers
+            // for it if a foreign ledger ever brings one.
             let Some(last) = blocks.last().map(|block| block.id) else {
                 continue;
             };
             // Fork instead of starting over. The group's conversation is the
             // context every answer is built from, and a prompt edit is not a
-            // reason to forget what was said — the fork inherits the history
-            // through the junction, so nothing is copied and nothing is lost.
-            // The inherited prompt blocks are what the fork detaches: an
-            // appended replacement would sit behind them, read second and
-            // obeyed unevenly. Everything else about the fork — the current
-            // binding, the current prompt in their place, the configured
-            // reasoning level — is the session module's one recording of
-            // what a fork under the current deployment is.
-            let inherited_prompts: Vec<i64> = blocks
-                .iter()
-                .filter(|block| {
-                    matches!(
-                        AssistantKind::from_block(block),
-                        AssistantKind::Core(kind::FrameworkKind(BlockKind::SystemPrompt(_)))
-                    )
-                })
-                .map(|block| block.id)
-                .collect();
+            // reason to forget what was said — the successor inherits the
+            // history through the junction, so nothing is copied and nothing
+            // is lost. Everything else about the fork — the current prompt at
+            // its head, and the current model binding, whose reasoning level
+            // travels with it into the successor's stored settings — is the
+            // session module's one recording of what a fork under the current
+            // deployment is.
+            //
+            // The range is what this walk knows and that module does not:
+            // where the old prompt sits, and therefore which rows are the
+            // history it is being lifted out of.
+            //
+            // The two indexed reads below are safe by the arm ORDER and
+            // nothing else: `blocks[0]` is reached only where a prompt was
+            // found at row 0, so the ledger has that row, and `blocks[row-1]`
+            // only after the `Some((0, _))` arm above has taken every row
+            // that would underflow. Both indices come from the enumeration
+            // over `blocks` itself, so neither can run past its end.
+            let inherited = match recorded {
+                // The prompt is the head: the history is everything past it.
+                Some((0, _)) => InheritedRows::After(blocks[0].id),
+                // The prompt sits further in, which is what a fork built
+                // before the head rule carries. The rows ahead of it are the
+                // history, and the row before it is the last of them.
+                Some((row, _)) => InheritedRows::UpTo(blocks[row - 1].id),
+                // No prompt at all: there is no row to lift out, so the whole
+                // ledger rides across behind the fresh one.
+                None => InheritedRows::UpTo(last),
+            };
             let successor = self
                 .sessions
-                .forked_with_current_prompt(record.conversation_id, last, &inherited_prompts)
+                .forked_with_current_prompt(record.conversation_id, inherited)
                 .await?;
             mapping::delete_by_conversation(&tx, record.conversation_id).await?;
             mapping::claim(&tx, &channel, record.kind, successor).await?;
@@ -1377,7 +1449,9 @@ impl Assistant {
                 successor,
                 prompt_current,
                 model_current,
-                "the recorded prompt or model is stale; the channel forks and takes the current ones"
+                prompt_first,
+                "the recorded prompt, its position or the model is stale; the channel forks and \
+                 takes the current ones"
             );
         }
         Ok(retired)

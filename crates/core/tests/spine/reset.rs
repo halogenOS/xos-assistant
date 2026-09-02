@@ -104,6 +104,44 @@ async fn reset_fixture_built(
     hold: Option<Arc<support::TurnHold>>,
 ) -> (support::Fixture, Replies) {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let (tools, provider, handle) = reset_wiring(hold);
+    let fixture = support::start_assistant_full(store, provider, handle, tools, protection).await;
+    let replies = outbound_edge(&fixture).await;
+    (fixture, replies)
+}
+
+/// The reset fixture over a store the caller keeps and an assembly
+/// configuration of its own — what a restart needs: two processes over one
+/// database, the second composing a prompt of its own.
+async fn reset_fixture_config(
+    store: Store,
+    config: assistant_core::AssemblyConfig,
+) -> (support::Fixture, Replies) {
+    let (tools, provider, handle) = reset_wiring(None);
+    let fixture = support::start_assistant_config(store, provider, handle, tools, config).await;
+    let replies = outbound_edge(&fixture).await;
+    (fixture, replies)
+}
+
+/// The outbound edge, taken before anything is ingested, so everything
+/// stored afterwards is this edge's business.
+async fn outbound_edge(fixture: &support::Fixture) -> Replies {
+    fixture
+        .assistant
+        .outbound(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens")
+}
+
+/// The probe tool and the tool-scripted provider every reset fixture runs
+/// on, whichever door assembles them.
+fn reset_wiring(
+    hold: Option<Arc<support::TurnHold>>,
+) -> (
+    ToolSet,
+    Box<dyn agent_ledger::ProviderModule>,
+    support::ScriptHandle,
+) {
     let mut tools = ToolSet::new();
     tools.admit(ProbeTool(Arc::new(AtomicBool::new(false))));
     let (provider, handle) = tool_scripted_provider(
@@ -116,13 +154,7 @@ async fn reset_fixture_built(
         },
         hold,
     );
-    let fixture = support::start_assistant_full(store, provider, handle, tools, protection).await;
-    let replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
-    (fixture, replies)
+    (tools, provider, handle)
 }
 
 /// The conversation a channel currently maps to, read raw — the fact a
@@ -817,6 +849,252 @@ async fn an_exhausted_turn_compacts_the_session_unattended() {
         kinds(&fixture.store, source).await.len(),
         source_before + 1,
         "the late marker is the only thing that changed"
+    );
+}
+
+/// A compaction the database REFUSES ends the process and is never tried
+/// again: one fork, one summary turn, the exit signal raised, and no later
+/// wake pays for a second attempt.
+///
+/// The production shape this answers: a statement refused by a rule was
+/// classified as passing, so every wake forked a conversation, paid for a
+/// summary turn over the whole first half, and met the same refusal at the
+/// same statement. The refusal is scripted here as a trigger over the
+/// prompt a compacted thread appends — a NEW system prompt joining any
+/// conversation is aborted, which is exactly the statement that failed —
+/// so the attempt reaches the model and fails where the incident's did.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refused_compaction_ends_the_process_and_is_not_retried() {
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, source, _) = flooded_group(&fixture, &mut replies, "refused-room").await;
+
+    let written: i64 = fixture
+        .store
+        .run(|conn| Ok(conn.query_row("SELECT max(id) FROM blocks", [], |row| row.get(0))?))
+        .await
+        .expect("the newest block id reads");
+    fixture
+        .store
+        .run(move |conn| {
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER scripted_refusal
+                      BEFORE INSERT ON conversation_blocks
+                      WHEN NEW.block_id > {written}
+                       AND (SELECT block_type FROM blocks WHERE id = NEW.block_id)
+                           = 'system_prompt'
+                  BEGIN
+                      SELECT RAISE(ABORT, 'the scripted refusal');
+                  END;"
+            ))?;
+            Ok(())
+        })
+        .await
+        .expect("the refusal is scripted");
+
+    // Every request that reached the provider, compaction turns included:
+    // the turn counter above them counts only the ordinary ones, and what
+    // this asserts is what the attempt PAID for.
+    let requests = || fixture.script.seen.lock().unwrap().len();
+    let requests_before = requests();
+    let conversations_before = fixture
+        .store
+        .list_conversations()
+        .await
+        .expect("the conversation list reads")
+        .len();
+    fixture
+        .store
+        .insert_status_block(
+            BlockDestination::from(source),
+            Status::TOOL_CALLS_EXHAUSTED.into(),
+            None,
+        )
+        .await
+        .expect("the forced turn end records its marker");
+
+    tokio::time::timeout(support::DEADLINE, fixture.assistant.cannot_serve())
+        .await
+        .expect("the refused statement raises the process's exit");
+
+    // One fork and one turn: the fork's own conversation is retired the
+    // moment its summary is read, so the count is back where it started and
+    // the single request is the whole of what the attempt cost.
+    let paid = requests() - requests_before;
+    assert_eq!(paid, 1, "the attempt paid for exactly one summary turn");
+    assert_eq!(
+        fixture
+            .store
+            .list_conversations()
+            .await
+            .expect("the conversation list reads")
+            .len(),
+        conversations_before,
+        "the forked conversation was retired and no thread was opened"
+    );
+    assert_eq!(
+        mapped_conversation(&fixture.store, &key).await,
+        Some(source),
+        "the channel stays on the conversation it was on"
+    );
+
+    // Every later wake is the loop this ends: the watch stopped, so the
+    // marker still standing summons nothing.
+    //
+    // The wake is proven DELIVERED instead of waited out. This test
+    // subscribes to the very broadcast the driver watches, and its own
+    // receipt of the late block change is that fan-out happening — the event
+    // a driver still watching would have taken. The harness offers no
+    // synchronous door into the driver, nothing that awaits its reaction, so
+    // this is the strongest observable there is here; what it replaces is a
+    // sleep that would have passed whether or not the watch had stopped.
+    let mut wakes = fixture.bus.subscribe();
+    fixture
+        .store
+        .insert_status_block(
+            BlockDestination::from(source),
+            Status::TOOL_CALLS_EXHAUSTED.into(),
+            None,
+        )
+        .await
+        .expect("a late marker wakes the watch again");
+    tokio::time::timeout(support::DEADLINE, async {
+        loop {
+            let event = wakes
+                .recv()
+                .await
+                .expect("the bus delivers the late change");
+            if matches!(
+                event,
+                CoreEvent::BlocksChanged { conversation_id, .. } if conversation_id == source
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the late marker reaches the subscribers of the driver's own bus");
+    assert_eq!(
+        requests() - requests_before,
+        paid,
+        "no wake after the refusal pays for a second attempt"
+    );
+    assert_eq!(
+        mapped_conversation(&fixture.store, &key).await,
+        Some(source),
+        "and nothing moved the channel"
+    );
+}
+
+/// A channel the startup walk re-forked compacts, end to end: the walk moves
+/// the group onto a successor whose head is the current prompt, and the
+/// unattended compaction of that successor opens a thread carrying ONE
+/// prompt, its own, at its own head.
+///
+/// This is the incident whole. A prompt edit moved every live group onto a
+/// conversation the fork built in the forbidden shape, and the compaction of
+/// each one failed at the thread's prompt. The walk composes the successor
+/// the other way now, and what proves it is the thread that comes out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_channel_the_walk_re_forked_compacts_with_one_prompt_at_its_head() {
+    let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+    let (first, mut replies) =
+        reset_fixture_config(store.clone(), support::assembly_config()).await;
+    let (key, source, _) = flooded_group(&first, &mut replies, "re-forked-room").await;
+    first.shutdown().await;
+
+    // The restart a prompt edit produces: the same database, a different
+    // composed prompt, and the walk before anything is served.
+    let mut edited = support::assembly_config();
+    edited.system_prompt = "a different system prompt entirely".into();
+    let (restarted, _replies) = reset_fixture_config(store.clone(), edited).await;
+    assert_eq!(
+        restarted
+            .assistant
+            .retire_stale_channels()
+            .await
+            .expect("the walk reads the ledger"),
+        1,
+        "the edited prompt re-forks the group"
+    );
+    let successor = mapped_conversation(&store, &key)
+        .await
+        .expect("the channel is mapped");
+    assert_ne!(successor, source, "the walk moved the channel");
+    // What the walk installed is read from the successor's head, so the head
+    // is asserted before it is read from: a successor whose first row was
+    // anything else would otherwise hand this test a string and pass.
+    let head = store
+        .list_blocks(successor)
+        .await
+        .expect("the successor reads")
+        .into_iter()
+        .next()
+        .expect("the successor holds a block");
+    assert_eq!(
+        head.block_type,
+        SystemPrompt::KINDS[0],
+        "the walk's successor opens with its prompt"
+    );
+    let prompt = support::block_text(&head, "content");
+    assert!(
+        prompt.contains("a different system prompt entirely"),
+        "and it carries the edited wording, not the one the source opened with: {prompt}"
+    );
+
+    // The unattended door, on the conversation the walk built.
+    store
+        .insert_status_block(
+            BlockDestination::from(successor),
+            Status::TOOL_CALLS_EXHAUSTED.into(),
+            None,
+        )
+        .await
+        .expect("the forced turn end records its marker");
+    let deadline = std::time::Instant::now() + support::DEADLINE;
+    let thread = loop {
+        if let Some(mapped) = mapped_conversation(&store, &key).await
+            && mapped != successor
+        {
+            break mapped;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting the compaction of the re-forked conversation"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+
+    let blocks = store.list_blocks(thread).await.expect("the thread reads");
+    let kinds: Vec<&str> = blocks
+        .iter()
+        .map(|block| block.block_type.as_str())
+        .collect();
+    assert_eq!(
+        blocks[0].block_type,
+        SystemPrompt::KINDS[0],
+        "the thread opens with its prompt: {kinds:?}"
+    );
+    assert_eq!(
+        support::block_text(&blocks[0], "content"),
+        prompt,
+        "and it is the wording the walk installed"
+    );
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block.block_type == SystemPrompt::KINDS[0])
+            .count(),
+        1,
+        "exactly one prompt in the whole thread: {kinds:?}"
+    );
+    assert_eq!(
+        support::block_text(&blocks[2], "content"),
+        SCRIPTED_SUMMARY,
+        "the thread carries the captured summary: {kinds:?}"
+    );
+    assert!(
+        blocks.len() > 4,
+        "and the second half of the history behind it: {kinds:?}"
     );
 }
 

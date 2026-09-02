@@ -1537,17 +1537,23 @@ pub async fn reencode_receipts_at_utc_minus_five(store: &Store) {
 }
 
 /// The transient append fault, injected at the store: a temporary trigger
-/// refuses every INSERT into the named content table while every read stays
+/// fails every INSERT into the named content table while every read stays
 /// live — the seam behind the redelivered-after-transient-failure proofs,
 /// which show no window or cap is spent before an append stands. The
-/// framework's append is one transaction, so the refused content insert
-/// rolls the header back with it and the ledger keeps no half-written
-/// block. [`heal_appends`] removes the fault.
+/// framework's append is one transaction, so the failed content insert rolls
+/// the header back with it and the ledger keeps no half-written block.
+/// [`heal_appends`] removes the fault.
+///
+/// The fault is an arithmetic overflow and not an aborting trigger, because
+/// the CLASS has to be the passing one: a statement a database refuses by a
+/// RULE is fatal to this process (2026-09-02), and what these proofs are
+/// about is the failure a redelivery gets past. An overflow is an ordinary
+/// runtime error, so the caller reads exactly that class.
 pub async fn sabotage_appends(store: &Store, table: &'static str) {
     agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
         conn.execute_batch(&format!(
             "CREATE TRIGGER sabotage_{table} BEFORE INSERT ON {table} \
-             BEGIN SELECT RAISE(ABORT, 'injected append failure'); END;"
+             BEGIN SELECT abs(-9223372036854775807 - 1); END;"
         ))?;
         Ok(())
     })

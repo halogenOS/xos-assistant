@@ -3,7 +3,10 @@
 
 use std::sync::Arc;
 
-use agent_ledger::{CoreEvent, EventBus, Store};
+// `LeafKind` carries the `KINDS` constant this file reads off `SystemPrompt`,
+// so the trait has to be in scope for the type to answer it.
+use agent_ledger::agency::{LeafKind, SystemPrompt};
+use agent_ledger::{CoreEvent, EventBus, Role, Store};
 use assistant_core::schema::store_config;
 use assistant_core::{Assistant, ChannelKind, CoreError};
 
@@ -200,6 +203,158 @@ async fn an_edited_prompt_moves_a_served_group_to_a_new_conversation() {
         settled.conversation_id, after.conversation_id,
         "a second message stays in the conversation the first one opened"
     );
+}
+
+/// A mapped conversation whose prompt is not its FIRST row is re-forked,
+/// wording unchanged and model unchanged: the position alone is the reason.
+///
+/// That shape is what every deployed database carries, written by the fork
+/// this walk used to run — history first, the current prompt appended behind
+/// it. A ledger in it can be neither compacted nor dispatched, so the walk
+/// repairs it before anything is served: the channel takes a successor whose
+/// head is the prompt, holding the same history through the same shared
+/// blocks.
+///
+/// The shape is built in SQL by the helper below, because no door builds it
+/// any more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_that_is_not_the_first_row_re_forks_the_channel() {
+    let db = support::TempDb::new("misplaced-prompt");
+    let store = Store::open_with(db.path(), store_config()).expect("the configured store opens");
+
+    let first = support::start_assistant_on(store.clone(), None).await;
+    let room = support::authorized_group(&first.assistant, "room-misplaced-prompt").await;
+    let source = support::ingest_recorded(
+        &first.assistant,
+        support::inbound(&room, ChannelKind::Group, "member-1", "hello there"),
+    )
+    .await
+    .conversation_id;
+    support::await_ledger(&store, source, "the answered turn", |blocks| {
+        blocks
+            .iter()
+            .any(|block| block.role == Some(Role::Assistant))
+    })
+    .await;
+    first.shutdown().await;
+
+    let held = misplace_the_prompt(&store, source).await;
+
+    let restarted = support::start_assistant_on(store.clone(), None).await;
+    assert_eq!(
+        restarted
+            .assistant
+            .retire_stale_channels()
+            .await
+            .expect("the walk reads the ledger"),
+        1,
+        "the misplaced prompt re-forks the channel although the wording and the model stand"
+    );
+
+    let served = support::ingest_recorded(
+        &restarted.assistant,
+        support::inbound(&room, ChannelKind::Group, "member-1", "still here?"),
+    )
+    .await
+    .conversation_id;
+    assert_ne!(served, source, "the channel serves the successor");
+    let blocks = store
+        .list_blocks(served)
+        .await
+        .expect("the successor reads");
+    assert_eq!(
+        blocks[0].block_type,
+        SystemPrompt::KINDS[0],
+        "the successor opens with the prompt: {:?}",
+        blocks
+            .iter()
+            .map(|block| block.block_type.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        support::block_text(&blocks[0], "content"),
+        support::composed_prompt(),
+        "and it is the wording this process composes"
+    );
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block.block_type == SystemPrompt::KINDS[0])
+            .count(),
+        1,
+        "the misplaced row is not inherited: one prompt, at the head"
+    );
+    let inherited: Vec<i64> = blocks[1..].iter().map(|block| block.id).collect();
+    let history = &held[..held.len() - 1];
+    assert_eq!(
+        &inherited[..history.len()],
+        history,
+        "everything written ahead of the misplaced prompt rides across shared, in order"
+    );
+    let newest_held = held.iter().copied().max().expect("the source holds rows");
+    assert!(
+        inherited[history.len()..]
+            .iter()
+            .all(|id| *id > newest_held),
+        "nothing else of the source rides across: whatever follows the history is a row \
+         the successor wrote itself, never one the source held ({inherited:?})"
+    );
+}
+
+/// Rewrite one conversation into the shape the old prompt fork left behind:
+/// the prompt row detached from the front and the current wording appended
+/// at the END. Answers the ledger it leaves, newest last.
+///
+/// The wording is the CURRENT one, so nothing but the position is stale and
+/// the walk has one reason to act on. The appended block joins the ledger as
+/// system-voiced prose — the header, junction and text rows a prompt is made
+/// of — and is then stamped with the prompt's kind, which is the state a
+/// database written before the head rule is in; the rule stands on the
+/// junction insert, which is exactly what such a database never met.
+async fn misplace_the_prompt(store: &Store, conversation_id: i64) -> Vec<i64> {
+    let prompt_row = store
+        .list_blocks(conversation_id)
+        .await
+        .expect("the ledger reads")
+        .first()
+        .expect("the conversation holds its prompt")
+        .id;
+    let appended = store
+        .insert_final_text_block(
+            conversation_id,
+            Role::System,
+            support::composed_prompt(),
+            None,
+        )
+        .await
+        .expect("the redeployed wording stores as system-voiced prose");
+    store
+        .run(move |conn| {
+            conn.execute(
+                "DELETE FROM conversation_blocks WHERE conversation_id = ?1 AND block_id = ?2",
+                [conversation_id, prompt_row],
+            )?;
+            conn.execute(
+                "UPDATE blocks SET block_type = ?2 WHERE id = ?1",
+                (appended, SystemPrompt::KINDS[0]),
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the forbidden shape is written");
+    let held: Vec<i64> = store
+        .list_blocks(conversation_id)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .map(|block| block.id)
+        .collect();
+    assert_eq!(
+        held.last(),
+        Some(&appended),
+        "the conversation's prompt is its newest row, which is the shape the walk repairs"
+    );
+    held
 }
 
 /// The walk retires a channel whose stored MODEL is stale, prompt unchanged —
