@@ -9,7 +9,7 @@
 //! Every turn scripted here is NARRATION-FREE: the call is made bare,
 //! which is the shape the teaching prohibits writing prose ahead of. What
 //! prose ahead of a call would do — deliver as its own message — is the
-//! standing mechanism's, pinned by the search suite, and this module
+//! standing mechanism's, asserted by the search suite, and this module
 //! neither repeats nor contradicts it.
 
 use std::time::{Duration, Instant};
@@ -20,7 +20,7 @@ use agent_ledger::{
     Block, CoreEvent, ProviderModule, Store, ToolContext, ToolHandler, ToolOutcome,
 };
 use assistant_core::schema::store_config;
-use assistant_core::tools::{ToolSet, no_reply_needed, work_is_done};
+use assistant_core::tools::{ToolSet, no_reply_needed, report, work_is_done};
 use assistant_core::{ChannelKind, Outbound, ProtectionConfig};
 use serde_json::json;
 
@@ -207,12 +207,23 @@ fn the_two_stored_closes_are_the_units_sentences() {
 // ─── AC4: the registered set, and the summary turn that has neither ──────
 
 /// Both tools ride the registered set: a created conversation's recorded
-/// choice names them, beside the react and changelog tools they are
-/// registered next to — and the compaction fork's own choice, written
-/// EMPTY by the framework's door, names neither, so the turn that
-/// summarizes a conversation is offered no way to end itself early.
+/// choice names them, in a deployment carrying no moderation handle and
+/// therefore no report tool, which is what "unconditional" buys — and the
+/// compaction fork's own choice, written EMPTY by the framework's door,
+/// names neither, so the turn that summarizes a conversation is offered no
+/// way to end itself early.
 ///
-/// The fork is opened here rather than driven through a whole compaction,
+/// This unit's criterion 6 places the two tools "beside the react and
+/// report tools". No home holds those two together unconditionally: the
+/// react tool joins with the assembled tools, which exist to carry
+/// injected state, and the report tool joins there only where a moderation
+/// handle is configured. A tool that needs nothing handed to it joins the
+/// assembly's unconditional home, whose other residents are the runtime
+/// facts and the harness changelog, and that is where these two are
+/// registered. The criterion's naming of the neighbours is the part that
+/// disagrees with the tree; every claim it makes about behaviour holds.
+///
+/// The fork is opened here instead of running a whole compaction,
 /// because a compaction retires its temporary conversation as soon as the
 /// summary is read: the ledger this claim is about exists only inside that
 /// operation. The door opened here is the one the compaction calls.
@@ -248,6 +259,10 @@ async fn both_tools_ride_the_choice_and_the_summary_fork_names_neither() {
             "the created conversation's choice names {tool}: {names:?}"
         );
     }
+    assert!(
+        !names.contains(&report::NAME.to_owned()),
+        "this deployment has no report tool, and the two ride its choice anyway: {names:?}"
+    );
 
     let summary_turn = fixture
         .store
@@ -280,7 +295,7 @@ async fn both_tools_ride_the_choice_and_the_summary_fork_names_neither() {
 
 // ─── AC7: a park beside a sibling silences only itself ───────────────────
 
-/// The sibling tool of the same-round pin: it answers a fixed line, but
+/// The sibling call of the same round: it answers a fixed line, but
 /// only once the park call's stamped resolution is already in the ledger.
 ///
 /// The wait is what makes the claim readable. The runner executes a
@@ -396,7 +411,7 @@ async fn a_park_beside_a_sibling_call_silences_only_itself() {
     let sibling = resolutions
         .iter()
         .find(|block| field(block, "content") == SIBLING_RESULT)
-        .expect("the sibling's own resolution landed behind the stamped one");
+        .expect("the sibling's own resolution was stored behind the stamped one");
     assert!(
         !stamped(sibling),
         "the stamp silences its own outcome and nothing else"

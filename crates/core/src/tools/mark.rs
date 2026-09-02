@@ -1,12 +1,13 @@
 //! The react tool and the message-mark block kind: one emoji the
 //! assistant puts on a message where a reply would add nothing (unit 39,
-//! 2026-08-30).
+//! 2026-08-30; the trigger redefined by unit 54, 2026-09-02).
 //!
-//! The flow: the prompt teaches the model that chatter which LANDS — a
-//! share, a milestone, a joke — may draw one reaction instead of the empty
-//! turn the silence default would otherwise end in, and the model calls
-//! this tool naming the message by its projected id and giving the emoji
-//! it chose. The named origin is validated against the turn's own
+//! The flow: the prompt teaches the model that a response to the assistant
+//! which needs no further response — the thanks that closes an exchange
+//! already answered — can be stamped off with one reaction instead of the
+//! empty turn the silence default would otherwise end in, and the model
+//! calls this tool naming the message by its projected id and giving the
+//! emoji it chose. The named origin is validated against the turn's own
 //! co-summoning messages, so the model can mark a message that opened this
 //! turn and nothing else: not an old message, not an invented id, not
 //! another channel's, not a join notice — a join is its own block kind and

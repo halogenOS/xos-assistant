@@ -212,7 +212,7 @@ pub const CLOSING_PROHIBITIONS: &str = "Never post a message whose only content 
 /// mode, then the react teaching and the closing prohibitions — all three
 /// unconditional — and then, each exactly when its own capability is
 /// there, the moderation teaching and the web search teaching. Public
-/// because the suites pin recorded prompts against exactly this
+/// because the suites assert recorded prompts against exactly this
 /// composition instead of restating it.
 #[must_use]
 pub fn composed_system_prompt(
@@ -950,15 +950,7 @@ mod tests {
             );
         }
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
-            for capabilities in [
-                Capabilities::default(),
-                moderating(),
-                searching(),
-                Capabilities {
-                    moderation_handle: true,
-                    web_search: true,
-                },
-            ] {
+            for capabilities in every_capabilities() {
                 assert!(
                     composed_system_prompt("b", "n", mode, capabilities).contains(REACT_TEACHING),
                     "the react teaching composes in {mode:?} mode under {capabilities:?}"
