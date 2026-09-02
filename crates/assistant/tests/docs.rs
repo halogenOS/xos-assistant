@@ -1218,10 +1218,11 @@ fn the_web_search_ships_its_five_privacy_edits() {
         policy.contains("We do not reach lookup records — including a web search's query"),
         "the deletion section names the query among what erasure does not reach"
     );
-    // The policy's "Last updated" line is not checked here. It carries the
-    // date of the LATEST change to the document, so every later edit would
-    // fail a test about this one; what dates this change is the "(added
-    // 2026-08-29)" note on each edit above, which is checked.
+    // The policy's "Last updated" line is checked by the test of the newest
+    // change to the document, never here. It carries the date of that
+    // change, so every later edit would fail a test about this one; what
+    // dates this change is the "(added 2026-08-29)" note on each edit above,
+    // which is checked.
 
     let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
     for marker in [
@@ -2460,6 +2461,14 @@ fn the_retention_span_ships_its_four_document_updates() {
         )),
         "the policy gives the residuals a request leaves behind an end date of their own"
     );
+    // The footer dates the newest change to the policy, which is this one.
+    // It is asserted here and nowhere else: a later unit that edits the
+    // policy moves this line to its own test with its own date, the way this
+    // one took it from the web search's.
+    assert!(
+        policy.contains("Last updated: 2 September 2026"),
+        "the policy's footer carries the date of the newest change to it"
+    );
 
     let records = flattened(&repo_file("docs/privacy/records-of-processing.md"));
     for marker in [
@@ -2555,7 +2564,7 @@ fn the_retention_decision_is_recorded_and_leaves_0003_standing() {
 /// Each sentence below is quoted whole, so a dated correction naming the old
 /// claim in order to withdraw it is not mistaken for the claim itself.
 #[test]
-fn the_privacy_documents_promise_no_no_expiry_rule_and_no_stored_files() {
+fn the_privacy_documents_drop_the_expiry_free_claim_and_promise_no_stored_files() {
     for document in [
         "docs/privacy/bot-assistant-privacy-policy.md",
         "docs/privacy/dpia.md",

@@ -35,19 +35,28 @@
 //! Each tick asks the store for the expired conversations and, for each one,
 //! unmaps its channel and retires it through the one existing door. After
 //! the conversations, one orphan collection; then the identity rows nothing
-//! names any more. A tick that finds nothing does nothing at all.
+//! names any more.
 //!
-//! The deletion phase runs under the erasure fence, the arbiter erasure and
-//! the session resets already hold, so a sweep and a deletion request never
+//! The two collections are owed every tick, whatever the reading named. A
+//! tick that retired conversations and then failed its orphan collection
+//! left those conversations' blocks in the store holding nobody's
+//! conversation — content, and the identity rows behind it — and the tick
+//! after it names no conversation at all, so a collection owed only behind a
+//! non-empty reading would never run again. A pass over a store with nothing
+//! orphaned deletes nothing and costs one query.
+//!
+//! The whole tick runs under the erasure fence, the arbiter erasure and the
+//! session resets already hold, so a sweep and a deletion request never
 //! interleave. A request never waits for the schedule either: erasure takes
 //! the fence on demand and the next tick simply finds less to do.
 //!
-//! What decides a deletion is read UNDER that fence and never before it. A
-//! reading taken outside is already history by the time the fence is
-//! granted: a message ingested into a named conversation in between refreshes
-//! it, and an erasure in between can free its id for a fresh session to be
-//! born under. Both would have the tick delete a conversation the rule no
-//! longer names, so the naming is re-read where nothing can move it.
+//! What decides a deletion is therefore read UNDER that fence and never
+//! before it. A reading taken outside is already history by the time the
+//! fence is granted: a message ingested into a named conversation in between
+//! refreshes it, and an erasure in between can free its id for a fresh
+//! session to be born under. Both would have the tick delete a conversation
+//! the rule no longer names, so the one reading sits where nothing can move
+//! what it names.
 //!
 //! A failure inside one conversation's retirement fails that conversation
 //! and nothing else. The sweep logs it and moves on, and the next tick
@@ -109,21 +118,24 @@ impl Default for RetentionConfig {
 }
 
 /// Start the sweep beside the compaction driver, or start nothing when the
-/// deployment configured no span.
+/// deployment configured no span. Answers the task it started, and nothing
+/// when it started none — the one direct reading of which of the two
+/// happened.
 ///
 /// The first tick is at spawn, and a boot is a tick like any other: the
 /// sweep has no catch-up behaviour and no first-run grace, because the rule
 /// is the whole mechanism and a tick deletes only what the rule names. The
 /// task holds the sessions weakly and ends with the assembly, the compaction
-/// driver's own shape.
-pub(crate) fn spawn_sweep(sessions: &Arc<Sessions>, retention: RetentionConfig) {
-    let Some(days) = retention.days else {
-        return;
-    };
+/// driver's own shape, so a caller with no use for the handle drops it.
+pub(crate) fn spawn_sweep(
+    sessions: &Arc<Sessions>,
+    retention: RetentionConfig,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let days = retention.days?;
     let weak = Arc::downgrade(sessions);
     let mut ticks = tokio::time::interval(SWEEP_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         loop {
             ticks.tick().await;
             let Some(sessions) = weak.upgrade() else {
@@ -131,7 +143,7 @@ pub(crate) fn spawn_sweep(sessions: &Arc<Sessions>, retention: RetentionConfig) 
             };
             sweep(&sessions, days).await;
         }
-    });
+    }))
 }
 
 /// One tick: retire what expired, collect what nothing holds, and say so in
@@ -142,31 +154,28 @@ pub(crate) fn spawn_sweep(sessions: &Arc<Sessions>, retention: RetentionConfig) 
 /// it was for the next tick to find.
 async fn sweep(sessions: &Sessions, days: NonZeroU32) {
     let store = sessions.context().store();
-    // The first reading only asks whether there is anything to do: a tick
-    // with nothing to expire holds no fence and costs one query, so the
-    // hourly cadence never stands in front of an ingestion for the length
-    // of a scan.
-    if expired_or_none(store, days)
-        .await
-        .is_none_or(|expired| expired.is_empty())
-    {
-        return;
-    }
+    // The fence comes before the reading, and the tick holds it whole. A
+    // reading taken ahead of it answers for a moment already past: a message
+    // ingested into a named conversation refreshes it, and an erasure can
+    // take a named id and let a fresh session be born under it, both between
+    // that answer and this fence. Under the fence neither can happen, so
+    // what the one reading names is what the rule names when the deletions
+    // run — a refreshed conversation is absent from it and a reissued id is
+    // fresh.
     let _no_erasure_mid_sweep = sessions.erasure_fence().write().await;
-    // The naming that DECIDES is this one, taken with the fence held. The
-    // reading above answered for a moment already past: a message ingested
-    // into a named conversation refreshes it, and an erasure can take a
-    // named id and let a fresh session be born under it, both between that
-    // answer and this fence. Under the fence neither can happen, so what
-    // this reading names is what the rule names when the deletions run — a
-    // refreshed conversation is absent from it and a reissued id is fresh.
-    let Some(expired) = expired_or_none(store, days).await else {
-        return;
-    };
-    if expired.is_empty() {
-        return;
-    }
     let mut retired = 0_usize;
+    // A reading that fails names no conversation: the tick retires nothing
+    // and goes on to the collections it owes either way.
+    let expired = match expired_conversations(store, days).await {
+        Ok(expired) => expired,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "the retention reading failed; the next sweep reads again"
+            );
+            Vec::new()
+        }
+    };
     for conversation_id in expired {
         if let Err(error) = sessions.retire_expired(conversation_id).await {
             tracing::warn!(
@@ -178,6 +187,9 @@ async fn sweep(sessions: &Sessions, days: NonZeroU32) {
         }
         retired += 1;
     }
+    // Both collections run whether or not this tick retired anything: what
+    // an earlier tick failed to collect is still orphaned, and nothing else
+    // in the process will ever name it.
     if let Err(error) = store.gc_orphan_blocks().await {
         tracing::warn!(
             retired,
@@ -193,22 +205,6 @@ async fn sweep(sessions: &Sessions, days: NonZeroU32) {
             %error,
             "the principal collection failed after a sweep; the next sweep collects"
         ),
-    }
-}
-
-/// The reading with its one failure already answered: a reading that fails
-/// names nothing, says so in the log, and leaves the store exactly as the
-/// next tick will find it.
-async fn expired_or_none(store: &Store, days: NonZeroU32) -> Option<Vec<i64>> {
-    match expired_conversations(store, days).await {
-        Ok(expired) => Some(expired),
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                "the retention reading failed; the next sweep reads again"
-            );
-            None
-        }
     }
 }
 
@@ -484,6 +480,15 @@ mod tests {
         .expect("the identity rows read")
     }
 
+    /// How many blocks the store holds in all, junctioned or not.
+    async fn stored_blocks(store: &Store) -> i64 {
+        domain_run(&store.tx(), DOMAIN, |conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM blocks", [], |row| row.get(0))?)
+        })
+        .await
+        .expect("the block count reads")
+    }
+
     /// How many junction rows one conversation still holds.
     async fn junction_rows(store: &Store, conversation: i64) -> i64 {
         domain_run(&store.tx(), DOMAIN, move |conn| {
@@ -495,6 +500,25 @@ mod tests {
         })
         .await
         .expect("the junction reads")
+    }
+
+    /// Return once the spawned tick is standing at the erasure fence.
+    ///
+    /// The fence is fair, so a further read cannot be granted while a writer
+    /// waits: a refused `try_read` IS the tick's write request in line, read
+    /// from the mechanism instead of waited out on a clock. The tick asks
+    /// for the fence before it reads or deletes anything, so when this
+    /// returns the tick has provably touched nothing — and a tick that asked
+    /// for no fence fails here instead of passing on a duration that happened
+    /// to be long enough.
+    async fn wait_until_the_tick_stands_at_the_fence(sessions: &Sessions) {
+        for _ in 0..10_000 {
+            if sessions.erasure_fence().try_read().is_err() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("the tick never asked for the erasure fence");
     }
 
     /// A channel key on the suite's adapter.
@@ -635,6 +659,52 @@ mod tests {
         );
     }
 
+    /// The collections are owed every tick, including a tick that names no
+    /// conversation at all. A tick whose retirements ran and whose orphan
+    /// collection then failed leaves blocks no conversation holds and an
+    /// identity row only those blocks name; the next tick finds nothing
+    /// expired, and nothing else in the process ever collects them.
+    #[tokio::test]
+    async fn a_tick_that_expires_nothing_collects_what_an_earlier_tick_left() {
+        let (sessions, store) = quiet_sessions();
+        let living = conversation_with_a_block(&store).await;
+        let gone = conversation_with_a_block(&store).await;
+        let spoke_only_there = person(&store, "1").await;
+        message_from(&store, gone, spoke_only_there).await;
+        // The residue of a tick that retired a conversation and then failed
+        // its collection: the conversation row is deleted, its blocks stay
+        // behind held by nothing. Both remaining conversations are fresh,
+        // so this tick's reading names none of them.
+        let before = stored_blocks(&store).await;
+        store
+            .delete_conversation(gone)
+            .await
+            .expect("the conversation goes, its blocks stay");
+        assert_eq!(
+            stored_blocks(&store).await,
+            before,
+            "the residue is there to collect: the deletion left every block standing"
+        );
+
+        sweep(&sessions, SPAN).await;
+
+        assert_eq!(
+            surviving(&store).await,
+            vec![living],
+            "the fresh conversation is untouched"
+        );
+        assert_eq!(
+            stored_blocks(&store).await,
+            junction_rows(&store, living).await,
+            "the orphaned blocks are collected on a tick that expired nothing; what is left \
+             is the living conversation's own"
+        );
+        assert!(
+            principals(&store).await.is_empty(),
+            "and the identity row only those blocks named goes with them"
+        );
+    }
+
     /// AC6: after the conversations and the orphan collection, the sweep
     /// takes every unflagged identity row nothing names any more — and
     /// keeps the one a join notice in a surviving conversation names, and
@@ -714,6 +784,10 @@ mod tests {
     /// same way a conversation refreshed a moment earlier does — and the
     /// erasure form of the window closes with it, since an id an erasure
     /// freed comes back to a fresh session that this reading finds fresh.
+    ///
+    /// The entry lands with the tick observed at the fence, never after a
+    /// duration hoped to be long enough, so the window it is written into is
+    /// a fact on any machine and under any load.
     #[tokio::test]
     async fn a_conversation_refreshed_while_the_tick_waits_is_left_standing() {
         let (sessions, store) = quiet_sessions();
@@ -725,10 +799,7 @@ mod tests {
             let sessions = Arc::clone(&sessions);
             async move { sweep(&sessions, SPAN).await }
         });
-        // Long enough that the tick has named the conversation and is
-        // waiting on the fence: everything ahead of the wait is one query
-        // on an in-memory database.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        wait_until_the_tick_stands_at_the_fence(&sessions).await;
         // The entry an ingestion writes into the window the wait opens.
         store
             .insert_final_text_block(
@@ -800,6 +871,11 @@ mod tests {
     /// AC10: the deletion phase runs under the erasure fence. A holder of
     /// the fence keeps the tick's deletions waiting, and they run when the
     /// hold is released.
+    ///
+    /// The wait is observed, not timed: a tick that asked for no fence never
+    /// reaches the wait below and the case fails there, where a duration
+    /// long enough on this machine would have called an unfenced tick
+    /// fenced.
     #[tokio::test]
     async fn the_deletions_wait_for_the_erasure_fence() {
         let (sessions, store) = quiet_sessions();
@@ -811,9 +887,7 @@ mod tests {
             let sessions = Arc::clone(&sessions);
             async move { sweep(&sessions, SPAN).await }
         });
-        // Long enough that a sweep taking no fence would have finished: the
-        // whole tick is three store operations on an in-memory database.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        wait_until_the_tick_stands_at_the_fence(&sessions).await;
         assert_eq!(
             surviving(&store).await,
             vec![conversation],
@@ -852,25 +926,23 @@ mod tests {
         let conversation = conversation_with_a_block(&store).await;
         age(&store, conversation, 400).await;
 
-        let alive = tokio::runtime::Handle::current()
-            .metrics()
-            .num_alive_tasks();
-        spawn_sweep(&sessions, RetentionConfig::of_days(0));
-        assert_eq!(
-            tokio::runtime::Handle::current()
-                .metrics()
-                .num_alive_tasks(),
-            alive,
+        // The spawn answers what it did, so the absence is read from the
+        // mechanism itself and not from a task count the whole runtime
+        // shares with every unrelated task.
+        assert!(
+            spawn_sweep(&sessions, RetentionConfig::of_days(0)).is_none(),
             "a disabled span spawns no task"
         );
-        tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
             surviving(&store).await,
             vec![conversation],
             "and nothing expires under it, however old"
         );
 
-        spawn_sweep(&sessions, RetentionConfig::default());
+        assert!(
+            spawn_sweep(&sessions, RetentionConfig::default()).is_some(),
+            "a stated span spawns the task"
+        );
         // The first tick is at spawn, so the conversation goes without any
         // wait for the hour.
         for _ in 0..200 {

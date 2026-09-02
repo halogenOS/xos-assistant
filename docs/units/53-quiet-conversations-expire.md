@@ -78,14 +78,16 @@ tick like any other, and every tick is idempotent, so the cadence carries no mea
 freshness of enforcement. Each tick it asks the store for the expired conversations and, for
 each one: delete the channel mapping row if one names it, then retire through the one
 existing door — settle, delete, forget. After the conversations, one `gc_orphan_blocks`
-pass; then the unflagged principals nothing names any more. A tick that finds nothing does
-nothing. Failures follow the standing rule: a store error inside one conversation's
+pass; then the unflagged principals nothing names any more. The collections are owed on
+EVERY tick, expired conversations or none — an earlier tick's failed collection must not
+leave orphaned rows waiting for something else to expire — so a tick that finds nothing
+expired deletes no conversation and still collects. Failures follow the standing rule: a store error inside one conversation's
 retirement fails that conversation's deletion and the sweep moves on, logging it; the next
 tick retries it, because the conversation is still expired. Nothing about a failed sweep
 touches serving.
 
-**The sweep and an erasure never race.** The deletion phase of every tick runs under the
-erasure fence, the arbiter the erasure and reset paths already hold; whichever holds the
+**The sweep and an erasure never race.** The whole tick — the expiry reading, the
+retirements and the collections — runs under the erasure fence, the arbiter the erasure and reset paths already hold; whichever holds the
 fence runs whole, and the other waits its turn. A deletion request never waits for the
 schedule in the other direction either: erasure takes the fence on demand and the sweep's
 next tick simply finds less to do.
@@ -158,8 +160,9 @@ the only mechanism and that is what the rule says.
    no mapping change, no principal removed. A test asserts it against a populated store —
    the mechanical half of the first-boot requirement; the calendar half is recorded in the
    design.
-10. The deletion phase of a tick runs under the erasure fence. A test holds the fence and
-    asserts the tick's deletions wait for its release.
+10. The tick runs under the erasure fence, the expiry reading included, so what the reading
+    names is what stands when the deletions run. A test holds the fence and asserts the
+    tick's deletions wait for its release.
 11. The app reads no wall clock for the sweep: the store answers the expiry question with
     its own clock, and the existing clock-source test still passes unchanged.
 12. Every committed home of the no-expiry statement moves: the policy's retention section,

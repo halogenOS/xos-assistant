@@ -295,12 +295,14 @@ impl Sessions {
     /// channel that points at it, then settle, delete and forget through the
     /// one door above (unit 53, 2026-09-02).
     ///
-    /// The mapping row goes FIRST, the order erasure's own direct-chat
-    /// removal takes: a channel left pointing at a deleted conversation
-    /// would resolve every later message into a conversation that is not
-    /// there, while an unmapped channel's next message creates a fresh
-    /// session on the path that already exists. A conversation nothing maps
-    /// deletes no row here and retires the same way.
+    /// The mapping row goes FIRST, ahead of the settle and the deletion
+    /// both: while those run, a message arriving on that channel must not
+    /// resolve into the conversation this tick is about to delete, and a
+    /// channel left mapped after the deletion resolves every later message
+    /// into a conversation that is not there. An unmapped channel's next
+    /// message creates a fresh session on the path that already exists. A
+    /// conversation nothing maps deletes no row here and retires the same
+    /// way.
     ///
     /// # Errors
     ///

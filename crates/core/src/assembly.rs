@@ -749,7 +749,9 @@ impl Assistant {
         // monotonic time serving context pressure, and retention is
         // wall-clock days. A deployment that configured no span gets no task
         // here at all.
-        retention::spawn_sweep(&sessions, retention);
+        // The handle is dropped: the task ends with the assembly, which is
+        // the only end it has.
+        drop(retention::spawn_sweep(&sessions, retention));
         spawn_reactor(ctx.clone());
         Ok(Self {
             ctx,

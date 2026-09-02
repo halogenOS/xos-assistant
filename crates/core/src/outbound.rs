@@ -397,7 +397,8 @@ async fn deliver_stored_items(
         return Ok(());
     }
     let mut blocks = ctx.store().list_blocks(conversation_id).await?;
-    let cursor = seated_cursor(&tx, cursors, conversation_id, &blocks).await?;
+    let newest = blocks.iter().map(|block| block.id).max().unwrap_or(0);
+    let cursor = seated_cursor(&tx, cursors, conversation_id, newest).await?;
     for index in 0..blocks.len() {
         let block_id = blocks[index].id;
         if block_id <= *cursor {
@@ -525,6 +526,13 @@ async fn deliver_stored_items(
 /// ledger order: a compacted thread's own opening carries the highest ids and
 /// sits at the FRONT of its ledger, so the two readings part company there.
 ///
+/// The comparison is STRICT, and equality stays: a cursor standing exactly at
+/// the newest block is what every delivered conversation carries between
+/// turns, so re-seeding there would send its whole history out again on the
+/// next wake that brings no new block. Equality is the one shape ids alone
+/// cannot decide, and it is answered in favour of the conversation that is
+/// alive.
+///
 /// # Errors
 ///
 /// [`StoreError`] if the boundary read fails or the store's actor has
@@ -533,9 +541,8 @@ async fn seated_cursor<'a>(
     tx: &StoreTx,
     cursors: &'a mut DeliveryCursors,
     conversation_id: i64,
-    blocks: &[Block],
+    newest: i64,
 ) -> Result<&'a mut i64, StoreError> {
-    let newest = blocks.iter().map(|block| block.id).max().unwrap_or(0);
     match cursors.entry(conversation_id) {
         Entry::Occupied(entry) => {
             let cursor = entry.into_mut();
@@ -1463,6 +1470,85 @@ mod tests {
             reply.text,
             disclosure.disclosed("the new holder's first answer"),
             "the stale cursor re-seeded, so the answer reaches the chat"
+        );
+    }
+
+    /// A second delivery pass over a conversation whose blocks all went out
+    /// already sends nothing again — and that is why the re-seed reads a
+    /// cursor standing STRICTLY above the newest block, never one standing
+    /// at it.
+    ///
+    /// A cursor equal to the newest block id is the steady state of every
+    /// delivered conversation, not a reissued id: the last block delivered
+    /// IS the newest one. Re-seeding there would drop the cursor to the
+    /// inherited boundary — zero for a conversation forked from nothing —
+    /// and send the whole conversation to the chat again on the next pass
+    /// that meets no new block, which is what a failed turn's wake and every
+    /// lag recovery bring. The narrower shape the strict reading leaves open
+    /// — a reissued id whose new holder's newest block lands on exactly the
+    /// old cursor's number — costs that holder one swallowed answer, and no
+    /// reading of ids alone can tell it from this case.
+    ///
+    /// The pass is driven directly, so the equality is the case's premise
+    /// and not a scheduling accident: through the event task, a wake with
+    /// nothing new can be read after the next answer is already stored, and
+    /// then the cursor is BELOW the newest block and the case proves
+    /// nothing.
+    #[tokio::test]
+    async fn a_second_pass_over_a_delivered_conversation_sends_nothing_again() {
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let ctx = quiet_ctx(store.clone());
+        let (key, conversation) = mapped_conversation(&store, "dm-rewoken").await;
+        let disclosure = Disclosure::resolve(None, "Probe");
+        let (items, mut sent) = mpsc::unbounded_channel();
+        let mut cursors = DeliveryCursors::new();
+        cursors.insert(conversation, 0);
+
+        store
+            .insert_final_text_block(conversation, Role::Assistant, "the one answer".into(), None)
+            .await
+            .expect("the answer stores");
+        deliver_stored_items(
+            &ctx,
+            "quiet",
+            &disclosure,
+            conversation,
+            &mut cursors,
+            &items,
+        )
+        .await
+        .expect("the first pass reads stored state");
+        let reply = as_reply(sent.try_recv().expect("the answer goes out"));
+        assert_eq!(reply.channel, key);
+        assert_eq!(reply.text, disclosure.disclosed("the one answer"));
+
+        let newest = store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads")
+            .iter()
+            .map(|block| block.id)
+            .max()
+            .expect("the conversation holds blocks");
+        assert_eq!(
+            cursors[&conversation], newest,
+            "the premise: the delivered conversation's cursor stands exactly at its newest block"
+        );
+
+        deliver_stored_items(
+            &ctx,
+            "quiet",
+            &disclosure,
+            conversation,
+            &mut cursors,
+            &items,
+        )
+        .await
+        .expect("the second pass reads stored state");
+
+        assert!(
+            sent.try_recv().is_err(),
+            "the conversation is delivered whole, so a second pass over it sends nothing"
         );
     }
 
