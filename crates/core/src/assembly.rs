@@ -50,11 +50,13 @@ use crate::streams::StreamObserver;
 use crate::tools::ToolSet;
 use crate::tools::changelog::HarnessChangelog;
 use crate::tools::mark::{self, MarkTool};
+use crate::tools::no_reply_needed::NoReplyNeeded;
 use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
 use crate::tools::runtime::RuntimeFacts;
 use crate::tools::search::{SearchConfig, WebSearch};
 use crate::tools::standing::StandingLookup;
+use crate::tools::work_is_done::WorkIsDone;
 use crate::window::{
     ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, RESET_REPLY_CAP,
     RESET_REPLY_WINDOW, ReplyWindow,
@@ -525,12 +527,19 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
     ));
 }
 
-/// The tools no assembly is without (unit 32, unit 47): the runtime facts
-/// and the harness changelog join unconditionally, because neither has a
-/// configuration to be absent — the questions they answer are asked
-/// wherever the assistant runs, the one value the changelog states is
+/// The tools no assembly is without (unit 32, unit 47, unit 54): the
+/// runtime facts and the harness changelog join unconditionally, because
+/// neither has a configuration to be absent — the questions they answer are
+/// asked wherever the assistant runs, the one value the changelog states is
 /// embedded in the build, and a build that passed no changelog gets a tool
 /// that answers that absence, not a tool that vanishes.
+///
+/// The two TURN-ENDING tools join on the same terms (unit 54, 2026-09-02):
+/// a turn that was asked nothing and a turn whose actions are the whole
+/// answer happen wherever the assistant runs, and neither tool reads or
+/// writes anything an assembly would have to hand it. They are registered
+/// here and never in the lookups set, which answers what lookups ship and
+/// nothing else.
 ///
 /// The runtime-facts tool takes the binary's start instant here, the one
 /// fact it cannot reach for itself. The model is not injected: that one
@@ -540,6 +549,8 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
 fn admit_unconditional_tools(tools: &mut ToolSet, started_at: Instant) {
     tools.admit(RuntimeFacts::new(started_at));
     tools.admit(HarnessChangelog::new());
+    tools.admit(NoReplyNeeded::new());
+    tools.admit(WorkIsDone::new());
 }
 
 /// The release lookup's own rate window (the operator's numbers, decision

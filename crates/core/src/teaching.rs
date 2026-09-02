@@ -146,18 +146,21 @@ pub const SEARCH_TEACHING: &str = "You can also search the web with the search_w
 /// carries none of the report's conditions.
 ///
 /// What it teaches is the trigger and the two bounds. The trigger is the
-/// chatter that LANDS where the silence default would otherwise end the
-/// turn empty: the reaction is what the assistant may put there instead of
-/// words. The bounds are that words and a reaction never land on one
-/// message — an answer already acknowledges it — and that one message
-/// takes one reaction, ever.
+/// TERMINAL MESSAGE, as decision 0197 defines it (2026-09-02, with unit
+/// 54, superseding decision 0155's chatter fit): a response to
+/// the assistant that needs no further response — the thanks that closes
+/// an exchange already answered — may be stamped off with one reaction
+/// where the silence default would otherwise end the turn empty. The
+/// sentence stays permissive: it says a reaction CAN close such a message,
+/// never that one should. The bounds are that words and a reaction never
+/// land on one message — an answer already acknowledges it — and that one
+/// message takes one reaction, ever.
 ///
 /// It composes in the addressed mode too, and legitimately: there the
-/// empty-turn clause covers an ADDRESSED message that lands with nothing
-/// to say, so a share aimed at the assistant may draw a reaction as well.
-/// The chatter carve-out that rides the helpful arm's silence sentence is
-/// a different sentence for a different case, and that arm is where it
-/// lives.
+/// empty-turn clause covers an ADDRESSED message that leaves nothing to
+/// say, which is exactly what a closing thanks is. The carve-out that
+/// rides the helpful arm's silence sentence states the same rule where
+/// that arm's silence default would otherwise contradict it.
 ///
 /// No emoji appears here, deliberately: which emoji a platform can place
 /// is a platform fact and lives in the adapter, and the core's own
@@ -165,19 +168,56 @@ pub const SEARCH_TEACHING: &str = "You can also search the web with the search_w
 /// emoji suits which moment — is the deployed persona's, not the core's.
 pub const REACT_TEACHING: &str = "You can also put one emoji reaction on a message, with the \
      react tool: name the message by the bracketed id shown ahead of it and give the emoji \
-     you choose. Chatter that lands may draw one reaction instead of an empty turn — a \
-     share, a milestone, a joke — and that is what the tool is for. Words and a reaction \
-     never land on one message: when you answer in words, the answer is the whole of it. \
-     Most messages deserve no reaction at all, one message takes at most one reaction \
-     ever, and silence stays the default.";
+     you choose. A response to you that needs no further response can be stamped off with \
+     one reaction instead of an empty turn: someone asks you how something works, you \
+     answer, they write back thanks — that thanks can take a reaction and nothing more. \
+     Words and a reaction never land on one message: when you answer in words, the answer \
+     is the whole of it. Most messages deserve no reaction at all, one message takes at \
+     most one reaction ever, and silence stays the default.";
+
+/// The two closing prohibitions (unit 54, 2026-09-02), composed
+/// unconditionally: both bind every deployment, because neither names a
+/// capability a configuration can remove.
+///
+/// Neither sentence PUSHES anything, and that is the unit's whole
+/// decision. The assistant gained two tools that end a turn with nothing
+/// posted, and the teaching gained no directive to call them: a rule that
+/// pushes an act gets the act stamped on everything, and those tools are a
+/// protection against a model that loops because it must do something, not
+/// a behaviour to encourage. What each tool is for lives in its own
+/// model-facing description. Ending a turn with plain silence stays the
+/// taught default, exactly as before.
+///
+/// What the two sentences forbid, and why each is here:
+///
+/// 1. THE ANNOUNCEMENT. Observed in production on 2026-09-01: asked a
+///    question aimed at another member by name, the assistant posted that
+///    the question was not for it and it was staying out. That message is
+///    the silence written out, and it belongs to nobody.
+/// 2. THE NARRATED CLOSE. Prose written ahead of a tool call is finalized
+///    and delivered as its own message by the standing mechanism decision
+///    0146 records: a round's text ahead of a call commits as its own
+///    answer block and the outbound edge delivers it, with nothing holding
+///    a mid-turn text back. So a close narrated before the call posts
+///    exactly the announcement the first sentence forbids. Nothing
+///    mechanizes this: the words are written before any handler is
+///    reached, so the teaching is the whole control, stated as a teaching
+///    — the same honesty 0146 states about the line it teaches.
+pub const CLOSING_PROHIBITIONS: &str = "Never post a message whose only content is that you \
+     are not taking part: a line saying the question was for someone else, that you are \
+     staying out of it, or that you have nothing to add is your silence written out, and \
+     nobody needs to read it. When a tool call is how a turn of yours ends, make that call \
+     on its own, with nothing written ahead of it: whatever you write before a tool call is \
+     posted to the group as its own message, so a narrated ending posts the very line the \
+     rule above forbids.";
 
 /// The whole system prompt the assembly records: the embedder's prompt,
 /// then the name identity, then the answering teaching for the configured
-/// mode, then the react teaching — unconditional like the two before it —
-/// and then, each exactly when its own capability is there, the moderation
-/// teaching and the web search teaching. Public because the suites pin
-/// recorded prompts against exactly this composition instead of restating
-/// it.
+/// mode, then the react teaching and the closing prohibitions — all three
+/// unconditional — and then, each exactly when its own capability is
+/// there, the moderation teaching and the web search teaching. Public
+/// because the suites assert recorded prompts against exactly this
+/// composition instead of restating it.
 #[must_use]
 pub fn composed_system_prompt(
     base: &str,
@@ -186,7 +226,7 @@ pub fn composed_system_prompt(
     capabilities: Capabilities,
 ) -> String {
     let mut prompt = format!(
-        "{base}\n\n{identity}\n\n{teaching}\n\n{REACT_TEACHING}",
+        "{base}\n\n{identity}\n\n{teaching}\n\n{REACT_TEACHING}\n\n{CLOSING_PROHIBITIONS}",
         identity = identity_section(name),
         teaching = answering_section(answering),
     );
@@ -253,26 +293,33 @@ pub(crate) const SILENCE_IN_WORDS: &str =
     "they get nothing from you in words: not an answer, not an acknowledgment, not a comment.";
 
 /// The carve-out that joins the amended sentence, in the helpful arm
-/// alone (unit 39, 2026-08-30). It rides HERE and not beside the rule as a
-/// separate paragraph, because the composed prompt would otherwise
-/// contradict itself on a literal read — the exact collision decision 0148
-/// documents.
+/// alone (unit 39, 2026-08-30; its trigger rewritten by decision 0197,
+/// 2026-09-02, with unit 54). It rides HERE and not beside the rule as a
+/// separate paragraph, because the composed prompt would otherwise contradict
+/// itself on a literal read — the exact collision decision 0148 documents.
 ///
-/// The addressed arm is deliberately left unamended: there an unaddressed
-/// message opens no turn at all, so the CHATTER carve-out never meets that
-/// arm's sentence. What the addressed mode does get is
-/// [`REACT_TEACHING`], whose empty-turn clause covers the addressed
-/// message that lands with nothing to say.
+/// The trigger is the terminal message, the same one [`REACT_TEACHING`]
+/// states: a response to the assistant that needs no further response.
+/// The chatter wording this carried before — a share, a milestone, a joke
+/// — is gone from both homes, because one teaching cannot name two
+/// different triggers for one act; decision 0197 supersedes the chatter
+/// fit decision 0155 gave it, and the bounds of 0155 live on here.
 ///
-/// Pinned byte for byte, its two dashes spelled as codepoints: the unit
-/// pins an em dash there, and an em dash pasted through an editor is one
+/// The addressed arm is deliberately left unamended: there this arm's
+/// silence sentence does not exist, so there is nothing for a carve-out to
+/// except. What the addressed mode gets is [`REACT_TEACHING`], whose
+/// empty-turn clause covers the addressed message that leaves nothing to
+/// say.
+///
+/// Asserted byte for byte, its two dashes spelled as codepoints: the copy
+/// fixes an em dash there, and an em dash pasted through an editor is one
 /// silent keystroke away from a hyphen or an en dash. The assertion below
 /// spells the glyph instead, so the two sides cannot drift together.
-pub(crate) const REACTION_CARVE_OUT: &str = "The one exception is the emoji reaction: where \
-     you would otherwise end an empty turn but a message genuinely lands \u{2014} a share, a \
-     milestone, a joke that landed \u{2014} you may put one reaction on it instead. A \
-     reaction never rides with words on the same message, most messages deserve no reaction \
-     either, and silence stays the default.";
+pub(crate) const REACTION_CARVE_OUT: &str = "The one exception is the emoji reaction: a \
+     response to you that needs no further response \u{2014} the thanks that closes an \
+     exchange you already answered \u{2014} can be stamped off with one reaction instead of \
+     the empty turn. A reaction never rides with words on the same message, most messages \
+     deserve no reaction either, and silence stays the default.";
 
 /// The answering teaching for one mode (rewritten by unit 16 and unit 22,
 /// extended by unit 21, 2026-08-24; the silence sentence amended by unit
@@ -821,11 +868,11 @@ mod tests {
         );
         assert_eq!(
             REACTION_CARVE_OUT,
-            "The one exception is the emoji reaction: where you would otherwise end an \
-             empty turn but a message genuinely lands — a share, a milestone, a joke \
-             that landed — you may put one reaction on it instead. A reaction never \
-             rides with words on the same message, most messages deserve no reaction \
-             either, and silence stays the default."
+            "The one exception is the emoji reaction: a response to you that needs no \
+             further response — the thanks that closes an exchange you already answered \
+             — can be stamped off with one reaction instead of the empty turn. A \
+             reaction never rides with words on the same message, most messages deserve \
+             no reaction either, and silence stays the default."
         );
         let helpful =
             composed_system_prompt("b", "n", AnsweringMode::Helpful, Capabilities::default());
@@ -855,21 +902,33 @@ mod tests {
         );
     }
 
-    /// AC-A's tool half (unit 39): the react teaching composes
-    /// unconditionally — every mode, every configuration, exactly as the
-    /// tool registers — and states the two things the trigger needs: that
-    /// chatter which lands may draw one reaction instead of an empty turn,
-    /// and that words and a reaction never land on one message. It carries
-    /// no emoji of its own, which the core's cleanliness scans would fail
-    /// on anyway; taste is the deployed persona's.
+    /// AC-A's tool half (unit 39), with the trigger unit 54 rewrote: the
+    /// react teaching composes unconditionally — every mode, every
+    /// configuration, exactly as the tool registers — and states the
+    /// terminal-message trigger with its example, permissively, beside the
+    /// bounds that survive untouched. The chatter wording it carried is
+    /// asserted GONE from both homes: one act cannot have two triggers.
+    /// It carries no emoji of its own, which the core's cleanliness scans
+    /// would fail on anyway; taste is the deployed persona's.
     #[test]
     fn the_react_teaching_composes_everywhere_and_states_its_bounds() {
+        for replaced in ["a share, a milestone", "Chatter that lands"] {
+            assert!(
+                !REACT_TEACHING.contains(replaced) && !REACTION_CARVE_OUT.contains(replaced),
+                "the chatter wording is replaced, not left beside its replacement: {replaced}"
+            );
+        }
         for fact in [
             "with the react tool",
             "name the message by the bracketed id shown ahead of it",
-            "Chatter that lands may draw one reaction instead of an empty turn",
+            "A response to you that needs no further response can be stamped off with \
+             one reaction instead of an empty turn",
+            "someone asks you how something works, you answer, they write back thanks \
+             — that thanks can take a reaction and nothing more",
             "Words and a reaction never land on one message",
             "one message takes at most one reaction ever",
+            "Most messages deserve no reaction at all",
+            "silence stays the default",
         ] {
             assert!(
                 REACT_TEACHING.contains(fact),
@@ -887,16 +946,23 @@ mod tests {
             "the react teaching names no emoji: which emoji a platform places is the \
              adapter's fact, and the taste is the persona's"
         );
+        // The mood is the TRIGGER SENTENCE's, so the read is that
+        // sentence's alone: the constant around it is free to say
+        // "should" about anything else, and a later sentence carrying
+        // the letters in another word decides nothing here.
+        for teaching in [REACT_TEACHING, REACTION_CARVE_OUT] {
+            let trigger = teaching
+                .split_inclusive('.')
+                .find(|sentence| sentence.contains("can be stamped off with one reaction"))
+                .expect("the trigger sentence stands in the teaching");
+            assert!(
+                !trigger.contains("should"),
+                "the trigger sentence stays permissive: it says a reaction CAN close \
+                 such a message, never that one should: {trigger}"
+            );
+        }
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
-            for capabilities in [
-                Capabilities::default(),
-                moderating(),
-                searching(),
-                Capabilities {
-                    moderation_handle: true,
-                    web_search: true,
-                },
-            ] {
+            for capabilities in every_capabilities() {
                 assert!(
                     composed_system_prompt("b", "n", mode, capabilities).contains(REACT_TEACHING),
                     "the react teaching composes in {mode:?} mode under {capabilities:?}"
@@ -963,6 +1029,132 @@ mod tests {
         assert!(
             taught.contains("report the join on sight"),
             "the taught deployment reads the join rule"
+        );
+    }
+
+    /// Every capability shape a composition can take, so a claim about
+    /// "the teaching" is made against all of them and not one.
+    fn every_capabilities() -> [Capabilities; 4] {
+        [
+            Capabilities::default(),
+            moderating(),
+            searching(),
+            Capabilities {
+                moderation_handle: true,
+                web_search: true,
+            },
+        ]
+    }
+
+    /// AC5's first half (unit 54): the teaching PUSHES NOTHING. Neither
+    /// turn-ending tool's name appears in any teaching constant, in either
+    /// mode, under any configuration — the tools are a protection that
+    /// works by existing, and what each is for lives in its own
+    /// model-facing description. The taught default is unchanged: a turn
+    /// with nothing to say ends with no text.
+    #[test]
+    fn no_teaching_constant_names_a_turn_ending_tool() {
+        let tools = [
+            crate::tools::no_reply_needed::NAME,
+            crate::tools::work_is_done::NAME,
+        ];
+        for constant in [
+            REACT_TEACHING,
+            CLOSING_PROHIBITIONS,
+            MODERATION_TEACHING,
+            SEARCH_TEACHING,
+            REACTION_CARVE_OUT,
+            SILENCE_IN_WORDS,
+        ] {
+            for tool in tools {
+                assert!(
+                    !constant.contains(tool),
+                    "no teaching constant names {tool}: {constant}"
+                );
+            }
+        }
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            for capabilities in every_capabilities() {
+                let prompt = composed_system_prompt("b", "n", mode, capabilities);
+                for tool in tools {
+                    assert!(
+                        !prompt.contains(tool),
+                        "the {mode:?} composition under {capabilities:?} names {tool}"
+                    );
+                }
+                assert!(
+                    prompt.contains("end your turn without writing any text — no placeholder"),
+                    "the taught default stays the empty turn in {mode:?} mode"
+                );
+            }
+        }
+    }
+
+    /// AC5's second half (unit 54): the two prohibitions compose in both
+    /// answering modes and under every configuration, byte for byte — the
+    /// never-announce sentence and the bare-call sentence. Neither directs
+    /// the model to call anything: the second names what a tool call does
+    /// to the prose ahead of it, which is a fact about the mechanism.
+    #[test]
+    fn both_modes_carry_the_two_closing_prohibitions() {
+        assert_eq!(
+            CLOSING_PROHIBITIONS,
+            "Never post a message whose only content is that you are not taking part: a \
+             line saying the question was for someone else, that you are staying out of \
+             it, or that you have nothing to add is your silence written out, and nobody \
+             needs to read it. When a tool call is how a turn of yours ends, make that \
+             call on its own, with nothing written ahead of it: whatever you write \
+             before a tool call is posted to the group as its own message, so a narrated \
+             ending posts the very line the rule above forbids."
+        );
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            for capabilities in every_capabilities() {
+                assert!(
+                    composed_system_prompt("b", "n", mode, capabilities)
+                        .contains(CLOSING_PROHIBITIONS),
+                    "the prohibitions compose in {mode:?} mode under {capabilities:?}"
+                );
+            }
+        }
+    }
+
+    /// AC5's third half (unit 54): the search teaching and the sourcing
+    /// paragraph stand BYTE-UNCHANGED. This unit reworded the reaction
+    /// trigger and added two prohibitions; a reworded search or sourcing
+    /// sentence would be a change nobody decided, and the two literals
+    /// here are what says so.
+    #[test]
+    fn the_search_and_sourcing_sentences_stand_unchanged() {
+        assert_eq!(
+            SEARCH_TEACHING,
+            "You can also search the web with the search_web tool, for questions about \
+             the world and not about the project. Before you run a search, say in one \
+             short line what you are about to look up, then run the search, then answer: \
+             one line and no more, stating the thing you are going to look for — never a \
+             placeholder standing in for an answer, and never a restatement of the words \
+             the member just wrote. Ending a turn with no text is for a turn with \
+             nothing to say; a turn with a search to run has something to say. A \
+             result's snippet is a hint, not a source: when you answer from one, say \
+             where it came from and name the page. A snippet that does not contain the \
+             claim is a miss, exactly as an unanswering lookup is — say you don't know \
+             instead of filling the gap from memory. Facts about the project itself \
+             still come only from the project lookups: a web result is never the source \
+             for a claim about halogenOS, its features, its procedures or its builds."
+        );
+        assert_eq!(
+            sourcing_rules(),
+            "Your lookup tools are the only source of substantive claims: any claim \
+             about the project — a feature, a procedure, a project fact — must come from \
+             a lookup you made in this turn, never from your trained knowledge, so look \
+             it up before you answer. A lookup answers a question only when its result \
+             actually contains the answer: a result that is empty, off-topic, or missing \
+             the specific claim is a miss, not a licence to fill the gap from memory. \
+             Never guess and never answer from hedged memory — no \"as far as I know\", \
+             no \"probably\" — and in a compound answer, every project-specific claim is \
+             either confirmed by a lookup or dropped. When you were addressed and a \
+             lookup cannot back the answer, say you don't know, plainly and in your own \
+             words — never guess from memory or offer a hedged recollection. When you \
+             were not addressed and have nothing to add, end the turn with no text."
         );
     }
 }

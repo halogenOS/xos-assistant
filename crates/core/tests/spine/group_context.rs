@@ -1719,9 +1719,11 @@ async fn an_observation_supersedes_a_stale_choice_once_per_process() {
             "lookup_release".to_owned(),
             assistant_core::tools::wiki::NAME.to_owned(),
             assistant_core::tools::standing::NAME.to_owned(),
+            assistant_core::tools::no_reply_needed::NAME.to_owned(),
             assistant_core::tools::rights::NAME.to_owned(),
             assistant_core::tools::mark::NAME.to_owned(),
-            assistant_core::tools::runtime::NAME.to_owned()
+            assistant_core::tools::runtime::NAME.to_owned(),
+            assistant_core::tools::work_is_done::NAME.to_owned()
         ],
         "the delta carries this process's registered set"
     );

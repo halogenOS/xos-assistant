@@ -31,6 +31,7 @@ pub mod changelog;
 pub mod commit;
 pub(crate) mod lookup;
 pub mod mark;
+pub mod no_reply_needed;
 pub(crate) mod provenance;
 pub mod release;
 pub mod report;
@@ -39,6 +40,7 @@ pub mod runtime;
 pub mod search;
 pub mod standing;
 pub mod wiki;
+pub mod work_is_done;
 
 use commit::CommitLookup;
 use release::ReleaseLookup;
@@ -229,6 +231,64 @@ mod tests {
             registry.names().collect::<Vec<_>>(),
             vec!["alpha", "zulu"],
             "the registry iterates the same order the choice records"
+        );
+    }
+
+    /// AC1 (unit 54): the two turn-ending tools, read as the runtime reads
+    /// them — off the registry, through the framework's own handler
+    /// surface. Both declare the turn-ending property, both take no
+    /// parameters at all, and no sibling registration declares it, so the
+    /// property says what it names and nothing else does.
+    ///
+    /// The admission answer is NOT compared here: a member-level answer is
+    /// behaviorally identical to the hook's default, so a comparison would
+    /// pass against a module that answers nothing. What holds that is the
+    /// cleanliness suite's admission scan, which reads the source.
+    #[test]
+    fn the_turn_ending_tools_declare_the_end_and_take_no_parameters() {
+        let mut set = ToolSet::new();
+        set.admit(no_reply_needed::NoReplyNeeded::new());
+        set.admit(work_is_done::WorkIsDone::new());
+        set.admit(Named("ordinary_probe", Authority::Member));
+        let (registry, names) = set.into_registry();
+        assert_eq!(
+            names,
+            vec![
+                no_reply_needed::NAME.to_owned(),
+                "ordinary_probe".to_owned(),
+                work_is_done::NAME.to_owned()
+            ],
+            "both tools register under their own names"
+        );
+
+        for name in [no_reply_needed::NAME, work_is_done::NAME] {
+            let handler = registry.get(name).expect("the registered handler reads");
+            assert!(
+                handler.ends_turn(),
+                "the registry reads the turn-ending property off {name}"
+            );
+            let definition = handler.definition();
+            assert_eq!(definition.name, name);
+            assert_eq!(
+                definition.parameters["properties"],
+                serde_json::json!({}),
+                "{name} takes no parameters"
+            );
+            assert!(
+                definition.parameters.get("required").is_none(),
+                "{name} requires none either"
+            );
+            assert!(
+                !definition.description.is_empty(),
+                "{name} carries its own meaning, which the teaching does not"
+            );
+        }
+        assert!(
+            !registry
+                .get("ordinary_probe")
+                .expect("the probe registers")
+                .ends_turn(),
+            "an ordinary tool ends no turn: the property names these two and nothing else"
         );
     }
 

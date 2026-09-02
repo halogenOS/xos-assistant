@@ -1971,13 +1971,14 @@ fn the_reaction_copy_ships_in_the_prompt_and_the_composed_teaching() {
     );
     assert!(
         composed.contains(
-            "The one exception is the emoji reaction: where you would otherwise end an \
-             empty turn but a message genuinely lands — a share, a milestone, a joke \
-             that landed — you may put one reaction on it instead. A reaction never \
-             rides with words on the same message, most messages deserve no reaction \
-             either, and silence stays the default."
+            "The one exception is the emoji reaction: a response to you that needs no \
+             further response — the thanks that closes an exchange you already answered \
+             — can be stamped off with one reaction instead of the empty turn. A \
+             reaction never rides with words on the same message, most messages deserve \
+             no reaction either, and silence stays the default."
         ),
-        "the composed prompt carries the carve-out"
+        "the composed prompt carries the carve-out, with the terminal-message trigger \
+         unit 54 decided"
     );
     assert!(
         !composed.contains("they get nothing from you, not an answer"),
@@ -1998,7 +1999,8 @@ fn the_reaction_copy_ships_in_the_prompt_and_the_composed_teaching() {
             "the react teaching composes in {mode:?} mode, as the tool registers"
         );
         for bound in [
-            "Chatter that lands may draw one reaction instead of an empty turn",
+            "A response to you that needs no further response can be stamped off with \
+             one reaction instead of an empty turn",
             "Words and a reaction never land on one message",
         ] {
             assert!(

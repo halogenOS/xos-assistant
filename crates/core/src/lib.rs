@@ -113,8 +113,8 @@ pub use message::{
 };
 pub use outbound::{PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT};
 pub use teaching::{
-    Capabilities, MODERATION_TEACHING, REACT_TEACHING, SEARCH_TEACHING, composed_system_prompt,
-    moderation_taught,
+    CLOSING_PROHIBITIONS, Capabilities, MODERATION_TEACHING, REACT_TEACHING, SEARCH_TEACHING,
+    composed_system_prompt, moderation_taught,
 };
 pub use window::{
     ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, RESET_REPLY_CAP,

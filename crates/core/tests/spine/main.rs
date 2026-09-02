@@ -71,7 +71,10 @@
 //! (the self-introspection tool an ordinary member reaches, stating the
 //! model its own conversation runs on), `changelog` (the harness-changelog
 //! tool an ordinary member reaches, stating what changed in the assistant's
-//! own software or its stated absence), and — behind the
+//! own software or its stated absence), `turn_ends` (the two turn-ending
+//! tools: the bare call that ends a turn with nothing delivered, the stored
+//! close, the recorded choice that names them beside the summary fork's
+//! empty one, and the sibling call a park does not silence), and — behind the
 //! `chat_completions`
 //! feature — the framework's real `OpenRouter` module, the shared
 //! chat-completions wire, against a loopback server.
@@ -114,3 +117,4 @@ mod storage;
 mod support;
 mod threading;
 mod tools;
+mod turn_ends;
