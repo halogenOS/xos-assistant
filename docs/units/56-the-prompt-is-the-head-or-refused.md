@@ -68,6 +68,14 @@ conversation is re-forked when its prompt moved OR when its prompt is not its fi
 and the repair is the same composition with the range the caller chooses — append the
 prompt, clone the join rows before the misplaced one. One walk, once, before serving; no paid turn.
 
+**A head with no prompt is refused at the dispatch.** The dispatch reads the conversation's
+first row before every request; when it is not a `system_prompt`, no request is sent: the
+turn fails loudly with a fatal store-class error naming the conversation, because a request
+without its prompt is a silently degraded conversation, the failure the user's reference
+design treats as the one that must never be papered over. A conversation created by any
+door in this repository has its prompt first, so only a foreign or damaged ledger reaches
+this; it is the second line of the same rule the store enforces at the write.
+
 **A refused statement is fatal.** `StoreError::Rejected` classifies `FailureKind::Fatal`: the
 database applied a rule the code violated, the ledger is in a shape the code cannot
 continue from, and the standing rule for a database error applies — the process ends
@@ -93,29 +101,33 @@ Framework:
    yields a thread with exactly one prompt, its own, every other post-cut block copied in
    order. A test builds that source directly in SQL — the door can no longer build it — and
    asserts the thread's ledger.
-4. Every check runs clean: `cargo fmt --all -- --check`, `cargo clippy --workspace
+4. The dispatch refuses a conversation whose first row is not a `system_prompt`: no provider
+   request is sent, a fatal-class error names the conversation, and a conversation with its
+   prompt first dispatches as today. A test builds the promptless head directly in SQL and
+   asserts no request and the error; a second asserts the ordinary case unchanged.
+5. Every check runs clean: `cargo fmt --all -- --check`, `cargo clippy --workspace
    --all-targets --all-features -- -D warnings`, `cargo test --workspace`, and `cargo doc
    --workspace --no-deps` under `RUSTDOCFLAGS="-D warnings"`.
 
 App:
 
-5. `forked_with_current_prompt` is the composition — create, append a fresh prompt, clone the
+6. `forked_with_current_prompt` is the composition — create, append a fresh prompt, clone the
    join rows from offset 1 — with no detach step; a test asserts the successor's first row is the prompt
    and the old prompt is absent.
-6. The startup walk re-forks a mapped conversation whose prompt is not its first row, prompt
+7. The startup walk re-forks a mapped conversation whose prompt is not its first row, prompt
    moved or not, through the composition with the caller-chosen range; a test builds the
    forbidden shape directly in SQL, runs the walk, and asserts the channel serves a
    conversation with the prompt first and the same shared history.
-7. `StoreError::Rejected` classifies `FailureKind::Fatal`; `StoreError::Contended` stays
+8. `StoreError::Rejected` classifies `FailureKind::Fatal`; `StoreError::Contended` stays
    `Transient`. The classification test asserts both.
-8. A compaction failing with a fatal error ends the process the way every fatal store error
+9. A compaction failing with a fatal error ends the process the way every fatal store error
    does, with no retry and no second fork: a test scripts a refused statement and asserts one
    fork, one model request, and the fatal exit signal the assembly already raises for fatal
    store errors.
-9. A conversation re-forked by the walk compacts successfully end to end against the merged
+10. A conversation re-forked by the walk compacts successfully end to end against the merged
    framework: a spine test runs the walk, ages the conversation past the threshold, and
    asserts the compacted thread serves with one prompt at its head.
-10. Every check runs clean in this repository, as in criterion 4.
+11. Every check runs clean in this repository, as in criterion 5.
 
 ## Rejected alternatives
 
@@ -133,6 +145,10 @@ App:
   successor takes.
 
 ## Decisions on record
+
+**2026-09-02, the head check and the go (msgs 1733-1734):** asked whether the dispatch should
+refuse a promptless head loudly, and for the go: "Sounds good yes go and push this fix when
+done".
 
 **2026-09-02, the composition (msg 1727, verbatim):** "The system prompt is a row like any
 other. The fork mechanism shouldnt care about this at all. The only case is whent he prompt
