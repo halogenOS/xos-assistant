@@ -29,6 +29,13 @@ refactor until the change fits naturally, then make it.
 - Every unit of work runs in a git worktree through the implement-review-verify workflow,
   merges back on completion, and the worktree is deleted.
 - Documented decisions carry their date and the rejected alternatives.
+- A unit's acceptance criteria run the feature through the existing lifecycles, not only its
+  own path: a restart with a changed prompt, a compaction, an erasure, a take-back, a
+  retirement. A mechanism proven alone and never in sequence with the others is the shape
+  that reached production on 2026-09-02 (the prompt-last fork that broke every compaction).
+- A shape the code must never produce is refused by the store, never merely avoided by the
+  callers: the rule lives where the rows are written, so the wrong shape fails loudly the
+  first time anyone builds it.
 - Commit messages follow the repository style: lowercase scope prefix plus plain imperative,
   a body written from zero, and a `Test:` footer stating a past fact.
 
