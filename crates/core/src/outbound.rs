@@ -56,14 +56,16 @@
 //!
 //! # A conversation id its previous holder left behind (unit 53, 2026-09-02)
 //!
-//! The store reissues conversation ids, and since the retention sweep a
-//! process can delete a mapped conversation while it runs — so an id whose
-//! cursor this edge holds can come back as somebody else's fresh session. A
-//! conversation never loses a block while it lives, so a cursor standing
-//! above everything its conversation holds is the previous holder's, and it
-//! re-seeds at the inherited boundary like a conversation this edge has
-//! never seen. The check is a level read of stored state, not a moment to
-//! catch: no deletion has to tell this edge anything.
+//! The store reissues conversation ids, and a process can delete a mapped
+//! conversation while it runs — an erasure request has always been able to,
+//! and the retention sweep now does it on a schedule, so this repairs the
+//! older hole as well as the new one. An id whose cursor this edge holds can
+//! therefore come back as somebody else's fresh session. A conversation
+//! never loses a block while it lives, so a cursor standing above everything
+//! its conversation holds is the previous holder's, and it re-seeds at the
+//! inherited boundary like a conversation this edge has never seen. The
+//! check is a level read of stored state, not a moment to catch: no deletion
+//! has to tell this edge anything.
 //!
 //! The durable ratchet cursor is deliberately NOT the seed. It is the
 //! frontier of what the model has been driven through, it moves with every
@@ -1380,6 +1382,87 @@ mod tests {
         assert_eq!(
             reply.text, line,
             "a fixed reply is a person's own text and reaches the channel whole"
+        );
+    }
+
+    /// A conversation id its previous holder left behind (unit 53): the id's
+    /// new holder has its first answer DELIVERED, never swallowed as history
+    /// somebody else made.
+    ///
+    /// The deletion here is the shape both a retention sweep and an erasure
+    /// leave — the mapping row, then the conversation, then the blocks
+    /// nothing holds any more — which is what puts the reissued id in front
+    /// of a cursor standing above every block that id now holds. The
+    /// premise is asserted, not assumed: if the store ever stops reissuing,
+    /// this case says so instead of passing on a race it no longer runs.
+    #[tokio::test]
+    async fn a_reissued_conversation_id_delivers_its_new_holders_first_answer() {
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let ctx = quiet_ctx(store.clone());
+        let (key, first) = mapped_conversation(&store, "dm-reissued").await;
+        let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
+        let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
+            .await
+            .expect("the edge opens");
+
+        // Three answers, so the cursor this edge keeps for the id ends up
+        // well above the single block its next holder will hold.
+        for line in ["one", "two", "three"] {
+            store
+                .insert_final_text_block(first, Role::Assistant, line.into(), None)
+                .await
+                .expect("the answer stores");
+        }
+        wake(&ctx, first);
+        for _ in 0..3 {
+            as_reply(
+                tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
+                    .await
+                    .expect("the first holder's answers deliver before the deadline")
+                    .expect("the edge outlives the test"),
+            );
+        }
+
+        mapping::delete_by_conversation(&store.tx(), first)
+            .await
+            .expect("the mapping row goes first");
+        store
+            .delete_conversation(first)
+            .await
+            .expect("the conversation goes");
+        store
+            .gc_orphan_blocks()
+            .await
+            .expect("the blocks nothing holds go");
+
+        let (again, second) = mapped_conversation(&store, "dm-reissued").await;
+        assert_eq!(
+            second, first,
+            "the premise: the store hands the freed id to the next conversation"
+        );
+        assert_eq!(again, key, "and the same channel maps to it");
+        store
+            .insert_final_text_block(
+                second,
+                Role::Assistant,
+                "the new holder's first answer".into(),
+                None,
+            )
+            .await
+            .expect("the answer stores");
+        wake(&ctx, second);
+
+        let reply = as_reply(
+            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
+                .await
+                .expect("the new holder's first answer delivers before the deadline")
+                .expect("the edge outlives the test"),
+        );
+        assert_eq!(reply.channel, key);
+        assert_eq!(
+            reply.text,
+            disclosure.disclosed("the new holder's first answer"),
+            "the stale cursor re-seeded, so the answer reaches the chat"
         );
     }
 

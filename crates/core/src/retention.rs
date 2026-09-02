@@ -22,14 +22,13 @@
 //! mechanically by the consumer's clock-source scan.
 //!
 //! Stored stamps come in two encodings and both are read as instants, never
-//! as text. The framework's own writer stamps a block with a local time and
-//! its numeric offset; the header's column default is `SQLite`'s UTC
-//! `datetime('now')`, which is what a row inserted without a stamp carries.
-//! `datetime()` normalizes either one to UTC, so the comparison is between
-//! two instants and an offset never shifts a conversation's age. A stamp
-//! `datetime()` cannot read at all answers NULL, which fails the comparison
-//! and leaves that conversation standing: an unreadable time is never a
-//! reason to delete.
+//! as text — the fact and its consequence are written down once, in the
+//! comment above the protection window's counted-debt predicate in
+//! [`crate::kind`], which met them first. The reading below applies the same
+//! `datetime()` normalization for the same reason. A stamp `datetime()`
+//! cannot read at all answers NULL, which fails the comparison and leaves
+//! that conversation standing: an unreadable time is never a reason to
+//! delete.
 //!
 //! # What a sweep does
 //!
@@ -42,6 +41,13 @@
 //! the session resets already hold, so a sweep and a deletion request never
 //! interleave. A request never waits for the schedule either: erasure takes
 //! the fence on demand and the next tick simply finds less to do.
+//!
+//! What decides a deletion is read UNDER that fence and never before it. A
+//! reading taken outside is already history by the time the fence is
+//! granted: a message ingested into a named conversation in between refreshes
+//! it, and an erasure in between can free its id for a fresh session to be
+//! born under. Both would have the tick delete a conversation the rule no
+//! longer names, so the naming is re-read where nothing can move it.
 //!
 //! A failure inside one conversation's retirement fails that conversation
 //! and nothing else. The sweep logs it and moves on, and the next tick
@@ -136,23 +142,30 @@ pub(crate) fn spawn_sweep(sessions: &Arc<Sessions>, retention: RetentionConfig) 
 /// it was for the next tick to find.
 async fn sweep(sessions: &Sessions, days: NonZeroU32) {
     let store = sessions.context().store();
-    let expired = match expired_conversations(store, days).await {
-        Ok(expired) => expired,
-        Err(error) => {
-            tracing::warn!(
-                %error,
-                "the retention reading failed; the next sweep reads again"
-            );
-            return;
-        }
+    // The first reading only asks whether there is anything to do: a tick
+    // with nothing to expire holds no fence and costs one query, so the
+    // hourly cadence never stands in front of an ingestion for the length
+    // of a scan.
+    if expired_or_none(store, days)
+        .await
+        .is_none_or(|expired| expired.is_empty())
+    {
+        return;
+    }
+    let _no_erasure_mid_sweep = sessions.erasure_fence().write().await;
+    // The naming that DECIDES is this one, taken with the fence held. The
+    // reading above answered for a moment already past: a message ingested
+    // into a named conversation refreshes it, and an erasure can take a
+    // named id and let a fresh session be born under it, both between that
+    // answer and this fence. Under the fence neither can happen, so what
+    // this reading names is what the rule names when the deletions run — a
+    // refreshed conversation is absent from it and a reissued id is fresh.
+    let Some(expired) = expired_or_none(store, days).await else {
+        return;
     };
     if expired.is_empty() {
         return;
     }
-    // The deletion phase, and only it, is ordered against an erasure: the
-    // reading above touches nothing, and a conversation an erasure removed
-    // between the two is simply gone when this tick reaches it.
-    let _no_erasure_mid_sweep = sessions.erasure_fence().write().await;
     let mut retired = 0_usize;
     for conversation_id in expired {
         if let Err(error) = sessions.retire_expired(conversation_id).await {
@@ -180,6 +193,22 @@ async fn sweep(sessions: &Sessions, days: NonZeroU32) {
             %error,
             "the principal collection failed after a sweep; the next sweep collects"
         ),
+    }
+}
+
+/// The reading with its one failure already answered: a reading that fails
+/// names nothing, says so in the log, and leaves the store exactly as the
+/// next tick will find it.
+async fn expired_or_none(store: &Store, days: NonZeroU32) -> Option<Vec<i64>> {
+    match expired_conversations(store, days).await {
+        Ok(expired) => Some(expired),
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "the retention reading failed; the next sweep reads again"
+            );
+            None
+        }
     }
 }
 
@@ -232,6 +261,8 @@ mod tests {
     use crate::message::{Authority, ChannelKey, ChannelKind, SenderIdentity};
     use crate::schema::{DOMAIN, store_config};
     use crate::session::SessionCoordination;
+    use crate::tools::mark::{self, MessageMark};
+    use crate::tools::report::{self, Report};
     use crate::{mapping, streams};
 
     /// A sessions object over an in-memory store with nothing registered:
@@ -318,6 +349,36 @@ mod tests {
             )
             .await
             .expect("the message appends")
+    }
+
+    /// One mark recording a person: the family that names a principal from
+    /// the assistant's own reaction, with no message of theirs behind it.
+    async fn mark_of(store: &Store, conversation: i64, principal_id: i64) {
+        store
+            .append_consumer_block(
+                conversation,
+                None,
+                mark::MESSAGE_MARK_KIND,
+                MessageMark::stored_fields("org-marked", principal_id, "x"),
+                None,
+            )
+            .await
+            .expect("the mark appends");
+    }
+
+    /// One filed report naming the person it is about: the fourth family
+    /// the enumeration carries.
+    async fn report_of(store: &Store, conversation: i64, principal_id: i64) {
+        store
+            .append_consumer_block(
+                conversation,
+                None,
+                report::REPORT_KIND,
+                Report::stored_fields("org-reported", Some(principal_id), "a filed line"),
+                None,
+            )
+            .await
+            .expect("the report appends");
     }
 
     /// One resolved identity row on the test adapter.
@@ -607,6 +668,85 @@ mod tests {
             principals(&store).await,
             vec![joined, flagged],
             "the unnamed row is collected, the join notice keeps one and the flag keeps the other"
+        );
+    }
+
+    /// AC6, the two families the case above does not reach: a person named
+    /// by ONLY a mark, and one named by only a report, in a conversation
+    /// that survives are both kept. One case per family, because each
+    /// family's own constant is what the collection joins against — a wrong
+    /// table or column there would take a person the rule keeps.
+    #[tokio::test]
+    async fn the_collection_keeps_a_person_a_mark_or_a_report_still_names() {
+        let (sessions, store) = quiet_sessions();
+        let quiet = conversation_with_a_block(&store).await;
+        let living = conversation_with_a_block(&store).await;
+        let marked = person(&store, "1").await;
+        let reported = person(&store, "2").await;
+        let gone = person(&store, "3").await;
+        // All three spoke only in the conversation that expires, so the
+        // message family keeps nobody here and each survivor stands on the
+        // one row family named beside it.
+        message_from(&store, quiet, marked).await;
+        message_from(&store, quiet, reported).await;
+        message_from(&store, quiet, gone).await;
+        mark_of(&store, living, marked).await;
+        report_of(&store, living, reported).await;
+        age(&store, quiet, 91).await;
+
+        sweep(&sessions, SPAN).await;
+
+        assert_eq!(
+            surviving(&store).await,
+            vec![living],
+            "only the quiet conversation goes"
+        );
+        assert_eq!(
+            principals(&store).await,
+            vec![marked, reported],
+            "the mark keeps one and the report keeps the other; the person no surviving row names goes"
+        );
+    }
+
+    /// AC4 against the fence: what a tick deletes is what the rule names
+    /// when the deletions RUN, never what it named before the fence was
+    /// granted. A conversation refreshed while the tick waits stands, the
+    /// same way a conversation refreshed a moment earlier does — and the
+    /// erasure form of the window closes with it, since an id an erasure
+    /// freed comes back to a fresh session that this reading finds fresh.
+    #[tokio::test]
+    async fn a_conversation_refreshed_while_the_tick_waits_is_left_standing() {
+        let (sessions, store) = quiet_sessions();
+        let conversation = conversation_with_a_block(&store).await;
+        age(&store, conversation, 91).await;
+
+        let held = sessions.erasure_fence().read().await;
+        let ticking = tokio::spawn({
+            let sessions = Arc::clone(&sessions);
+            async move { sweep(&sessions, SPAN).await }
+        });
+        // Long enough that the tick has named the conversation and is
+        // waiting on the fence: everything ahead of the wait is one query
+        // on an in-memory database.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // The entry an ingestion writes into the window the wait opens.
+        store
+            .insert_final_text_block(
+                conversation,
+                Role::User,
+                "spoken while the tick waited".into(),
+                None,
+            )
+            .await
+            .expect("the fresh line stores");
+
+        drop(held);
+        ticking.await.expect("the tick finishes");
+
+        assert_eq!(
+            surviving(&store).await,
+            vec![conversation],
+            "the conversation is fresh when the deletions run, so the tick leaves it"
         );
     }
 
