@@ -291,6 +291,14 @@ async fn a_prompt_that_is_not_the_first_row_re_forks_the_channel() {
         history,
         "everything written ahead of the misplaced prompt rides across shared, in order"
     );
+    let newest_held = held.iter().copied().max().expect("the source holds rows");
+    assert!(
+        inherited[history.len()..]
+            .iter()
+            .all(|id| *id > newest_held),
+        "nothing else of the source rides across: whatever follows the history is a row \
+         the successor wrote itself, never one the source held ({inherited:?})"
+    );
 }
 
 /// Rewrite one conversation into the shape the old prompt fork left behind:
@@ -327,8 +335,8 @@ async fn misplace_the_prompt(store: &Store, conversation_id: i64) -> Vec<i64> {
                 [conversation_id, prompt_row],
             )?;
             conn.execute(
-                "UPDATE blocks SET block_type = 'system_prompt' WHERE id = ?1",
-                [appended],
+                "UPDATE blocks SET block_type = ?2 WHERE id = ?1",
+                (appended, SystemPrompt::KINDS[0]),
             )?;
             Ok(())
         })

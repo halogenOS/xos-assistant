@@ -95,7 +95,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::assembly::{ErasureFence, ModelBinding, ScriptedPause};
 use crate::compaction::{COMPACTION_INSTRUCTIONS, CONTEXT_SWEEP, ContextWatch};
 use crate::erasure;
-use crate::error::{CoreError, FailureKind, FatalExit};
+use crate::error::{CoreError, FatalExit};
 use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{ChannelKey, ChannelKind};
@@ -481,7 +481,10 @@ impl Sessions {
     /// nothing serves — an empty conversation, or one holding a prompt and
     /// no history. It is retired through the same discard door every other
     /// door here ends at, and only then does the failure reach the caller:
-    /// what the caller gets back is a store where this call never happened.
+    /// the successor is retired before the failure returns. The retirement is
+    /// best effort: a failure of its own is logged, and the half-built
+    /// conversation it could not remove is unmapped, serves nobody, and expires
+    /// under the retention rule like any other quiet conversation.
     ///
     /// # Errors
     ///
@@ -1588,15 +1591,11 @@ impl Sessions {
     }
 }
 
-/// What one unattended failure comes to, and the one place that decides it.
-///
-/// A FATAL failure is not this conversation's: the database refused a
-/// statement by a rule, or it can no longer answer at all, and neither is
-/// something a later attempt gets past. So the exit signal is raised and the
-/// watch stops — no wake after this one pays for another summary turn before
-/// meeting the same refusal, which is the loop this whole unit exists to
-/// end. Every other failure leaves everything standing and the next wake
-/// tries again.
+/// What one unattended compaction failure comes to: the shared decision on
+/// the exit signal — a fatal failure ends the watch, so no wake after this
+/// one pays for another summary turn before meeting the same refusal, which
+/// is the loop this whole unit exists to end — and, for every other failure,
+/// this door's own warning line ahead of the next wake's retry.
 fn unattended_failure(
     failure: &CoreError,
     fatal: &FatalExit,
@@ -1604,10 +1603,7 @@ fn unattended_failure(
     door: &'static str,
     warning: &'static str,
 ) -> ControlFlow<()> {
-    if failure.failure_kind() == FailureKind::Fatal {
-        fatal.raise(failure);
-        return ControlFlow::Break(());
-    }
+    fatal.ends_on(failure)?;
     tracing::warn!(conversation_id, door, %failure, "{warning}");
     ControlFlow::Continue(())
 }

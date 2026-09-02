@@ -1434,10 +1434,14 @@ pub(crate) async fn conversations_of_principal(
 /// reads its own silence back as the honest record of that turn.
 ///
 /// Delegation is spelled per hook because the field is a wrapper, not the
-/// derive's delegate directly; a framework hook added later lands here as
-/// a compile-time absence only if it has no default, so the frontier
-/// transparency pin in the provenance tests stands watch over the one
-/// defaulted hook whose silent loss would change behavior.
+/// derive's delegate directly, and a framework hook added later with a
+/// default lands here as SILENCE, not as a compile error: the wrapper keeps
+/// answering the default while the framework's own kinds answer the truth.
+/// That is how the head-of-ledger hook was lost on 2026-09-02 and every
+/// turn was refused. The forwarding test below therefore compares this
+/// wrapper against the framework's kind on every defaulted hook over every
+/// kind the framework claims, so a dropped forward fails the suite instead
+/// of the deployment.
 pub struct FrameworkKind(pub BlockKind);
 
 impl FromBlock for FrameworkKind {
@@ -1482,6 +1486,10 @@ impl Agency for FrameworkKind {
 
     fn frontier_transparent(&self) -> bool {
         self.0.frontier_transparent()
+    }
+
+    fn heads_the_ledger(&self) -> bool {
+        self.0.heads_the_ledger()
     }
 
     fn gate<E: RuntimeEvent>(
@@ -1573,6 +1581,61 @@ fn string_field(block: &Block, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The wrapper answers every defaulted agency hook exactly as the
+    /// framework's own kind does, over every kind the framework claims.
+    /// A forward this wrapper forgets is silence, not a compile error, and
+    /// on 2026-09-02 the forgotten head-of-ledger forward refused every
+    /// turn in production; this comparison is what turns that loss into a
+    /// failing test. The quote's own awaiting policy is the one recorded
+    /// difference and is compared as such.
+    #[test]
+    fn the_framework_wrapper_forwards_every_defaulted_hook() {
+        for (index, kind) in <FrameworkKind as FromBlock>::CLAIMED_KINDS
+            .iter()
+            .enumerate()
+        {
+            let block = Block {
+                id: i64::try_from(index).expect("a small index") + 1,
+                role: None,
+                block_type: (*kind).to_owned(),
+                created_at: String::new(),
+                dispatch_anchor: None,
+                fields: serde_json::Map::new(),
+            };
+            let wrapped = FrameworkKind::from_block(&block);
+            let bare = agent_ledger::agency::BlockKind::from_block(&block);
+            assert_eq!(
+                wrapped.durable(),
+                bare.durable(),
+                "durable forwards for {kind}"
+            );
+            assert_eq!(
+                wrapped.frontier_transparent(),
+                bare.frontier_transparent(),
+                "frontier_transparent forwards for {kind}"
+            );
+            assert_eq!(
+                wrapped.heads_the_ledger(),
+                bare.heads_the_ledger(),
+                "heads_the_ledger forwards for {kind}"
+            );
+            assert_eq!(
+                wrapped.post_gate_id(&[]),
+                bare.post_gate_id(&[]),
+                "post_gate_id forwards for {kind}"
+            );
+            let expected_awaiting = match bare {
+                agent_ledger::agency::BlockKind::Quote(_) => None,
+                ref other => other.awaiting(),
+            };
+            assert_eq!(
+                wrapped.awaiting(),
+                expected_awaiting,
+                "awaiting forwards for {kind}, the quote's own policy aside"
+            );
+        }
+    }
     use agent_ledger::Store;
 
     use super::*;

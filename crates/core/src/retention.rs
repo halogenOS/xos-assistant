@@ -78,7 +78,7 @@ use agent_ledger::store::domain_run;
 use agent_ledger::{Store, StoreError};
 
 use crate::erasure;
-use crate::error::{CoreError, FailureKind, FatalExit};
+use crate::error::{CoreError, FatalExit};
 use crate::session::Sessions;
 
 /// How often the sweep runs. The cadence carries no meaning beyond freshness
@@ -187,7 +187,7 @@ async fn sweep(sessions: &Sessions, days: NonZeroU32, fatal: &FatalExit) -> Cont
         Ok(expired) => expired,
         Err(error) => {
             let failure = CoreError::Store(error);
-            ends_the_sweep(&failure, fatal)?;
+            fatal.ends_on(&failure)?;
             tracing::warn!(
                 failure = %failure,
                 "the retention reading failed; the next sweep reads again"
@@ -197,7 +197,7 @@ async fn sweep(sessions: &Sessions, days: NonZeroU32, fatal: &FatalExit) -> Cont
     };
     for conversation_id in expired {
         if let Err(failure) = sessions.retire_expired(conversation_id).await {
-            ends_the_sweep(&failure, fatal)?;
+            fatal.ends_on(&failure)?;
             tracing::warn!(
                 conversation_id,
                 %failure,
@@ -212,7 +212,7 @@ async fn sweep(sessions: &Sessions, days: NonZeroU32, fatal: &FatalExit) -> Cont
     // in the process will ever name it.
     if let Err(error) = store.gc_orphan_blocks().await {
         let failure = CoreError::Store(error);
-        ends_the_sweep(&failure, fatal)?;
+        fatal.ends_on(&failure)?;
         tracing::warn!(
             retired,
             failure = %failure,
@@ -224,27 +224,13 @@ async fn sweep(sessions: &Sessions, days: NonZeroU32, fatal: &FatalExit) -> Cont
         Ok(collected) => tracing::info!(retired, collected, "the retention sweep ran"),
         Err(error) => {
             let failure = CoreError::Store(error);
-            ends_the_sweep(&failure, fatal)?;
+            fatal.ends_on(&failure)?;
             tracing::warn!(
                 retired,
                 failure = %failure,
                 "the principal collection failed after a sweep; the next sweep collects"
             );
         }
-    }
-    ControlFlow::Continue(())
-}
-
-/// What one sweep failure comes to, and the one place that decides it: a
-/// fatal one raises the process's exit and breaks the tick out of the sweep,
-/// and every other one is the caller's to log and carry on from.
-///
-/// Answers in [`ControlFlow`] so each failure site states the decision with
-/// one `?` instead of keeping its own copy of the rule.
-fn ends_the_sweep(failure: &CoreError, fatal: &FatalExit) -> ControlFlow<()> {
-    if failure.failure_kind() == FailureKind::Fatal {
-        fatal.raise(failure);
-        return ControlFlow::Break(());
     }
     ControlFlow::Continue(())
 }

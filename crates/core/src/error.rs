@@ -2,6 +2,7 @@
 //! unattended path raises when its failure reaches the whole process.
 
 use agent_ledger::StoreError;
+use std::ops::ControlFlow;
 use tokio::sync::watch;
 
 use crate::message::ChannelKind;
@@ -195,18 +196,35 @@ impl FatalExit {
     /// The FIRST raise is the whole event: it writes the record and wakes
     /// every wait. A later one changes nothing at all, logging included — the
     /// process is already ending, and a second line about a second failure on
-    /// the way out reads like a second incident. The log is written under the
-    /// signal's own lock, ahead of the wake, so the record is in the log
-    /// before anything waiting on the exit can act on it.
+    /// the way out reads like a second incident. The log is written right
+    /// after the first raise, outside the signal's lock, so a slow log sink
+    /// never stalls a subscriber.
     pub(crate) fn raise(&self, failure: &CoreError) {
-        self.0.send_if_modified(|raised| {
+        let first = self.0.send_if_modified(|raised| {
             if *raised {
                 return false;
             }
-            tracing::error!(%failure, "the core cannot serve; the process ends for a restart");
             *raised = true;
             true
         });
+        if first {
+            tracing::error!(%failure, "the core cannot serve; the process ends for a restart");
+        }
+    }
+
+    /// What one unattended failure comes to — the ONE place that decides it
+    /// for every background task: a fatal failure raises the signal and
+    /// breaks the task out of its loop, and every other failure is the
+    /// caller's to log and carry on from.
+    ///
+    /// Answers in [`ControlFlow`] so each failure site states the decision
+    /// with one `?` instead of keeping its own copy of the rule.
+    pub(crate) fn ends_on(&self, failure: &CoreError) -> ControlFlow<()> {
+        if failure.failure_kind() == FailureKind::Fatal {
+            self.raise(failure);
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
     }
 
     /// Resolves once the signal is raised, at once when it already is.

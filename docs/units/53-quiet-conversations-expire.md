@@ -152,10 +152,11 @@ the only mechanism and that is what the rule says.
    flagged principal kept unconditionally.
 7. A swept serving channel's next message creates a fresh session and is answered. A spine
    test sweeps a mapped conversation and sends the next message.
-8. A store failure inside one conversation's retirement leaves that conversation for the next
-   tick and does not stop the sweep or the process. A test scripts the failure on the first
-   of two expired conversations and asserts the second is swept and the first survives to be
-   swept when the failure clears.
+8. A transient store failure inside one conversation's retirement leaves that conversation
+   for the next tick and does not stop the sweep or the process; a fatal one — a refused
+   statement, an unusable store — ends the sweep and raises the process's exit, per unit 56.
+   A test scripts a transient failure on the first of two expired conversations and asserts
+   the second is swept and the first survives to be swept when the failure clears.
 9. A database whose every conversation is fresher than the span sweeps nothing: no deletion,
    no mapping change, no principal removed. A test asserts it against a populated store —
    the mechanical half of the first-boot requirement; the calendar half is recorded in the
