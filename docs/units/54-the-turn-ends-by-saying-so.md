@@ -33,8 +33,10 @@ changes no framework code.
 ## The design
 
 **Two tools, one capability.** Both declare `ends_turn`, both at member authority, both
-registered in the assembly's unconditional-tools home — where the react, report and standing
-tools already join, never the lookups set, whose three-name assertion stands:
+registered in the assembly's function for tools that need nothing injected and ship in every
+deployment — never the lookups set, whose three-name assertion stands. The react, report and
+standing tools join in the assembly's other admitting function because they carry injected
+state or a condition; these two carry neither:
 
 - `no_reply_needed` — the turn was asked nothing. The absorbed messages are someone else's
   conversation, a question aimed at a named person who is not the assistant, or chatter that
@@ -105,8 +107,8 @@ assistant's own turn.
    wording is replaced by the terminal-message wording, permissive voice, standing bounds
    intact. The search and sourcing sentences stand byte-unchanged and are asserted
    unchanged. The teaching tests cover the new wording in both answering modes.
-6. The two tools register in the assembly's unconditional-tools home, beside the react and
-   report tools, never in the lookups set. The test fixtures see them wherever they see the
+6. The two tools register in the assembly's function for tools that need nothing injected,
+   never in the lookups set. The test fixtures see them wherever they see the
    unconditional tools, and existing tests that count or enumerate registered tools pass
    updated, the three-lookup assertion untouched.
 7. A turn that calls `no_reply_needed` while a sibling tool call of the same round is still
