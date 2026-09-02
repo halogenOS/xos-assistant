@@ -1,6 +1,8 @@
-//! The core's error type.
+//! The core's error type, how far each failure reaches, and the signal an
+//! unattended path raises when its failure reaches the whole process.
 
 use agent_ledger::StoreError;
+use tokio::sync::watch;
 
 use crate::message::ChannelKind;
 
@@ -137,15 +139,23 @@ impl CoreError {
             // The mapping recorded the channel's kind at creation and the
             // message claims another; no retry changes either side.
             Self::ChannelKindMismatch { .. } => FailureKind::Terminal,
-            // The database is damaged, is not a database, or was used
-            // against its contract; or its one writer is gone. Every later
-            // message meets the same wall, so retrying this one would spin
-            // an intake that can never answer anything (2026-09-01).
-            Self::Store(StoreError::Unusable(_) | StoreError::ActorStopped) => FailureKind::Fatal,
+            // Three classes, one answer. The database refused a statement by
+            // a rule this code violated — a constraint and never contention
+            // (2026-09-02) — or it is damaged, is not a database, was used
+            // against its contract, or its one writer is gone (2026-09-01).
+            // Nothing here passes on a retry: a refused statement is refused
+            // the same way every time and leaves the ledger in a shape this
+            // code cannot continue from, and a database that cannot answer
+            // meets every later message with the same wall. So the process
+            // ends and the supervisor starts a replacement over the durable
+            // state, where the startup walk runs before anything is served.
+            Self::Store(
+                StoreError::Rejected(_) | StoreError::Unusable(_) | StoreError::ActorStopped,
+            ) => FailureKind::Fatal,
             // Storage, wiring and timing failures can all pass on a retry;
             // the start-time refusals never reach a per-message caller. A
-            // refused write and a race with another writer are among them:
-            // both are about what this message asked for.
+            // race with another writer is among them: it is about what this
+            // message asked for, and the next attempt can win it.
             Self::Store(_)
             | Self::UnknownVendor { .. }
             | Self::MissingContentTable { .. }
@@ -154,6 +164,44 @@ impl CoreError {
             | Self::StreamUnsettled { .. }
             | Self::CompactionUnsummarized { .. } => FailureKind::Transient,
         }
+    }
+}
+
+/// The one signal a failure with no caller raises: this process cannot go
+/// on, and something outside it has to end it.
+///
+/// A [`FailureKind::Fatal`] failure on a per-message path already ends the
+/// process: the intake stops its run with the message unacknowledged, the
+/// binary exits, and the supervisor starts a replacement. An unattended path
+/// — the compaction driver — has no caller to stop and no message to leave
+/// unacknowledged, so it states the same thing here, and the binary waits on
+/// this beside the termination signal.
+///
+/// The signal latches: it is raised once, and a wait that starts after the
+/// raise answers immediately, so nothing depends on somebody listening at
+/// the moment the failure happens.
+pub(crate) struct FatalExit(watch::Sender<bool>);
+
+impl FatalExit {
+    /// A signal nobody has raised.
+    pub(crate) fn new() -> Self {
+        Self(watch::channel(false).0)
+    }
+
+    /// State that this process cannot go on, naming the failure in the log
+    /// — the one record of what it was, since nothing downstream carries the
+    /// error itself. Raising an already raised signal changes nothing.
+    pub(crate) fn raise(&self, failure: &CoreError) {
+        tracing::error!(%failure, "the core cannot serve; the process ends for a restart");
+        self.0.send_replace(true);
+    }
+
+    /// Resolves once the signal is raised, at once when it already is.
+    pub(crate) async fn raised(&self) {
+        let mut listener = self.0.subscribe();
+        // The wait reads the current value before it waits for a change,
+        // which is what makes an earlier raise answer this call.
+        let _ = listener.wait_for(|raised| *raised).await;
     }
 }
 
@@ -175,9 +223,11 @@ mod tests {
     }
 
     /// The class the store put on a database failure decides how far it
-    /// reaches: a refused write and a contended one are about the message
-    /// that made them, a damaged database and a departed writer are about
-    /// everything after it.
+    /// reaches: a contended write is about the message that made it, while a
+    /// refused one, a damaged database and a departed writer are about
+    /// everything after it. The refusal and the contention are asserted side
+    /// by side because they are the pair that is easy to confuse: a rule the
+    /// code violated is answered the same way every time, and a race is not.
     #[test]
     fn the_stores_classes_split_the_message_from_the_process() {
         let scripted = || {
@@ -189,7 +239,7 @@ mod tests {
         for (error, expected) in [
             (
                 CoreError::Store(StoreError::Rejected(scripted())),
-                FailureKind::Transient,
+                FailureKind::Fatal,
             ),
             (
                 CoreError::Store(StoreError::Contended(scripted())),
@@ -210,6 +260,25 @@ mod tests {
         ] {
             assert_eq!(error.failure_kind(), expected, "`{error}` is misjudged");
         }
+    }
+
+    /// The exit signal latches. The failure happens on a task of its own and
+    /// the binary reaches its wait whenever the start sequence gets there, so
+    /// a raise that came first has to answer the wait that follows it — a
+    /// signal only a listener present at the moment could hear would lose
+    /// exactly the failure that happens during startup.
+    #[tokio::test]
+    async fn the_fatal_exit_answers_a_wait_that_starts_after_the_raise() {
+        let fatal = FatalExit::new();
+        fatal.raise(&CoreError::Store(StoreError::Rejected(
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER),
+                Some("scripted".to_owned()),
+            ),
+        )));
+        tokio::time::timeout(std::time::Duration::from_secs(5), fatal.raised())
+            .await
+            .expect("the wait answers the signal raised before it");
     }
 
     #[test]

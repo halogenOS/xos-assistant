@@ -204,6 +204,14 @@ enum StartError {
     /// The adapter refused to start.
     #[error(transparent)]
     Adapter(#[from] AdapterError),
+
+    /// The core stated that it can no longer serve anything: an unattended
+    /// path met a failure no retry gets past, and the process ends for a
+    /// replacement to start over the durable state. What the failure was is
+    /// in the log line the core raised where it happened; nothing is
+    /// repeated here that a member's message could appear in.
+    #[error("the core cannot serve; the run ended for a restart")]
+    CoreCannotServe,
 }
 
 fn main() -> ExitCode {
@@ -551,11 +559,17 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
         webhook_address.as_deref(),
     );
 
+    // The intakes end their own run on a fatal failure, message in hand.
+    // The core's unattended paths have no message and no caller, so their
+    // fatal failure arrives here instead, and it ends the process the same
+    // way: nonzero, for the supervisor to start a replacement.
+    let assistant = Arc::new(assistant);
     tokio::select! {
         _ = sigterm.recv() => {
             tracing::info!("SIGTERM received; stopping");
             Ok(())
         }
-        outcome = adapter.run(Arc::new(assistant)) => Ok(outcome?),
+        () = assistant.cannot_serve() => Err(StartError::CoreCannotServe),
+        outcome = adapter.run(Arc::clone(&assistant)) => Ok(outcome?),
     }
 }

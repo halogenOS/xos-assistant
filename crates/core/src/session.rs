@@ -77,6 +77,7 @@
 //! nothing from, and the streaming tail it had already written rides across
 //! into the successor only to be cascaded away when the source finalizes.
 
+use std::ops::ControlFlow;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -94,7 +95,7 @@ use tokio::sync::broadcast::error::RecvError;
 use crate::assembly::{ErasureFence, ModelBinding, ScriptedPause};
 use crate::compaction::{COMPACTION_INSTRUCTIONS, CONTEXT_SWEEP, ContextWatch};
 use crate::erasure;
-use crate::error::CoreError;
+use crate::error::{CoreError, FailureKind, FatalExit};
 use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{ChannelKey, ChannelKind};
@@ -130,6 +131,25 @@ pub(crate) enum CompactOutcome {
     /// was deleted; the winner's session governs the channel. Every block
     /// lives on in the source conversation.
     ClaimLost,
+}
+
+/// Which of a source's join rows a successor takes over, named by one block
+/// of the source.
+///
+/// The blocks themselves are shared through the junction whichever range is
+/// chosen: a successor holds the source's own blocks, and the source keeps
+/// all of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InheritedRows {
+    /// Every row past this one. The system prompt's own row, where the
+    /// prompt is the head: the history comes across and the wording being
+    /// replaced does not.
+    After(i64),
+    /// Every row up to and including this one. The row before a system
+    /// prompt that is NOT the head: everything written ahead of that prompt
+    /// comes across, and the prompt row itself is what the successor's own
+    /// first block replaces.
+    UpTo(i64),
 }
 
 /// What one wipe came to.
@@ -428,45 +448,55 @@ impl Sessions {
         })
     }
 
-    /// Fork a conversation under the CURRENT deployment: the current
-    /// binding, the given blocks detached from the fork, the current system
-    /// prompt recorded in their place, and the configured reasoning level
-    /// set on the fork.
+    /// Fork a conversation under the CURRENT deployment: an empty successor
+    /// under the current binding, the current system prompt as its first
+    /// block, and then the source's join rows in the range the caller chose.
     ///
-    /// The fork inherits its source's prompt along with everything else, and
-    /// an appended replacement would sit behind it, read second and obeyed
-    /// unevenly — so the inherited one is among the blocks the caller names
-    /// for detaching, and the current prompt is recorded after. The source
-    /// keeps every block: a fork does not edit what it came from.
+    /// The composition is the whole of it, and each step is a plain one. The
+    /// prompt goes in FIRST because a system prompt joins a conversation
+    /// that holds nothing yet and is refused anywhere else, and because that
+    /// is what a replacement means here: the successor opens with the
+    /// current wording, and the row the source opened with is simply outside
+    /// the range that follows. Nothing is detached and nothing is deleted —
+    /// the source keeps every block, and every row the successor takes
+    /// SHARES the source's blocks through the junction.
+    ///
+    /// Which rows those are is the caller's, because the callers mean
+    /// different things by the range: a conversation whose prompt is its
+    /// head hands over everything past that row, and one carrying a prompt
+    /// somewhere else hands over everything written before it.
     ///
     /// The fork always carries the current binding. Inheriting would keep a
     /// stale model alive through the very operations that exist to replace
     /// a session, and a session replaced under the current prompt but the
     /// previous model is half a replacement.
     ///
-    /// However long the list, the detaching is ONE round trip and one
-    /// transaction: the framework's bulk door takes the whole set, and the
-    /// per-row door would serialize a thousand transactions behind the
-    /// stamp lock this runs under.
-    ///
     /// # Errors
     ///
-    /// [`CoreError::Store`] if the fork, the detaching, the prompt insert or
-    /// the reasoning write fails.
+    /// [`CoreError::Store`] if the fork, the prompt insert or the row clone
+    /// fails.
     pub(crate) async fn forked_with_current_prompt(
         &self,
         source: i64,
-        up_to_block_id: i64,
-        detach: &[i64],
+        inherited: InheritedRows,
     ) -> Result<i64, CoreError> {
         let store = self.ctx.store();
-        let successor = store
-            .fork_conversation(source, up_to_block_id, self.current_model())
-            .await?;
-        store.detach_blocks(successor, detach.to_vec()).await?;
+        let successor = store.fork_empty(source, self.current_model()).await?;
         store
             .insert_system_prompt(successor, self.system_prompt.clone())
             .await?;
+        match inherited {
+            InheritedRows::After(block_id) => {
+                store
+                    .clone_join_rows_after(source, successor, block_id)
+                    .await?;
+            }
+            InheritedRows::UpTo(block_id) => {
+                store
+                    .clone_join_rows_up_to(source, successor, block_id)
+                    .await?;
+            }
+        }
         Ok(successor)
     }
 
@@ -1431,35 +1461,47 @@ impl Sessions {
     }
 
     /// The compaction the driver runs for one conversation, behind whichever
-    /// door woke it.
+    /// door woke it. Answers whether the driver keeps watching.
     ///
     /// Nothing is answered in chat: nobody invoked anything, and a line
     /// nobody asked for in a group is noise. The record is this method's own
     /// log.
-    async fn unattended_compact(&self, conversation_id: i64, door: &'static str) {
-        let Ok(Some((channel, kind))) = self.mapped_channel(conversation_id).await.inspect_err(
-            |error| {
-                tracing::warn!(
+    async fn unattended_compact(
+        &self,
+        conversation_id: i64,
+        door: &'static str,
+        fatal: &FatalExit,
+    ) -> ControlFlow<()> {
+        let mapped = match self.mapped_channel(conversation_id).await {
+            Ok(Some(mapped)) => mapped,
+            Ok(None) => return ControlFlow::Continue(()),
+            Err(error) => {
+                return unattended_failure(
+                    &error,
+                    fatal,
                     conversation_id,
-                    %error,
-                    "the unattended compaction could not read its channel; the next wake re-reads"
+                    door,
+                    "the unattended compaction could not read its channel; the next wake re-reads",
                 );
-            },
-        ) else {
-            return;
+            }
         };
+        let (channel, kind) = mapped;
         match self.compact(conversation_id, &channel, kind).await {
-            Ok(outcome) => tracing::info!(
+            Ok(outcome) => {
+                tracing::info!(
+                    conversation_id,
+                    door,
+                    ?outcome,
+                    "the session was compacted unattended"
+                );
+                ControlFlow::Continue(())
+            }
+            Err(error) => unattended_failure(
+                &error,
+                fatal,
                 conversation_id,
                 door,
-                ?outcome,
-                "the session was compacted unattended"
-            ),
-            Err(error) => tracing::warn!(
-                conversation_id,
-                door,
-                %error,
-                "the unattended compaction failed; the session stands and the next wake retries"
+                "the unattended compaction failed; the session stands and the next wake retries",
             ),
         }
     }
@@ -1507,6 +1549,30 @@ impl Sessions {
     }
 }
 
+/// What one unattended failure comes to, and the one place that decides it.
+///
+/// A FATAL failure is not this conversation's: the database refused a
+/// statement by a rule, or it can no longer answer at all, and neither is
+/// something a later attempt gets past. So the exit signal is raised and the
+/// watch stops — no wake after this one pays for another summary turn before
+/// meeting the same refusal, which is the loop this whole unit exists to
+/// end. Every other failure leaves everything standing and the next wake
+/// tries again.
+fn unattended_failure(
+    failure: &CoreError,
+    fatal: &FatalExit,
+    conversation_id: i64,
+    door: &'static str,
+    standing: &'static str,
+) -> ControlFlow<()> {
+    if failure.failure_kind() == FailureKind::Fatal {
+        fatal.raise(failure);
+        return ControlFlow::Break(());
+    }
+    tracing::warn!(conversation_id, door, %failure, "{standing}");
+    ControlFlow::Continue(())
+}
+
 /// Watch for the two unattended doors into the compaction and drive them —
 /// the framework's forced turn end, and the context thresholds.
 ///
@@ -1529,14 +1595,21 @@ impl Sessions {
 /// announces the moment one starts holding: the sweep is what notices, and it
 /// asks the context watch, which answers from what the stream observer
 /// measured and when the channel last heard from anyone.
+///
+/// **A fatal failure ends the watch.** It has no caller to fail and no
+/// message to leave unacknowledged, so it states the process's end on the
+/// signal it is handed and stops, and nothing here retries what a database
+/// refuses by a rule.
 pub(crate) fn spawn_compaction_driver(
     sessions: &Arc<Sessions>,
     bus: &Arc<EventBus<CoreEvent>>,
     watch: &Arc<ContextWatch>,
+    fatal: &Arc<FatalExit>,
 ) {
     let mut events = bus.subscribe();
     let weak = Arc::downgrade(sessions);
     let watch = Arc::downgrade(watch);
+    let fatal = Arc::clone(fatal);
     // A process that stated no context window has both threshold arms
     // permanently silent, so it gets no sweep and no periodic timer at all —
     // the door simply does not exist there, rather than existing and
@@ -1550,7 +1623,7 @@ pub(crate) fn spawn_compaction_driver(
             sweep
         });
     tokio::spawn(async move {
-        loop {
+        'watching: loop {
             tokio::select! {
                 event = events.recv() => {
                     let event = match event {
@@ -1577,7 +1650,13 @@ pub(crate) fn spawn_compaction_driver(
                     .await
                     {
                         Ok(true) => {
-                            sessions.unattended_compact(conversation_id, "forced turn end").await;
+                            if sessions
+                                .unattended_compact(conversation_id, "forced turn end", &fatal)
+                                .await
+                                .is_break()
+                            {
+                                break 'watching;
+                            }
                         }
                         Ok(false) => {}
                         Err(error) => tracing::warn!(
@@ -1595,12 +1674,17 @@ pub(crate) fn spawn_compaction_driver(
                         if !watch.due(conversation_id) {
                             continue;
                         }
-                        sessions.unattended_compact(conversation_id, "context threshold").await;
+                        let driving = sessions
+                            .unattended_compact(conversation_id, "context threshold", &fatal)
+                            .await;
                         // The compacted source is unmapped and its successor
                         // is a fresh id with no measurement of its own; the
                         // stale reading would otherwise keep answering for a
                         // conversation nothing serves.
                         watch.forget(conversation_id);
+                        if driving.is_break() {
+                            break 'watching;
+                        }
                     }
                 }
             }
@@ -1905,6 +1989,7 @@ async fn exhausted_turn_since_the_thread_opened(
 
 #[cfg(test)]
 mod tests {
+    use agent_ledger::agency::SystemPrompt;
     use agent_ledger::event::stream_status;
     use agent_ledger::store::ToolCallInsert;
     use agent_ledger::{ProviderRegistry, Store, ToolRegistry};
@@ -2686,5 +2771,77 @@ mod tests {
             )
             .await
             .expect("the turn's late write still has a live conversation to write into");
+    }
+
+    /// The prompt replacement is the composition and nothing else: the
+    /// successor OPENS with the current prompt, the wording it replaces is
+    /// nowhere in it, and everything past the source's first row rides
+    /// across by identity — the source's own blocks, shared through the
+    /// junction, never copied.
+    #[tokio::test]
+    async fn a_replaced_prompt_is_the_successors_first_row_and_the_old_one_is_absent() {
+        let (sessions, store, _bus, _context) = quiet_sessions();
+        let source = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        store
+            .insert_system_prompt(source, "the wording of an earlier deployment".into())
+            .await
+            .expect("the source records the prompt it was created with");
+        for text in ["a question", "an answer"] {
+            store
+                .insert_final_text_block(source, Role::User, text.into(), None)
+                .await
+                .expect("the history stores");
+        }
+        let source_ids: Vec<i64> = store
+            .list_blocks(source)
+            .await
+            .expect("the source reads")
+            .iter()
+            .map(|block| block.id)
+            .collect();
+
+        let successor = sessions
+            .forked_with_current_prompt(source, InheritedRows::After(source_ids[0]))
+            .await
+            .expect("the successor forks");
+
+        let blocks = store
+            .list_blocks(successor)
+            .await
+            .expect("the successor reads");
+        assert_eq!(
+            blocks[0].block_type,
+            SystemPrompt::KINDS[0],
+            "the successor opens with a system prompt"
+        );
+        assert_eq!(
+            blocks[0].fields["content"],
+            serde_json::json!("the system prompt"),
+            "and it is the one this deployment composes"
+        );
+        let ids: Vec<i64> = blocks.iter().map(|block| block.id).collect();
+        assert!(
+            !ids.contains(&source_ids[0]),
+            "the wording being replaced is not in the successor at all: {ids:?}"
+        );
+        assert_eq!(
+            ids[1..],
+            source_ids[1..],
+            "the history rides across shared, in the source's own order"
+        );
+        assert_eq!(
+            store
+                .list_blocks(source)
+                .await
+                .expect("the source reads")
+                .iter()
+                .map(|block| block.id)
+                .collect::<Vec<i64>>(),
+            source_ids,
+            "the source keeps every block it had, its prompt included"
+        );
     }
 }
