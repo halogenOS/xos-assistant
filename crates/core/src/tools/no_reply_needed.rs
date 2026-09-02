@@ -15,6 +15,13 @@
 //! description and nowhere else. The description carries the whole
 //! meaning: nobody here is waiting on me.
 //!
+//! It names two concrete cases and no third, and a reaction is not among
+//! them. Decision 0197 makes the reaction the terminal-message action — a
+//! response to the assistant that needs no further response — so chatter
+//! draws no reaction at all, and a turn that DID place one is
+//! [`work_is_done`](crate::tools::work_is_done)'s fact, whose description
+//! names it.
+//!
 //! No parameters, no reads, no writes past its own resolution. The tool's
 //! identity IS the reason the turn ended, which is why no free-text
 //! parameter carries one: a reason field would invite exactly the prose
@@ -73,12 +80,11 @@ impl ToolHandler<CoreEvent> for NoReplyNeeded {
             name: NAME.into(),
             description: "End this turn without posting anything, because nothing here \
                  was asked of you. Call it when the messages you are reading are other \
-                 people's conversation, when a question names someone who is not you, or \
-                 when chatter needs no acknowledgment beyond a reaction you already \
-                 placed. Calling it says: nobody here is waiting on me. It takes no \
-                 arguments and posts nothing. Call it on its own, with nothing written \
-                 ahead of the call: whatever you write before a tool call is posted to \
-                 the group as its own message."
+                 people's conversation, or when a question names someone who is not you. \
+                 Calling it says: nobody here is waiting on me. It takes no arguments and \
+                 posts nothing. Call it on its own, with nothing written ahead of the \
+                 call: whatever you write before a tool call is posted to the group as \
+                 its own message."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -133,6 +139,12 @@ mod tests {
     /// parameters at all, and a description carrying the meaning the
     /// teaching deliberately does not — what the call is for, that it
     /// posts nothing, and that it is made bare.
+    ///
+    /// The reaction is asserted ABSENT from it. Decision 0197 gave the
+    /// reaction the terminal message, so no chatter case is left for a
+    /// reaction to close, and the turn that placed one belongs to the
+    /// sibling tool: a description licensing it here would send the model
+    /// to two tools for one fact.
     #[test]
     fn the_definition_declares_the_end_and_takes_no_parameters() {
         let tool = NoReplyNeeded::new();
@@ -157,6 +169,14 @@ mod tests {
             assert!(
                 definition.description.contains(meaning),
                 "the description carries: {meaning}"
+            );
+        }
+        for absent in ["reaction", "chatter"] {
+            assert!(
+                !definition.description.contains(absent),
+                "the description licenses no reaction case: the reaction closes a \
+                 response to the assistant, and the turn that placed one is the \
+                 sibling tool's fact: {absent}"
             );
         }
     }

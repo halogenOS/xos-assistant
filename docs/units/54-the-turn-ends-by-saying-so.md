@@ -40,8 +40,7 @@ state or a condition; these two carry neither:
 
 - `no_reply_needed` — the turn was asked nothing. The absorbed messages are someone else's
   conversation, a question aimed at a named person who is not the assistant, or chatter that
-  needs no acknowledgment beyond what a reaction already gave. Calling it says: nobody here
-  is waiting on me.
+  asks nothing of the assistant. Calling it says: nobody here is waiting on me.
 - `work_is_done` — the turn acted and the actions are the whole answer. A report was filed,
   a reaction was placed, a lookup ran for the assistant's own orientation; a closing message
   would add words to a finished thing. Calling it says: what I did is complete, and prose

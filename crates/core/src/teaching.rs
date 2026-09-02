@@ -146,7 +146,8 @@ pub const SEARCH_TEACHING: &str = "You can also search the web with the search_w
 /// carries none of the report's conditions.
 ///
 /// What it teaches is the trigger and the two bounds. The trigger is the
-/// TERMINAL MESSAGE, as unit 54 redefined it (2026-09-02): a response to
+/// TERMINAL MESSAGE, as decision 0197 defines it (2026-09-02, with unit
+/// 54, superseding decision 0155's chatter fit): a response to
 /// the assistant that needs no further response — the thanks that closes
 /// an exchange already answered — may be stamped off with one reaction
 /// where the silence default would otherwise end the turn empty. The
@@ -194,11 +195,14 @@ pub const REACT_TEACHING: &str = "You can also put one emoji reaction on a messa
 ///    the question was not for it and it was staying out. That message is
 ///    the silence written out, and it belongs to nobody.
 /// 2. THE NARRATED CLOSE. Prose written ahead of a tool call is finalized
-///    and delivered as its own message by the standing mechanism, so a
-///    close narrated before the call posts exactly the announcement the
-///    first sentence forbids. Nothing mechanizes this: the words are
-///    written before any handler is reached, so the teaching is the whole
-///    control, stated as a teaching (decision 0155).
+///    and delivered as its own message by the standing mechanism decision
+///    0146 records: a round's text ahead of a call commits as its own
+///    answer block and the outbound edge delivers it, with nothing holding
+///    a mid-turn text back. So a close narrated before the call posts
+///    exactly the announcement the first sentence forbids. Nothing
+///    mechanizes this: the words are written before any handler is
+///    reached, so the teaching is the whole control, stated as a teaching
+///    — the same honesty 0146 states about the line it teaches.
 pub const CLOSING_PROHIBITIONS: &str = "Never post a message whose only content is that you \
      are not taking part: a line saying the question was for someone else, that you are \
      staying out of it, or that you have nothing to add is your silence written out, and \
@@ -289,16 +293,17 @@ pub(crate) const SILENCE_IN_WORDS: &str =
     "they get nothing from you in words: not an answer, not an acknowledgment, not a comment.";
 
 /// The carve-out that joins the amended sentence, in the helpful arm
-/// alone (unit 39, 2026-08-30; its trigger rewritten by unit 54,
-/// 2026-09-02). It rides HERE and not beside the rule as a separate
-/// paragraph, because the composed prompt would otherwise contradict
+/// alone (unit 39, 2026-08-30; its trigger rewritten by decision 0197,
+/// 2026-09-02, with unit 54). It rides HERE and not beside the rule as a
+/// separate paragraph, because the composed prompt would otherwise contradict
 /// itself on a literal read — the exact collision decision 0148 documents.
 ///
 /// The trigger is the terminal message, the same one [`REACT_TEACHING`]
 /// states: a response to the assistant that needs no further response.
 /// The chatter wording this carried before — a share, a milestone, a joke
 /// — is gone from both homes, because one teaching cannot name two
-/// different triggers for one act.
+/// different triggers for one act; decision 0197 supersedes the chatter
+/// fit decision 0155 gave it, and the bounds of 0155 live on here.
 ///
 /// The addressed arm is deliberately left unamended: there this arm's
 /// silence sentence does not exist, so there is nothing for a carve-out to
@@ -941,12 +946,19 @@ mod tests {
             "the react teaching names no emoji: which emoji a platform places is the \
              adapter's fact, and the taste is the persona's"
         );
-        for permissive in [REACT_TEACHING, REACTION_CARVE_OUT] {
+        // The mood is the TRIGGER SENTENCE's, so the read is that
+        // sentence's alone: the constant around it is free to say
+        // "should" about anything else, and a later sentence carrying
+        // the letters in another word decides nothing here.
+        for teaching in [REACT_TEACHING, REACTION_CARVE_OUT] {
+            let trigger = teaching
+                .split_inclusive('.')
+                .find(|sentence| sentence.contains("can be stamped off with one reaction"))
+                .expect("the trigger sentence stands in the teaching");
             assert!(
-                permissive.contains("can be stamped off with one reaction")
-                    && !permissive.contains("should"),
+                !trigger.contains("should"),
                 "the trigger sentence stays permissive: it says a reaction CAN close \
-                 such a message, never that one should: {permissive}"
+                 such a message, never that one should: {trigger}"
             );
         }
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
