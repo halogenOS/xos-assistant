@@ -30,10 +30,12 @@
 //! now-model-generated acknowledgment among human-written fixed lines, and the
 //! unit's two decision records — and the standing lookup's AC11 and AC13
 //! pins: the four privacy documents carrying standing as data that reaches
-//! the model provider, each at the sites the old claim appears and each
-//! dated, the unit's thirteen decision records, and the conduct prose that
-//! routes a claimed authority to the tool and bounds what an override
-//! reaches.
+//! the model provider, each at the sites the old claim appears, dated in the
+//! three internal records and undated in the published policy, which
+//! dates only itself; the unit's thirteen decision records, and the conduct
+//! prose that routes a claimed authority to the tool and bounds what an
+//! override reaches — and the published policy's single-date pin: a year
+//! stands in its footer and nowhere else in it.
 //! Each pin reads the
 //! committed file the way the repository ships it, so a drifted edit fails
 //! loudly here.
@@ -1186,17 +1188,19 @@ fn the_autonomous_moderation_units_decisions_are_recorded() {
 
 /// AC8, four of the five sites: the published policy, the impact
 /// assessment, the legitimate-interest re-weigh and decision 0045's
-/// amendment, each with a dated note — the record of processing is pinned
-/// by the test below it. The policy's own claims are checked as the public
-/// document they are: the closed recipient table gains the search
+/// amendment — the record of processing is pinned by the test below it. The
+/// three internal documents carry a dated note; the published policy carries
+/// none, because a member reads what the assistant does and the footer
+/// carries the date. The policy's own claims are checked as the public
+/// document they are: the closed recipient table names the search
 /// provider, the transfer count becomes four, and the sourcing sentence
 /// names the search.
 #[test]
 fn the_web_search_ships_its_five_privacy_edits() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
-        policy.contains("| Serper, United Kingdom (added 2026-08-29) |"),
-        "the closed recipient table gains the search provider with its date"
+        policy.contains("| Serper, United Kingdom |"),
+        "the closed recipient table names the search provider"
     );
     assert!(
         policy.contains("Data leaves the EU/EEA in four places"),
@@ -1219,10 +1223,11 @@ fn the_web_search_ships_its_five_privacy_edits() {
         "the deletion section names the query among what erasure does not reach"
     );
     // The policy's "Last updated" line is checked by the test of the newest
-    // change to the document, never here. It carries the date of that
-    // change, so every later edit would fail a test about this one; what
-    // dates this change is the "(added 2026-08-29)" note on each edit above,
-    // which is checked.
+    // change to the document, never here: it carries the date of that change,
+    // so every later edit would fail a test about this one. The policy dates
+    // no clause of its own — the footer is its single date — so the pins
+    // above read the shipped sentences and never a note about when they
+    // arrived.
 
     let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
     for marker in [
@@ -1680,7 +1685,7 @@ fn the_standing_lookup_ships_its_four_privacy_edits() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     for marker in [
         "whether someone is an administrator of the group, when the assistant looks \
-         that up (added 2026-08-29)",
+         that up",
         "so that a claim in a message cannot pass for the fact",
         "only about a handle the group showed here, only in a group, and it says \
          nothing else about the person",
@@ -2438,7 +2443,7 @@ fn the_retention_span_ships_its_four_document_updates() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
         policy.contains(&flattened(
-            "a conversation nobody has written in for 90 days is then deleted whole"
+            "A conversation nobody has written in for 90 days is then deleted whole"
         )),
         "the policy states the rule in days and in member words"
     );
@@ -2458,15 +2463,17 @@ fn the_retention_span_ships_its_four_document_updates() {
     );
     assert!(
         policy.contains(&flattened(
-            "everything named in this paragraph is deleted anyway when the conversation \
+            "Everything named in this paragraph is deleted anyway when the conversation \
              holding it expires"
         )),
         "the policy gives the residuals a request leaves behind an end date of their own"
     );
     // The footer dates the newest change to the policy, which is this one.
-    // It is asserted here and nowhere else: a later unit that edits the
+    // Its date is asserted here and nowhere else: a later unit that edits the
     // policy moves this line to its own test with its own date, the way this
-    // one took it from the web search's.
+    // one took it from the web search's. The single-date test at the end of
+    // this file reads the same line for its position instead of its date, so
+    // that move stays a one-place edit.
     assert!(
         policy.contains("Last updated: 2 September 2026"),
         "the policy's footer carries the date of the newest change to it"
@@ -2607,5 +2614,52 @@ fn the_privacy_documents_drop_the_expiry_free_claim_and_promise_no_stored_files(
         flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"))
             .contains(&flattened("We do not store the media itself")),
         "and the policy still says plainly that media is not stored"
+    );
+}
+
+// ─── The published policy's single date (unit 57, 2026-09-02) ─────────────
+
+/// The policy is a member-facing document, not a change log: it says what
+/// the assistant does now, and it carries a date in exactly one place, the
+/// footer. Every clause dated inside the text is a sentence about the
+/// project's history in a document a member reads for the present rule, so
+/// the scan below fails on the first year a later edit writes back into the
+/// prose. The internal records are the opposite case and keep their dated
+/// audit notes; they are not scanned here.
+///
+/// A year is a run of exactly four digits opening with "20", bounded by
+/// non-digits on both sides: a five-digit postal code is one longer run and
+/// is no year, whatever digits it opens with.
+fn lines_stating_a_year(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| {
+            line.split(|c: char| !c.is_ascii_digit())
+                .any(|run| run.len() == 4 && run.starts_with("20"))
+        })
+        .collect()
+}
+
+#[test]
+fn the_policy_carries_one_date_and_it_is_the_footer() {
+    let policy = repo_file("docs/privacy/bot-assistant-privacy-policy.md");
+    let dated = lines_stating_a_year(&policy);
+    assert!(
+        !dated.is_empty(),
+        "the policy states no year at all: the footer's date is missing"
+    );
+    assert_eq!(
+        dated.len(),
+        1,
+        "the policy states a year in more than one place: {dated:?}"
+    );
+    assert!(
+        dated[0].starts_with("Last updated: "),
+        "the policy's one year sits outside its footer: {:?}",
+        dated[0]
+    );
+    assert_eq!(
+        policy.lines().rfind(|line| !line.trim().is_empty()),
+        Some(dated[0]),
+        "the dated line is not the document's last one"
     );
 }
