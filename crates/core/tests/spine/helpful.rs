@@ -178,10 +178,11 @@ async fn a_silent_turn_speaks_nothing_and_spends_no_window_slot() {
     );
 }
 
-/// AC7 at the spine: the typing cue lights only once real text flows. A
-/// turn that says nothing raises no cue at all, and the spoken turn
-/// behind it raises exactly one begin/stop pair — proven by the ordered
-/// composing channel: its first update is the spoken turn's begin.
+/// AC7 at the spine, as unit 55 left it: the typing cue lights when a
+/// SENDING call starts, so a turn that sends nothing raises no cue at all
+/// however much it writes, and the turn that sends behind it raises exactly
+/// one begin/stop pair — proven by the ordered composing channel: its first
+/// update is the sending turn's begin.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_cue_stays_dark_for_a_silent_turn_and_lights_for_a_spoken_one() {
     let fixture = helpful_fixture(assistant_core::ProtectionConfig::default()).await;
@@ -190,7 +191,7 @@ async fn the_cue_stays_dark_for_a_silent_turn_and_lights_for_a_spoken_one() {
     let room = support::authorized_group(&fixture.assistant, "room-cue").await;
 
     // The silent turn runs to its committed empty answer first, so every
-    // cue it could have raised would sit ahead of the spoken turn's.
+    // cue it could have raised would sit ahead of the sending turn's.
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound_unaddressed(
@@ -222,8 +223,8 @@ async fn the_cue_stays_dark_for_a_silent_turn_and_lights_for_a_spoken_one() {
         .expect("the composing edge outlives the test");
     assert_eq!(
         begun.channel, room,
-        "the first composing update is the spoken turn's: the silent turn \
-         raised no cue"
+        "the first composing update is the sending turn's: the silent turn \
+         started no send, so it raised no cue"
     );
     assert_eq!(begun.state, assistant_core::ComposingState::Composing);
     let stopped = tokio::time::timeout(support::DEADLINE, composing.recv())

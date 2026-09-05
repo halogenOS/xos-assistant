@@ -140,15 +140,19 @@ pub fn at_required_authority_and<'a>(
 /// added after the forwarding was written.
 ///
 /// The three-argument form (unit 55, 2026-09-02) names ONE further reading
-/// asked behind the bar, through [`at_required_authority_and`]: a METHOD of
-/// the handler itself, taking the conversation and the loaded ledger and
-/// answering the decline sentence or nothing. A method and not an inline
-/// closure, because macro hygiene keeps a call-site closure from naming
-/// `self` or `ctx` at all — and because the reading belongs to the tool,
-/// which is where it can be read and tested. It exists for a bound the
-/// framework's own windows cannot express, and it stays the same one line
-/// each module states for itself, so the cleanliness suite's admission scan
-/// reads both forms.
+/// asked behind the bar, through [`at_required_authority_and`]: a MEMBER of
+/// the handler and a method on it, taking the conversation and the loaded
+/// ledger and answering the decline sentence or nothing. A path and not an
+/// inline closure, because macro hygiene keeps a call-site closure from
+/// naming `self` or `ctx` at all.
+///
+/// The member, and not a method on the handler itself, so a pair of tools
+/// sharing one reading state it where the reading lives — the shared type
+/// they are both built around — instead of each carrying a forwarder to it
+/// and the prose that explains it. It exists for a bound the framework's
+/// own windows cannot express, and it stays the same one line each module
+/// states for itself, so the cleanliness suite's admission scan reads both
+/// forms.
 macro_rules! admits_at_required_authority {
     ($name:expr, $required:expr) => {
         /// The authority a call of this tool requires (decision 0043),
@@ -162,7 +166,7 @@ macro_rules! admits_at_required_authority {
             $crate::tools::admission::at_required_authority($name, $required, ctx, ledger)
         }
     };
-    ($name:expr, $required:expr, $further:ident) => {
+    ($name:expr, $required:expr, $member:ident.$further:ident) => {
         /// The authority a call of this tool requires (decision 0043) and
         /// the tool's own further bound behind it, both answered through
         /// the framework's admission hook over the ledger snapshot the
@@ -177,7 +181,7 @@ macro_rules! admits_at_required_authority {
                 $required,
                 ctx,
                 ledger,
-                |ledger| self.$further(ctx.agency.conversation_id, ledger),
+                |ledger| self.$member.$further(ctx.agency.conversation_id, ledger),
             )
         }
     };

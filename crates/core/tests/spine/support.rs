@@ -1447,6 +1447,12 @@ impl Fixture {
     /// status block it appends once the rest of it has run: the latched
     /// state publishes earlier, so waiting on that would leave the append
     /// to land behind the next process's message.
+    ///
+    /// The assembly's own workers are stopped after the interrupts, through
+    /// the same door the binary takes at the end of its run: the stopped
+    /// process's compaction driver and retention sweep are ended and awaited,
+    /// so neither can compact or retire against the store the next process
+    /// opens.
     pub async fn shutdown(self) {
         let conversations = self
             .store
@@ -1472,6 +1478,47 @@ impl Fixture {
             )
             .await;
         }
+        self.assistant.shutdown().await;
+    }
+}
+
+/// The endings an assembly declares for its sends, read off the raw carrier
+/// (unit 55): the observation a delivery case makes around a report — no
+/// send was declared done before it, exactly one was after it.
+///
+/// Off the carrier and not off a composing edge, because an edge yields its
+/// begin and its stop whether or not any send ever reported: the round's own
+/// ending stops the signal too. Only this reading tells a missing stop apart
+/// from the one the turn's end raised.
+pub struct SendEndings(tokio::sync::broadcast::Receiver<i64>);
+
+impl SendEndings {
+    /// Start watching before the send goes out, so the whole window from
+    /// the call to the report is covered.
+    #[must_use]
+    pub fn watching(assistant: &Assistant) -> Self {
+        Self(assistant.finished_sends())
+    }
+
+    /// Nothing has declared a send done yet: the send is on its way.
+    pub fn none_yet(&mut self) {
+        assert!(
+            self.0.try_recv().is_err(),
+            "the send is on its way and nothing has declared it done yet"
+        );
+    }
+
+    /// The next ending, which must be this conversation's — the stop the
+    /// report just raised, named by what the case is proving.
+    pub async fn one_for(&mut self, conversation_id: i64, what: &str) {
+        assert_eq!(
+            tokio::time::timeout(DEADLINE, self.0.recv())
+                .await
+                .expect("the send is declared done before the deadline")
+                .expect("the carrier outlives the test"),
+            conversation_id,
+            "{what}"
+        );
     }
 }
 
@@ -2697,11 +2744,35 @@ pub fn tool_outcomes(blocks: &[Block]) -> Vec<String> {
     blocks
         .iter()
         .filter(|block| !settles_a_send(block, &sending))
-        .filter_map(|block| match block.block_type.as_str() {
-            "tool_result" => optional_field(block, "content"),
-            "tool_error" => optional_field(block, "error"),
-            _ => None,
-        })
+        .filter_map(resolution_sentence)
+        .collect()
+}
+
+/// What one block says as a tool resolution, or `None` for a block that is
+/// no resolution at all — the one reading of a resolution row, so the two
+/// complementary views around it differ in their filter and in nothing else.
+fn resolution_sentence(block: &Block) -> Option<String> {
+    match block.block_type.as_str() {
+        "tool_result" => optional_field(block, "content"),
+        "tool_error" => optional_field(block, "error"),
+        _ => None,
+    }
+}
+
+/// What one ledger's SENDS came to, in order: the result or the error
+/// paired with each sending call, as the model reads it — the complement of
+/// [`tool_outcomes`], which leaves exactly these out.
+///
+/// Paired by the call's own block id through the same reading that pairing
+/// serves there, so the two views of a ledger can never disagree about
+/// which resolution belongs to a send.
+#[must_use]
+pub fn send_settlements(blocks: &[Block]) -> Vec<String> {
+    let sending = sending_calls(blocks);
+    blocks
+        .iter()
+        .filter(|block| settles_a_send(block, &sending))
+        .filter_map(resolution_sentence)
         .collect()
 }
 

@@ -104,6 +104,26 @@ pub enum CoreError {
         /// The conversation the compaction was for.
         conversation_id: i64,
     },
+
+    /// A stored ancestor reference names no conversation. The framework
+    /// loads that id from a NOT NULL column, so no row this code writes can
+    /// produce the shape: the database holds something this code never
+    /// wrote, and every lineage-scoped read behind it would answer as a
+    /// thread that continues nothing — a reader would find no trace of why
+    /// the inherited half went missing. It reaches as far as the store's own
+    /// refusals do, and for the same reason: the next read of the same row
+    /// answers the same way.
+    #[error(
+        "block {block_id} of type `{block_type}` is an ancestor reference naming no \
+         conversation; the column it is loaded from is NOT NULL, so the database holds \
+         a shape this code never writes"
+    )]
+    AncestorUnnamed {
+        /// The reference block.
+        block_id: i64,
+        /// The kind that block was stored under.
+        block_type: String,
+    },
 }
 
 /// How far a failure reaches: this message, or everything after it. This is
@@ -150,9 +170,15 @@ impl CoreError {
             // meets every later message with the same wall. So the process
             // ends and the supervisor starts a replacement over the durable
             // state, where the startup walk runs before anything is served.
+            // The stored ancestor reference naming no conversation is the
+            // same judgement from the other side: the shape is one this code
+            // cannot write, so no path reads it into anything but the same
+            // answer, and every lineage-scoped reading behind it would
+            // quietly lose an inherited half.
             Self::Store(
                 StoreError::Rejected(_) | StoreError::Unusable(_) | StoreError::ActorStopped,
-            ) => FailureKind::Fatal,
+            )
+            | Self::AncestorUnnamed { .. } => FailureKind::Fatal,
             // Storage, wiring and timing failures can all pass on a retry;
             // the start-time refusals never reach a per-message caller. A
             // race with another writer is among them: it is about what this

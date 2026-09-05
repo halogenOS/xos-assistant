@@ -585,12 +585,17 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     // fatal failure arrives here instead, and it ends the process the same
     // way: nonzero, for the supervisor to start a replacement.
     let assistant = Arc::new(assistant);
-    tokio::select! {
+    let outcome = tokio::select! {
         _ = sigterm.recv() => {
             tracing::info!("SIGTERM received; stopping");
             Ok(())
         }
         () = assistant.cannot_serve() => Err(StartError::CoreCannotServe),
         outcome = adapter.run(Arc::clone(&assistant)) => Ok(outcome?),
-    }
+    };
+    // Whichever arm answered, the serving is over: the core's unattended
+    // tasks are stopped here and awaited, so nothing writes to the database
+    // while the process is on its way out.
+    assistant.shutdown().await;
+    outcome
 }

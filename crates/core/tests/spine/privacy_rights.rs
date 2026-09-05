@@ -696,6 +696,14 @@ fn a_restart_forgets_the_pending_state() {
 /// really ran and died at the fault, and a never-running or wedged
 /// erasure times the await out by name. A fresh ask-and-confirm after the
 /// fault heals runs to completion, which is the promised re-ask.
+///
+/// The injected fault is a REFUSED statement, so the run's failure is the
+/// process's (decision 0199): the spawned erasure answers nobody, and the
+/// person was already told the deletion started, so it raises the exit
+/// signal instead of ending its own task quietly. The signal is asserted
+/// here. In production the replacement process is what the re-ask below
+/// reaches; inside one test process the signal changes nothing else, which
+/// is what lets the rest of the case run on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_erasure_leaves_the_identity_standing_and_a_re_ask_works() {
     let fixture = support::start_assistant(None).await;
@@ -729,6 +737,9 @@ async fn a_failed_erasure_leaves_the_identity_standing_and_a_re_ask_works() {
         principal_row(&fixture.store, "A").await.is_some(),
         "the fault killed the conclusion — the identity row stands"
     );
+    tokio::time::timeout(support::DEADLINE, fixture.assistant.cannot_serve())
+        .await
+        .expect("the refused statement inside the spawned erasure raises the process's exit");
     assert_eq!(
         bounded_command_reply(&fixture.assistant, &room, "A", privacy::CONFIRM_COMMAND).await,
         Some(privacy::NOTHING_PENDING.to_owned()),

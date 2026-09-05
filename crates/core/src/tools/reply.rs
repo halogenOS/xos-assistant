@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::{Block, CoreEvent, ToolContext, ToolHandler, ToolOutcome};
+use agent_ledger::{CoreEvent, ToolContext, ToolHandler, ToolOutcome};
 use serde_json::json;
 use tokio::sync::RwLock;
 
@@ -47,13 +47,6 @@ impl ReplyMessage {
         Self {
             sender: Sender::new(fence, stops),
         }
-    }
-
-    /// The caps this tool's admission asks behind the authority bar, read
-    /// once over the ledger the admission pass loaded. The reading itself
-    /// is the pair's, so both tools decline on the same count.
-    fn declined_by_the_caps(&self, conversation_id: i64, ledger: &[Block]) -> Option<String> {
-        self.sender.declined_by_the_caps(conversation_id, ledger)
     }
 }
 
@@ -91,19 +84,10 @@ impl ToolHandler<CoreEvent> for ReplyMessage {
     crate::tools::admission::admits_at_required_authority!(
         NAME,
         REQUIRED_AUTHORITY,
-        declined_by_the_caps
+        sender.decline_a_spent_tier
     );
 
-    /// The sends run IN ORDER (unit 55, 2026-09-02): the framework parks a
-    /// ready call of this tool while an earlier in-order call of the same
-    /// conversation is unresolved, so the messages reach the group in the
-    /// order the model issued them and a pending send never has a sibling
-    /// in flight. It is also what makes the caps' count exact — the ledger
-    /// the admission pass loaded holds every earlier send — and what
-    /// leaves this tool with no filing lock of its own.
-    fn runs_in_order(&self) -> bool {
-        true
-    }
+    sending::sends_in_order!();
 
     fn execute<'a>(
         &'a self,

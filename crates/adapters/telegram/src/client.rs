@@ -796,6 +796,12 @@ impl BotClient {
     /// failing the send says so rather than recording a delivery under an
     /// invented id. The failure is a decode failure, which is not a refusal,
     /// so nothing re-sends the text on it.
+    ///
+    /// A threaded send carries `allow_sending_without_reply`, which is this
+    /// adapter's answer to a target the chat no longer holds: the message is
+    /// posted without its quote and the send succeeds, instead of the whole
+    /// message being lost to a deleted target. The core states the race that
+    /// makes this reachable and leaves the answer to the adapter.
     async fn send_body(
         &self,
         chat_id: i64,

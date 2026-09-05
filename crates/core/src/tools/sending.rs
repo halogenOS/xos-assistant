@@ -62,6 +62,16 @@
 //! a FAILURE and not a refusal: the model can correct it inside the turn by
 //! naming another id or sending plainly, so it must not count toward the
 //! run that ends a turn.
+//!
+//! One race stands beside that validation, and its whole bound is stated
+//! here: the deletion mirror can remove the platform's copy of a message
+//! between this scan and the append, so a reply may be filed against a
+//! target the platform no longer has when the adapter posts it. What the
+//! group then sees is the platform's own tolerance for a vanished target,
+//! which each adapter states for itself: where the platform allows it, the
+//! message is posted without its quote and the receipt settles the call as
+//! delivered, so the effect is a reply that reads as a plain message. That
+//! is why no lock is taken for it.
 
 use std::sync::Arc;
 
@@ -90,6 +100,32 @@ pub const NAMES: [&str; 2] = [crate::tools::send::NAME, crate::tools::reply::NAM
 pub fn is_sending_tool(name: &str) -> bool {
     NAMES.contains(&name)
 }
+
+/// The pair's answer to the framework's in-order hook, written once here
+/// and invoked inside each tool's `impl ToolHandler`.
+///
+/// The admission answer's shape, for the admission answer's reason: the
+/// method belongs to the handler each tool already implements, and a
+/// forwarder written once per tool is one sentence with two places to stop
+/// being true. A wrapping handler type would silently drop whatever trait
+/// method is added after the wrapper was written.
+macro_rules! sends_in_order {
+    () => {
+        /// The sends run IN ORDER (unit 55, 2026-09-02): the framework parks
+        /// a ready call of either sending tool while an earlier in-order
+        /// call of the same conversation is unresolved, so the messages
+        /// reach the group in the order the model issued them and a pending
+        /// send never has a sibling in flight. It is also what makes the
+        /// caps' count exact — the ledger the admission pass loaded holds
+        /// every earlier send — and what leaves the pair with no filing lock
+        /// of its own.
+        fn runs_in_order(&self) -> bool {
+            true
+        }
+    };
+}
+
+pub(crate) use sends_in_order;
 
 /// The words to send — the one parameter both tools take.
 pub const PARAMETER_TEXT: &str = "text";
@@ -236,9 +272,9 @@ pub fn spent_tier(ledger: &[Block], now: DateTime<Utc>) -> Option<(Tier, DateTim
 /// The store writes that column itself, in RFC 3339 with milliseconds and
 /// an offset, so an unreadable value is a row the store did not produce.
 /// It is counted at `now` — the limiting direction, since an unreadable
-/// clock must never widen an allowance — and SAID rather than swallowed:
-/// a silent fallback here would let a broken stamp quietly shift what the
-/// caps admit, with nothing anywhere naming why.
+/// clock must never widen an allowance — and said, not swallowed: a silent
+/// fallback here would let a broken stamp quietly shift what the caps
+/// admit, with nothing anywhere naming why.
 fn counted_at(created_at: &str, now: DateTime<Utc>) -> DateTime<Utc> {
     match DateTime::parse_from_rfc3339(created_at) {
         Ok(stamped) => stamped.with_timezone(&Utc),
@@ -404,16 +440,18 @@ impl Sender {
         Self { fence, stops }
     }
 
-    /// The caps as each tool's admission hook asks them, with the cue's
-    /// stop where they refuse: a call declined before its body ran filed
-    /// nothing, so the indicator its start lit is ended here.
+    /// Decline the call when a tier is spent, and end the cue when it does:
+    /// a call declined before its body ran filed nothing, so no delivery
+    /// report will ever say that send is over. Both acts, which is why this
+    /// is named for the deciding and not for the reading — the answer is
+    /// what each tool's admission hook hands back.
     ///
     /// The count itself is [`cap_decline`]'s, read once over the ledger the
     /// admission pass already loaded. Nothing else is asked and nothing is
     /// re-read: the calls run in order, so that ledger holds every earlier
     /// send of the conversation and the count is exact.
     #[must_use]
-    pub fn declined_by_the_caps(&self, conversation_id: i64, ledger: &[Block]) -> Option<String> {
+    pub fn decline_a_spent_tier(&self, conversation_id: i64, ledger: &[Block]) -> Option<String> {
         let declined = cap_decline(ledger);
         if declined.is_some() {
             self.stop_the_cue(conversation_id);
@@ -453,9 +491,15 @@ impl Sender {
 
     /// File one send, or answer the refusal the model reads.
     ///
-    /// `Ok` is always [`ToolOutcome::Pending`]: the call is settled by the
-    /// delivery receipt, whether this run appended the block or found the
-    /// block a previous run of the same call appended.
+    /// Three outcomes, all of them the model's to read.
+    /// [`ToolOutcome::Pending`] is a filed send — whether this run appended
+    /// the block or found the block a previous run of the same call
+    /// appended. [`ToolOutcome::Error`] carries the unknown-target sentence
+    /// for a target the ledger does not hold, and the transient sentence
+    /// where the store's own read or append failed; neither filed anything.
+    /// Nothing fails a caller here: [`Self::answer`] takes whatever comes
+    /// back and stops the cue on every error, because a call that filed
+    /// nothing has no delivery report coming to end it.
     async fn file(&self, ctx: &ToolContext<'_, CoreEvent>, named: &NamedSend) -> ToolOutcome {
         let _no_erasure_mid_filing = self.fence.read().await;
         match self.append(ctx, named).await {
@@ -471,9 +515,9 @@ impl Sender {
         }
     }
 
-    /// The filing itself, behind both holds. Separated so the store's own
-    /// failures answer one transient sentence in one place, instead of once
-    /// per read.
+    /// The filing itself, behind the erasure fence. Separated so the
+    /// store's own failures answer one transient sentence in one place,
+    /// instead of once per read.
     async fn append(
         &self,
         ctx: &ToolContext<'_, CoreEvent>,
@@ -1075,7 +1119,7 @@ mod tests {
             "the five filed messages are the five admitted calls"
         );
 
-        let refusals: Vec<String> = agency
+        let refusals: Vec<(String, agent_ledger::agency::Refusal)> = agency
             .store
             .list_blocks(conversation_id)
             .await
@@ -1085,20 +1129,64 @@ mod tests {
                 agent_ledger::BlockKind::ToolError(failure)
                     if failure.call_block_id == Some(calls[5]) =>
                 {
-                    Some(failure.error)
+                    Some((failure.error, failure.refusal))
                 }
                 _ => None,
             })
             .collect();
         assert_eq!(refusals.len(), 1, "the sixth call is answered exactly once");
+        // The stamp, not only the sentence: a spent tier is a STANDING no,
+        // and it is this stored fact that a run of five of them ends the
+        // turn on. Recorded as an ordinary failure it would read as
+        // something the model could re-plan around inside the turn.
+        assert_eq!(
+            refusals[0].1,
+            agent_ledger::agency::Refusal::Refused,
+            "the spent tier is recorded as a refusal"
+        );
         assert!(
-            refusals[0].starts_with(
+            refusals[0].0.starts_with(
                 "declined: this conversation has sent its 5 messages for the last minute, and \
                  this one was not sent. The allowance reopens at "
-            ) && refusals[0].ends_with("Send nothing more this turn; continue on a later one."),
+            ) && refusals[0]
+                .0
+                .ends_with("Send nothing more this turn; continue on a later one."),
             "the refusal is the recorded sentence: {}",
-            refusals[0]
+            refusals[0].0
         );
+    }
+
+    /// EVERY sending tool answers the in-order hook (AC19), asked of the
+    /// registered handler the way the framework asks it.
+    ///
+    /// The requirement held only in prose before this: a third sending tool
+    /// that forgot the answer would have posted its message out of order
+    /// with the pair's and passed every other case. Read over [`NAMES`], so
+    /// a name added to the pair's enumeration and not registered here fails
+    /// loudly instead of going unasked.
+    #[test]
+    fn every_sending_tool_answers_the_in_order_hook() {
+        let mut registry = ToolRegistry::<CoreEvent>::new();
+        registry.register(
+            crate::tools::send::NAME,
+            SendMessage::new(Arc::new(RwLock::new(())), crate::composing::stops()),
+        );
+        registry.register(
+            crate::tools::reply::NAME,
+            crate::tools::reply::ReplyMessage::new(
+                Arc::new(RwLock::new(())),
+                crate::composing::stops(),
+            ),
+        );
+        for name in NAMES {
+            let handler = registry
+                .get(name)
+                .unwrap_or_else(|| panic!("the sending tool '{name}' is registered here"));
+            assert!(
+                handler.runs_in_order(),
+                "the sending tool '{name}' runs in order"
+            );
+        }
     }
 
     /// A call refused before anything is filed stops the composing cue
@@ -1120,7 +1208,7 @@ mod tests {
         let now = Utc::now();
 
         assert_eq!(
-            sender.declined_by_the_caps(conversation_id, &pending_sends(5, 5, now)),
+            sender.decline_a_spent_tier(conversation_id, &pending_sends(5, 5, now)),
             cap_decline(&pending_sends(5, 5, now)),
             "the spent tier declines with the caps' own sentence"
         );
@@ -1130,7 +1218,7 @@ mod tests {
         );
 
         assert_eq!(
-            sender.declined_by_the_caps(conversation_id, &[]),
+            sender.decline_a_spent_tier(conversation_id, &[]),
             None,
             "an unspent conversation is admitted"
         );

@@ -1635,12 +1635,15 @@ fn unattended_failure(
 /// message to leave unacknowledged, so it states the process's end on the
 /// signal it is handed and stops, and nothing here retries what a database
 /// refuses by a rule.
+///
+/// Answers the task, so the assembly can stop the watch on its own shutdown
+/// instead of waiting for the sessions or the bus to go.
 pub(crate) fn spawn_compaction_driver(
     sessions: &Arc<Sessions>,
     bus: &Arc<EventBus<CoreEvent>>,
     watch: &Arc<ContextWatch>,
     fatal: &Arc<FatalExit>,
-) {
+) -> tokio::task::JoinHandle<()> {
     let mut events = bus.subscribe();
     let weak = Arc::downgrade(sessions);
     let watch = Arc::downgrade(watch);
@@ -1724,7 +1727,7 @@ pub(crate) fn spawn_compaction_driver(
                 }
             }
         }
-    });
+    })
 }
 
 /// What one erased principal costs one compacted lineage: the whole

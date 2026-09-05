@@ -214,9 +214,10 @@ async fn the_disambiguation_is_a_normal_two_turn_exchange() {
     );
 }
 
-/// AC7's clarifying half (unit 22): a clarifying question is real text,
-/// so its turn raises the typing cue — one begin once the question's text
-/// flows, one stop at the turn's end.
+/// AC7's clarifying half (unit 22), as unit 55 left it: a clarifying
+/// question is a message the assistant SENDS, so its turn raises the typing
+/// cue — one begin when the sending call starts, one stop when that send is
+/// done.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_clarifying_question_raises_the_typing_cue() {
     let fixture = helpful_fixture().await;

@@ -1006,24 +1006,12 @@ async fn a_refused_compaction_ends_the_process_and_is_not_retried() {
 /// each one failed at the thread's prompt. The walk composes the successor
 /// the other way now, and what proves it is the thread that comes out.
 ///
-/// IGNORED ON THIS BRANCH, and the disagreement is named rather than
-/// papered over (unit 55's fixer, 2026-09-03). The case is flaky here — it
-/// passes on `main` five runs out of five and fails here two runs out of
-/// three, before any of unit 55's own fixes — and what it catches is the
-/// FIXTURE, not the walk: `Fixture::shutdown` only interrupts streams, so
-/// the stopped process's compaction worker keeps running against the shared
-/// in-memory store, compacts the channel it still sees and claims it for a
-/// thread of its own. The wording proves whose thread it is: the head the
-/// assertion reads carries the FIRST fixture's composed prompt, and only
-/// the stopped assembly holds that wording — the restarted one is
-/// configured with the edited prompt this case is about. Unit 55 files
-/// more blocks per turn and settles pending sends before the fork, which
-/// widens that window; it changes nothing about which prompt a fork
-/// installs. Closing it means making a stopped fixture stop its workers,
-/// which is unit 56's suite and its shutdown contract, not this unit's to
-/// redesign.
-#[ignore = "the fixture's shutdown leaves the stopped process's compaction worker running; \
-            unit 56's shutdown contract, not unit 55's to redesign"]
+/// The restart is a real one: the first fixture's shutdown ends that
+/// assembly's compaction driver and waits for it, so the only process
+/// compacting against the shared store afterwards is the restarted one. A
+/// stopped driver still running would claim the channel for a thread of its
+/// own, and the head asserted below would carry the FIRST fixture's composed
+/// prompt — the wording only the stopped assembly holds.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_channel_the_walk_re_forked_compacts_with_one_prompt_at_its_head() {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
@@ -1125,6 +1113,94 @@ async fn a_channel_the_walk_re_forked_compacts_with_one_prompt_at_its_head() {
     assert!(
         blocks.len() > 4,
         "and the second half of the history behind it: {kinds:?}"
+    );
+}
+
+/// THE SHUTDOWN IN SEQUENCE: a stopped assembly writes to the store no more.
+///
+/// The unattended door is opened TWICE on one fixture, and the two answers
+/// are what make this readable. Before the shutdown the forced-turn-end
+/// marker moves the channel onto a thread, which is the driver acting. After
+/// it the same marker on the same store moves nothing and pays for no
+/// summary turn — the ledger stands exactly as the marker left it.
+///
+/// The second marker's own bus event is awaited before anything is asserted,
+/// on the subscription this test holds: a driver still watching takes that
+/// same fan-out, so the assertions run after the moment it would have woken
+/// on, not after a sleep that would pass either way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shut_down_assembly_stops_writing_to_the_store() {
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, source, _) = flooded_group(&fixture, &mut replies, "shutdown-room").await;
+    let requests = || fixture.script.seen.lock().unwrap().len();
+
+    // The door, with the driver running: the channel moves.
+    fixture
+        .store
+        .insert_status_block(
+            BlockDestination::from(source),
+            Status::TOOL_CALLS_EXHAUSTED.into(),
+            None,
+        )
+        .await
+        .expect("the forced turn end records its marker");
+    let deadline = std::time::Instant::now() + support::DEADLINE;
+    let thread = loop {
+        if let Some(mapped) = mapped_conversation(&fixture.store, &key).await
+            && mapped != source
+        {
+            break mapped;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting the compaction the running driver owes"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+
+    let mut wakes = fixture.bus.subscribe();
+    let paid = requests();
+    fixture.assistant.shutdown().await;
+
+    // The same door, after the shutdown.
+    fixture
+        .store
+        .insert_status_block(
+            BlockDestination::from(thread),
+            Status::TOOL_CALLS_EXHAUSTED.into(),
+            None,
+        )
+        .await
+        .expect("the second forced turn end records its marker");
+    let after_the_marker = kinds(&fixture.store, thread).await;
+    tokio::time::timeout(support::DEADLINE, async {
+        loop {
+            let event = wakes.recv().await.expect("the bus delivers the change");
+            if matches!(
+                event,
+                CoreEvent::BlocksChanged { conversation_id, .. } if conversation_id == thread
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("the late marker reaches the subscribers of the driver's own bus");
+
+    assert_eq!(
+        mapped_conversation(&fixture.store, &key).await,
+        Some(thread),
+        "the stopped assembly's driver moved nothing"
+    );
+    assert_eq!(
+        kinds(&fixture.store, thread).await,
+        after_the_marker,
+        "and wrote nothing: the ledger stands as the marker left it"
+    );
+    assert_eq!(
+        requests(),
+        paid,
+        "no summary turn was paid for after the shutdown"
     );
 }
 

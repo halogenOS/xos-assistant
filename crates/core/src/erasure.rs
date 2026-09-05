@@ -66,6 +66,7 @@
 use agent_ledger::store::{StoreTx, domain_run};
 use agent_ledger::{Block, FromBlock, Store, StoreError};
 
+use crate::error::CoreError;
 use crate::identity;
 use crate::join;
 use crate::kind::{self, AssistantKind};
@@ -440,11 +441,13 @@ pub(crate) async fn collect_unnamed_principals(store: &Store) -> Result<usize, S
 ///
 /// # Errors
 ///
-/// [`StoreError`] if a read fails or the store's actor has stopped.
+/// [`CoreError::Store`] if a read fails or the store's actor has stopped;
+/// [`CoreError::AncestorUnnamed`] for the stored shape the lineage walk
+/// refuses.
 pub(crate) async fn compacted_lineages(
     store: &Store,
     principal_id: i64,
-) -> Result<Vec<StrippedLineage>, StoreError> {
+) -> Result<Vec<StrippedLineage>, CoreError> {
     let mut found = Vec::new();
     for record in mapping::all(&store.tx()).await? {
         if let Some(lineage) = stripped_lineage(store, record.conversation_id, &|blocks| {
@@ -478,17 +481,19 @@ pub(crate) async fn compacted_lineages(
 ///
 /// # Errors
 ///
-/// [`StoreError`] if a read fails or the store's actor has stopped.
+/// [`CoreError::Store`] if a read fails or the store's actor has stopped;
+/// [`CoreError::AncestorUnnamed`] for the stored shape the lineage walk
+/// refuses.
 pub(crate) async fn stripped_lineage(
     store: &Store,
     serving: i64,
     stripped: &(dyn Fn(&[Block]) -> Vec<i64> + Sync),
-) -> Result<Option<StrippedLineage>, StoreError> {
+) -> Result<Option<StrippedLineage>, CoreError> {
     let mut hops = Vec::new();
     let mut walked = std::collections::HashSet::from([serving]);
     let mut current = serving;
     let mut blocks = store.list_blocks(current).await?;
-    while let Some(opening) = lineage::own_opening(&blocks) {
+    while let Some(opening) = lineage::own_opening(&blocks)? {
         let ancestor_blocks = store.list_blocks(opening.ancestor).await?;
         if ancestor_blocks.is_empty() || !walked.insert(opening.ancestor) {
             tracing::warn!(

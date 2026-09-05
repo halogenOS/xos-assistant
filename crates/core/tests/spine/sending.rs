@@ -16,7 +16,7 @@
 //! the model ever learns about its message: the call it made either
 //! completed with ids or failed with a reason.
 
-use agent_ledger::{Block, BlockKind, FromBlock, LeafKind, Store};
+use agent_ledger::{Block, LeafKind, Store};
 use assistant_core::schema::store_config;
 use assistant_core::{ChannelKind, Outbound, ProtectionConfig, SendOutcome};
 
@@ -26,50 +26,17 @@ use crate::support::{self, channel, inbound};
 /// string, and the exact text the failed call must carry back.
 const REFUSED: &str = "the platform refused the request";
 
-/// What one conversation's sends came to, in ledger order: the result or
-/// the error paired with each sending call, as the model reads it.
-///
-/// Paired by the call's own BLOCK id, the way the framework pairs a call
-/// with its resolution — never by position, which a turn with a lookup
-/// beside its send would get wrong, and never by the provider's echo,
-/// which two calls of one round can share.
+/// What one conversation's sends came to, in ledger order, read off the
+/// store — the suite's one pairing of a send with its settlement lives in
+/// `support`, where the consumer view already needs it, and this reads it
+/// there instead of pairing a second time.
 async fn send_outcomes(store: &Store, conversation_id: i64) -> Vec<String> {
-    let blocks = store
-        .list_blocks(conversation_id)
-        .await
-        .expect("the ledger reads");
-    let sending: Vec<i64> = blocks
-        .iter()
-        .filter(|block| block.block_type == "tool_call" && names_a_sending_tool(block))
-        .map(|block| block.id)
-        .collect();
-    blocks
-        .iter()
-        .filter_map(|block| match BlockKind::from_block(block) {
-            BlockKind::ToolResult(result)
-                if result
-                    .call_block_id
-                    .is_some_and(|call| sending.contains(&call)) =>
-            {
-                Some(result.content)
-            }
-            BlockKind::ToolError(failure)
-                if failure
-                    .call_block_id
-                    .is_some_and(|call| sending.contains(&call)) =>
-            {
-                Some(failure.error)
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Whether one recorded tool call names a sending tool.
-fn names_a_sending_tool(block: &Block) -> bool {
-    matches!(BlockKind::from_block(block), BlockKind::ToolCall(call)
-        if call.name == assistant_core::tools::send::NAME
-            || call.name == assistant_core::tools::reply::NAME)
+    support::send_settlements(
+        &store
+            .list_blocks(conversation_id)
+            .await
+            .expect("the ledger reads"),
+    )
 }
 
 /// The outgoing blocks one conversation holds, oldest first.
@@ -124,9 +91,17 @@ async fn one_reply(items: &mut tokio::sync::mpsc::UnboundedReceiver<Outbound>) -
 ///
 /// The failure is what the model reads: a send whose call quietly completed
 /// would have it believe the group is holding words nobody ever saw.
+///
+/// The typing cue's stop is read here too (AC12), through
+/// [`support::SendEndings`], which states why the raw carrier and not a
+/// composing edge answers it. What is asserted is that the ENDING was
+/// raised, and that it was raised by this report — nothing had reported
+/// before it. Narrowing the receipt door's stop to delivered sends leaves
+/// the await below with nothing to receive and fails the case.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_send_fails_its_call_with_the_platforms_reason() {
     let fixture = unreported_fixture().await;
+    let mut endings = support::SendEndings::watching(&fixture.assistant);
     let mut items = fixture
         .assistant
         .outbound(support::ADAPTER)
@@ -142,6 +117,7 @@ async fn a_refused_send_fails_its_call_with_the_platforms_reason() {
     let Outbound::Reply(reply) = one_reply(&mut items).await else {
         panic!("a send reaches the edge as a reply");
     };
+    endings.none_yet();
 
     fixture
         .assistant
@@ -151,6 +127,13 @@ async fn a_refused_send_fails_its_call_with_the_platforms_reason() {
             &SendOutcome::Failed {
                 reason: REFUSED.into(),
             },
+        )
+        .await;
+    endings
+        .one_for(
+            asked.conversation_id,
+            "a send the platform refused is done, so the chat stops showing the \
+             assistant typing",
         )
         .await;
 
@@ -189,9 +172,14 @@ async fn a_refused_send_fails_its_call_with_the_platforms_reason() {
 /// Both halves matter to the model. What the group read is not what it
 /// wrote, and a member replying to the part that posted replies to one of
 /// those ids.
+///
+/// The typing cue's stop is read here too (AC12), on the same terms as the
+/// refused send above and through the same observation. A send that posted
+/// half a message is done, and the chat stops showing the assistant typing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cut_short_send_fails_its_call_with_the_ids_that_posted() {
     let fixture = unreported_fixture().await;
+    let mut endings = support::SendEndings::watching(&fixture.assistant);
     let mut items = fixture
         .assistant
         .outbound(support::ADAPTER)
@@ -209,6 +197,7 @@ async fn a_cut_short_send_fails_its_call_with_the_ids_that_posted() {
     };
 
     let posted = vec!["71".to_owned()];
+    endings.none_yet();
     fixture
         .assistant
         .report_delivery(
@@ -217,6 +206,12 @@ async fn a_cut_short_send_fails_its_call_with_the_ids_that_posted() {
             &SendOutcome::Failed {
                 reason: REFUSED.into(),
             },
+        )
+        .await;
+    endings
+        .one_for(
+            asked.conversation_id,
+            "a send that posted part of its message is done too",
         )
         .await;
 
@@ -241,6 +236,61 @@ async fn a_cut_short_send_fails_its_call_with_the_ids_that_posted() {
         receipts,
         vec![Some("71".to_owned())],
         "exactly the message that reached the chat is recorded"
+    );
+}
+
+/// AC12's first stop, the DELIVERED one: a whole send is done when the
+/// receipt says so, and that report is what ended the cue — nothing had
+/// declared this send done before it.
+///
+/// The stop is attributable because it is read where the receipt door and
+/// the refusing tool write, not off a composing edge: the edge stops on the
+/// round's own ending too, so a stop seen there would prove nothing about
+/// the send. The call's own settlement is asserted beside it, so the case
+/// reads one delivered send end to end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_delivered_sends_report_is_what_stops_the_cue() {
+    let fixture = unreported_fixture().await;
+    let mut endings = support::SendEndings::watching(&fixture.assistant);
+    let mut items = fixture
+        .assistant
+        .outbound(support::ADAPTER)
+        .await
+        .expect("the outbound edge opens");
+    let key = channel("dm-send-delivered-cue");
+
+    let asked = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&key, ChannelKind::Direct, "42", "and this one arrives?"),
+    )
+    .await;
+    let Outbound::Reply(reply) = one_reply(&mut items).await else {
+        panic!("a send reaches the edge as a reply");
+    };
+    endings.none_yet();
+
+    fixture
+        .assistant
+        .report_delivery(reply.delivery, &["83".to_owned()], &SendOutcome::Whole)
+        .await;
+    endings
+        .one_for(
+            asked.conversation_id,
+            "the delivered send's own report is what declared it done",
+        )
+        .await;
+
+    support::await_ledger(
+        &fixture.store,
+        asked.conversation_id,
+        "the delivered send's settlement",
+        |blocks| blocks.iter().any(|block| block.block_type == "tool_result"),
+    )
+    .await;
+    assert_eq!(
+        send_outcomes(&fixture.store, asked.conversation_id).await,
+        vec![assistant_core::outgoing::sent_result(&["83".to_owned()])],
+        "the call completes with the id the message was posted under"
     );
 }
 

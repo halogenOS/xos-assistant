@@ -24,7 +24,7 @@ use agent_ledger::{
     Block, BlockKind, CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext,
     Store, ToolCallResult, spawn_reactor,
 };
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
 use crate::acknowledgment;
 use crate::commands::{self, Command};
@@ -480,6 +480,16 @@ pub struct Assistant {
     /// channel for the calls they refuse before filing anything. Its whole
     /// contract is on [`composing::SendStops`].
     send_stops: composing::SendStops,
+    /// The unattended tasks this assembly started and can end: the
+    /// compaction driver and the retention sweep, the two that write to the
+    /// store with nobody waiting on them. [`Assistant::shutdown`] takes them
+    /// out of here, so a second call finds nothing left to stop.
+    ///
+    /// The reactor is NOT among them: the framework spawns it and hands back
+    /// no handle, so this assembly cannot end it. What ends its work is the
+    /// per-conversation interrupt — a latched conversation stands its
+    /// delivery down — and the process exiting.
+    workers: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 /// What the assembly itself adds to the embedder's tool set: the shared
@@ -703,6 +713,36 @@ async fn check_and_record_wiring(
     Ok(())
 }
 
+/// Start the assembly's unattended tasks and hold their handles for
+/// [`Assistant::shutdown`].
+///
+/// The compaction's two doors come first, beside the stream observer and on
+/// the same broadcast: a turn the framework ended over a spent tool-call
+/// window has left the conversation in the shape the mechanism exists to
+/// clear, and a conversation running out of context window needs clearing
+/// whether or not anyone notices.
+///
+/// The retention rule takes a task of its own, deliberately not inside the
+/// driver: the driver's tick is thirty seconds of monotonic time serving
+/// context pressure, and retention is wall-clock days. A deployment that
+/// configured no span gets no task here at all, so the answer can hold one
+/// handle or two.
+///
+/// Both handles are kept because these two write to the store with nobody
+/// waiting on them. Either still ends on its own when the assembly is
+/// dropped, or on the exit signal a fatal failure inside it raises.
+fn spawn_workers(
+    sessions: &Arc<Sessions>,
+    context: &Arc<ContextWatch>,
+    fatal: &Arc<FatalExit>,
+    retention: RetentionConfig,
+) -> std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>> {
+    let driver =
+        session::spawn_compaction_driver(sessions, sessions.context().bus(), context, fatal);
+    let sweep = retention::spawn_sweep(sessions, retention, fatal);
+    std::sync::Mutex::new(std::iter::once(driver).chain(sweep).collect())
+}
+
 impl Assistant {
     /// Assemble and start the core: check the wiring, record the binding's
     /// provider instance in the store, and spawn the runtime over the given
@@ -822,20 +862,7 @@ impl Assistant {
         // leave unacknowledged, so a fatal failure there ends the process
         // through this.
         let fatal = Arc::new(FatalExit::new());
-        // The compaction's two unattended doors, beside the stream observer
-        // and on the same broadcast: a turn the framework ended over a spent
-        // tool-call window has left the conversation in the shape the
-        // mechanism exists to clear, and a conversation running out of
-        // context window needs clearing whether or not anyone notices.
-        session::spawn_compaction_driver(&sessions, ctx.bus(), &context, &fatal);
-        // The retention rule's own task, beside the compaction driver and
-        // deliberately not inside it: the driver's tick is thirty seconds of
-        // monotonic time serving context pressure, and retention is
-        // wall-clock days. A deployment that configured no span gets no task
-        // here at all.
-        // The handle is dropped: the task ends with the assembly, or with the
-        // exit signal it raises on a fatal failure of its own.
-        drop(retention::spawn_sweep(&sessions, retention, &fatal));
+        let workers = spawn_workers(&sessions, &context, &fatal, retention);
         spawn_reactor(ctx.clone());
         Ok(Self {
             ctx,
@@ -859,7 +886,40 @@ impl Assistant {
             choice_reconciled: Mutex::new(HashSet::new()),
             filing_door,
             send_stops,
+            workers,
         })
+    }
+
+    /// End this assembly's unattended work and wait until it has ended: the
+    /// compaction driver and the retention sweep are aborted and awaited, so
+    /// once this returns neither can write to the store again.
+    ///
+    /// An abort and not a cancellation the loops observe, because there is
+    /// nothing to finish: a driver mid-compaction has written a fork nothing
+    /// is mapped to yet, which is the state a killed process leaves and which
+    /// the next start's walk already heals. Waiting for the model turn that
+    /// compaction is inside would make a shutdown as slow as a provider.
+    ///
+    /// Idempotent: the handles are taken out here, so a second call has
+    /// nothing to stop. What this does NOT cover is the framework's reactor
+    /// and the per-conversation actors it spawns — the framework keeps those
+    /// handles — nor the outbound and composing edges, which end when the
+    /// adapter drops the receiver it holds.
+    pub async fn shutdown(&self) {
+        let workers = std::mem::take(
+            &mut *self
+                .workers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for worker in &workers {
+            worker.abort();
+        }
+        for worker in workers {
+            // The join answers the abort itself; an unattended task that
+            // panicked has already logged what it was.
+            let _ = worker.await;
+        }
     }
 
     /// Resolves when this assembly can no longer serve anything: a failure
@@ -1996,6 +2056,24 @@ impl Assistant {
         composing::spawn_edge(self.ctx.clone(), adapter.to_owned(), &self.send_stops)
     }
 
+    /// Every send this assembly declares DONE, by the conversation it was
+    /// sent in: the raw carrier the composing edges above are built on
+    /// (unit 55, 2026-09-02).
+    ///
+    /// The edge is the cue; this is the reading of whether the cue was told
+    /// anything. They are not the same observation, and only one of them can
+    /// tell a missing stop apart from a stop the round's own ending
+    /// happened to raise first: a composing edge yields one begin and one
+    /// stop per turn whether or not any send ever reported, because the
+    /// stream's terminal ends the signal too. What comes out here is
+    /// exactly what the receipt door and a refusing tool said, per ending.
+    ///
+    /// Lossy and live-only like the cue itself, and it carries no history:
+    /// a subscriber hears the endings raised after it subscribed.
+    pub fn finished_sends(&self) -> broadcast::Receiver<i64> {
+        self.send_stops.subscribe()
+    }
+
     /// Erase one principal, in one call, per decision 0012: the personal
     /// columns of the principal's messages — text, origin reference and
     /// platform send time — are nulled in every conversation (the block
@@ -2663,6 +2741,12 @@ impl Assistant {
                         let sessions = Arc::clone(&self.sessions);
                         let streams = Arc::clone(&self.streams);
                         let context = Arc::clone(&self.context);
+                        // The task answers nobody: the person was already
+                        // told the deletion started, so a failure that reaches
+                        // the whole process is raised on the exit signal here
+                        // instead of ending this one task and leaving the
+                        // process serving over the state that failed it.
+                        let fatal = Arc::clone(&self.fatal);
                         tokio::spawn(async move {
                             match erase_behind_the_fence(sessions, streams, context, principal_id)
                                 .await
@@ -2675,6 +2759,9 @@ impl Assistant {
                                     );
                                 }
                                 Err(error) => {
+                                    if fatal.ends_on(&error).is_break() {
+                                        return;
+                                    }
                                     tracing::warn!(
                                         principal_id,
                                         %error,
