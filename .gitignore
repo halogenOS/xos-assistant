@@ -3,3 +3,8 @@ LOCAL.md
 
 /target
 result
+HANDOFF.md
+
+# Local worktrees and scratch, never tracked
+.worktrees/
+.cache/
