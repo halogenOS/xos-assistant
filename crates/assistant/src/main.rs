@@ -453,6 +453,38 @@ async fn resolved_adapter(
     Ok((TelegramAdapter::new(adapter_config), name))
 }
 
+/// What the process settles before it serves anything, in this order.
+///
+/// First the retirement: a channel whose conversation recorded an older
+/// prompt or an older model starts a new one, so an edited prompt reaches
+/// the groups already being served instead of only the next group to
+/// appear. Startup is the one moment the composed prompt can have moved —
+/// it comes from configuration and from files read at boot — so it runs
+/// here and never again.
+///
+/// Then the unconfirmed sends: a message the previous process filed and
+/// never got a confirmation for is failed, so the turn waiting on it can
+/// end and the model may send it again (unit 55, 2026-09-02). AFTER the
+/// retirement, which settles the conversations it retires, and BEFORE the
+/// adapter's edges are taken, so no live delivery report can race it.
+async fn settle_before_serving(assistant: &Assistant) -> Result<(), StartError> {
+    let retired = assistant.retire_stale_channels().await?;
+    if retired > 0 {
+        tracing::info!(
+            channels = retired,
+            "the prompt or the model changed; those channels start new conversations"
+        );
+    }
+    let unfinished = assistant.fail_unfinished_sends().await?;
+    if unfinished > 0 {
+        tracing::info!(
+            messages = unfinished,
+            "messages this process could not confirm are recorded unsent"
+        );
+    }
+    Ok(())
+}
+
 /// Assemble and serve until SIGTERM or an adapter start refusal.
 async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     let ServeInputs {
@@ -538,18 +570,7 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
     )
     .await?;
 
-    // Before serving: a channel whose conversation recorded an older prompt
-    // starts a new one, so an edited prompt reaches the groups already being
-    // served instead of only the next group to appear. Startup is the one
-    // moment the composed prompt can have moved — it comes from configuration
-    // and from files read at boot — so this runs here and never again.
-    let retired = assistant.retire_stale_channels().await?;
-    if retired > 0 {
-        tracing::info!(
-            channels = retired,
-            "the prompt or the model changed; those channels start new conversations"
-        );
-    }
+    settle_before_serving(&assistant).await?;
 
     log_startup(
         &configuration,

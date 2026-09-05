@@ -60,6 +60,7 @@ async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
             tool: runtime::NAME.into(),
             input: "{}".into(),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -97,6 +98,9 @@ async fn a_member_reaches_the_tool_and_reads_the_model_the_turn_runs_on() {
         receipt.conversation_id,
         "the runtime-facts turn",
         |blocks| {
+            // The consumer view filters a SEND's own call and result (unit
+            // 55), so the tool result this waits for is the runtime-facts
+            // lookup's own — which is exactly the one the case is about.
             blocks.iter().any(|block| block.block_type == "tool_result")
                 && blocks
                     .last()
@@ -198,6 +202,7 @@ async fn the_stated_model_is_the_one_the_conversation_runs_on() {
             tool: runtime::NAME.into(),
             input: "{}".into(),
             narration: None,
+            announce: None,
         },
         None,
     );

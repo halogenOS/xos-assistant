@@ -48,12 +48,11 @@
 //! line is harmless and a skipped first one is the violation — the inverse
 //! of the admission fold, for the inverse duty.
 
-use agent_ledger::store::{StoreTx, domain_run};
+use agent_ledger::store::StoreTx;
 use agent_ledger::{Block, BlockKind, FromBlock, Role, Store, StoreError};
 use serde_json::json;
 
 use crate::kind::{self, AssistantKind, FrameworkKind};
-use crate::schema::DOMAIN;
 use crate::tools::provenance;
 
 /// The disclosure line composed from the assistant's name — what an unset
@@ -161,30 +160,36 @@ impl Disclosure {
         ledger: &mut [Block],
         index: usize,
     ) -> Result<Introduction, StoreError> {
-        let content = answer_content(&ledger[index]);
+        let content = message_content(&ledger[index]);
         if content.starts_with(&self.prefix) {
             return Ok(Introduction::Lined);
         }
-        let answer_id = ledger[index].id;
+        let block_id = ledger[index].id;
+        // The summoning key is the CALL an outgoing block answers, since a
+        // consumer append carries no dispatch anchor of its own; an
+        // unreadable key folds toward the line like every other absence
+        // here.
+        let summoning_key = summoning_key(&ledger[index]).unwrap_or(block_id);
         if !self
-            .first_answer_to_someone(store, conversation_id, ledger, answer_id)
+            .first_message_to_someone(store, conversation_id, ledger, summoning_key)
             .await?
         {
             return Ok(Introduction::Bare);
         }
-        self.store_line(&store.tx(), answer_id).await?;
-        ledger[index]
-            .fields
-            .insert("content".into(), json!(self.disclosed(&content)));
+        self.store_line(&store.tx(), block_id).await?;
+        ledger[index].fields.insert(
+            crate::outgoing::COLUMN_TEXT.into(),
+            json!(self.disclosed(&content)),
+        );
         Ok(Introduction::Lined)
     }
 
-    /// Whether this answer is the first to any of its summoning people: the
-    /// co-summoner set is read from the answer's own dispatch anchor,
-    /// several people are each checked, and the line shows if ANY of them
-    /// is new (decision 0078). An empty or unreadable summoner set answers
-    /// true — the fold toward the line the module doc states.
-    async fn first_answer_to_someone(
+    /// Whether this message is the first to any of its summoning people:
+    /// the co-summoner set is read from the summoning key's dispatch
+    /// anchor, several people are each checked, and the line shows if ANY
+    /// of them is new (decision 0078). An empty or unreadable summoner set
+    /// answers true — the fold toward the line the module doc states.
+    async fn first_message_to_someone(
         &self,
         store: &Store,
         conversation_id: i64,
@@ -255,53 +260,71 @@ impl Disclosure {
     fn introduction_in(&self, blocks: &[Block], principal: i64, before: i64) -> bool {
         blocks
             .iter()
-            .filter(|block| block.id < before && self.lined_answer(block))
-            .any(|answer| {
-                provenance::co_summoners(blocks, answer.id)
+            .filter(|block| block.id < before && self.lined_message(block))
+            .filter_map(summoning_key)
+            .any(|key| {
+                provenance::co_summoners(blocks, key)
                     .iter()
                     .any(|summoner| summoner.principal_id == Some(principal))
             })
     }
 
-    /// Whether a block is an answer that opens with the line — the stored
-    /// receipt of a delivered introduction.
-    fn lined_answer(&self, block: &Block) -> bool {
-        matches!(
-            AssistantKind::from_block(block),
-            AssistantKind::Core(FrameworkKind(BlockKind::Text(text)))
-                if text.role == Some(Role::Assistant)
-                    && text.content.starts_with(&self.prefix)
-        )
+    /// Whether a block is one of the assistant's own messages that opens
+    /// with the line — the stored receipt of a delivered introduction.
+    ///
+    /// TWO shapes answer, and both are honest (unit 55, 2026-09-02). A
+    /// filed outgoing message is what carries the line from this unit on.
+    /// An assistant TEXT block carrying it is history: while answers were
+    /// relayed, the line was written into exactly such a block before its
+    /// send, and a person that line reached is introduced whether or not
+    /// the mechanism that reached them still exists. Reading only the new
+    /// shape would re-introduce everyone the old one had already met.
+    fn lined_message(&self, block: &Block) -> bool {
+        match AssistantKind::from_block(block) {
+            AssistantKind::OutgoingMessage(outgoing) => outgoing
+                .text
+                .is_some_and(|text| text.starts_with(&self.prefix)),
+            AssistantKind::Core(FrameworkKind(BlockKind::Text(text))) => {
+                text.role == Some(Role::Assistant) && text.content.starts_with(&self.prefix)
+            }
+            _ => false,
+        }
     }
 
-    /// Write the line into the stored answer block, in one idempotent
-    /// statement: the prepend applies only while the content does not
-    /// already open with the prefix, so a repeated call cannot stack a
-    /// second line. The framework's `block_text` table is named directly —
-    /// the same deliberate coupling decision 0032 records for the
-    /// framework's header and junction tables, extended to the text table
-    /// by decision 0079.
+    /// Write the line into the stored outgoing block, in one idempotent
+    /// statement owned by the kind whose column it writes: the prepend
+    /// applies only while the text does not already open with the prefix,
+    /// so a repeated send cannot stack a second line.
     async fn store_line(&self, tx: &StoreTx, block_id: i64) -> Result<(), StoreError> {
-        let prefix = self.prefix.clone();
-        domain_run(tx, DOMAIN, move |conn| {
-            conn.execute(
-                "UPDATE block_text SET content = ?2 || content \
-                 WHERE block_id = ?1 AND substr(content, 1, length(?2)) <> ?2",
-                rusqlite::params![block_id, prefix],
-            )?;
-            Ok(())
-        })
-        .await
+        crate::outgoing::prepend_line(tx, block_id, &self.prefix).await
     }
 }
 
-/// One answer block's stored prose, read through the composed kind's one
-/// parse path. The caller hands this an answer block it already classified;
-/// anything else reads as empty, and nothing downstream invents text for it.
-fn answer_content(block: &Block) -> String {
+/// The stored text of one message the model filed, read through the
+/// composed kind's one parse path. One shape reaches the introduction — the
+/// outgoing block, which is the only thing the edge introduces — so
+/// anything else reads as empty and nothing downstream invents text for it.
+/// The old relay's lined text blocks are read by `lined_message` instead,
+/// where the history question is asked.
+fn message_content(block: &Block) -> String {
     match AssistantKind::from_block(block) {
-        AssistantKind::Core(FrameworkKind(BlockKind::Text(text))) => text.content,
+        AssistantKind::OutgoingMessage(outgoing) => outgoing.text.unwrap_or_default(),
         _ => String::new(),
+    }
+}
+
+/// The block id one of the assistant's own messages reads its summoning
+/// people from — the id whose dispatch anchor the provenance walk keys on.
+///
+/// For an outgoing block that is the CALL it answers, not the block itself:
+/// a consumer append carries no anchor, while the tool call the model made
+/// carries the anchor of the turn's summoning frontier. For a lined
+/// assistant text block of the old relay it is the block's own id, which is
+/// where the framework's dispatch stamped the anchor.
+fn summoning_key(block: &Block) -> Option<i64> {
+    match AssistantKind::from_block(block) {
+        AssistantKind::OutgoingMessage(outgoing) => outgoing.call_block,
+        _ => Some(block.id),
     }
 }
 
@@ -343,11 +366,11 @@ mod tests {
         );
     }
 
-    /// The fold toward the line, driven through the store: an answer
-    /// written through the public write surface carries no dispatch anchor,
-    /// so its summoners are unreadable — and the resolution answers with
-    /// the line, prepends it once, and a repeated call finds the receipt
-    /// instead of stacking a second line.
+    /// The fold toward the line, driven through the store: a filed send
+    /// whose call block this ledger does not hold has unreadable summoners
+    /// — and the resolution answers with the line, prepends it once into
+    /// the STORED text, and a repeated call finds the receipt instead of
+    /// stacking a second line.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn unreadable_provenance_folds_toward_the_line_and_the_prepend_is_idempotent() {
         let disclosure = Disclosure::resolve(None, "Probe");
@@ -357,9 +380,15 @@ mod tests {
             .await
             .expect("a conversation row");
         store
-            .insert_final_text_block(conversation, Role::Assistant, "an answer".into(), None)
+            .append_consumer_block(
+                conversation,
+                None,
+                crate::outgoing::OUTGOING_MESSAGE_KIND,
+                crate::outgoing::OutgoingMessage::stored_fields("an answer", None, 9_999),
+                None,
+            )
             .await
-            .expect("the answer stores");
+            .expect("the send files");
         let mut ledger = store
             .list_blocks(conversation)
             .await
@@ -373,7 +402,7 @@ mod tests {
         assert_eq!(
             introduction,
             Introduction::Lined,
-            "an answer whose summoners cannot be read is introduced"
+            "a send whose summoners cannot be read is introduced"
         );
 
         // The stored block carries the line over the model's own words.
@@ -382,7 +411,7 @@ mod tests {
             .await
             .expect("the ledger re-reads");
         assert_eq!(
-            stored[index].fields["content"],
+            stored[index].fields[crate::outgoing::COLUMN_TEXT],
             json!(disclosure.disclosed("an answer")),
             "the ledger carries the introduction the channel received"
         );
@@ -405,7 +434,7 @@ mod tests {
             .await
             .expect("the ledger re-reads");
         assert_eq!(
-            twice[index].fields["content"],
+            twice[index].fields[crate::outgoing::COLUMN_TEXT],
             json!(disclosure.disclosed("an answer")),
             "one line, never two"
         );

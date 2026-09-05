@@ -73,7 +73,7 @@ use std::time::{Duration, Instant};
 use assistant_core::{
     Assistant, Authority, ChannelKind, ChannelReset, ComposingState, ComposingUpdate,
     DeliveryHandle, DeliveryItem, FailureKind, InboundMessage, IngestOutcome, Observation,
-    ObserveOutcome, ObservedFact, Outbound, OutboundMark, OutboundReply,
+    ObserveOutcome, ObservedFact, Outbound, OutboundMark, OutboundReply, SendOutcome,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -1051,6 +1051,11 @@ async fn consume_outbound(
     }
 }
 
+/// What the model is told when the outbound item names a chat this adapter
+/// cannot address. The reason travels into the core's failure sentence, so
+/// it reads as one clause of it and states the fact plainly.
+const UNROUTABLE_CHANNEL: &str = "this chat could not be addressed";
+
 /// Send one reply's words to its chat — threaded as the core's reply
 /// thread states, decoded through the same naming rule the inbound side
 /// stored the origin under, recovery included: whether a refused thread
@@ -1061,6 +1066,12 @@ async fn consume_outbound(
 /// still runs, is stopped ahead of the send: the answer ends the composing
 /// it announced, even when the core's stop transition was lost to the
 /// lossy cue.
+///
+/// A channel key naming no chat is a mapping row this adapter never minted,
+/// so nothing can be sent. The drop is REPORTED as a failure all the same
+/// (unit 55): the item can carry the model's pending call, and a call
+/// nobody answers holds its turn open until the next process start sweeps
+/// it.
 async fn send_reply(
     client: &BotClient,
     assistant: &Assistant,
@@ -1069,6 +1080,15 @@ async fn send_reply(
 ) {
     let Some(chat_id) = translate::chat_id_of(&reply.channel) else {
         tracing::error!("an outbound channel key names no chat; reply dropped");
+        assistant
+            .report_delivery(
+                reply.delivery,
+                &[],
+                &SendOutcome::Failed {
+                    reason: UNROUTABLE_CHANNEL.to_owned(),
+                },
+            )
+            .await;
         return;
     };
     typing.stop(chat_id);
@@ -1174,7 +1194,19 @@ async fn send_recording(
         .copied()
         .map(translate::origin_of)
         .collect();
-    assistant.report_delivery(delivery, &origins).await;
+    // What the core cannot see and only this side knows: whether the whole
+    // message went out (unit 55, 2026-09-02). The ids alone cannot say it —
+    // a cut-short send reports the ids that posted too — and the core
+    // decides what each shape means for the model's pending call.
+    let reported = match &outcome {
+        Ok(_) => SendOutcome::Whole,
+        Err(failure) => SendOutcome::Failed {
+            reason: failure.error.to_string(),
+        },
+    };
+    assistant
+        .report_delivery(delivery, &origins, &reported)
+        .await;
     outcome.map(|_| ())
 }
 

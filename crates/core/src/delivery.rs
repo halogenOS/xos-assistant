@@ -227,14 +227,19 @@ pub(crate) async fn record(
 /// whose answer column is empty or whose block has no text row. The planned indexes are non-unique and
 /// this tolerates a duplicate row rather than forbidding one.
 ///
-/// The text comes from the framework's own text table beside the receipt
-/// row, which is the one place the assistant's stored prose lives — the
-/// deliberate coupling decision 0032 records for the framework's tables,
-/// extended to the text table by decision 0079, whose write is what makes
-/// the stored text equal to the sent text. A receipt whose block carries
-/// no text row, and an origin this conversation never recorded, both
-/// answer `None`: the reply lands quoteless and nothing is invented in
-/// place of a message the ledger cannot show.
+/// The text comes from wherever the assistant's stored words for that
+/// block live, and there are two such places (unit 55, 2026-09-02): the
+/// outgoing message's own table, which is where a sent message's words live
+/// from this unit on, and the framework's text table, which is where a
+/// relayed answer's words lived before it. Both are read and the first that
+/// answers wins — the two are disjoint by block, so the order settles
+/// nothing but the shape of the query, and reading only the new one would
+/// leave every reply to a message sent before this unit quoteless. The
+/// coupling to the framework's table is the one decision 0032 records,
+/// extended by decision 0079. A receipt whose block carries neither row,
+/// and an origin this conversation never recorded, both answer `None`: the
+/// reply lands quoteless and nothing is invented in place of a message the
+/// ledger cannot show.
 ///
 /// Scoped through ONE conversation's junction, unlike the retraction
 /// lookups above: platform message ids are opaque and unique only per
@@ -255,13 +260,17 @@ pub(crate) async fn newest_answer_of_origin(
         Ok(conn
             .query_row(
                 &format!(
-                    "SELECT d.{COLUMN_ANSWER_BLOCK}, t.content \
+                    "SELECT d.{COLUMN_ANSWER_BLOCK}, COALESCE(o.{sent}, t.content) \
                      FROM {DELIVERED_TABLE} d \
                      JOIN conversation_blocks cb ON cb.block_id = d.block_id \
-                     JOIN block_text t ON t.block_id = d.{COLUMN_ANSWER_BLOCK} \
+                     LEFT JOIN {outgoing} o ON o.block_id = d.{COLUMN_ANSWER_BLOCK} \
+                     LEFT JOIN block_text t ON t.block_id = d.{COLUMN_ANSWER_BLOCK} \
                      WHERE cb.conversation_id = ?1 \
                      AND d.{COLUMN_ORIGIN} = ?2 \
-                     ORDER BY cb.id DESC LIMIT 1"
+                     AND COALESCE(o.{sent}, t.content) IS NOT NULL \
+                     ORDER BY cb.id DESC LIMIT 1",
+                    outgoing = crate::outgoing::OUTGOING_MESSAGE_TABLE,
+                    sent = crate::outgoing::COLUMN_TEXT,
                 ),
                 (conversation_id, &origin),
                 |row| {

@@ -502,22 +502,33 @@ async fn the_configured_budget_limits_answers_through_the_binary() {
         1,
         "the over-limit ask draws no answer and no notice"
     );
-    // The wire also carries the framework's title derivation, told apart by
-    // its appended instruction — the same discriminator the core suite
-    // uses. A changed instruction wording would count the derivation as a
-    // turn and fail this assertion loudly, never pass it silently.
-    let turns = completions
-        .requests()
-        .iter()
-        .filter(|body| {
-            !serde_json::to_string(body)
-                .expect("the recorded body serializes")
-                .contains("Generate a concise title")
-        })
-        .count();
-    assert_eq!(
-        turns, 1,
-        "the refused debt never reaches the model — the spend the limit exists to save"
+
+    // The spend the limit exists to save: the refused ask never reaches the
+    // model at all. Read as what no request carries, not as a round count —
+    // an answered turn takes two rounds since unit 55 (the round that calls
+    // the sending tool and the round that reads its result), and a message
+    // absorbed between them stands the second one down, so counting rounds
+    // would be timing and not the budget. The words of the refused ask are
+    // the exact thing that must never be sent to the model.
+    let asked_the_model = completions.requests().iter().any(|body| {
+        serde_json::to_string(body)
+            .expect("the recorded body serializes")
+            .contains("the second ask")
+    });
+    assert!(
+        !asked_the_model,
+        "the refused debt reached the model: the limit spent a model call it exists to save"
+    );
+    // Non-vacuity: the ADMITTED ask did reach it, so the reading above is a
+    // statement about the refusal and not about a silent wire. The wire also
+    // carries the framework's title derivation, told apart by its appended
+    // instruction — the same discriminator the core suite uses.
+    assert!(
+        completions.requests().iter().any(|body| {
+            let recorded = serde_json::to_string(body).expect("the recorded body serializes");
+            recorded.contains("the first ask") && !recorded.contains("Generate a concise title")
+        }),
+        "the admitted ask reached the model"
     );
     drop(run);
 }

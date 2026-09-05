@@ -2,8 +2,9 @@
 //! scripted update, the tool-scripted provider, the commit lookup against a
 //! scripted loopback forge, and the answer out through the scripted
 //! server's `sendMessage` — asserted on the ledger block by block, tool
-//! call and result included. The narration variant proves both of the
-//! turn's texts reach the chat.
+//! call and result included. The announce variant proves a turn that
+//! announces beside its call puts two messages in the chat, and that the
+//! notes it wrote reach nobody.
 
 use std::sync::{Arc, Mutex};
 
@@ -17,7 +18,7 @@ use tokio::net::TcpListener;
 use crate::server::BotApiServer;
 use crate::support::{
     self, TOOL_CLOSING_ANSWER, TempStateFile, ToolScript, await_conversations, await_shape,
-    message_id_of, private_update, recording_sleep, spawn_adapter, start_assistant_with_tools,
+    private_update, recording_sleep, spawn_adapter, start_assistant_with_tools,
 };
 
 /// The scripted call's input — non-empty by the script's contract.
@@ -143,6 +144,7 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
             tool: commit::NAME.into(),
             input: COMMIT_INPUT.into(),
             narration: None,
+            announce: None,
         }),
         commit_tools(&forge),
     )
@@ -173,6 +175,9 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
             "chat_message",
             "tool_call",
             "tool_result",
+            "tool_call",
+            assistant_core::outgoing::OUTGOING_MESSAGE_KIND,
+            "tool_result",
             "text",
         ],
     )
@@ -181,10 +186,16 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
     assert_eq!(field(&blocks[3], "name"), commit::NAME);
     assert_eq!(field(&blocks[3], "input"), COMMIT_INPUT);
     assert_eq!(field(&blocks[4], "content"), compact_result());
+    // The closing round SENDS its answer (unit 55): the call names the
+    // sending tool, the outgoing block carries the words the chat received
+    // — the disclosure line composed in — and the turn's own text behind
+    // the send's receipt is the notes, which reach nobody.
+    assert_eq!(field(&blocks[5], "name"), assistant_core::tools::send::NAME);
     assert_eq!(
-        field(&blocks[5], "content"),
+        field(&blocks[6], assistant_core::outgoing::COLUMN_TEXT),
         support::disclosed(TOOL_CLOSING_ANSWER)
     );
+    assert_eq!(field(&blocks[8], "content"), TOOL_CLOSING_ANSWER);
 
     // The tool executed against the loopback forge, once, at the dialect's
     // path.
@@ -194,27 +205,26 @@ async fn an_addressed_question_runs_the_commit_lookup_end_to_end() {
     );
 }
 
-/// The narration variant: a turn that narrates before calling the tool
-/// delivers both texts to the chat — the narration and the closing answer,
-/// in that order — with both standing in the ledger, and each threaded
-/// onto the message it answers.
+/// The announce variant: a turn that ANNOUNCES beside its call puts two
+/// messages in the chat — the heads-up and the closing answer, in that
+/// order — while the narration it wrote in the same round reaches nobody.
 ///
-/// Both threading is the rule doing its job, not a slip (unit 26): each
-/// delivered answer names the one message that addressed the assistant
-/// among what the turn had absorbed when that text was written, and here
-/// that is the same ask for both. Threading only the turn's first text
-/// would put the quote on "let me look that up" and leave the answer
-/// itself loose, and a turn's last text is not knowable at delivery: a
-/// text is delivered when its stream ends, rounds before the turn does.
+/// The heads-up before slow work is a message like any other from unit 55
+/// on, so it goes out through a sending tool; the turn's own text is
+/// private notes, and the chat never receives a word of it. Both facts are
+/// read on the wire together: exactly two sends, neither of them the
+/// narration.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn narration_before_the_call_delivers_both_texts_to_the_chat() {
-    const NARRATION: &str = "Let me look that commit up.";
+async fn an_announce_beside_the_call_delivers_two_messages_and_the_notes_reach_nobody() {
+    const NARRATION: &str = "The commit lookup is the right tool here.";
+    const ANNOUNCE: &str = "Let me look that commit up.";
     let forge = ScriptedForge::start().await;
     let fixture = start_assistant_with_tools(
         Some(ToolScript {
             tool: commit::NAME.into(),
             input: COMMIT_INPUT.into(),
             narration: Some(NARRATION.into()),
+            announce: Some(ANNOUNCE.into()),
         }),
         commit_tools(&forge),
     )
@@ -222,47 +232,94 @@ async fn narration_before_the_call_delivers_both_texts_to_the_chat() {
     let server = BotApiServer::start().await;
     server.push_update(private_update(1, 42, "what changed?"));
 
-    let state = TempStateFile::new("tool-narration");
+    let state = TempStateFile::new("tool-announce");
     let (sleep, _) = recording_sleep();
     let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
 
-    // Both texts reach the chat, narration first.
+    // Both messages reach the chat, the announce first. It is this person's
+    // first delivery and so carries the disclosure line; the closing answer
+    // behind it arrives bare.
     let sends = server.await_recorded("sendMessage", 2).await;
     let texts: Vec<&str> = sends
         .iter()
         .filter_map(|send| send.body["text"].as_str())
         .collect();
-    // The narration is the person's first answer block and carries the
-    // line; the closing answer behind it arrives bare.
-    let introduced = support::disclosed(NARRATION);
+    let introduced = support::disclosed(ANNOUNCE);
     assert_eq!(texts, vec![introduced.as_str(), TOOL_CLOSING_ANSWER]);
+    assert!(
+        !texts.iter().any(|text| text.contains(NARRATION)),
+        "the turn's own text is private notes: no send carries a word of it"
+    );
     for send in &sends {
         assert_eq!(
-            send.body["reply_parameters"]["message_id"],
-            json!(message_id_of(1)),
-            "every text this turn delivers is a reply to the one message \
-             that addressed the assistant"
+            send.body.get("reply_parameters"),
+            None,
+            "a plain send threads onto nothing: the model aims a reply, and \
+             this turn aimed at nothing"
         );
     }
 
-    // Both stand in the ledger, in the production order: the message end
-    // finalizes the narration text before the drained tool lifecycle
-    // inserts the call block, so the narration precedes the call.
+    // The ledger holds the narration as her own text and the two sent
+    // messages as outgoing blocks, in the order the chat received them.
     let conversation = await_conversations(&fixture.store, 1).await[0];
-    let blocks = await_shape(
-        &fixture.store,
-        conversation,
-        &[
-            "system_prompt",
-            "tool_choice",
-            "chat_message",
-            "text",
-            "tool_call",
-            "tool_result",
-            "text",
-        ],
-    )
-    .await;
-    assert_eq!(field(&blocks[3], "content"), introduced);
-    assert_eq!(field(&blocks[6], "content"), TOOL_CLOSING_ANSWER);
+    let blocks = await_conversation_settles(&fixture.store, conversation).await;
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block.block_type == "text")
+            .map(|block| field(block, "content"))
+            .collect::<Vec<_>>(),
+        vec![NARRATION.to_owned(), TOOL_CLOSING_ANSWER.to_owned()],
+        "her own texts are the narration and the notes the closing round wrote"
+    );
+    assert_eq!(
+        blocks
+            .iter()
+            .filter(|block| block.block_type == assistant_core::outgoing::OUTGOING_MESSAGE_KIND)
+            .map(|block| field(block, assistant_core::outgoing::COLUMN_TEXT))
+            .collect::<Vec<_>>(),
+        vec![introduced, TOOL_CLOSING_ANSWER.to_owned()],
+        "the ledger's sent messages are the announce and then the answer"
+    );
+}
+
+/// Await the ledger settling on the announced turn's whole shape: the two
+/// sent messages, every call resolved, and both of the turn's own texts.
+///
+/// A shape pin would have to fix the order of the announce's own resolution
+/// against the lookup's, and those two resolve on different clocks — the
+/// platform's round trip and the forge's. The settled counts are the honest
+/// reading.
+async fn await_conversation_settles(store: &agent_ledger::Store, conversation: i64) -> Vec<Block> {
+    let deadline = std::time::Instant::now() + support::DEADLINE;
+    loop {
+        let blocks = store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads");
+        let sent = blocks
+            .iter()
+            .filter(|block| block.block_type == assistant_core::outgoing::OUTGOING_MESSAGE_KIND)
+            .count();
+        let results = blocks
+            .iter()
+            .filter(|block| block.block_type == "tool_result")
+            .count();
+        let texts = blocks
+            .iter()
+            .filter(|block| block.block_type == "text")
+            .count();
+        if sent == 2 && results == 3 && texts == 2 {
+            return blocks;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting the announced turn to settle; have {:?}",
+            blocks
+                .iter()
+                .map(|block| block.block_type.clone())
+                .collect::<Vec<_>>()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }

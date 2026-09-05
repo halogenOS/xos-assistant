@@ -62,12 +62,35 @@ async fn await_message(store: &Store, conversation_id: i64, count: usize) -> Blo
 async fn silent_assistant(
     protection: assistant_core::ProtectionConfig,
 ) -> (Assistant, Store, Arc<EventBus<CoreEvent>>) {
+    assistant_over(support::silent_provider(), protection).await
+}
+
+/// The same assembly over the SENDING stub, with the suite's stand-in
+/// adapter reporting its deliveries — what a budget pin needs from unit 55
+/// on, because a debt counts against a budget only once its turn delivered
+/// a message (AC13). A silent provider spends nothing, so every budget over
+/// one would stay open forever and the pins below would read nothing.
+async fn sending_assistant(
+    protection: assistant_core::ProtectionConfig,
+) -> (Arc<Assistant>, Store, Arc<EventBus<CoreEvent>>) {
+    let (assistant, store, bus) = assistant_over(support::sending_stub(), protection).await;
+    let assistant = Arc::new(assistant);
+    support::spawn_delivery_reporter(&assistant).await;
+    (assistant, store, bus)
+}
+
+/// One assembly over the given provider and budgets — the wiring both
+/// helpers above share.
+async fn assistant_over(
+    provider: Box<dyn agent_ledger::ProviderModule>,
+    protection: assistant_core::ProtectionConfig,
+) -> (Assistant, Store, Arc<EventBus<CoreEvent>>) {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let bus: Arc<EventBus<CoreEvent>> = Arc::new(EventBus::new());
     let assistant = Assistant::start(
         store.clone(),
         Arc::clone(&bus),
-        support::registry_of(support::silent_provider()),
+        support::registry_of(provider),
         assistant_core::tools::ToolSet::new(),
         assistant_core::AssemblyConfig {
             retention: assistant_core::RetentionConfig::disabled(),
@@ -211,6 +234,8 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                  DROP TABLE {delivered};
                  DROP TABLE {marks};
                  DROP TABLE {retractions};
+                 DROP TABLE {outgoing};
+                 DROP TABLE {notices};
                  DROP TABLE group_authorizations;
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';",
                 index = PRINCIPAL_ADDRESSED_INDEX.as_str(),
@@ -220,6 +245,8 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
                 marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
                 retractions = assistant_core::delivery::RETRACTION_TABLE,
+                outgoing = assistant_core::outgoing::OUTGOING_MESSAGE_TABLE,
+                notices = assistant_core::contract::CONTRACT_NOTICE_TABLE,
             ))?;
             Ok(())
         })
@@ -261,7 +288,7 @@ async fn a_version_three_store_upgrades_through_the_appended_steps_alone() {
     assert_eq!(report_tables, 1, "the report step created its table");
     assert_eq!(
         domain_migration_version(&reopened).await,
-        21,
+        23,
         "the appended steps advanced the domain's version"
     );
 
@@ -387,7 +414,9 @@ async fn a_database_written_before_the_withdrawal_opens_and_keeps_its_history() 
         // junction and content row, exactly as that build wrote them.
         agent_ledger::store::domain_run(&store.tx(), assistant_core::schema::DOMAIN, move |conn| {
             conn.execute_batch(&format!(
-                "CREATE TABLE block_tool_palette (
+                "DROP TABLE block_outgoing_message;
+                    DROP TABLE block_contract_notice;
+                    CREATE TABLE block_tool_palette (
                         block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
                         tools  TEXT NOT NULL
                     );
@@ -434,7 +463,7 @@ async fn a_database_written_before_the_withdrawal_opens_and_keeps_its_history() 
     );
     assert_eq!(
         domain_migration_version(&reopened).await,
-        21,
+        23,
         "the withdrawal step ran and advanced the domain's version"
     );
 
@@ -474,11 +503,7 @@ async fn the_principal_budget_refuses_the_next_debt_and_the_window_releases_it()
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let fixture =
         support::start_assistant_configured(store, None, budgets(Some((2, 600)), None)).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = channel("dm-principal-budget");
 
     let receipt = support::ingest_recorded(
@@ -514,8 +539,9 @@ async fn the_principal_budget_refuses_the_next_debt_and_the_window_releases_it()
     );
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
-        2,
-        "the refused ask draws no turn"
+        4,
+        "the refused ask draws no turn: the count is the two answered \
+         turns' two rounds each and nothing more"
     );
     assert!(
         matches!(replies.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
@@ -548,11 +574,7 @@ async fn the_channel_budget_spares_other_channels_and_the_direct_chat() {
     let fixture =
         support::start_assistant_configured(store, None, budgets(Some((100, 600)), Some((2, 600))))
             .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-channel-budget").await;
 
     let receipt = support::ingest_recorded(
@@ -613,8 +635,9 @@ fn held_provider(release: Arc<Semaphore>) -> Box<dyn ProviderModule> {
         let (response_tx, responses) = mpsc::unbounded_channel();
         let release = Arc::clone(&release);
         tokio::spawn(async move {
+            let mut round = 0_usize;
             while let Some(request) = requests.recv().await {
-                let ProviderRequest::Stream { .. } = request else {
+                let ProviderRequest::Stream { messages, .. } = request else {
                     continue;
                 };
                 release
@@ -623,14 +646,25 @@ fn held_provider(release: Arc<Semaphore>) -> Box<dyn ProviderModule> {
                     .expect("the release outlives the test")
                     .forget();
                 let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
-                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                    text: "the released answer".into(),
-                }));
-                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
-                    usage: Usage::default(),
-                    stop_reason: StopReason::EndTurn,
-                }));
+                // A round that answers a send closes the turn; every other
+                // round SENDS, because that is the one way words reach a
+                // chat (unit 55). One permit per round, so a test spends
+                // permits in rounds and not in turns.
+                if support::answers_a_send(&messages) {
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                        usage: Usage::default(),
+                        stop_reason: StopReason::EndTurn,
+                    }));
+                } else {
+                    round += 1;
+                    support::send_scripted_message(
+                        &response_tx,
+                        round,
+                        "the released answer",
+                        None,
+                    );
+                }
+                let _ = response_tx.send(ProviderResponse::Done);
             }
         });
         (request_tx, responses)
@@ -642,9 +676,18 @@ fn held_provider(release: Arc<Semaphore>) -> Box<dyn ProviderModule> {
 /// limited stamp naming the refusing budget and a true answer-due carrying
 /// the earlier sender's debt forward — and that earlier answer still
 /// arrives. A flooder can be refused their own answer but can never cancel
-/// someone else's. The exhausted channel still records unaddressed messages
+/// someone else's. The exhausted budget still records unaddressed messages
 /// with a null limited fact: budgets are consulted for addressed messages
 /// only.
+///
+/// The shape is the PRINCIPAL budget's, and it has to be (unit 55): a debt
+/// counts only once its turn DELIVERED, and a turn held open delivers
+/// nothing — so inside one conversation an owed answer and a spent budget
+/// cannot stand together. The principal budget counts across
+/// conversations, which is exactly the room this needs: the flooder spends
+/// their one slot in a first room whose turn completes, and their
+/// over-limit message then lands in a second room behind somebody else's
+/// held turn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrives() {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
@@ -664,7 +707,7 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
             answering: support::FIXTURE_ANSWERING,
             name: support::NAME.into(),
             disclosure: None,
-            protection: budgets(None, Some((1, 600))),
+            protection: budgets(Some((1, 600)), None),
             operators: support::operator_config(),
             direct_chats: assistant_core::DirectChats::default(),
             privacy_policy_address: None,
@@ -674,14 +717,26 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
     )
     .await
     .expect("the assembly starts");
-    let mut replies = assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
-    let room = support::authorized_group(&assistant, "room-propagated").await;
+    let assistant = Arc::new(assistant);
+    support::spawn_delivery_reporter(&assistant).await;
+    let mut replies = support::outbound_of(&assistant, &store).await;
 
-    // The innocent sender's ask takes the channel's one slot; its turn is
-    // held before any stream event, so the ask stays the unanswered tail.
+    // The flooder spends their one slot in a room of their own: two
+    // permits, so both rounds of that turn run and the send is delivered.
+    release.add_permits(2);
+    let spent = support::authorized_group(&assistant, "room-flooder-spend").await;
+    let spending = support::ingest_recorded(
+        &assistant,
+        inbound(&spent, ChannelKind::Group, "B", "the flooder's own ask"),
+    )
+    .await;
+    support::await_sends(&store, spending.conversation_id, 1).await;
+    assert_eq!(recv_reply(&mut replies).await.kind, ReplyKind::Answer);
+
+    // The innocent sender's ask opens the second room's turn; no permit is
+    // left, so it is held before any stream event and the ask stays the
+    // unanswered tail.
+    let room = support::authorized_group(&assistant, "room-propagated").await;
     let receipt = support::ingest_recorded(
         &assistant,
         inbound(&room, ChannelKind::Group, "A", "the innocent ask"),
@@ -698,7 +753,7 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
     .await;
     let flooded = await_message(&store, conv, 2).await;
     assert_eq!(flooded.fields["addressed"], json!(true));
-    assert_eq!(flooded.fields["limited"], json!("channel"));
+    assert_eq!(flooded.fields["limited"], json!("principal"));
     assert_eq!(
         flooded.fields["answer_due"],
         json!(true),
@@ -706,9 +761,8 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
          debt it propagates"
     );
 
-    // The exhausted channel consults no budget for an unaddressed message:
-    // The exhausted channel consults no budget for an unaddressed message:
-    // recorded with a null limited fact.
+    // An unaddressed message consults no budget at all: recorded with a
+    // null limited fact.
     support::ingest_recorded(
         &assistant,
         inbound_unaddressed(&room, ChannelKind::Group, "C", "an aside"),
@@ -722,24 +776,33 @@ async fn an_over_limit_message_propagates_the_debt_and_the_earlier_answer_arrive
     );
 
     // Released, the earlier sender's answer arrives.
-    release.add_permits(1);
+    release.add_permits(2);
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.kind, ReplyKind::Answer);
     assert_eq!(reply.channel, room);
 }
 
-/// AC5, the race for the last slot: two messages ingested concurrently
-/// against a one-answer channel budget yield exactly one taken debt and one
-/// limited stamp, because the counts and the append share the stamp
-/// serialization. The interleaving is probabilistic — nothing forces the
-/// two ingestions to collide on any single run — so each round starts the
-/// two racers from a barrier into an already-mapped room, and the loop
-/// repeats the collision enough times that a broken serialization,
-/// double-granting the slot on some round, fails in practice: with the
-/// serialization removed, this test fails within the first few rounds.
+/// AC5 under unit 55's counted-debt key: two messages ingested
+/// concurrently against a SPENT one-answer channel budget are both refused,
+/// on every round.
+///
+/// What the race can still prove and what it no longer can, said plainly.
+/// A debt counts against a budget only once its turn DELIVERED a message
+/// (AC13), so two asks colliding before anything has been sent both read a
+/// count of zero and both take a slot — the budget bounds what the
+/// assistant SAYS, and neither of them has made it say anything yet. What
+/// the stamp serialization still guarantees is that a SPENT budget refuses
+/// both: the delivered send is on the ledger before either racer reads it,
+/// so no interleaving can let one through.
+///
+/// The interleaving is probabilistic — nothing forces the two ingestions to
+/// collide on any single run — so each round starts the two racers from a
+/// barrier into an already-mapped room whose one slot is already spent, and
+/// the loop repeats the collision enough times that a count read outside
+/// the serialization would show up in practice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_racing_messages_cannot_both_take_the_last_slot() {
-    let (assistant, store, _bus) = silent_assistant(budgets(None, Some((1, 600)))).await;
+async fn two_racers_against_a_spent_budget_are_both_refused() {
+    let (assistant, store, _bus) = sending_assistant(budgets(None, Some((1, 600)))).await;
     let assistant = Arc::new(assistant);
     for round in 0..30 {
         let room = support::authorized_group(&assistant, &format!("room-race-{round}")).await;
@@ -755,6 +818,15 @@ async fn two_racing_messages_cannot_both_take_the_last_slot() {
             )
             .await;
         }
+        // And the channel's one slot is SPENT before the race: an addressed
+        // ask whose turn sent a message, which is what a counted debt is
+        // since unit 55.
+        let spending = support::ingest_recorded(
+            &assistant,
+            inbound(&room, ChannelKind::Group, "C", "the spending ask"),
+        )
+        .await;
+        support::await_sends(&store, spending.conversation_id, 1).await;
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
         let racer = |sender: &'static str, text: &'static str| {
             let assistant = Arc::clone(&assistant);
@@ -780,17 +852,17 @@ async fn two_racing_messages_cannot_both_take_the_last_slot() {
         );
 
         let recorded = messages(&store, conv).await;
-        assert_eq!(recorded.len(), 4, "recording is never limited");
+        assert_eq!(recorded.len(), 5, "recording is never limited");
         let limited: Vec<bool> = recorded
             .iter()
-            .skip(2)
+            .skip(3)
             .map(|block| block.fields.get("limited").is_some())
             .collect();
         assert_eq!(
-            limited.iter().filter(|stamped| **stamped).count(),
-            1,
-            "round {round}: exactly one racer is limited, one takes the \
-             slot; stamps were {limited:?}"
+            limited,
+            vec![true, true],
+            "round {round}: the spent slot refuses both racers, whichever \
+             of them the stamp lock admits first"
         );
     }
 }
@@ -1015,7 +1087,7 @@ async fn a_pre_migration_owing_tail_folds_to_its_stored_sender_authority() {
 /// pinned silent by the addressing suite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn only_a_taken_debt_emits_the_unlatch_intent() {
-    let (assistant, _store, bus) = silent_assistant(budgets(None, Some((1, 600)))).await;
+    let (assistant, store, bus) = sending_assistant(budgets(None, Some((1, 600)))).await;
     let mut events = bus.subscribe();
     let room = support::authorized_group(&assistant, "room-unlatch-limited").await;
 
@@ -1024,6 +1096,9 @@ async fn only_a_taken_debt_emits_the_unlatch_intent() {
         inbound(&room, ChannelKind::Group, "A", "the taken ask"),
     )
     .await;
+    // The debt counts only once its turn DELIVERED (AC13), so the send
+    // has to land before the next ask is stamped against it.
+    support::await_sends(&store, receipt.conversation_id, 1).await;
     support::ingest_recorded(
         &assistant,
         inbound(&room, ChannelKind::Group, "B", "the refused ask"),
@@ -1061,7 +1136,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
         let assistant = Assistant::start(
             store.clone(),
             Arc::new(EventBus::new()),
-            support::registry_of(support::silent_provider()),
+            support::registry_of(support::sending_stub()),
             assistant_core::tools::ToolSet::new(),
             assistant_core::AssemblyConfig {
                 retention: assistant_core::RetentionConfig::disabled(),
@@ -1082,6 +1157,8 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
         )
         .await
         .expect("the first assembly starts");
+        let assistant = Arc::new(assistant);
+        support::spawn_delivery_reporter(&assistant).await;
         let receipt = support::ingest_recorded(
             &assistant,
             inbound(&room, ChannelKind::Direct, "A", "the taken ask"),
@@ -1089,6 +1166,9 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
         .await;
         let taken = await_message(&store, receipt.conversation_id, 1).await;
         assert!(taken.fields.get("limited").is_none());
+        // The debt counts only once its turn DELIVERED (AC13), and the
+        // second assembly derives its refusal from that stored delivery.
+        support::await_sends(&store, receipt.conversation_id, 1).await;
     }
 
     // The second assembly derives the same refusal from the stored history.
@@ -1166,7 +1246,7 @@ async fn the_budget_state_is_the_ledger_and_ages_with_it() {
 /// refuse, and a flooder could lock themselves out past the window forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_debt_consumes_no_budget() {
-    let (assistant, store, _bus) = silent_assistant(budgets(Some((1, 600)), None)).await;
+    let (assistant, store, _bus) = sending_assistant(budgets(Some((1, 600)), None)).await;
     let room = channel("dm-refused-consumes-nothing");
 
     let receipt = support::ingest_recorded(
@@ -1177,6 +1257,9 @@ async fn a_refused_debt_consumes_no_budget() {
     let conv = receipt.conversation_id;
     let taken = await_message(&store, conv, 1).await;
     assert!(taken.fields.get("limited").is_none());
+    // The debt counts only once its turn DELIVERED (AC13), so the send
+    // has to land before the next ask is stamped against it.
+    support::await_sends(&store, conv, 1).await;
 
     // Half a window on, the taken debt still refuses the next ask.
     age_receipts(&store, 300).await;
@@ -1215,7 +1298,7 @@ async fn a_refused_debt_consumes_no_budget() {
 /// refusals.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_debt_consumes_no_channel_budget() {
-    let (assistant, store, _bus) = silent_assistant(budgets(None, Some((1, 600)))).await;
+    let (assistant, store, _bus) = sending_assistant(budgets(None, Some((1, 600)))).await;
     let room = support::authorized_group(&assistant, "room-refused-consumes-nothing").await;
 
     let receipt = support::ingest_recorded(
@@ -1226,6 +1309,9 @@ async fn a_refused_debt_consumes_no_channel_budget() {
     let conv = receipt.conversation_id;
     let taken = await_message(&store, conv, 1).await;
     assert!(taken.fields.get("limited").is_none());
+    // The debt counts only once its turn DELIVERED (AC13), so the send
+    // has to land before the next ask is stamped against it.
+    support::await_sends(&store, conv, 1).await;
 
     // Half a window on, the channel's one slot still refuses the next ask.
     age_receipts(&store, 300).await;
@@ -1268,7 +1354,7 @@ async fn a_refused_debt_consumes_no_channel_budget() {
 /// the first refusing budget names the limited fact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_budgets_exhausted_at_once_name_the_principal_fact() {
-    let (assistant, store, _bus) = silent_assistant(budgets(Some((1, 600)), Some((1, 600)))).await;
+    let (assistant, store, _bus) = sending_assistant(budgets(Some((1, 600)), Some((1, 600)))).await;
     let room = support::authorized_group(&assistant, "room-both-exhausted").await;
 
     // One taken debt exhausts both one-answer budgets together.
@@ -1280,6 +1366,9 @@ async fn both_budgets_exhausted_at_once_name_the_principal_fact() {
     let conv = receipt.conversation_id;
     let taken = await_message(&store, conv, 1).await;
     assert!(taken.fields.get("limited").is_none());
+    // The debt counts only once its turn DELIVERED (AC13), so the send
+    // has to land before the next ask is stamped against it.
+    support::await_sends(&store, conv, 1).await;
     support::ingest_recorded(
         &assistant,
         inbound(&room, ChannelKind::Group, "A", "the refused ask"),
@@ -1302,7 +1391,7 @@ async fn both_budgets_exhausted_at_once_name_the_principal_fact() {
 /// fresh budget per room — while another principal stays untouched.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_principal_budget_spans_conversations() {
-    let (assistant, store, _bus) = silent_assistant(budgets(Some((1, 600)), None)).await;
+    let (assistant, store, _bus) = sending_assistant(budgets(Some((1, 600)), None)).await;
     let room = support::authorized_group(&assistant, "room-global-budget").await;
 
     let receipt = support::ingest_recorded(
@@ -1312,6 +1401,9 @@ async fn the_principal_budget_spans_conversations() {
     .await;
     let taken = await_message(&store, receipt.conversation_id, 1).await;
     assert!(taken.fields.get("limited").is_none());
+    // The debt counts only once its turn DELIVERED (AC13), so the send
+    // has to land before the next ask is stamped against it.
+    support::await_sends(&store, receipt.conversation_id, 1).await;
 
     // The same principal in a different conversation: refused, because the
     // count crosses conversations.
@@ -1357,7 +1449,7 @@ async fn the_principal_budget_spans_conversations() {
 /// release.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_window_counts_receipt_times_across_offset_encodings() {
-    let (assistant, store, _bus) = silent_assistant(budgets(Some((1, 600)), None)).await;
+    let (assistant, store, _bus) = sending_assistant(budgets(Some((1, 600)), None)).await;
     let room = channel("dm-offset-encoding");
 
     let receipt = support::ingest_recorded(
@@ -1368,6 +1460,9 @@ async fn the_window_counts_receipt_times_across_offset_encodings() {
     let conv = receipt.conversation_id;
     let taken = await_message(&store, conv, 1).await;
     assert!(taken.fields.get("limited").is_none());
+    // The debt counts only once its turn DELIVERED (AC13), so the send
+    // has to land before the next ask is stamped against it.
+    support::await_sends(&store, conv, 1).await;
 
     // The same instants, re-expressed at UTC-05:00 through the support
     // seam that owns the header's time encoding.

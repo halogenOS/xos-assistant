@@ -59,17 +59,17 @@ async fn assert_wake_precedes_turn_end(
 /// with the switched-off title derivation pinned silent (decision 0077).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_inbound_message_becomes_an_outbound_reply() {
+    /// The one question this case asks, named once so the ledger check and
+    /// the reply assertion cannot read two different asks.
+    const ASKED: &str = "What is the plan?";
+
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     // Subscribed BEFORE the ingest so the whole event order is observed.
     let mut events = fixture.bus.subscribe();
 
     let key = channel("dm-1");
-    let mut message = inbound(&key, ChannelKind::Direct, "42", "What is the plan?");
+    let mut message = inbound(&key, ChannelKind::Direct, "42", ASKED);
     message.origin = Some("origin-7".into());
     let sent_at = message.timestamp.to_rfc3339();
     let receipt = support::ingest_recorded(&fixture.assistant, message).await;
@@ -90,30 +90,38 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
 
     // The outbound edge yields the answer, bound to the channel key — the
     // sender's first answer ever, so it opens with the disclosure line.
-    let answer = first_answer_to("What is the plan?");
+    let answer = first_answer_to(ASKED);
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.channel, key);
     assert_eq!(reply.text, answer);
 
     // The ledger, block by block: the recorded prompt, the tool choice, the
-    // recorded message, then the answer.
+    // recorded message, then the turn's own committed text — which is the
+    // model's private NOTES from unit 55 on, and carries no disclosure
+    // line, because that line is composed into the message that was sent.
     let blocks = support::viewed_ledger(&fixture.store, conv, "the answered turn", |blocks| {
         blocks.len() == 4
-            && blocks
-                .last()
-                .is_some_and(|b| b.block_type == "text" && b.fields["content"] == json!(answer))
+            && blocks.last().is_some_and(|b| {
+                b.block_type == "text" && b.fields["content"] == json!(support::answer_to(ASKED))
+            })
     })
     .await;
+    assert_eq!(
+        support::sent_texts(&fixture.store, conv).await,
+        vec![answer.clone()],
+        "what the chat received is the stored outgoing message, the \
+         disclosure line written into it before the send"
+    );
     assert_eq!(blocks[0].block_type, "system_prompt");
     assert_eq!(blocks[1].block_type, "tool_choice");
     assert_eq!(blocks[2].block_type, CHAT_MESSAGE_KIND);
     assert_eq!(blocks[2].role, Some(Role::User));
-    assert_eq!(blocks[2].fields["text"], json!("What is the plan?"));
+    assert_eq!(blocks[2].fields["text"], json!(ASKED));
     assert_eq!(blocks[2].fields["authority"], json!("member"));
     assert_eq!(blocks[2].fields["origin"], json!("origin-7"));
     match AssistantKind::from_block(&blocks[2]) {
         AssistantKind::ChatMessage(recorded) => {
-            assert_eq!(recorded.text.as_deref(), Some("What is the plan?"));
+            assert_eq!(recorded.text.as_deref(), Some(ASKED));
             assert_eq!(recorded.authority, Some(Authority::Member));
             assert_eq!(
                 recorded.principal_id,
@@ -132,7 +140,9 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
         | AssistantKind::Report(_)
         | AssistantKind::Delivered(_)
         | AssistantKind::MessageMark(_)
-        | AssistantKind::Retraction(_) => {
+        | AssistantKind::Retraction(_)
+        | AssistantKind::OutgoingMessage(_)
+        | AssistantKind::ContractNotice(_) => {
             panic!("the stored row resolved through the delegate")
         }
     }
@@ -140,12 +150,17 @@ async fn an_inbound_message_becomes_an_outbound_reply() {
 
     // One owed turn, one request, and the projection carried the message's
     // text to the provider.
-    assert_eq!(fixture.script.turns.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fixture.script.turns.load(Ordering::SeqCst),
+        2,
+        "one turn, two rounds: the round that sends and the round the \
+         delivery report re-drives"
+    );
     {
         // Scoped so the lock is released before the next await.
         let requests = fixture.script.seen.lock().unwrap();
         assert!(
-            requests[0].iter().any(|m| carries(m, "What is the plan?")),
+            requests[0].iter().any(|m| carries(m, ASKED)),
             "the projected messages carry the recorded text: {requests:?}"
         );
     }
@@ -188,8 +203,8 @@ async fn assert_no_title_derivation(
     );
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
-        1,
-        "the answered turn stays the only request of any kind"
+        2,
+        "the answered turn's own two rounds stay the only requests of any kind"
     );
     let blocks = support::consumer_view(
         &fixture
@@ -221,14 +236,11 @@ async fn assert_no_title_derivation(
 /// text, each reply's text is its own channel's answer, and the recorded
 /// authority is each message's own. The scripted answers derive from the
 /// request, so a reply bound to the other channel's key cannot pass.
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_channels_stay_two_conversations() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
 
     let key_one = support::authorized_group(&fixture.assistant, "room-1").await;
     let key_two = support::authorized_group(&fixture.assistant, "room-2").await;
@@ -306,7 +318,14 @@ async fn two_channels_stay_two_conversations() {
         };
         assert_eq!(
             support::block_text(&blocks[3], "content"),
-            first_answer_to(&text)
+            support::answer_to(&text),
+            "the turn's own notes carry no disclosure line: the line is \
+             written into the message that was sent"
+        );
+        assert_eq!(
+            support::sent_texts(&fixture.store, conversation.id).await,
+            vec![first_answer_to(&text)],
+            "and what the chat received carries it"
         );
         assert!(
             !support::block_text(&blocks[3], "content").contains(other),
@@ -316,7 +335,12 @@ async fn two_channels_stay_two_conversations() {
 
     // Each turn's projected request carried its own text and never the
     // other's.
-    assert_eq!(fixture.script.turns.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        fixture.script.turns.load(Ordering::SeqCst),
+        4,
+        "two turns, two rounds each: the round that sends and the round \
+         the delivery report re-drives"
+    );
     let requests = fixture.script.seen.lock().unwrap();
     for (own, other) in [
         (
@@ -349,15 +373,12 @@ async fn two_channels_stay_two_conversations() {
 /// then opens the second turn, whose projected context carries message two,
 /// and the ledger ends [message one, message two, answer one, message three,
 /// answer two].
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
     let hold = support::TurnHold::new();
     let fixture = support::start_assistant(Some(hold.clone())).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = support::authorized_group(&fixture.assistant, "room-9").await;
     support::ingest_recorded(
         &fixture.assistant,
@@ -402,17 +423,29 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
 
     // The ledger settles with the absorbed message BEFORE the answer that
     // streamed over it, and no second turn fires for it.
-    let blocks = support::settle(&fixture.store, conv, "the settled first turn", 5).await;
+    // Six blocks, not five: a HELD turn writes its notes in the round the
+    // test holds — which is what puts a streaming tail in the ledger while
+    // the hold stands — and its closing round commits the framework's own
+    // empty block behind them.
+    let blocks = support::settle(&fixture.store, conv, "the settled first turn", 6).await;
     assert_eq!(support::block_text(&blocks[2], "text"), "message one");
     assert_eq!(support::block_text(&blocks[3], "text"), "message two");
     assert_eq!(
         support::block_text(&blocks[4], "content"),
-        first_answer_to("message one")
+        support::answer_to("message one"),
+        "the held turn's notes are written before the hold, over the window \
+         it was dispatched on — and bare, because the disclosure line is \
+         written into the message that was sent"
+    );
+    assert_eq!(
+        support::sent_texts(&fixture.store, conv).await,
+        vec![first_answer_to("message one")]
     );
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
-        1,
-        "the absorbed message drew no turn of its own"
+        2,
+        "the absorbed message drew no turn of its own: the count is the \
+         held turn's own two rounds"
     );
 
     // The next appended message opens the next turn, and the absorbed
@@ -423,12 +456,16 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
     )
     .await;
     let turn = hold.started().await;
-    assert_eq!(turn, 2, "message three opened the second turn");
+    assert_eq!(
+        turn, 3,
+        "message three opened the second turn: the hold counts REQUESTS, \
+         and the first turn spent two of them"
+    );
     hold.release();
     let reply = recv_reply(&mut replies).await;
     assert_eq!(reply.text, answer_to("message three"));
 
-    let blocks = support::settle(&fixture.store, conv, "the settled second turn", 7).await;
+    let blocks = support::settle(&fixture.store, conv, "the settled second turn", 9).await;
     let shape: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
     assert_eq!(
         shape,
@@ -438,15 +475,18 @@ async fn a_mid_turn_message_is_absorbed_into_the_next_turn() {
             CHAT_MESSAGE_KIND,
             CHAT_MESSAGE_KIND,
             "text",
+            "text",
             CHAT_MESSAGE_KIND,
+            "text",
             "text"
         ],
         "the stated order holds"
     );
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
-        2,
-        "two turns in total"
+        4,
+        "two turns in total, two rounds each: the round that sends and the \
+         round the delivery report re-drives"
     );
     let requests = fixture.script.seen.lock().unwrap();
     assert!(
@@ -471,11 +511,7 @@ fn a_restarted_process_answers_a_known_channel() {
     support::process_runtime().block_on(async {
         let store = Store::open_with(db.path(), store_config()).expect("the first store opens");
         let fixture = support::start_assistant_on(store, None).await;
-        let mut replies = fixture
-            .assistant
-            .outbound(support::ADAPTER)
-            .await
-            .expect("the outbound edge opens");
+        let mut replies = support::outbound(&fixture).await;
         support::ingest_recorded(
             &fixture.assistant,
             inbound(&key, ChannelKind::Direct, "42", "the first question"),
@@ -483,6 +519,22 @@ fn a_restarted_process_answers_a_known_channel() {
         .await;
         let reply = recv_reply(&mut replies).await;
         assert_eq!(reply.text, first_answer_to("the first question"));
+        // The first process is torn down only once its turn has SETTLED: a
+        // turn spans two rounds since unit 55, and a process dropped
+        // between them leaves a streaming tail the second phase would then
+        // be reading instead of its own work.
+        let conversations = fixture
+            .store
+            .list_conversations()
+            .await
+            .expect("the conversation list reads");
+        support::settle(
+            &fixture.store,
+            conversations[0].id,
+            "the first process's own turn",
+            4,
+        )
+        .await;
     });
 
     // The next process over the same file: the conversation exists in the
@@ -491,11 +543,7 @@ fn a_restarted_process_answers_a_known_channel() {
     support::process_runtime().block_on(async {
         let store = Store::open_with(db.path(), store_config()).expect("the store reopens");
         let fixture = support::start_assistant_on(store, None).await;
-        let mut replies = fixture
-            .assistant
-            .outbound(support::ADAPTER)
-            .await
-            .expect("the outbound edge reopens");
+        let mut replies = support::outbound(&fixture).await;
         support::ingest_recorded(
             &fixture.assistant,
             inbound(
@@ -522,13 +570,20 @@ fn a_restarted_process_answers_a_known_channel() {
             .await
             .expect("the conversation list reads");
         assert_eq!(conversations.len(), 1, "the mapping survived the restart");
-        let blocks = support::consumer_view(
-            &fixture
-                .store
-                .list_blocks(conversations[0].id)
-                .await
-                .expect("the ledger reads"),
-        );
+        let blocks = support::settle_shape(
+            &fixture.store,
+            conversations[0].id,
+            "the restarted process's own turn",
+            &[
+                "system_prompt",
+                "tool_choice",
+                CHAT_MESSAGE_KIND,
+                "text",
+                CHAT_MESSAGE_KIND,
+                "text",
+            ],
+        )
+        .await;
         let shape: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
         assert_eq!(
             shape,

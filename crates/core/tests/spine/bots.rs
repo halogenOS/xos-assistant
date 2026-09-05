@@ -77,11 +77,7 @@ async fn a_bots_plain_messages_open_no_turn_and_spend_no_budget() {
         AnsweringMode::Helpful,
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-bot-quiet").await;
 
     let receipt = support::ingest_recorded(
@@ -165,7 +161,12 @@ async fn a_bots_plain_messages_open_no_turn_and_spend_no_budget() {
         mentioned.fields.get("limited").is_none(),
         "both budgets admit it: the plain messages above counted for nothing"
     );
-    assert_eq!(fixture.script.turns.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fixture.script.turns.load(Ordering::SeqCst),
+        2,
+        "one turn, two rounds: the round that sends and the round the \
+         delivery report re-drives"
+    );
 }
 
 /// `AC3b`: the owed tail waits for a carrier it is entitled to. A member's
@@ -466,11 +467,7 @@ async fn a_commands_false_row_above_a_settled_tail_carries_no_debt_either_way() 
         let fixture =
             support::start_assistant_answering(store, None, ProtectionConfig::default(), answering)
                 .await;
-        let mut replies = fixture
-            .assistant
-            .outbound(support::ADAPTER)
-            .await
-            .expect("the outbound edge opens");
+        let mut replies = support::outbound(&fixture).await;
         let room = support::authorized_group(&fixture.assistant, "room-settled").await;
 
         // The answered ask settles the conversation: nothing is owed behind

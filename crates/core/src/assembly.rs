@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use agent_ledger::agency::{LeafKind, ToolChoice};
@@ -22,7 +22,7 @@ use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{ProviderInstance, StoreTx};
 use agent_ledger::{
     Block, BlockKind, CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext,
-    Store, spawn_reactor,
+    Store, ToolCallResult, spawn_reactor,
 };
 use tokio::sync::{Mutex, RwLock, mpsc};
 
@@ -30,6 +30,7 @@ use crate::acknowledgment;
 use crate::commands::{self, Command};
 use crate::compaction::ContextWatch;
 use crate::composing;
+use crate::contract::{self, ContractNotice};
 use crate::erasure::{self, ErasureOutcome};
 use crate::error::{CoreError, FatalExit};
 use crate::filing::{self, FilingDoor};
@@ -40,9 +41,10 @@ use crate::kind::{
 use crate::message::{
     Authority, ChannelKey, ChannelKind, ChannelReset, ComposingUpdate, DeliveryHandle,
     DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt, JoinedMember, Observation,
-    ObserveOutcome, ObservedDelivery, ObservedFact, Outbound,
+    ObserveOutcome, ObservedDelivery, ObservedFact, Outbound, SendOutcome,
 };
 use crate::note::{self, ContextNote, NoteTopic};
+use crate::outgoing;
 use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::quoting;
 use crate::retention::{self, RetentionConfig};
@@ -52,10 +54,12 @@ use crate::tools::ToolSet;
 use crate::tools::changelog::HarnessChangelog;
 use crate::tools::mark::{self, MarkTool};
 use crate::tools::no_reply_needed::NoReplyNeeded;
+use crate::tools::reply::ReplyMessage;
 use crate::tools::report::{self, ReportTool};
 use crate::tools::rights::PrivacyTool;
 use crate::tools::runtime::RuntimeFacts;
 use crate::tools::search::{SearchConfig, WebSearch};
+use crate::tools::send::SendMessage;
 use crate::tools::standing::StandingLookup;
 use crate::tools::work_is_done::WorkIsDone;
 use crate::window::{
@@ -89,6 +93,15 @@ pub(crate) const DEBT_READ_THROUGH: &[&str] = &[
     // point its history had reached — including behind an ask nobody has
     // answered yet. That ask still owes its turn.
     TOOL_CHOICE_KIND,
+    // The contract notice (unit 55, 2026-09-02): appended beside the tool
+    // choice above it, at the same arbitrary moment and for the same
+    // reason — a conversation's first activity per process, which can land
+    // behind an ask nobody has answered yet.
+    contract::CONTRACT_NOTICE_KIND,
+    // The outgoing message (unit 55, 2026-09-02): a sending tool writes it
+    // INTO a live turn's window, so a message absorbed while the send was
+    // in flight must still summon its own turn.
+    crate::outgoing::OUTGOING_MESSAGE_KIND,
     // The kind unit 52 withdrew, spelled as the literal string a previous
     // build stored, because no kind of this assistant claims it any more.
     // The withdrawal drops the content table and the registry row; the
@@ -437,11 +450,15 @@ pub struct Assistant {
     /// memory, forgotten on restart — deletion is the flow where forgetting
     /// errs safe.
     pending_deletions: Arc<PendingDeletions>,
-    /// The observation race's test seam; `None` in production.
-    note_read_pause: Option<ScriptedPause>,
+    /// The observation race's test seam; unset in production. A
+    /// write-once cell, the session's own seam shape: a seam is installed
+    /// before the assembly serves anything, so it needs no reach past a
+    /// shared handle and never changes under a running conversation.
+    note_read_pause: OnceLock<ScriptedPause>,
     /// The suppression race's test seam, run between the pre-lock standing
-    /// read and the stamp lock; `None` in production.
-    standing_read_pause: Option<ScriptedPause>,
+    /// read and the stamp lock; unset in production, write-once like the
+    /// seam above it.
+    standing_read_pause: OnceLock<ScriptedPause>,
     /// The conversations whose recorded tool choice this process already
     /// compared against the registered set — the once-per-process memory
     /// of the on-delta supersession (decided 2026-08-23), bounded by
@@ -455,6 +472,12 @@ pub struct Assistant {
     /// filing takes the fence shared too. The whole contract, and the lock
     /// order this path obeys, are on [`crate::filing`].
     filing_door: FilingDoor,
+    /// Where the receipt door tells every composing edge that a send failed
+    /// (unit 55, 2026-09-02): a message that never reached the chat leaves
+    /// no adapter to end the indicator the send's own start lit, so the
+    /// core says so instead. Its whole contract is on
+    /// [`composing::SendStops`].
+    send_stops: composing::SendStops,
 }
 
 /// What the assembly itself adds to the embedder's tool set: the shared
@@ -505,6 +528,13 @@ struct AssembledTools {
 ///   anyone could state, and would remove it from the addressed mode. It
 ///   writes a block naming a person, so it takes the erasure fence too,
 ///   and the filing door it shares with the report.
+/// - The two SENDING tools join unconditionally (unit 55, 2026-09-02), and
+///   they have to: from this unit on they are the ONLY way the model's
+///   words reach a chat, so an assembly missing one would be an assistant
+///   that cannot speak. They validate a reply target against stored
+///   origins, so they take the erasure fence, and they file against those
+///   origins, so they take the same filing door the report and the reaction
+///   take.
 fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
     let AssembledTools {
         moderation_handle,
@@ -531,7 +561,15 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
         ));
     }
     tools.admit(StandingLookup::new(Arc::clone(&erasure_fence)));
-    tools.admit(MarkTool::new(Arc::clone(&erasure_fence), filing_door));
+    tools.admit(MarkTool::new(
+        Arc::clone(&erasure_fence),
+        Arc::clone(&filing_door),
+    ));
+    tools.admit(SendMessage::new(
+        Arc::clone(&erasure_fence),
+        Arc::clone(&filing_door),
+    ));
+    tools.admit(ReplyMessage::new(Arc::clone(&erasure_fence), filing_door));
     tools.admit(PrivacyTool::new(
         pending_deletions,
         privacy_replies,
@@ -585,6 +623,22 @@ fn with_release_window(
     } else {
         ctx
     }
+}
+
+/// Whether a recorded tool choice already names BOTH sending tools — the
+/// contract notice's one condition beyond the delta (unit 55, 2026-09-02).
+///
+/// A record naming both is a conversation that already had the tools, and
+/// therefore already ran under this contract: nothing to explain. A record
+/// naming one of them and not the other is a conversation whose model could
+/// not speak the way this build speaks, so it reads as pre-contract too —
+/// the honest reading of a half-set that no build ever registered. Which
+/// names those are is the sending pair's own enumeration, so this reading
+/// and the typing cue's cannot part company.
+fn names_the_sending_tools(recorded: &[String]) -> bool {
+    crate::tools::sending::NAMES
+        .iter()
+        .all(|sending| recorded.iter().any(|name| name == sending))
 }
 
 /// Whether a recorded tool choice already names the registered set, read
@@ -793,10 +847,11 @@ impl Assistant {
             privacy_replies,
             reset_replies: ReplyWindow::new(RESET_REPLY_WINDOW, RESET_REPLY_CAP),
             pending_deletions,
-            note_read_pause: None,
-            standing_read_pause: None,
+            note_read_pause: OnceLock::new(),
+            standing_read_pause: OnceLock::new(),
             choice_reconciled: Mutex::new(HashSet::new()),
             filing_door,
+            send_stops: composing::stops(),
         })
     }
 
@@ -823,8 +878,8 @@ impl Assistant {
     /// between the on-delta newest-note read and its append, inside the
     /// stamp lock — which is exactly why a suite can prove the lock holds
     /// the read-then-append window. Production never calls this.
-    pub fn pause_between_note_read_and_append(&mut self, pause: ScriptedPause) {
-        self.note_read_pause = Some(pause);
+    pub fn pause_between_note_read_and_append(&self, pause: ScriptedPause) {
+        let _ = self.note_read_pause.set(pause);
     }
 
     /// Install the suppression race's test seam: the given pause runs
@@ -832,8 +887,8 @@ impl Assistant {
     /// exactly the window a peer ingestion's flag write can land in — so a
     /// suite proves the under-lock re-read drops the racing message.
     /// Production never calls this.
-    pub fn pause_between_standing_read_and_append(&mut self, pause: ScriptedPause) {
-        self.standing_read_pause = Some(pause);
+    pub fn pause_between_standing_read_and_append(&self, pause: ScriptedPause) {
+        let _ = self.standing_read_pause.set(pause);
     }
 
     /// Install the reset claim race's test seam: the given pause runs
@@ -841,7 +896,7 @@ impl Assistant {
     /// window a concurrent racer takes the channel in — so a suite proves
     /// what a reset that lost the claim answers. Production never calls
     /// this.
-    pub fn pause_between_reset_delete_and_claim(&mut self, pause: ScriptedPause) {
+    pub fn pause_between_reset_delete_and_claim(&self, pause: ScriptedPause) {
         self.sessions.pause_between_reset_delete_and_claim(pause);
     }
 
@@ -975,7 +1030,7 @@ impl Assistant {
             family,
             suppressed,
         } = sender;
-        if let Some(pause) = &self.standing_read_pause {
+        if let Some(pause) = self.standing_read_pause.get() {
             pause().await;
         }
 
@@ -1307,9 +1362,12 @@ impl Assistant {
     /// can differ — it is composed from configuration and from files read at
     /// boot, so nothing can change it while the process runs. Each mapped
     /// channel's conversation is read for its system prompt; where that text
-    /// differs from the one composed now, the channel's mapping is dropped.
-    /// The next message on that channel then takes the ordinary unmapped
-    /// path and creates a fresh conversation carrying the current prompt.
+    /// differs from the one composed now, the channel FORKS: a successor
+    /// composed under the current deployment takes the mapping, and the
+    /// group's history rides along through the junction, everything past the
+    /// prompt the source opened with. A conversation that recorded no prompt
+    /// at all has no head to compose a successor past; it is unmapped
+    /// instead, and its channel's next message opens a fresh conversation.
     ///
     /// A channel is re-forked for a third reason: its conversation's prompt
     /// is not its FIRST row, whether or not the wording moved. A system
@@ -1326,25 +1384,27 @@ impl Assistant {
     /// Nothing is rewritten and nothing is deleted. The old conversation
     /// stays in the ledger exactly as it was — readable, exportable, and
     /// reachable by erasure through the same principal it always was — and
-    /// the channel simply moves on from it. That is the append-only answer
-    /// to a changed prompt: not a mutated record, but a new conversation
-    /// beside the old one.
+    /// no block is copied: the successor holds the same rows through the
+    /// junction. That is the append-only answer to a changed prompt: not a
+    /// mutated record, but a new conversation beside the old one.
     ///
-    /// The cost is stated rather than hidden: the group's earlier
-    /// conversation no longer rides in the model's context, so the assistant
-    /// starts that channel fresh. A prompt edit is a change of instructions,
-    /// and carrying half a conversation under new instructions is its own
-    /// kind of wrong; a model swap is a change of the dispatch itself, and a
-    /// channel left on the old binding keeps talking — and billing — through
-    /// it, which the operator watched happen before this walk learned to
-    /// look (2026-08-29).
+    /// What the successor does NOT take is the inherited prompt. The current
+    /// one stands in its place, at the head, where it reads first — an
+    /// appended one would sit behind the inherited one and be obeyed
+    /// unevenly. The rest of what the successor is — the current binding,
+    /// the configured reasoning level — is the session module's one
+    /// recording of what a fork under the current deployment means. A model
+    /// swap is a change of the dispatch itself, and a channel left on the
+    /// old binding keeps talking — and billing — through it, which the
+    /// operator watched happen before this walk learned to look
+    /// (2026-08-29).
     ///
     /// Returns how many channels were retired.
     ///
     /// # Errors
     ///
-    /// [`CoreError::Store`] if a mapping read, a block read or the unmapping
-    /// fails.
+    /// [`CoreError::Store`] if a mapping read, a block read, a settlement,
+    /// the fork or the re-mapping fails.
     pub async fn retire_stale_channels(&self) -> Result<usize, CoreError> {
         let store = self.ctx.store();
         let tx = store.tx();
@@ -1437,6 +1497,26 @@ impl Assistant {
                 // ledger rides across behind the fresh one.
                 None => InheritedRows::UpTo(last),
             };
+            // The settle, ahead of the fork (unit 55, 2026-09-02): a send
+            // this conversation filed and nobody confirmed will never
+            // happen now — the channel is about to move to a fresh session
+            // and the outbound edge seeds the successor past everything
+            // already stored — so the call waiting on it is failed with the
+            // sentence naming the retirement instead of being left open on
+            // a conversation nothing serves.
+            let settled = outgoing::fail_pending_sends(
+                store,
+                record.conversation_id,
+                outgoing::RETIRED_BEFORE_CONFIRMED,
+            )
+            .await?;
+            if settled > 0 {
+                tracing::info!(
+                    conversation_id = record.conversation_id,
+                    settled,
+                    "the retiring conversation held unconfirmed messages; they count as unsent"
+                );
+            }
             let successor = self
                 .sessions
                 .forked_with_current_prompt(record.conversation_id, inherited)
@@ -1546,7 +1626,7 @@ impl Assistant {
                 // the same way an ingested message grants them.
                 self.reconcile_tool_choice(conversation_id).await?;
                 let newest = note::newest_text(self.ctx.store(), conversation_id, topic).await?;
-                if let Some(pause) = &self.note_read_pause {
+                if let Some(pause) = self.note_read_pause.get() {
                     pause().await;
                 }
                 if newest.as_deref() == Some(text.as_str()) {
@@ -1611,9 +1691,29 @@ impl Assistant {
     /// One [`crate::delivery::Delivered`] block per reported origin, all
     /// under the first one as the delivery key, each naming the stored
     /// block a reply to that message quotes where the send carried one.
-    /// The adapter reports after every successful send on either path,
-    /// including a send cut short partway: the reported list is exactly
-    /// what reached the chat, so an empty list records nothing.
+    /// The adapter reports after every send on either path, whole or cut
+    /// short partway: the reported list is exactly what reached the chat,
+    /// so an empty list records nothing.
+    ///
+    /// # It also settles the model's call (unit 55, 2026-09-02)
+    ///
+    /// A message the model asked for through a sending tool left that call
+    /// PENDING, and this is the door that answers it — the one place either
+    /// send path passes through, so the record and the settlement cannot
+    /// drift apart:
+    ///
+    /// - a WHOLE send completes the call with the ids the platform assigned,
+    ///   which is how the model learns what to name when it answers a
+    ///   member replying to its own message;
+    /// - a FAILED send fails the call with the adapter's reason, so the
+    ///   model learns its words never arrived;
+    /// - a CUT-SHORT send fails the call too, with a sentence carrying the
+    ///   ids that did post: the message the group read is not the message
+    ///   the model wrote, and a member replying to the part that posted
+    ///   replies to one of those ids.
+    ///
+    /// A send nobody asked for — a report's line, a deterministic item —
+    /// carries no call on its handle and settles nothing.
     ///
     /// This answers nothing and never fails outward. A conversation that no
     /// longer exists — erasure can delete a direct conversation between the
@@ -1621,9 +1721,14 @@ impl Assistant {
     /// dropped here, because the alternative is an adapter deciding what to
     /// do about the core's bookkeeping. The consequence is stated rather
     /// than hidden: the message is then unrecorded, so a member's reply to
-    /// it lands quoteless, exactly as a reply to a message sent before this
-    /// unit does.
-    pub async fn report_delivery(&self, delivery: DeliveryHandle, origins: &[String]) {
+    /// it lands quoteless, and a settlement that failed to write leaves the
+    /// call open until the next startup sweep fails it.
+    pub async fn report_delivery(
+        &self,
+        delivery: DeliveryHandle,
+        origins: &[String],
+        outcome: &SendOutcome,
+    ) {
         if let Err(error) = delivery::record(self.ctx.store(), delivery, origins).await {
             tracing::warn!(
                 conversation_id = delivery.conversation_id(),
@@ -1632,6 +1737,88 @@ impl Assistant {
                 "the delivery was not fully recorded; a reply to an unrecorded message lands quoteless"
             );
         }
+        let Some(call_block) = delivery.call_block() else {
+            return;
+        };
+        let settlement = match outcome {
+            SendOutcome::Whole => ToolCallResult::Success {
+                content: outgoing::sent_result(origins),
+            },
+            SendOutcome::Failed { reason } if origins.is_empty() => ToolCallResult::Error {
+                error: outgoing::send_failed(reason),
+            },
+            SendOutcome::Failed { reason } => ToolCallResult::Error {
+                error: outgoing::send_cut_short(origins, reason),
+            },
+        };
+        if matches!(outcome, SendOutcome::Failed { .. }) {
+            // The composing cue's second stop: this send's own start lit
+            // the indicator and no message reached the chat to end it, so
+            // the edges are told. A send with no listening edge answers an
+            // error, which is nothing to act on: the cue is live-only.
+            let _ = self.send_stops.send(delivery.conversation_id());
+        }
+        if let Err(error) = outgoing::settle(
+            self.ctx.store(),
+            delivery.conversation_id(),
+            call_block,
+            settlement,
+        )
+        .await
+        {
+            tracing::warn!(
+                conversation_id = delivery.conversation_id(),
+                call_block,
+                %error,
+                "the send's call could not be settled; it stays open until the next start"
+            );
+        }
+    }
+
+    /// Settle every send this process could not finish (unit 55,
+    /// 2026-09-02): before serving, every outgoing block whose call is
+    /// still unresolved is FAILED with the restart sentence, in every
+    /// mapped conversation.
+    ///
+    /// A pending send the process died with is not delivered late and never
+    /// could be: the outbound edge's startup seed marks everything already
+    /// stored as history, so the block would sit undelivered forever while
+    /// its call kept the turn open. The trade is decision 0014's, the one
+    /// it made for a redelivered update — a possible duplicate over a
+    /// possible silence — and the model is told plainly that it may send
+    /// again.
+    ///
+    /// Run BEFORE the edges are taken, so the sweep never races a live
+    /// delivery report for the same call; and idempotent through the
+    /// framework's own resolution door, so a repeat settles nothing.
+    ///
+    /// Returns how many calls were settled.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Store`] if the mapping read, a ledger read or a
+    /// settlement write fails.
+    pub async fn fail_unfinished_sends(&self) -> Result<usize, CoreError> {
+        let store = self.ctx.store();
+        let mut settled = 0;
+        for record in mapping::all(&store.tx()).await? {
+            let failed = outgoing::fail_pending_sends(
+                store,
+                record.conversation_id,
+                outgoing::RESTARTED_BEFORE_CONFIRMED,
+            )
+            .await?;
+            if failed > 0 {
+                tracing::info!(
+                    conversation_id = record.conversation_id,
+                    failed,
+                    "the process restarted before the chat confirmed these messages; \
+                     they count as unsent"
+                );
+            }
+            settled += failed;
+        }
+        Ok(settled)
     }
 
     /// Record one join event, past the authorization gate (unit 36,
@@ -1792,7 +1979,7 @@ impl Assistant {
     /// included. Each adapter takes one edge under its own name, beside
     /// its [`Self::outbound`] edge.
     pub fn composing(&self, adapter: &str) -> mpsc::UnboundedReceiver<ComposingUpdate> {
-        composing::spawn_edge(self.ctx.clone(), adapter.to_owned())
+        composing::spawn_edge(self.ctx.clone(), adapter.to_owned(), &self.send_stops)
     }
 
     /// Erase one principal, in one call, per decision 0012: the personal
@@ -2674,6 +2861,35 @@ impl Assistant {
     /// depended on the record. The memory is marked only after the append
     /// stands — a transiently failed append leaves the conversation
     /// unreconciled, and the redelivered activity retries.
+    ///
+    /// # The contract notice rides the delta (unit 55, 2026-09-02)
+    ///
+    /// A conversation whose newest prior choice EXISTED and lacked the two
+    /// sending tools ran under the old contract, where the assistant's
+    /// written answers were relayed to the group. In the same act as the
+    /// choice that grants it the tools, one system-voiced
+    /// [`ContractNotice`] is appended stating where the line falls: the
+    /// answers above it were posted as they stand, and from there the
+    /// written text is private.
+    ///
+    /// The two conditions are exactly the delta's own: a prior choice must
+    /// have existed — a conversation carrying no record at all is one this
+    /// process has no evidence about, and a notice explaining a change
+    /// nobody can show would be a claim rather than a record — and it must
+    /// have LACKED the two tools, since a conversation born under this
+    /// build has no relayed answer to explain and gets no notice. Both
+    /// blocks are appended now, after every raw answer the notice explains,
+    /// so under compaction the notice sits with them.
+    ///
+    /// The one act is two writes, and no door spans both, so the ORDER
+    /// carries what a transaction would: the notice is written first, and
+    /// only when the conversation holds none yet. A process that dies
+    /// between the two leaves the delta unwritten, so the next activity
+    /// reads the same pre-contract choice, finds the notice already
+    /// standing, and appends only what is missing. Written the other way
+    /// round the delta would land alone and every later reconcile would see
+    /// a choice that already names the tools — the crossing recorded
+    /// nowhere, the notice lost for good.
     async fn reconcile_tool_choice(&self, conversation_id: i64) -> Result<(), CoreError> {
         if self
             .choice_reconciled
@@ -2684,9 +2900,28 @@ impl Assistant {
             return Ok(());
         }
         let recorded = self.ctx.store().newest_tool_choice(conversation_id).await?;
+        let crossed_into_sending = recorded
+            .as_ref()
+            .is_some_and(|names| !names_the_sending_tools(names));
         let already_current =
             recorded.is_some_and(|names| names_the_same_set(&names, self.sessions.tool_names()));
         if !already_current {
+            if crossed_into_sending && !self.holds_contract_notice(conversation_id).await? {
+                self.ctx
+                    .store()
+                    .append_consumer_block(
+                        conversation_id,
+                        None,
+                        contract::CONTRACT_NOTICE_KIND,
+                        ContractNotice::stored_fields(contract::CONTRACT_NOTICE),
+                        None,
+                    )
+                    .await?;
+                tracing::info!(
+                    conversation_id,
+                    "the conversation crossed into the sending contract; the notice is recorded"
+                );
+            }
             self.ctx
                 .store()
                 .append_tool_choice(conversation_id, self.sessions.tool_names().to_vec())
@@ -2703,6 +2938,23 @@ impl Assistant {
         }
         reconciled.insert(conversation_id);
         Ok(())
+    }
+
+    /// Whether this conversation already holds its contract notice — read
+    /// off the ledger and not off the process's memory, because the fact the
+    /// once-only rule rests on is a stored one: a process that appended the
+    /// notice and died before the choice must find it here.
+    ///
+    /// One ledger read, taken only on the crossing itself, which happens at
+    /// most once in a conversation's life.
+    async fn holds_contract_notice(&self, conversation_id: i64) -> Result<bool, CoreError> {
+        Ok(self
+            .ctx
+            .store()
+            .list_blocks(conversation_id)
+            .await?
+            .iter()
+            .any(|block| block.block_type == contract::CONTRACT_NOTICE_KIND))
     }
 
     /// The conversation's owing tail, if any — the one-block read behind the
@@ -2798,7 +3050,9 @@ impl Assistant {
                 | AssistantKind::Report(_)
                 | AssistantKind::Delivered(_)
                 | AssistantKind::MessageMark(_)
-                | AssistantKind::Retraction(_),
+                | AssistantKind::Retraction(_)
+                | AssistantKind::OutgoingMessage(_)
+                | AssistantKind::ContractNotice(_),
             )
             | None => None,
         })

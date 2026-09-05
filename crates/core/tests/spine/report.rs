@@ -75,11 +75,7 @@ async fn report_fixture_on(
     let fixture =
         support::start_assistant_reporting(store, provider, handle, ToolSet::new(), protection)
             .await;
-    let replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let replies = support::outbound(&fixture).await;
     (fixture, replies)
 }
 
@@ -95,6 +91,7 @@ async fn assessing_fixture(
             tool: report::NAME.into(),
             input: input.into(),
             narration,
+            announce: None,
         },
         hold,
     );
@@ -221,7 +218,21 @@ fn sequenced_provider(
                         let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
-                    turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    // The round that answers a SEND is transport, not a
+                    // step (unit 55): the words are already in the chat, so
+                    // the turn ends with nothing more and the script keeps
+                    // its numbering.
+                    if support::answers_a_send(&messages) {
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: agent_ledger::StopReason::EndTurn,
+                            }));
+                        let _ = response_tx.send(ProviderResponse::Done);
+                        continue;
+                    }
+                    let turn = turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
                     seen.lock().unwrap().push(messages);
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
                     let step = steps
@@ -231,19 +242,19 @@ fn sequenced_provider(
                         .unwrap_or(Step::Answer(CLOSING_ANSWER));
                     match step {
                         Step::Answer(text) => {
-                            if !text.is_empty() {
-                                let _ = response_tx
-                                    .send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                            // Words reach the chat the one way anything
+                            // does (unit 55): through the sending tool. An
+                            // empty step says nothing and ends the turn.
+                            if text.is_empty() {
                                 let _ = response_tx.send(ProviderResponse::Event(
-                                    StreamEvent::TextDelta { text: text.into() },
+                                    StreamEvent::MessageEnd {
+                                        usage: agent_ledger::providers::Usage::default(),
+                                        stop_reason: agent_ledger::StopReason::EndTurn,
+                                    },
                                 ));
+                            } else {
+                                support::send_scripted_message(&response_tx, turn, text, None);
                             }
-                            let _ = response_tx.send(ProviderResponse::Event(
-                                StreamEvent::MessageEnd {
-                                    usage: agent_ledger::providers::Usage::default(),
-                                    stop_reason: agent_ledger::StopReason::EndTurn,
-                                },
-                            ));
                         }
                         Step::Fail(error) => {
                             let _ = response_tx.send(ProviderResponse::Error(error.into()));
@@ -378,7 +389,7 @@ async fn a_violating_message_is_assessed_and_the_edge_threads_the_report_before_
         let requests = fixture.script.seen.lock().unwrap();
         let opening = requests
             .iter()
-            .find(|request| request.iter().any(|m| carries(m, "[origin-spam-1]")))
+            .find(|request| request.iter().any(|m| carries(m, "msgid: origin-spam-1")))
             .expect("the opening request was seen");
         assert!(
             opening
@@ -387,7 +398,7 @@ async fn a_violating_message_is_assessed_and_the_edge_threads_the_report_before_
             "the rules note rides the assessed request"
         );
         assert!(
-            opening.iter().any(|m| carries(m, "[origin-spam-1]")),
+            opening.iter().any(|m| carries(m, "msgid: origin-spam-1")),
             "the offending message's id is shown to the model"
         );
     }
@@ -662,11 +673,9 @@ async fn with_several_messages_absorbed_the_model_names_the_one_violator() {
         1,
         "one violator named, one report filed"
     );
-    // The narration committed ahead of the filing, so it delivers first;
-    // the report follows it, threaded onto the named violator.
-    let narration = recv_reply(&mut replies).await;
-    assert_eq!(narration.kind, ReplyKind::Answer);
-    assert_eq!(narration.text, support::disclosed("One moment."));
+    // The narration reaches NOBODY (unit 55): the model's written text is
+    // private notes, so the first thing the chat receives is the report's
+    // own line, threaded onto the named violator.
     let filed = recv_reply(&mut replies).await;
     assert_eq!(filed.kind, ReplyKind::Report);
     assert_eq!(
@@ -1735,17 +1744,21 @@ fn racing_report_provider() -> (
                             },
                         ));
                         let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
-                    } else {
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: CLOSING_ANSWER.into(),
-                        }));
+                    } else if support::answers_a_send(&messages) {
+                        // The round after the send: the words are in the
+                        // chat, so the turn ends with nothing more.
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
                                 usage: agent_ledger::providers::Usage::default(),
                                 stop_reason: agent_ledger::StopReason::EndTurn,
                             }));
+                    } else {
+                        support::send_scripted_message(
+                            &response_tx,
+                            resolved,
+                            CLOSING_ANSWER,
+                            None,
+                        );
                     }
                     let _ = response_tx.send(ProviderResponse::Done);
                 }
@@ -1891,8 +1904,10 @@ fn reporting_tools() -> Vec<String> {
         assistant_core::tools::no_reply_needed::NAME.into(),
         assistant_core::tools::rights::NAME.into(),
         assistant_core::tools::mark::NAME.into(),
+        assistant_core::tools::reply::NAME.into(),
         report::NAME.into(),
         assistant_core::tools::runtime::NAME.into(),
+        assistant_core::tools::send::NAME.into(),
         assistant_core::tools::work_is_done::NAME.into(),
     ]
 }
@@ -2042,6 +2057,7 @@ async fn a_pre_unit_choice_gains_the_report_tool_and_files_on_first_activity() {
             tool: report::NAME.into(),
             input: r#"{"message_id":"origin-spam-1"}"#.into(),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -2054,11 +2070,7 @@ async fn a_pre_unit_choice_gains_the_report_tool_and_files_on_first_activity() {
         ProtectionConfig::default(),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     support::authorize(&fixture.assistant, &key).await;
 
     // The first activity: the offense lands behind the superseding
@@ -2100,6 +2112,7 @@ async fn a_pre_unit_choice_gains_the_report_tool_and_files_on_first_activity() {
 /// conversation's tool choice — the wiki tool stands with the other lookups
 /// — and REMOVED from a pre-existing conversation's choice by the delta
 /// append on its first activity under the handleless process.
+#[allow(clippy::too_many_lines)]
 #[test]
 fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
     let db = support::TempDb::new("handle-removed");
@@ -2179,7 +2192,9 @@ fn without_a_handle_the_report_tool_unregisters_and_the_delta_removes_it() {
                 assistant_core::tools::no_reply_needed::NAME.to_owned(),
                 assistant_core::tools::rights::NAME.to_owned(),
                 assistant_core::tools::mark::NAME.to_owned(),
+                assistant_core::tools::reply::NAME.to_owned(),
                 assistant_core::tools::runtime::NAME.to_owned(),
+                assistant_core::tools::send::NAME.to_owned(),
                 assistant_core::tools::work_is_done::NAME.to_owned()
             ],
             "the report tool is removed; the lookups and the unconditional tools stand"

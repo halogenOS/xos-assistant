@@ -82,9 +82,7 @@ impl ToolHandler<CoreEvent> for NoReplyNeeded {
                  was asked of you. Call it when the messages you are reading are other \
                  people's conversation, or when a question names someone who is not you. \
                  Calling it says: nobody here is waiting on me. It takes no arguments and \
-                 posts nothing. Call it on its own, with nothing written ahead of the \
-                 call: whatever you write before a tool call is posted to the group as \
-                 its own message."
+                 posts nothing."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -137,8 +135,14 @@ mod tests {
 
     /// The definition: the registered name, the turn-ending property, no
     /// parameters at all, and a description carrying the meaning the
-    /// teaching deliberately does not — what the call is for, that it
-    /// posts nothing, and that it is made bare.
+    /// teaching deliberately does not — what the call is for, and that it
+    /// posts nothing.
+    ///
+    /// The pre-call posting sentence is asserted GONE (unit 55,
+    /// 2026-09-02). It warned that prose written ahead of a call is posted
+    /// as its own message, which was true while text was relayed; from unit
+    /// 55 written text reaches nobody at all, so the warning would describe
+    /// a mechanism that no longer exists.
     ///
     /// The reaction is asserted ABSENT from it. Decision 0197 gave the
     /// reaction the terminal message, so no chatter case is left for a
@@ -164,13 +168,18 @@ mod tests {
             "a question names someone who is not you",
             "nobody here is waiting on me",
             "It takes no arguments and posts nothing",
-            "Call it on its own, with nothing written ahead of the call",
         ] {
             assert!(
                 definition.description.contains(meaning),
                 "the description carries: {meaning}"
             );
         }
+        assert!(
+            !definition
+                .description
+                .contains("posted to the group as its own message"),
+            "the pre-call posting warning is gone: written text reaches nobody now"
+        );
         for absent in ["reaction", "chatter"] {
             assert!(
                 !definition.description.contains(absent),

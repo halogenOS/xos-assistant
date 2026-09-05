@@ -12,12 +12,16 @@
 //! conversation's system prompt; like any prompt edit, a changed name,
 //! mode or moderation handle reaches new conversations only.
 //!
-//! Silence needs no vocabulary of its own (unit 22, 2026-08-24): the model
-//! stays silent by ending its turn without writing any text, the framework
-//! commits that turn as a real empty answer, and the outbound edge
-//! delivers it as nothing. When addressed and unable to back an answer
-//! with a lookup, the model says it doesn't know in its own words —
-//! ordinary prose, no machine routing.
+//! Silence needs no vocabulary of its own (unit 22, 2026-08-24; re-keyed
+//! by unit 55, 2026-09-02): the model stays silent by ending its turn
+//! without SENDING anything. Writing is no longer the act — what the model
+//! writes is private notes that reach nobody, and a message reaches the
+//! group only through a sending tool — so every silence sentence here says
+//! "without sending", and the contract that makes those words mean
+//! something is composed ahead of them ([`SENDING_CONTRACT`]). When
+//! addressed and unable to back an answer with a lookup, the model says it
+//! doesn't know in its own words — ordinary prose, sent like any message,
+//! with no machine routing.
 
 use crate::assembly::AnsweringMode;
 
@@ -53,8 +57,8 @@ pub fn moderation_taught(handle_configured: bool, answering: AnsweringMode) -> b
 
 /// The moderation teaching, verbatim (unit 15, 2026-08-24): the model
 /// judges each message against the pinned rules and reports a clear
-/// violation through the report tool, naming the message by the bracketed
-/// id the projection shows — reasoned first, assessment only, the
+/// violation through the report tool, naming the message by the msgid its
+/// envelope shows — reasoned first, assessment only, the
 /// administrators decide (decision 0070). The no-report cases are taught
 /// beside the capability: borderline calls, rule-absent messages, and
 /// every message while no rules are pinned. The pinned statement is named
@@ -64,7 +68,7 @@ pub fn moderation_taught(handle_configured: bool, answering: AnsweringMode) -> b
 /// (AC8's no-rules half, beside the base prose that carries no rules).
 ///
 /// Since unit 36 (2026-08-29) the same teaching carries the join rule: a
-/// join notice is marked with its own bracketed id, a shown name that is
+/// join notice carries an envelope of its own, a shown name that is
 /// itself unmistakably promotional bait — obvious at a glance to anyone —
 /// is the violation before the account has spoken, and it is reported on
 /// sight by that id; a name that is merely suspect is not bait, and doubt
@@ -79,22 +83,22 @@ pub const MODERATION_TEACHING: &str = "You also assess each group message agains
      group has no rules set — say so plainly if asked, invent none, and \
      report nothing. When a message clearly \
      violates those rules, think it through first, then file a report with \
-     the report_spam tool, naming the violating message by the bracketed id \
-     shown ahead of it. Report only clear violations: do not report \
+     the report_spam tool, naming the violating message by the msgid its \
+     envelope shows. Report only clear violations: do not report \
      borderline calls, messages no rule covers, or anything when no rules \
      are pinned. A report is an assessment for the group's administrators, \
      who decide; you never ban, mute or remove anyone. Reporting and \
      answering are independent: you may report and still answer, or report \
      and stay silent. The tool is the only way to report — never write the \
      report command into an answer yourself. \
-     You also see join notices, each marked with its own bracketed id: a \
+     You also see join notices, each under an envelope of its own: a \
      line stating that someone joined the group, under the name the \
      platform showed. When a joiner's shown name is itself unmistakably \
      promotional bait — an advertisement, a solicitation or a come-on \
      carried in place of a name, obvious at a glance to anyone — that name \
      is the violation before the account has said anything, and you report \
-     the join on sight, naming it by its bracketed id exactly as you would \
-     name a violating message. A name that merely sounds promotional, or \
+     the join on sight, naming it by its msgid exactly as you would name a \
+     violating message. A name that merely sounds promotional, or \
      that you suspect but cannot be certain of, is not bait: report only \
      what is beyond doubt, and when in doubt, do nothing. Filing \
      the report is the whole action: you never ban, kick, or reply to the \
@@ -115,23 +119,24 @@ pub const MODERATION_TEACHING: &str = "You also assess each group message agains
 /// The heads-up line rides HERE, inside the gated teaching, because the
 /// search is the slow work: it is the one tool that reaches the open web,
 /// and the composing cue goes dark while a call runs, so the line is the
-/// only sign of life in that window. Nothing mechanizes it — a round's
-/// text ahead of a tool call already finalizes as its own committed answer
-/// and delivers, so the behavior is taught prose and therefore
-/// probabilistic, never a guarantee the mechanism enforces. Its wording
-/// carries its own bounds so it cannot decay into filler: one line, what
-/// is being looked up, never a placeholder, never the member's words read
-/// back. The last clause settles it against the silence teaching, whose
-/// end-your-turn-with-no-text rule governs a turn with nothing to say —
-/// an announcing turn has a search to run.
+/// only sign of life in that window. Since unit 55 the line is SENT, with
+/// the plain sending tool, because that is the only way anything the model
+/// writes reaches a chat; nothing mechanizes it either way — the model
+/// decides whether to make that call — so the behavior stays taught prose
+/// and therefore probabilistic, never a guarantee the mechanism enforces.
+/// Its wording carries its own bounds so it cannot decay into filler: one
+/// line, what is being looked up, never a placeholder, never the member's
+/// words read back. The last clause settles it against the silence
+/// teaching, whose end-the-turn-without-sending rule governs a turn with
+/// nothing to say — an announcing turn has a search to run.
 pub const SEARCH_TEACHING: &str = "You can also search the web with the search_web tool, for questions about \
-     the world and not about the project. Before you run a search, say in \
-     one short line what you are about to look up, then run the search, then \
-     answer: one line and no more, stating the thing you are going to look \
-     for — never a placeholder standing in for an answer, and never a \
-     restatement of the words the member just wrote. Ending a turn with no \
-     text is for a turn with nothing to say; a turn with a search to run has \
-     something to say. A result's snippet is a hint, \
+     the world and not about the project. Before you run a search, send one \
+     short line with send_message saying what you are about to look up, then \
+     run the search, then send the answer: one line and no more, stating the \
+     thing you are going to look for — never a placeholder standing in for an \
+     answer, and never a restatement of the words the member just wrote. \
+     Ending a turn without sending is for a turn with nothing to say; a turn \
+     with a search to run has something to say. A result's snippet is a hint, \
      not a source: when you answer from one, say where it came from and name \
      the page. A snippet that does not contain the claim is a miss, exactly \
      as an unanswering lookup is — say you don't know instead of filling the \
@@ -167,7 +172,7 @@ pub const SEARCH_TEACHING: &str = "You can also search the web with the search_w
 /// cleanliness scans would fail on a glyph in this file. Taste — which
 /// emoji suits which moment — is the deployed persona's, not the core's.
 pub const REACT_TEACHING: &str = "You can also put one emoji reaction on a message, with the \
-     react tool: name the message by the bracketed id shown ahead of it and give the emoji \
+     react tool: name the message by the msgid its envelope shows and give the emoji \
      you choose. A response to you that needs no further response can be stamped off with \
      one reaction instead of an empty turn: someone asks you how something works, you \
      answer, they write back thanks — that thanks can take a reaction and nothing more. \
@@ -175,49 +180,86 @@ pub const REACT_TEACHING: &str = "You can also put one emoji reaction on a messa
      is the whole of it. Most messages deserve no reaction at all, one message takes at \
      most one reaction ever, and silence stays the default.";
 
-/// The two closing prohibitions (unit 54, 2026-09-02), composed
-/// unconditionally: both bind every deployment, because neither names a
-/// capability a configuration can remove.
+/// The closing prohibition (unit 54, 2026-09-02; halved by unit 55,
+/// 2026-09-02), composed unconditionally: it binds every deployment,
+/// because it names no capability a configuration can remove.
 ///
-/// Neither sentence PUSHES anything, and that is the unit's whole
-/// decision. The assistant gained two tools that end a turn with nothing
-/// posted, and the teaching gained no directive to call them: a rule that
-/// pushes an act gets the act stamped on everything, and those tools are a
-/// protection against a model that loops because it must do something, not
-/// a behaviour to encourage. What each tool is for lives in its own
-/// model-facing description. Ending a turn with plain silence stays the
-/// taught default, exactly as before.
+/// It PUSHES nothing, and that is unit 54's whole decision. The assistant
+/// gained two tools that end a turn with nothing posted, and the teaching
+/// gained no directive to call them: a rule that pushes an act gets the act
+/// stamped on everything, and those tools are a protection against a model
+/// that loops because it must do something, not a behaviour to encourage.
+/// What each tool is for lives in its own model-facing description. Ending
+/// a turn in silence stays the taught default, exactly as before.
 ///
-/// What the two sentences forbid, and why each is here:
+/// THE ANNOUNCEMENT is what it forbids. Observed in production on
+/// 2026-09-01: asked a question aimed at another member by name, the
+/// assistant posted that the question was not for it and it was staying
+/// out. That message is the silence written out, and it belongs to nobody.
 ///
-/// 1. THE ANNOUNCEMENT. Observed in production on 2026-09-01: asked a
-///    question aimed at another member by name, the assistant posted that
-///    the question was not for it and it was staying out. That message is
-///    the silence written out, and it belongs to nobody.
-/// 2. THE NARRATED CLOSE. Prose written ahead of a tool call is finalized
-///    and delivered as its own message by the standing mechanism decision
-///    0146 records: a round's text ahead of a call commits as its own
-///    answer block and the outbound edge delivers it, with nothing holding
-///    a mid-turn text back. So a close narrated before the call posts
-///    exactly the announcement the first sentence forbids. Nothing
-///    mechanizes this: the words are written before any handler is
-///    reached, so the teaching is the whole control, stated as a teaching
-///    — the same honesty 0146 states about the line it teaches.
-pub const CLOSING_PROHIBITIONS: &str = "Never post a message whose only content is that you \
+/// Unit 54's second sentence — the narrated close, which warned that prose
+/// written ahead of a tool call is posted as its own message — is GONE, and
+/// its mechanism with it: from unit 55 nothing the model writes is posted
+/// anywhere, so a narrated ending narrates to nobody and the warning would
+/// describe a machine that no longer exists.
+pub const CLOSING_PROHIBITIONS: &str = "Never send a message whose only content is that you \
      are not taking part: a line saying the question was for someone else, that you are \
      staying out of it, or that you have nothing to add is your silence written out, and \
-     nobody needs to read it. When a tool call is how a turn of yours ends, make that call \
-     on its own, with nothing written ahead of it: whatever you write before a tool call is \
-     posted to the group as its own message, so a narrated ending posts the very line the \
-     rule above forbids.";
+     nobody needs to read it.";
+
+/// The speaking contract, verbatim (unit 55, 2026-09-02), composed
+/// unconditionally: it describes the machine every deployment runs, and
+/// there is no configuration under which it is false.
+///
+/// It states four things and instructs almost nothing, because it is a
+/// description of what happens rather than a rule about what to do:
+///
+/// 1. WRITTEN TEXT IS PRIVATE. This is the change, and it is stated first
+///    and plainly. Everything the model writes is its own notes; no chat
+///    ever reads a word of it.
+/// 2. THE TWO DOORS. A message reaches the group through the sending tools
+///    and through nothing else. Both are named, with the difference
+///    between them — the reply names the message it answers — and where the
+///    id for that comes from.
+/// 3. WHAT ONE TURN MAY DO. Several messages, several people answered, or
+///    nothing at all: the whole point of the change, in the operator's own
+///    terms, is that the assistant is no longer forced into one answer per
+///    turn or none.
+/// 4. THE ENVELOPE. Every message the model reads carries one, and its
+///    msgid is the token the reply tool, the report tool and the react tool
+///    all aim by.
+///
+/// The two effects that are NOT sends stay named as what they are: a filed
+/// report's line and an emoji reaction are the tools' own effects, and
+/// neither is the model's text reaching anybody.
+///
+/// Silence keeps its place: it is the default here as everywhere else in
+/// the prompt, and a turn that ends without a send posts nothing. That
+/// sentence is what keeps the contract from reading as an instruction to
+/// send.
+pub const SENDING_CONTRACT: &str = "What you write is your own private notes. It is never \
+     posted and nobody in the group reads it. A message reaches the group only when you send \
+     it: with the send_message tool to post to the chat, or with the reply_message tool to \
+     answer one message in particular, naming it by the msgid its envelope shows. One turn of \
+     yours can send several messages, answer several people, or send nothing at all. Silence \
+     stays the default: a turn that ends without sending posts nothing, which is exactly \
+     right whenever there is nothing to say. Every message you read carries an envelope above \
+     it naming who wrote it, when the chat says it was sent, and its msgid. Two things that \
+     are not messages still reach the group as they always did, because they are a tool's own \
+     effect and not your text: a report you file, and an emoji reaction you place.";
 
 /// The whole system prompt the assembly records: the embedder's prompt,
-/// then the name identity, then the answering teaching for the configured
-/// mode, then the react teaching and the closing prohibitions — all three
-/// unconditional — and then, each exactly when its own capability is
-/// there, the moderation teaching and the web search teaching. Public
-/// because the suites assert recorded prompts against exactly this
-/// composition instead of restating it.
+/// then the name identity, then the speaking contract, then the answering
+/// teaching for the configured mode, then the react teaching and the
+/// closing prohibition — all of them unconditional — and then, each exactly
+/// when its own capability is there, the moderation teaching and the web
+/// search teaching. Public because the suites assert recorded prompts
+/// against exactly this composition instead of restating it.
+///
+/// The contract comes BEFORE the answering teaching, and the order is what
+/// makes the rest readable: every silence sentence below it says "without
+/// sending", which means what it means only once the reader knows that
+/// sending is an act of its own.
 #[must_use]
 pub fn composed_system_prompt(
     base: &str,
@@ -226,7 +268,8 @@ pub fn composed_system_prompt(
     capabilities: Capabilities,
 ) -> String {
     let mut prompt = format!(
-        "{base}\n\n{identity}\n\n{teaching}\n\n{REACT_TEACHING}\n\n{CLOSING_PROHIBITIONS}",
+        "{base}\n\n{identity}\n\n{SENDING_CONTRACT}\n\n{teaching}\n\n{REACT_TEACHING}\
+         \n\n{CLOSING_PROHIBITIONS}",
         identity = identity_section(name),
         teaching = answering_section(answering),
     );
@@ -350,7 +393,7 @@ fn answering_section(answering: AnsweringMode) -> String {
              someone else already answered, stay silent. In a busy \
              conversation, holding back is right even when you could add \
              something. When you do not speak, end your turn without \
-             writing any text — no placeholder. An answer is the \
+             sending anything — no placeholder message. An answer is the \
              exception, and an answer that makes a substantive claim must \
              be one you can back with a lookup. {sourcing} {audience} \
              {revisions}"
@@ -360,7 +403,7 @@ fn answering_section(answering: AnsweringMode) -> String {
              reply to one of your messages, your name, or a direct chat. \
              Answer what was asked of you; when even an addressed message \
              leaves you nothing useful to say, end your turn without \
-             writing any text — no placeholder. \
+             sending anything — no placeholder message. \
              {sourcing} {audience} {revisions} When you ask a clarifying \
              question, \
              invite the member to reply to your message: only a message \
@@ -391,7 +434,7 @@ fn sourcing_rules() -> String {
      When you were addressed and a lookup cannot back the answer, say \
      you don't know, plainly and in your own words — never guess from \
      memory or offer a hedged recollection. When you were not addressed \
-     and have nothing to add, end the turn with no text."
+     and have nothing to add, end the turn without sending."
         .to_owned()
 }
 
@@ -408,7 +451,7 @@ fn revision_rules() -> &'static str {
     "A message may appear again marked as edited under the same id: the \
      edited version is what the person now means, so answer that one. When \
      the earlier wording was already answered and the edit does not change \
-     what was asked, end the turn with no text."
+     what was asked, end the turn without sending."
 }
 
 /// The audience discipline, shared by both modes so it applies wherever a
@@ -478,7 +521,7 @@ mod tests {
                 "the identity names the assistant"
             );
             assert!(
-                prompt.contains("end your turn without writing any text — no placeholder"),
+                prompt.contains("end your turn without sending anything — no placeholder message"),
                 "the teaching states silence as the empty turn"
             );
         }
@@ -585,7 +628,7 @@ mod tests {
                  say you don't know, plainly and in your own words — never \
                  guess from memory or offer a hedged recollection",
                 "When you were not addressed and have nothing to add, end \
-                 the turn with no text",
+                 the turn without sending",
             ] {
                 assert!(
                     prompt.contains(fact),
@@ -617,7 +660,7 @@ mod tests {
                 "A message may appear again marked as edited under the same id",
                 "the edited version is what the person now means, so answer that one",
                 "When the earlier wording was already answered and the edit does \
-                 not change what was asked, end the turn with no text",
+                 not change what was asked, end the turn without sending",
             ] {
                 assert!(
                     prompt.contains(fact),
@@ -714,7 +757,7 @@ mod tests {
                 );
             }
             assert!(
-                prompt.contains("end your turn without writing any text — no placeholder"),
+                prompt.contains("end your turn without sending anything — no placeholder message"),
                 "the {mode:?} teaching states the empty turn as the silence mechanism"
             );
         }
@@ -824,8 +867,9 @@ mod tests {
     #[test]
     fn the_announce_line_rides_the_search_teaching_and_only_there() {
         for fact in [
-            "Before you run a search, say in one short line what you are \
-             about to look up, then run the search, then answer",
+            "Before you run a search, send one short line with send_message \
+             saying what you are about to look up, then run the search, then \
+             send the answer",
             "one line and no more",
             "stating the thing you are going to look for",
             "never a placeholder standing in for an answer",
@@ -920,7 +964,7 @@ mod tests {
         }
         for fact in [
             "with the react tool",
-            "name the message by the bracketed id shown ahead of it",
+            "name the message by the msgid its envelope shows",
             "A response to you that needs no further response can be stamped off with \
              one reaction instead of an empty turn",
             "someone asks you how something works, you answer, they write back thanks \
@@ -981,7 +1025,7 @@ mod tests {
     fn the_moderation_teaching_carries_its_facts() {
         for fact in [
             "the report_spam tool",
-            "naming the violating message by the bracketed id",
+            "naming the violating message by the msgid its envelope shows",
             "think it through first",
             "That statement is the group's only rules source",
             "when no rules statement is present, the group has no rules \
@@ -1010,14 +1054,14 @@ mod tests {
     fn the_moderation_teaching_carries_the_join_rule_as_the_whole_action() {
         assert!(
             MODERATION_TEACHING.ends_with(
-                "You also see join notices, each marked with its own bracketed id: a \
+                "You also see join notices, each under an envelope of its own: a \
                  line stating that someone joined the group, under the name the \
                  platform showed. When a joiner's shown name is itself unmistakably \
                  promotional bait — an advertisement, a solicitation or a come-on \
                  carried in place of a name, obvious at a glance to anyone — that name \
                  is the violation before the account has said anything, and you report \
-                 the join on sight, naming it by its bracketed id exactly as you would \
-                 name a violating message. A name that merely sounds promotional, or \
+                 the join on sight, naming it by its msgid exactly as you would name a \
+                 violating message. A name that merely sounds promotional, or \
                  that you suspect but cannot be certain of, is not bait: report only \
                  what is beyond doubt, and when in doubt, do nothing. Filing \
                  the report is the whole action: you never ban, kick, or reply to the \
@@ -1083,29 +1127,33 @@ mod tests {
                     );
                 }
                 assert!(
-                    prompt.contains("end your turn without writing any text — no placeholder"),
+                    prompt.contains(
+                        "end your turn without sending anything — no placeholder message"
+                    ),
                     "the taught default stays the empty turn in {mode:?} mode"
                 );
             }
         }
     }
 
-    /// AC5's second half (unit 54): the two prohibitions compose in both
-    /// answering modes and under every configuration, byte for byte — the
-    /// never-announce sentence and the bare-call sentence. Neither directs
-    /// the model to call anything: the second names what a tool call does
-    /// to the prose ahead of it, which is a fact about the mechanism.
+    /// AC5's second half (unit 54), as unit 55 leaves it: one closing
+    /// prohibition composes in both answering modes and under every
+    /// configuration, byte for byte — the never-announce sentence. The
+    /// bare-call sentence went with the mechanism it warned about, and this
+    /// asserts its absence beside the survivor's presence.
     #[test]
-    fn both_modes_carry_the_two_closing_prohibitions() {
+    fn both_modes_carry_the_closing_prohibition() {
         assert_eq!(
             CLOSING_PROHIBITIONS,
-            "Never post a message whose only content is that you are not taking part: a \
+            "Never send a message whose only content is that you are not taking part: a \
              line saying the question was for someone else, that you are staying out of \
              it, or that you have nothing to add is your silence written out, and nobody \
-             needs to read it. When a tool call is how a turn of yours ends, make that \
-             call on its own, with nothing written ahead of it: whatever you write \
-             before a tool call is posted to the group as its own message, so a narrated \
-             ending posts the very line the rule above forbids."
+             needs to read it."
+        );
+        assert!(
+            !CLOSING_PROHIBITIONS.contains("posted to the group as its own message"),
+            "the bare-call prohibition is gone with the mechanism it warned about: from \
+             unit 55 nothing written ahead of a call is posted anywhere"
         );
         for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
             for capabilities in every_capabilities() {
@@ -1118,6 +1166,105 @@ mod tests {
         }
     }
 
+    /// AC15 (unit 55): the speaking contract composes in every mode under
+    /// every configuration, byte for byte, and it states each of the four
+    /// things it exists to state — the private text, the two doors, what
+    /// one turn may do, and the envelope — beside the silence default and
+    /// the two tool effects that are not the model's text.
+    #[test]
+    fn every_composition_carries_the_speaking_contract() {
+        assert_eq!(
+            SENDING_CONTRACT,
+            "What you write is your own private notes. It is never posted and nobody in \
+             the group reads it. A message reaches the group only when you send it: with \
+             the send_message tool to post to the chat, or with the reply_message tool \
+             to answer one message in particular, naming it by the msgid its envelope \
+             shows. One turn of yours can send several messages, answer several people, \
+             or send nothing at all. Silence stays the default: a turn that ends without \
+             sending posts nothing, which is exactly right whenever there is nothing to \
+             say. Every message you read carries an envelope above it naming who wrote \
+             it, when the chat says it was sent, and its msgid. Two things that are not \
+             messages still reach the group as they always did, because they are a \
+             tool's own effect and not your text: a report you file, and an emoji \
+             reaction you place."
+        );
+        for named in [crate::tools::send::NAME, crate::tools::reply::NAME] {
+            assert!(
+                SENDING_CONTRACT.contains(named),
+                "the contract names the tool a message reaches the group through: {named}"
+            );
+        }
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            for capabilities in every_capabilities() {
+                let prompt = composed_system_prompt("b", "n", mode, capabilities);
+                assert!(
+                    prompt.contains(SENDING_CONTRACT),
+                    "the contract composes in {mode:?} mode under {capabilities:?}"
+                );
+            }
+        }
+    }
+
+    /// AC15's other half (unit 55): no sentence anywhere in the composed
+    /// prompt presupposes relayed text.
+    ///
+    /// The removed wordings are asserted GONE — the silence sentences that
+    /// spoke of writing, the announce line that said "say", and the
+    /// bare-call prohibition — and the rewritten ones present. Every
+    /// mode and every configuration is read, because a sentence surviving
+    /// in one arm is a sentence surviving.
+    #[test]
+    fn no_composed_sentence_presupposes_relayed_text() {
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            for capabilities in every_capabilities() {
+                let prompt = composed_system_prompt("b", "n", mode, capabilities);
+                for gone in [
+                    "end your turn without writing any text",
+                    "end the turn with no text",
+                    "Ending a turn with no text",
+                    "whatever you write before a tool call is posted to the group",
+                    "Before you run a search, say in one short line",
+                    "bracketed id",
+                    "shown in brackets",
+                ] {
+                    assert!(
+                        !prompt.contains(gone),
+                        "the {mode:?} composition under {capabilities:?} still carries a \
+                         sentence that presupposes relayed text: {gone}"
+                    );
+                }
+                for present in [
+                    "end your turn without sending anything — no placeholder message",
+                    "end the turn without sending",
+                    "What you write is your own private notes",
+                ] {
+                    assert!(
+                        prompt.contains(present),
+                        "the {mode:?} composition under {capabilities:?} carries: {present}"
+                    );
+                }
+            }
+        }
+        // The never-announce sentence stays, and it is the whole of what
+        // the closing prohibition is now.
+        let helpful =
+            composed_system_prompt("b", "n", AnsweringMode::Helpful, Capabilities::default());
+        assert!(
+            helpful.contains(
+                "Never send a message whose only content is that you are not taking part"
+            ),
+            "the never-announce sentence stays"
+        );
+        // The search teaching's heads-up is SENT, and only where the tool
+        // is admitted.
+        assert!(
+            composed_system_prompt("b", "n", AnsweringMode::Helpful, searching()).contains(
+                "send one short line with send_message saying what you are about to look up"
+            ),
+            "the heads-up before slow work is a send now"
+        );
+    }
+
     /// AC5's third half (unit 54): the search teaching and the sourcing
     /// paragraph stand BYTE-UNCHANGED. This unit reworded the reaction
     /// trigger and added two prohibitions; a reworded search or sourcing
@@ -1128,12 +1275,13 @@ mod tests {
         assert_eq!(
             SEARCH_TEACHING,
             "You can also search the web with the search_web tool, for questions about \
-             the world and not about the project. Before you run a search, say in one \
-             short line what you are about to look up, then run the search, then answer: \
-             one line and no more, stating the thing you are going to look for — never a \
-             placeholder standing in for an answer, and never a restatement of the words \
-             the member just wrote. Ending a turn with no text is for a turn with \
-             nothing to say; a turn with a search to run has something to say. A \
+             the world and not about the project. Before you run a search, send one \
+             short line with send_message saying what you are about to look up, then run \
+             the search, then send the answer: one line and no more, stating the thing \
+             you are going to look for — never a placeholder standing in for an answer, \
+             and never a restatement of the words the member just wrote. Ending a turn \
+             without sending is for a turn with nothing to say; a turn with a search to \
+             run has something to say. A \
              result's snippet is a hint, not a source: when you answer from one, say \
              where it came from and name the page. A snippet that does not contain the \
              claim is a miss, exactly as an unanswering lookup is — say you don't know \
@@ -1154,7 +1302,7 @@ mod tests {
              either confirmed by a lookup or dropped. When you were addressed and a \
              lookup cannot back the answer, say you don't know, plainly and in your own \
              words — never guess from memory or offer a hedged recollection. When you \
-             were not addressed and have nothing to add, end the turn with no text."
+             were not addressed and have nothing to add, end the turn without sending."
         );
     }
 }

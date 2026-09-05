@@ -93,11 +93,7 @@ async fn erasing_during_a_held_stream_interrupts_settles_then_deletes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_erasure_pays_no_wait() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = channel("dm-idle");
 
     let receipt = support::ingest_recorded(

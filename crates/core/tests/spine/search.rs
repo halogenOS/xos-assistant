@@ -37,11 +37,15 @@ const SEARCH_TURN: [&str; 6] = [
 /// The same turn announced first (unit 40): the heads-up line finalizes as
 /// its own text block ahead of the call, so one turn writes two texts with
 /// the call and its result between them.
-const ANNOUNCED_SEARCH_TURN: [&str; 7] = [
+/// The announced turn's own shape. The announce is a SEND since unit 55,
+/// so it leaves no text block of its own here: the consumer view filters a
+/// send's call, its outgoing block and its resolution, exactly as it
+/// filters the receipt beside them. What the chat received is read off the
+/// stored outgoing messages instead.
+const ANNOUNCED_SEARCH_TURN: [&str; 6] = [
     "system_prompt",
     "tool_choice",
     "chat_message",
-    "text",
     "tool_call",
     "tool_result",
     "text",
@@ -198,6 +202,7 @@ async fn the_envelope_renders_the_short_page_the_vendor_answered() {
             tool: search::NAME.into(),
             input: ask("linux kernel"),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -211,11 +216,7 @@ async fn the_envelope_renders_the_short_page_the_vendor_answered() {
         vendor.base(),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
 
     let receipt = support::ingest_recorded(
         &fixture.assistant,
@@ -281,6 +282,7 @@ async fn declined_turn(answer: LookupAnswer, input: String, channel_id: &str) ->
             tool: search::NAME.into(),
             input,
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -294,11 +296,7 @@ async fn declined_turn(answer: LookupAnswer, input: String, channel_id: &str) ->
         vendor.base(),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound(
@@ -386,6 +384,7 @@ async fn an_empty_page_is_answered_and_not_failed() {
             tool: search::NAME.into(),
             input: ask("a query nothing answers"),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -399,11 +398,7 @@ async fn an_empty_page_is_answered_and_not_failed() {
         vendor.base(),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound(
@@ -438,6 +433,7 @@ async fn an_unreachable_vendor_teaches_its_own_result() {
             tool: search::NAME.into(),
             input: ask("linux kernel"),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -451,11 +447,7 @@ async fn an_unreachable_vendor_teaches_its_own_result() {
         support::UNROUTABLE.to_owned(),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound(
@@ -544,6 +536,7 @@ async fn a_turn_holding_two_people_declines_the_spend() {
             tool: search::NAME.into(),
             input: ask("linux kernel"),
             narration: Some("One moment.".into()),
+            announce: None,
         },
         Some(hold.clone()),
     );
@@ -557,11 +550,7 @@ async fn a_turn_holding_two_people_declines_the_spend() {
         vendor.base(),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-search-two-people").await;
 
     let receipt = support::ingest_recorded(
@@ -631,11 +620,7 @@ async fn a_configured_key_admits_and_teaches_and_no_key_does_neither() {
         vendor.base(),
     )
     .await;
-    let mut replies = searching
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&searching).await;
     let receipt = support::ingest_recorded(
         &searching.assistant,
         inbound(
@@ -669,11 +654,7 @@ async fn a_configured_key_admits_and_teaches_and_no_key_does_neither() {
 
     // The unconfigured half: the suite's default fixture configures no key.
     let plain = support::start_assistant(None).await;
-    let mut plain_replies = plain
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut plain_replies = support::outbound(&plain).await;
     let plain_receipt = support::ingest_recorded(
         &plain.assistant,
         inbound(&channel("dm-no-search"), ChannelKind::Direct, "42", "hello"),
@@ -712,6 +693,7 @@ async fn no_recorded_block_carries_a_fragment_of_the_key() {
             tool: search::NAME.into(),
             input: ask("linux kernel"),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -725,11 +707,7 @@ async fn no_recorded_block_carries_a_fragment_of_the_key() {
         vendor.base(),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound(
@@ -784,7 +762,8 @@ async fn an_announce_ahead_of_the_search_arrives_before_the_answer() {
         ToolScript {
             tool: search::NAME.into(),
             input: ask("linux kernel"),
-            narration: Some(ANNOUNCE.into()),
+            narration: None,
+            announce: Some(ANNOUNCE.into()),
         },
         None,
     );
@@ -798,11 +777,7 @@ async fn an_announce_ahead_of_the_search_arrives_before_the_answer() {
         vendor.base(),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
 
     let receipt = support::ingest_recorded(
         &fixture.assistant,
@@ -837,10 +812,14 @@ async fn an_announce_ahead_of_the_search_arrives_before_the_answer() {
         &ANNOUNCED_SEARCH_TURN,
     )
     .await;
-    assert_eq!(field(&blocks[3], "content"), introduced);
-    assert_eq!(field(&blocks[4], "name"), search::NAME);
-    assert_eq!(field(&blocks[5], "content"), rendered_page());
-    assert_eq!(field(&blocks[6], "content"), CLOSING_ANSWER);
+    assert_eq!(field(&blocks[3], "name"), search::NAME);
+    assert_eq!(field(&blocks[4], "content"), rendered_page());
+    assert_eq!(field(&blocks[5], "content"), CLOSING_ANSWER);
+    assert_eq!(
+        support::sent_texts(&fixture.store, receipt.conversation_id).await,
+        vec![introduced.clone(), CLOSING_ANSWER.to_owned()],
+        "the chat received the announce and then the answer, in that order"
+    );
     assert_eq!(
         vendor.requests().len(),
         1,

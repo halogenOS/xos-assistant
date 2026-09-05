@@ -94,11 +94,7 @@ async fn the_ingest_path_stores_the_literal_fact_beside_the_summons() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unaddressed_turn_ending_empty_delivers_nothing_and_introduces_nobody() {
     let fixture = helpful_fixture().await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-empty-silent").await;
 
     let receipt = support::ingest_recorded(
@@ -144,11 +140,7 @@ async fn an_unaddressed_turn_ending_empty_delivers_nothing_and_introduces_nobody
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_addressed_dont_know_is_delivered_as_ordinary_text() {
     let fixture = helpful_fixture().await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-dont-know").await;
 
     let receipt = support::ingest_recorded(
@@ -173,16 +165,20 @@ async fn an_addressed_dont_know_is_delivered_as_ordinary_text() {
     let blocks = support::viewed_ledger(
         &fixture.store,
         receipt.conversation_id,
-        "the stored answer",
+        "the stored notes",
         |blocks| {
             blocks.last().is_some_and(|block| {
-                block.block_type == "text"
-                    && block.fields["content"] == json!(support::disclosed(DONT_KNOW_LINE))
+                block.block_type == "text" && block.fields["content"] == json!(DONT_KNOW_LINE)
             })
         },
     )
     .await;
-    assert_eq!(blocks.len(), 4, "one turn: prompt, choice, ask, answer");
+    assert_eq!(blocks.len(), 4, "one turn: prompt, choice, ask, notes");
+    assert_eq!(
+        support::sent_texts(&fixture.store, receipt.conversation_id).await,
+        vec![support::disclosed(DONT_KNOW_LINE)],
+        "and the stored outgoing message holds the delivered text"
+    );
 }
 
 /// AC3's addressed-mode half: under addressed answering the same
@@ -198,11 +194,7 @@ async fn in_addressed_mode_the_dont_know_delivers_the_same_way() {
         AnsweringMode::Addressed,
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-dont-know-addressed").await;
 
     support::ingest_recorded(
@@ -237,6 +229,7 @@ async fn a_lookup_that_does_not_answer_closes_with_the_plain_dont_know() {
             tool: wiki::NAME.into(),
             input: r#"{"page":"Home"}"#.into(),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -264,11 +257,7 @@ async fn a_lookup_that_does_not_answer_closes_with_the_plain_dont_know() {
         },
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-miss-lookup").await;
 
     support::ingest_recorded(

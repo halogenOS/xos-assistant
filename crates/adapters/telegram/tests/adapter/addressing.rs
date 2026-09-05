@@ -71,6 +71,7 @@ async fn direct_mention_and_reply_to_assistant_are_each_answered() {
     // The reply-to-assistant shape, on the settled group: the reply opens a
     // fresh user group behind the stored answer, so the projected tail — and
     // with it the scripted answer — is the reply's own text.
+    support::await_quiet(&fixture.store).await;
     server.push_update(reply_to_bot_update(3, group, 6, "the replied ask"));
     let sends = server.await_recorded("sendMessage", 3).await;
     // The same person's second answer arrives bare: the introduction

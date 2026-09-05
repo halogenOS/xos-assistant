@@ -88,12 +88,23 @@ async fn quote_blocks(store: &Store, conversation_id: i64) -> Vec<Block> {
 fn newest_user_turn(script: &support::ScriptHandle) -> String {
     let requests = script.seen.lock().unwrap();
     let request = requests.last().expect("a turn's request was recorded");
-    request
-        .iter()
-        .filter(|message| message.role == MessageRole::User)
-        .map(rendered)
-        .next_back()
-        .expect("the request carries a user message")
+    // The envelopes are stripped: their `date` is the platform's own live
+    // clock, so pinning them here would pin a timestamp. What the envelope
+    // renders is pinned at the kind, byte for byte; what these cases are
+    // about is the QUOTE standing above the words that pointed at it.
+    //
+    // A tool-voiced message is skipped: it is user-voiced on this wire and
+    // carries no words of anybody's (unit 55).
+    support::without_envelope(
+        &request
+            .iter()
+            .filter(|message| {
+                message.role == MessageRole::User && !support::carries_tool_result(message)
+            })
+            .map(rendered)
+            .next_back()
+            .expect("the request carries a user message"),
+    )
 }
 
 /// One recorded member message under an exact origin, resting (no turn).
@@ -192,11 +203,7 @@ async fn land_lone_quote(store: &Store, conversation_id: i64, block_id: i64, quo
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_reaches_the_model_quoted_above_its_own_words() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-quote-e2e").await;
 
     let target = said(
@@ -216,9 +223,9 @@ async fn a_reply_reaches_the_model_quoted_above_its_own_words() {
 
     assert_eq!(
         newest_user_turn(&fixture.script),
-        "[org-font] The text font tiring my eyes\n\n\
+        "The text font tiring my eyes\n\n\
          > The text font tiring my eyes\n\n\
-         [org-ask] which one?",
+         which one?",
         "the quoted message reaches the model `> `-prefixed, ahead of the \
          reply that pointed at it"
     );
@@ -239,11 +246,7 @@ async fn a_reply_reaches_the_model_quoted_above_its_own_words() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_manual_excerpt_narrows_and_a_drifted_one_quotes_the_whole_message() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-quote-narrow").await;
 
     let target = said(
@@ -270,9 +273,9 @@ async fn a_manual_excerpt_narrows_and_a_drifted_one_quotes_the_whole_message() {
     recv_reply(&mut replies).await;
     assert_eq!(
         newest_user_turn(&fixture.script),
-        "[org-groesse] die Größe — the text font tiring my eyes\n\n\
+        "die Größe — the text font tiring my eyes\n\n\
          > the text font\n\n\
-         [org-narrow] which one?",
+         which one?",
         "the excerpt is located by searching the stored text, so the \
          multibyte characters ahead of it shift the span by characters and \
          not by bytes"
@@ -302,7 +305,7 @@ async fn a_manual_excerpt_narrows_and_a_drifted_one_quotes_the_whole_message() {
     recv_reply(&mut replies).await;
     assert_eq!(
         newest_user_turn(&fixture.script),
-        "> die Größe — the text font tiring my eyes\n\n[org-drift] and this?",
+        "> die Größe — the text font tiring my eyes\n\nand this?",
         "an excerpt that drifted away from the stored text quotes the \
          message whole; the reply keeps its context"
     );
@@ -497,11 +500,7 @@ fn her_reply(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_to_the_assistant_quotes_her_words_and_still_wakes_her() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-quote-assistant").await;
 
     let first = support::ingest_recorded(
@@ -542,7 +541,7 @@ async fn a_reply_to_the_assistant_quotes_her_words_and_still_wakes_her() {
     assert_eq!(
         newest_user_turn(&fixture.script),
         format!(
-            "{quote}\n\n[org-second] and on the tablet?",
+            "{quote}\n\nand on the tablet?",
             quote = render_quote(&answer.text)
         ),
         "her stored answer reaches the model `> `-prefixed above the reply \
@@ -573,11 +572,7 @@ async fn a_reply_to_the_assistant_quotes_her_words_and_still_wakes_her() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_manual_excerpt_of_her_message_narrows_and_a_drifted_one_quotes_it_whole() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-narrow").await;
 
     // The scripted answer repeats the question, so her stored text carries
@@ -611,7 +606,7 @@ async fn a_manual_excerpt_of_her_message_narrows_and_a_drifted_one_quotes_it_who
     recv_reply(&mut replies).await;
     assert_eq!(
         newest_user_turn(&fixture.script),
-        "> the setting moved\n\n[org-second] which top?",
+        "> the setting moved\n\nwhich top?",
         "the excerpt is searched for in HER stored text, so the multibyte \
          characters ahead of it shift the span by characters, not bytes"
     );
@@ -629,10 +624,7 @@ async fn a_manual_excerpt_of_her_message_narrows_and_a_drifted_one_quotes_it_who
     recv_reply(&mut replies).await;
     assert_eq!(
         newest_user_turn(&fixture.script),
-        format!(
-            "{quote}\n\n[org-third] and this?",
-            quote = render_quote(&answer.text)
-        ),
+        format!("{quote}\n\nand this?", quote = render_quote(&answer.text)),
         "an excerpt that drifted away from her stored text quotes her \
          answer whole; the reply keeps its context"
     );
@@ -644,11 +636,7 @@ async fn a_manual_excerpt_of_her_message_narrows_and_a_drifted_one_quotes_it_who
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_to_a_later_chunk_quotes_her_whole_answer() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-chunks").await;
 
     let first = support::ingest_recorded(
@@ -690,7 +678,7 @@ async fn a_reply_to_a_later_chunk_quotes_her_whole_answer() {
     assert_eq!(
         newest_user_turn(&fixture.script),
         format!(
-            "{quote}\n\n[org-second] the third bit?",
+            "{quote}\n\nthe third bit?",
             quote = render_quote(&answer.text)
         ),
         "a reply to the last chunk quotes the one block she said it as"
@@ -708,11 +696,7 @@ async fn a_reply_to_a_later_chunk_quotes_her_whole_answer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_to_an_unresolvable_message_of_hers_lands_quoteless() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-quoteless").await;
 
     let first = support::ingest_recorded(
@@ -798,11 +782,7 @@ async fn a_reply_to_an_unresolvable_message_of_hers_lands_quoteless() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reply_to_a_deterministic_answer_lands_quoteless() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-fixed").await;
 
     let outcome = fixture
@@ -856,11 +836,7 @@ async fn a_reply_to_a_deterministic_answer_lands_quoteless() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_crash_shape_over_her_block_asks_nothing_and_settles_nothing() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-quote-her-crash").await;
 
     // Her answer, delivered and recorded: the block the crash-shape quote
@@ -981,11 +957,7 @@ async fn a_quoted_reply_still_takes_its_turn_in_both_answering_modes() {
         let fixture =
             support::start_assistant_answering(store, None, ProtectionConfig::default(), mode)
                 .await;
-        let mut replies = fixture
-            .assistant
-            .outbound(support::ADAPTER)
-            .await
-            .expect("the outbound edge opens");
+        let mut replies = support::outbound(&fixture).await;
         let room = support::authorized_group(&fixture.assistant, "room-quote-answering").await;
 
         let opener = said(
@@ -1038,11 +1010,17 @@ async fn a_quoted_reply_still_takes_its_turn_in_both_answering_modes() {
     }
 }
 
-/// AC8: the chat-message descriptor declares its quotable column and the
-/// other four declare none — and the framework's own open-time validation
-/// is what stands behind the declaration, driven from this workspace: the
+/// AC8: exactly TWO descriptors declare a quotable column — the recorded
+/// message and, since unit 55, the message the assistant SENT — and every
+/// other declares none. The framework's own open-time validation is what
+/// stands behind the declaration, driven from this workspace: the
 /// production configuration opens, and a misdeclared copy of the same
 /// descriptor is refused.
+///
+/// Two and not one, because a quote resolves to WHAT WAS SAID whoever said
+/// it: a member's reply to one of the assistant's messages quotes the words
+/// she actually sent, and from unit 55 those words live on the outgoing
+/// block instead of on a relayed answer.
 #[test]
 fn the_quotable_declaration_is_the_one_the_framework_validates_at_open() {
     let descriptors = AssistantKind::DESCRIPTORS;
@@ -1052,12 +1030,24 @@ fn the_quotable_declaration_is_the_one_the_framework_validates_at_open() {
         "a quote of a recorded message resolves to what was said"
     );
     for descriptor in &descriptors[1..] {
+        let quotable = descriptor.table == assistant_core::outgoing::OUTGOING_MESSAGE_TABLE;
         assert_eq!(
-            descriptor.quoted_text_column, None,
-            "{} declares no quotable text: nothing quotes it",
+            descriptor.quoted_text_column.is_some(),
+            quotable,
+            "{} declares a quotable column exactly when a reply to it \
+             quotes words: {quotable}",
             descriptor.table
         );
     }
+    assert_eq!(
+        descriptors
+            .iter()
+            .find(|descriptor| descriptor.table == assistant_core::outgoing::OUTGOING_MESSAGE_TABLE)
+            .expect("the outgoing descriptor is declared")
+            .quoted_text_column,
+        Some(assistant_core::outgoing::COLUMN_TEXT),
+        "a quote of one of her messages resolves to the words she sent"
+    );
 
     let config = store_config();
     Store::in_memory_with(config).expect("the declared column passes the open-time validation");

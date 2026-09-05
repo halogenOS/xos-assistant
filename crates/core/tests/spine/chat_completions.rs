@@ -47,16 +47,73 @@ struct Hit {
 /// content.
 type Script = fn(&Value) -> String;
 
-/// A chat-completions-shaped loopback server answering every POST with one
-/// server-sent text delta, a finish chunk and the end marker.
+/// A chat-completions-shaped loopback server answering every POST with the
+/// single-round send script.
 async fn start_completions_server() -> (String, Arc<Mutex<Vec<Hit>>>) {
-    start_scripted_server(one_text_round).await
+    start_scripted_server(one_send_round).await
 }
 
-/// The single-round script: the whole answer as one text delta, finished
-/// with the ordinary stop.
-fn one_text_round(_request: &Value) -> String {
-    stream_of(&[text_delta(SERVER_ANSWER), finish("stop")])
+/// The single-round script: the answer goes out through the sending tool —
+/// the one way words reach a chat since unit 55 — and the round behind it,
+/// which carries the send's own result, writes the words down as the turn's
+/// notes and ends.
+fn one_send_round(request: &Value) -> String {
+    if send_results(request) > 0 {
+        return stream_of(&[text_delta(SERVER_ANSWER), finish("stop")]);
+    }
+    stream_of(&[send_call(0, SERVER_ANSWER), finish("tool_calls")])
+}
+
+/// The provider id every scripted SEND is made under — what tells a send's
+/// own result apart from any other tool's on this wire.
+const SEND_CALL_ID: &str = "send-";
+
+/// One chunk carrying a call of the plain sending tool, under an id this
+/// module's scripts can recognize the answer to.
+fn send_call(round: usize, text: &str) -> Value {
+    json!({ "choices": [{ "delta": { "tool_calls": [{
+        "index": 0,
+        "id": format!("{SEND_CALL_ID}{round}"),
+        "type": "function",
+        "function": {
+            "name": assistant_core::tools::send::NAME,
+            "arguments": json!({ "text": text }).to_string()
+        }
+    }] } }] })
+}
+
+/// How many of a recorded request's tool messages answer a SEND, SINCE the
+/// newest thing a person said.
+///
+/// Scoped to this turn because a conversation keeps its history: a
+/// whole-request count would carry an earlier turn's sends into the reading
+/// and tell a fresh turn it had already spoken.
+fn send_results(request: &Value) -> usize {
+    let messages = request["messages"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let since = messages
+        .iter()
+        .rposition(|message| message["role"] == "user")
+        .map_or(0, |at| at + 1);
+    messages[since..]
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .filter_map(|message| message["tool_call_id"].as_str())
+        .filter(|id| id.starts_with(SEND_CALL_ID))
+        .count()
+}
+
+/// The call ids a recorded request's tool-voiced messages answer.
+fn tool_call_ids(request: &Value) -> impl Iterator<Item = &str> {
+    request["messages"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|message| message["role"] == "tool")
+        .filter_map(|message| message["tool_call_id"].as_str())
 }
 
 /// One server-sent stream: the given chunks, each on its own `data:` line,
@@ -176,13 +233,13 @@ async fn start_scripted_server(script: Script) -> (String, Arc<Mutex<Vec<Hit>>>)
 /// The tool set passed in is empty, which does not mean toolless: the
 /// assembly admits the runtime-facts tool on nothing, so the choice these
 /// turns record carries it and a call naming it resolves.
-async fn start_over_the_module(store: &Store, base: &str) -> Assistant {
+async fn start_over_the_module(store: &Store, base: &str) -> Arc<Assistant> {
     let mut providers = ProviderRegistry::new();
     let provider =
         MemoryConfiguredProvider::new(store, FAKE_KEY.into(), Some(base.to_owned())).await;
     let vendor = agent_ledger::ProviderModule::type_id(&provider).to_owned();
     providers.register(Box::new(provider));
-    Assistant::start(
+    let assistant = Assistant::start(
         store.clone(),
         Arc::new(EventBus::new()),
         Arc::new(providers),
@@ -215,7 +272,14 @@ async fn start_over_the_module(store: &Store, base: &str) -> Assistant {
         },
     )
     .await
-    .expect("the assembly starts over the real module")
+    .expect("the assembly starts over the real module");
+    // A send is a PENDING call since unit 55, and the delivery report is
+    // what settles it: without a stand-in adapter reporting back, every
+    // answered turn here would sit open on its own send and no closing
+    // round would ever be asked for.
+    let assistant = Arc::new(assistant);
+    support::spawn_delivery_reporter(&assistant).await;
+    assistant
 }
 
 /// The whole loop over the real module: ingest, answer, and the two key
@@ -229,10 +293,7 @@ async fn the_chat_completions_module_answers_over_the_loopback_wire_and_stores_n
     {
         let store = Store::open_with(db.path(), store_config()).expect("the store opens");
         let assistant = start_over_the_module(&store, &base).await;
-        let mut replies = assistant
-            .outbound(support::ADAPTER)
-            .await
-            .expect("the outbound edge opens");
+        let mut replies = support::outbound_of(&assistant, &store).await;
         support::ingest_recorded(
             &assistant,
             inbound(&key, ChannelKind::Direct, "42", "ask the model"),
@@ -301,10 +362,7 @@ async fn a_note_between_two_chat_messages_renders_a_wire_shape_the_module_accept
     let key = channel("group-noted-wire");
 
     let assistant = start_over_the_module(&store, &base).await;
-    let mut replies = assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound_of(&assistant, &store).await;
     support::authorize(&assistant, &key).await;
 
     // First exchange, then the note, then the second ask.
@@ -377,31 +435,36 @@ const WIRE_ANNOUNCE: &str = "Let me check what I am running on.";
 /// lifecycle, which is what finalizes the narration as its own committed
 /// answer ahead of the call block.
 fn announced_call_then_answer(request: &Value) -> String {
-    if carries_tool_result(request) {
+    // The opening round owes one send — the announce — so a second send's
+    // result is what says the closing round has already spoken.
+    if send_results(request) > 1 {
         return stream_of(&[text_delta(SERVER_ANSWER), finish("stop")]);
     }
+    if carries_tool_result(request) {
+        return stream_of(&[send_call(2, SERVER_ANSWER), finish("tool_calls")]);
+    }
     stream_of(&[
-        text_delta(WIRE_ANNOUNCE),
+        send_call(0, WIRE_ANNOUNCE),
         json!({ "choices": [{ "delta": { "tool_calls": [{
-            "index": 0,
+            "index": 1,
             "id": "wire-call-1",
             "type": "function",
             "function": { "name": runtime::NAME, "arguments": "{" }
         }] } }] }),
         json!({ "choices": [{ "delta": { "tool_calls": [{
-            "index": 0,
+            "index": 1,
             "function": { "arguments": "}" }
         }] } }] }),
         finish("tool_calls"),
     ])
 }
 
-/// Whether a recorded request already carries an answered call: the wire
-/// gives a tool result its own message under the tool role.
+/// Whether a recorded request already carries an answered call of a tool
+/// that is NOT a sending tool: the cue the scripted lookup has come back.
+/// The send's own results are excluded, or the closing round would read its
+/// own transport as its answer.
 fn carries_tool_result(request: &Value) -> bool {
-    request["messages"]
-        .as_array()
-        .is_some_and(|messages| messages.iter().any(|message| message["role"] == "tool"))
+    tool_call_ids(request).any(|id| !id.starts_with(SEND_CALL_ID))
 }
 
 /// AC4 (unit 40): the announce composes over the PRODUCTION wire, not only
@@ -427,10 +490,7 @@ async fn an_announced_tool_round_composes_over_the_production_wire() {
     let key = channel("dm-wire-announce");
 
     let assistant = start_over_the_module(&store, &base).await;
-    let mut replies = assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound_of(&assistant, &store).await;
     let receipt = support::ingest_recorded(
         &assistant,
         inbound(&key, ChannelKind::Direct, "42", "which model are you?"),
@@ -452,7 +512,9 @@ async fn an_announced_tool_round_composes_over_the_production_wire() {
         "the closing round's answer follows it"
     );
 
-    // The ledger's order, over two real requests on the wire.
+    // The ledger's order, in the consumer's view — which shows the lookup
+    // and the turn's own notes, and never a send's own call, block and
+    // resolution.
     let blocks = settle_shape(
         &store,
         receipt.conversation_id,
@@ -461,26 +523,31 @@ async fn an_announced_tool_round_composes_over_the_production_wire() {
             "system_prompt",
             "tool_choice",
             "chat_message",
-            "text",
             "tool_call",
             "tool_result",
             "text",
         ],
     )
     .await;
-    assert_eq!(field(&blocks[3], "content"), introduced);
-    assert_eq!(field(&blocks[4], "name"), runtime::NAME);
+    assert_eq!(field(&blocks[3], "name"), runtime::NAME);
     assert!(
-        field(&blocks[5], "content").starts_with("model: "),
+        field(&blocks[4], "content").starts_with("model: "),
         "the tool really ran: {:?}",
-        field(&blocks[5], "content")
+        field(&blocks[4], "content")
     );
-    assert_eq!(field(&blocks[6], "content"), SERVER_ANSWER);
+    assert_eq!(field(&blocks[5], "content"), SERVER_ANSWER);
+    assert_eq!(
+        support::sent_texts(&store, receipt.conversation_id).await,
+        vec![introduced, SERVER_ANSWER.to_owned()],
+        "the chat received the announce and then the answer, in that order"
+    );
 
-    // Two rounds, two requests, and the closing one carries the answered
-    // call back to the model under the wire's tool role.
+    // Three rounds, three requests: the announcing call, the round that
+    // sends the answer once the lookup came back, and the round that writes
+    // the notes down and ends. The closing one carries the answered call
+    // back to the model under the wire's tool role.
     let recorded = hits.lock().expect("the hit log locks").clone();
-    assert_eq!(recorded.len(), 2, "one request per round: {recorded:?}");
+    assert_eq!(recorded.len(), 3, "one request per round: {recorded:?}");
     assert!(
         !carries_tool_result(&recorded[0].body),
         "the calling round was asked with no result yet: {:?}",
@@ -488,7 +555,7 @@ async fn an_announced_tool_round_composes_over_the_production_wire() {
     );
     assert!(
         carries_tool_result(&recorded[1].body),
-        "the closing round was asked with the answered call: {:?}",
+        "the sending round was asked with the answered call: {:?}",
         recorded[1].body
     );
 }

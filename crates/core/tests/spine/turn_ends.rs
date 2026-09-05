@@ -55,6 +55,7 @@ async fn parking_fixture(tool: &str) -> (support::Fixture, Outgoing) {
             tool: tool.to_owned(),
             input: "{}".into(),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -76,11 +77,7 @@ async fn assemble(
         ProtectionConfig::default(),
     )
     .await;
-    let outgoing = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let outgoing = support::outbound(&fixture).await;
     (fixture, outgoing)
 }
 
@@ -176,9 +173,11 @@ async fn assert_a_bare_call_ends_the_turn(tool: &str, close: &str) {
             .script
             .turns
             .load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "two model requests: the parked turn and the one the second message summoned \
-         — the parked round summoned no continuation"
+        3,
+        "the parked turn's one request, and the two the second message's turn takes: \
+         the round that sends and the round the delivery report re-drives. The parked \
+         round still summoned no continuation of its own — that is the gap between \
+         three and four"
     );
 }
 
@@ -230,11 +229,7 @@ fn the_two_stored_closes_are_the_units_sentences() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn both_tools_ride_the_choice_and_the_summary_fork_names_neither() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         inbound(
@@ -247,6 +242,16 @@ async fn both_tools_ride_the_choice_and_the_summary_fork_names_neither() {
     .await;
     recv_reply(&mut replies).await;
 
+    // Read once the turn has settled: a send is a pending call, so a read
+    // taken at the reply catches the turn's closing round mid-write and
+    // the fork below would be handed a block that is still landing.
+    support::settle(
+        &fixture.store,
+        receipt.conversation_id,
+        "the answered turn",
+        4,
+    )
+    .await;
     let blocks = fixture
         .store
         .list_blocks(receipt.conversation_id)
@@ -393,11 +398,7 @@ async fn a_park_beside_a_sibling_call_silences_only_itself() {
     let fixture =
         support::start_assistant_full(store, provider, script, tools, ProtectionConfig::default())
             .await;
-    let mut outgoing = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut outgoing = support::outbound(&fixture).await;
 
     let receipt = support::ingest_recorded(
         &fixture.assistant,
@@ -451,7 +452,8 @@ async fn a_park_beside_a_sibling_call_silences_only_itself() {
             .script
             .turns
             .load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "the calling round and the one continuation the sibling summoned"
+        3,
+        "the calling round, the continuation the sibling summoned — which \
+         sends — and the round the delivery report re-drives"
     );
 }

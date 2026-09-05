@@ -35,6 +35,7 @@ async fn a_member_reaches_the_tool_and_reads_the_embedded_value() {
             tool: changelog::NAME.into(),
             input: "{}".into(),
             narration: None,
+            announce: None,
         },
         None,
     );

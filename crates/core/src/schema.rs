@@ -658,6 +658,67 @@ static WITHDRAWN_TOOLS_MIGRATION: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+/// The outgoing message's content table — an appended migration step of
+/// the speaking unit (unit 55, 2026-09-02), per decision 0026's discipline.
+/// The table shape is the outgoing kind's descriptor contract: the block
+/// header row is the ledger entry, this row carries the words to send, the
+/// message they thread onto and the tool call they answer.
+///
+/// The text is NOT NULL — a send with no words is refused before this row
+/// exists — and so is the call block, because a send no resolution can name
+/// could never be completed or failed and the idempotence that keeps a
+/// recovered round from sending twice is a match on exactly that column.
+/// The reply target is nullable for its own stored meaning: a plain send
+/// threads nowhere.
+///
+/// The one keyed access path is indexed in the same step, as the delivery
+/// receipt's and the mark's own steps index theirs: every reading of a
+/// filed send starts from the call it answers. The index is not unique —
+/// the idempotence read tolerates a duplicate rather than refusing the
+/// write that would expose one. No frozen vocabulary list: the step quotes
+/// no enum.
+static OUTGOING_MESSAGE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {table} (
+            block_id     INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {text}       TEXT NOT NULL,
+            {reply_to}   TEXT,
+            {call_block} INTEGER NOT NULL
+        );
+        CREATE INDEX {call_index} ON {table}({call_block});",
+        table = crate::outgoing::OUTGOING_MESSAGE_TABLE,
+        text = crate::outgoing::COLUMN_TEXT,
+        reply_to = crate::outgoing::COLUMN_REPLY_TO,
+        call_block = crate::outgoing::COLUMN_CALL_BLOCK,
+        call_index = OUTGOING_CALL_INDEX.as_str(),
+    )
+});
+
+/// The outgoing message's call-keyed index, named once: the appended step
+/// creates it and the suite's schema pins read it back under this name.
+pub static OUTGOING_CALL_INDEX: LazyLock<String> =
+    LazyLock::new(|| format!("idx_{}_call", crate::outgoing::OUTGOING_MESSAGE_TABLE));
+
+/// The contract notice's content table — an appended migration step of the
+/// speaking unit (unit 55, 2026-09-02). One column holding the sentence the
+/// notice was recorded with, NOT NULL: a notice that says nothing is not a
+/// notice, and the append always carries the wording. The sentence is the
+/// assistant's own statement about a conversation and names nobody, so
+/// erasure leaves it and the conversation's own deletion removes it through
+/// the block cascade. No index and no frozen vocabulary list: nothing looks
+/// a notice up by anything but its conversation, and the step quotes no
+/// enum.
+static CONTRACT_NOTICE_MIGRATION: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CREATE TABLE {table} (
+            block_id INTEGER PRIMARY KEY REFERENCES blocks(id) ON DELETE CASCADE,
+            {notice} TEXT NOT NULL
+        );",
+        table = crate::contract::CONTRACT_NOTICE_TABLE,
+        notice = crate::contract::COLUMN_NOTICE,
+    )
+});
+
 /// The store configuration the assistant opens with: the composed kind's
 /// descriptors, the tables it has withdrawn, and the domain migrations —
 /// the three creating steps, then every appended step in order.
@@ -690,6 +751,8 @@ pub fn store_config() -> StoreConfig {
                 REVISES_MIGRATION.as_str(),
                 RETRACTION_MIGRATION.as_str(),
                 WITHDRAWN_TOOLS_MIGRATION.as_str(),
+                OUTGOING_MESSAGE_MIGRATION.as_str(),
+                CONTRACT_NOTICE_MIGRATION.as_str(),
             ],
         }],
     }

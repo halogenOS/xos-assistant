@@ -79,9 +79,7 @@ impl ToolHandler<CoreEvent> for WorkIsDone {
                  report filed, a reaction placed, a lookup you ran to orient yourself — \
                  leave a closing message nothing to add. Calling it says: what I did is \
                  complete, and prose would only narrate it. It takes no arguments and \
-                 posts nothing. Call it on its own, with nothing written ahead of the \
-                 call: whatever you write before a tool call is posted to the group as \
-                 its own message."
+                 posts nothing."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -134,8 +132,14 @@ mod tests {
 
     /// The definition: the registered name, the turn-ending property, no
     /// parameters at all, and a description carrying the meaning the
-    /// teaching deliberately does not — what the call is for, that it
-    /// posts nothing, and that it is made bare.
+    /// teaching deliberately does not — what the call is for, and that it
+    /// posts nothing.
+    ///
+    /// The pre-call posting sentence is asserted GONE (unit 55,
+    /// 2026-09-02). It warned that prose written ahead of a call is posted
+    /// as its own message, which was true while text was relayed; from unit
+    /// 55 written text reaches nobody at all, so the warning would describe
+    /// a mechanism that no longer exists.
     #[test]
     fn the_definition_declares_the_end_and_takes_no_parameters() {
         let tool = WorkIsDone::new();
@@ -155,13 +159,18 @@ mod tests {
             "a report filed, a reaction placed, a lookup you ran to orient yourself",
             "what I did is complete, and prose would only narrate it",
             "It takes no arguments and posts nothing",
-            "Call it on its own, with nothing written ahead of the call",
         ] {
             assert!(
                 definition.description.contains(meaning),
                 "the description carries: {meaning}"
             );
         }
+        assert!(
+            !definition
+                .description
+                .contains("posted to the group as its own message"),
+            "the pre-call posting warning is gone: written text reaches nobody now"
+        );
     }
 
     /// Every input answers the stored close: there is nothing to read, so

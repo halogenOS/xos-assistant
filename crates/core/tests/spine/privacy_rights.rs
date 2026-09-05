@@ -268,11 +268,7 @@ async fn heal_deletes(store: &Store, table: &'static str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_standing_flag_drops_the_persons_messages_with_no_write() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-suppression").await;
     // The fresh channel is authorized ahead of the snapshot: authorization
     // rows are the operator's writes, not the suppressed person's.
@@ -376,7 +372,7 @@ async fn a_flag_landing_between_the_pre_lock_read_and_the_append_drops_the_racer
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let mut fixture = support::start_assistant(None).await;
+    let fixture = support::start_assistant(None).await;
     let (reached_tx, mut reached_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let resume = Arc::new(tokio::sync::Semaphore::new(0));
     let armed = Arc::new(AtomicBool::new(false));
@@ -458,11 +454,7 @@ async fn a_flag_landing_between_the_pre_lock_read_and_the_append_drops_the_racer
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_opted_out_persons_commands_answer_frozen_and_unblock_reopens() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-frozen").await;
 
     support::ingest_recorded(
@@ -777,6 +769,7 @@ async fn privacy_tool_fixture(
             tool: privacy_tool::NAME.into(),
             input: json!({ "action": action }).to_string(),
             narration,
+            announce: None,
         },
         hold,
     );
@@ -1163,11 +1156,7 @@ async fn a_budget_silenced_sender_still_draws_the_rights_answer() {
     let fixture =
         support::start_assistant_configured(store, None, support::budgets(Some((1, 600)), None))
             .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-budget-rights").await;
 
     support::ingest_recorded(
@@ -1332,7 +1321,9 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
                      ALTER TABLE block_chat_message DROP COLUMN literal_addressed;
                      DROP TABLE block_join_notice;
                      DROP TABLE block_delivered;
-                     DROP TABLE block_message_mark;",
+                     DROP TABLE block_message_mark;
+                     DROP TABLE block_outgoing_message;
+                     DROP TABLE block_contract_notice;",
                 revises_index = assistant_core::schema::MESSAGE_REVISES_INDEX.as_str(),
                 retractions = assistant_core::delivery::RETRACTION_TABLE,
             ))?;
@@ -1354,7 +1345,7 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
         .expect("the version-twelve store reopens under the shipped configuration");
     assert_eq!(
         support::domain_migration_version(&reopened).await,
-        21,
+        23,
         "the appended steps advanced the domain's version"
     );
     assert_eq!(

@@ -79,13 +79,48 @@ pub fn at_required_authority<'a>(
     ctx: &ToolContext<'_, CoreEvent>,
     ledger: &[Block],
 ) -> BoxFuture<'a, Admission> {
+    at_required_authority_and(name, required, ctx, ledger, |_| None)
+}
+
+/// The same answer with ONE further question asked behind it (unit 55,
+/// 2026-09-02): the authority bar first, and then whatever bound the tool
+/// itself reads off the very ledger the admission pass loaded.
+///
+/// The order is fixed, and it decides what the model is told. The authority
+/// reading is the access model; a tool a turn may not reach at all is
+/// declined for that reason and never for a spent allowance, which would
+/// tell the model to wait for something that will never let it through.
+///
+/// `further` answers `Some(sentence)` to decline and `None` to admit. It is
+/// a pure reading of the loaded vector, exactly as the authority reading is:
+/// the hook is answered before the future is handed back, so nothing here
+/// awaits and nothing reads the store. What it declines with is
+/// [`Admission::Refuse`], which the framework records as a REFUSAL — a
+/// standing no the model cannot re-plan around inside this turn, a run of
+/// which ends the turn.
+///
+/// The sending tools' per-conversation caps are this parameter's first
+/// consumer: the bound is shared across two tool names and counted over one
+/// conversation's own blocks, which the framework's single-tier per-name
+/// window cannot express.
+#[must_use]
+pub fn at_required_authority_and<'a>(
+    name: &str,
+    required: Authority,
+    ctx: &ToolContext<'_, CoreEvent>,
+    ledger: &[Block],
+    further: impl FnOnce(&[Block]) -> Option<String>,
+) -> BoxFuture<'a, Admission> {
     let reading = provenance::turn_reading(ledger, ctx.block_id);
     let answer = if reading < required {
         Admission::Refuse {
             reason: authority_decline(name, required, reading),
         }
     } else {
-        Admission::Admit
+        match further(ledger) {
+            Some(reason) => Admission::Refuse { reason },
+            None => Admission::Admit,
+        }
     };
     Box::pin(std::future::ready(answer))
 }
@@ -103,6 +138,13 @@ pub fn at_required_authority<'a>(
 /// handler the tool already implements. A type that forwarded to it would
 /// be the shape unit 52 deleted, silently dropping whatever trait method is
 /// added after the forwarding was written.
+///
+/// The three-argument form (unit 55, 2026-09-02) names ONE further reading
+/// asked behind the bar, through [`at_required_authority_and`]: a closure
+/// over the loaded ledger answering the decline sentence or nothing. It
+/// exists for a bound the framework's own windows cannot express, and it
+/// stays the same one line each module states for itself, so the
+/// cleanliness suite's admission scan reads both forms.
 macro_rules! admits_at_required_authority {
     ($name:expr, $required:expr) => {
         /// The authority a call of this tool requires (decision 0043),
@@ -114,6 +156,21 @@ macro_rules! admits_at_required_authority {
             ledger: &'a [::agent_ledger::Block],
         ) -> ::agent_ledger::providers::BoxFuture<'a, ::agent_ledger::Admission> {
             $crate::tools::admission::at_required_authority($name, $required, ctx, ledger)
+        }
+    };
+    ($name:expr, $required:expr, $further:expr) => {
+        /// The authority a call of this tool requires (decision 0043) and
+        /// the tool's own further bound behind it, both answered through
+        /// the framework's admission hook over the ledger snapshot the
+        /// runner's admission pass already loaded.
+        fn admit<'a>(
+            &'a self,
+            ctx: &'a ::agent_ledger::ToolContext<'a, ::agent_ledger::CoreEvent>,
+            ledger: &'a [::agent_ledger::Block],
+        ) -> ::agent_ledger::providers::BoxFuture<'a, ::agent_ledger::Admission> {
+            $crate::tools::admission::at_required_authority_and(
+                $name, $required, ctx, ledger, $further,
+            )
         }
     };
 }

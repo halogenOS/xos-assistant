@@ -80,11 +80,7 @@ async fn start_assistant_direct_off() -> support::Fixture {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_direct_message_under_off_touches_nothing_and_groups_are_served() {
     let fixture = start_assistant_direct_off().await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
 
     let dm = channel("dm-off");
     for message in [
@@ -150,8 +146,10 @@ async fn a_direct_message_under_off_touches_nothing_and_groups_are_served() {
             .script
             .turns
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "exactly the group's turn reached the model"
+        2,
+        "exactly the group's turn reached the model: its sending round and \
+         the round the delivery report re-drives, and nothing from the \
+         direct messages"
     );
 }
 
@@ -166,11 +164,7 @@ async fn the_default_serves_direct_chats_unchanged() {
         "the absent knob means on, so the generic assembly is unchanged"
     );
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let dm = channel("dm-default");
     let receipt = support::ingest_recorded(
         &fixture.assistant,
@@ -199,11 +193,7 @@ async fn the_default_serves_direct_chats_unchanged() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_revision_in_a_direct_chat_summons_like_every_message_there() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let dm = channel("dm-revision");
 
     let asked = support::with_origin(
@@ -224,10 +214,7 @@ async fn a_revision_in_a_direct_chat_summons_like_every_message_there() {
     assert_eq!(reply.channel, dm);
     assert_eq!(
         reply.text,
-        support::answer_to(&format!(
-            "{marker} how do I flash it?",
-            marker = assistant_core::kind::EDITED_MARKER
-        )),
+        support::answer_to("how do I flash it?"),
         "the corrected wording is answered, like every message in a direct chat"
     );
 }

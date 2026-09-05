@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use agent_ledger::agency::{DateMarker, LeafKind};
 use agent_ledger::providers::{
-    BoxFuture, ContentPart as WirePart, Message, MessageContent, ModelInfo, ProviderRx, ProviderTx,
-    ReasoningLevel,
+    BoxFuture, ContentPart as WirePart, Message, MessageContent, MessageRole, ModelInfo,
+    ProviderRx, ProviderTx, ReasoningLevel,
 };
 use agent_ledger::{
     Block, CoreEvent, EventBus, LlmError, ProviderModule, ProviderRegistry, ProviderRequest,
@@ -110,21 +110,44 @@ pub fn answer_to(text: &str) -> String {
     format!("The scripted answer to: {text}")
 }
 
-/// The projected text with every message's bracketed id mark removed —
-/// what the scripted provider derives its answer from. The projection
-/// opens each recorded message with its origin in brackets (unit 15), the
-/// way a model reads past an id to the words; stripping here keeps the
-/// suite's answer pins about the words while the marks themselves are
-/// pinned where the projection rule is.
+/// The projected text with the envelope stripped — what the scripted
+/// provider derives its answer from. Every recorded message projects under
+/// a fenced envelope naming its author, its send time and its msgid (unit
+/// 55), the way a model reads past the header to the words; stripping here
+/// keeps the suite's answer pins about the words while the envelope itself
+/// is pinned where the projection rule is.
+///
+/// The strip is the envelope's own shape read back: a leading fence, the
+/// header lines, the FIRST closing fence, and the body under it. A text
+/// that does not open with a fence carries no envelope and is its own
+/// body.
 #[must_use]
-pub fn without_origin_marks(text: &str) -> String {
-    text.lines()
-        .map(|line| match line.find("] ") {
-            Some(end) if line.starts_with('[') => &line[end + 2..],
-            _ => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+pub fn without_envelope(text: &str) -> String {
+    let mut body = String::new();
+    let mut rest = text;
+    loop {
+        // An envelope opens at the start of the text or at a line start.
+        // A projected turn joins several contributions, each with its own,
+        // so the strip repeats instead of taking the first.
+        let opens_at = if rest.starts_with("---\n") {
+            Some(0)
+        } else {
+            rest.find("\n---\n").map(|at| at + 1)
+        };
+        let Some(opens_at) = opens_at else {
+            body.push_str(rest);
+            return body;
+        };
+        body.push_str(&rest[..opens_at]);
+        let after_open = &rest[opens_at + "---\n".len()..];
+        if let Some((_, under)) = after_open.split_once("\n---\n") {
+            rest = under;
+        } else {
+            // A fence with no closing fence is a member's own prose.
+            body.push_str(&rest[opens_at..]);
+            return body;
+        }
+    }
 }
 
 /// The cue that scripts a silent turn: a turn whose newest projected
@@ -132,6 +155,15 @@ pub fn without_origin_marks(text: &str) -> String {
 /// prompt teaches the model to stay silent — and the framework commits
 /// the turn as a real empty assistant text block.
 pub const SILENT_CUE: &str = "(the quiet cue)";
+
+/// The cue that scripts a turn of NOTES: a turn whose newest projected
+/// message carries this text writes real text and SENDS NOTHING, so its
+/// every word stays where only the model reads it.
+///
+/// The ordinary shape from unit 55 on, and the one a silent turn cannot
+/// stand in for: a silent turn writes nothing at all, while this one proves
+/// that written text — however much of it — reaches nobody.
+pub const NOTES_CUE: &str = "(the notes cue)";
 
 /// The cue that scripts a spoken don't-know: a turn whose projected
 /// question carries this text answers with [`DONT_KNOW_LINE`] — the
@@ -144,6 +176,30 @@ pub const DONT_KNOW_CUE: &str = "(the unanswerable cue)";
 /// lookup could not back an answer. A fixture string, not product copy —
 /// the live model words its own.
 pub const DONT_KNOW_LINE: &str = "I don't know — I looked this up and could not confirm an answer.";
+
+/// The cue that scripts a THREADED send: a turn whose newest ask carries
+/// this text answers it with the reply tool, aimed at that ask's own msgid
+/// — the way the model chooses a target from unit 55 on, instead of the
+/// edge deriving one.
+pub const REPLY_CUE: &str = "(the threaded cue)";
+
+/// The msgid the newest ask declares, read off its own envelope.
+///
+/// The LAST one in the message, because a projected user turn joins several
+/// contributions under one message and the newest is the one at the end —
+/// which is the one a model aiming at "what was just said" would name.
+#[must_use]
+pub fn newest_msgid(messages: &[Message]) -> Option<String> {
+    let ask = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::User && !carries_tool_result(message))
+        .map(message_text)?;
+    ask.lines()
+        .filter_map(|line| line.strip_prefix("msgid: "))
+        .next_back()
+        .map(ToOwned::to_owned)
+}
 
 /// The cue that scripts a clarifying question: a turn whose newest
 /// projected message carries this text answers with
@@ -400,11 +456,19 @@ where
 }
 
 /// Build the scripted provider and the handle a test observes it through:
-/// every turn answers with [`answer_to`] the newest projected message's
-/// text, deterministically, so turn-count and block-by-block assertions
-/// stay exact. A title derivation request is counted, never answered —
-/// titles are off (decision 0077), so one arriving is the regression the
-/// zero pin exists for.
+/// every turn SENDS [`answer_to`] the newest projected message's text,
+/// deterministically, so turn-count and block-by-block assertions stay
+/// exact. A title derivation request is counted, never answered — titles
+/// are off (decision 0077), so one arriving is the regression the zero pin
+/// exists for.
+///
+/// It sends through the plain sending tool because that is the only way
+/// anything reaches a chat from unit 55 on: a turn that streamed its answer
+/// as text would be a turn of private notes, and every reply pin in this
+/// suite would wait forever. So an answered turn is TWO requests — the
+/// round that makes the call, and the round that reads its result and ends
+/// the turn with nothing more to say — which is the production shape.
+#[allow(clippy::too_many_lines)]
 pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule>, ScriptHandle) {
     let handle = ScriptHandle::fresh();
     let script = handle.clone();
@@ -441,11 +505,48 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                     let _ = response_tx.send(ProviderResponse::Error(failure));
                     continue;
                 }
-                let newest =
-                    without_origin_marks(&messages.last().map(message_text).unwrap_or_default());
-                // The silent cue streams NO text at all: the turn ends
-                // empty and the framework commits the empty answer block —
-                // the way the prompt teaches silence since unit 22.
+                // A compaction's own turn, recognized by the harness
+                // message it carries: it is answered with the summary,
+                // as TEXT — the digest is the one-shot's product, not a
+                // message anybody is sent.
+                if is_compaction_turn(&messages) {
+                    turns.fetch_add(1, Ordering::SeqCst);
+                    seen.lock().unwrap().push(messages);
+                    reasonings.lock().unwrap().push(reasoning);
+                    answer_compaction(&response_tx);
+                    continue;
+                }
+                // The rules acknowledgment is a one-shot generation and
+                // not a turn: its product is the text the item carries, so
+                // it is answered with text and never with a send.
+                if is_acknowledgment_request(&messages) {
+                    let rules =
+                        without_envelope(&messages.last().map(message_text).unwrap_or_default());
+                    // The silent cue streams nothing here too, which is what
+                    // the deterministic fallback's own pin drives.
+                    let text = (!rules.contains(SILENT_CUE)).then(|| answer_to(&rules));
+                    turns.fetch_add(1, Ordering::SeqCst);
+                    seen.lock().unwrap().push(messages);
+                    reasonings.lock().unwrap().push(reasoning);
+                    if let Some(text) = text {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx
+                            .send(ProviderResponse::Event(StreamEvent::TextDelta { text }));
+                    }
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                        usage: agent_ledger::providers::Usage::default(),
+                        stop_reason: StopReason::EndTurn,
+                    }));
+                    let _ = response_tx.send(ProviderResponse::Done);
+                    continue;
+                }
+                // The ASK is the newest thing a person said, wherever the
+                // round stands: on the closing round the newest message of
+                // all is the send's own result, and the answer is still
+                // derived from the question, so the suite's pins read one
+                // deterministic text either way.
+                let newest = without_envelope(&newest_ask(&messages));
                 let answer = if newest.contains(SILENT_CUE) {
                     None
                 } else if newest.contains(DONT_KNOW_CUE) {
@@ -455,23 +556,75 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                 } else {
                     Some(answer_to(&newest))
                 };
+                // The closing round: this request carries the send's own
+                // result, so the message is already in the chat. The turn
+                // writes down what it said — private notes, which reach
+                // nobody — and ends.
+                let closing = answers_a_send(&messages);
                 let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                 seen.lock().unwrap().push(messages);
                 reasonings.lock().unwrap().push(reasoning);
-                if let Some(text) = answer {
-                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                    let _ =
-                        response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta { text }));
+                // A HELD turn writes its notes before it is held, so the
+                // ledger carries a streaming tail while the test holds it —
+                // the stored evidence that a stream is open. An unheld turn
+                // writes them in its closing round instead, which keeps the
+                // ordinary shape one text block per turn either way.
+                if let Some(hold) = &hold {
+                    if closing {
+                        continue_after_notes(&response_tx);
+                        let _ = response_tx.send(ProviderResponse::Done);
+                        continue;
+                    }
+                    if let Some(text) = &answer {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: text.clone(),
+                        }));
+                    }
+                    if !hold.await_release(turn, &mut requests).await {
+                        break;
+                    }
                 }
-                if let Some(hold) = &hold
-                    && !hold.await_release(turn, &mut requests).await
-                {
-                    break;
+                let was_held = hold.is_some();
+                // The notes turn: real text, no send. It takes the writing
+                // arm below, which is the same arm a closing round takes —
+                // the words are committed and the turn ends there.
+                let notes_only = newest.contains(NOTES_CUE);
+                match answer {
+                    Some(text) if !closing && !notes_only => {
+                        let aimed = newest
+                            .contains(REPLY_CUE)
+                            .then(|| {
+                                newest_msgid(
+                                    seen.lock()
+                                        .unwrap()
+                                        .last()
+                                        .expect("the request was just recorded"),
+                                )
+                            })
+                            .flatten();
+                        send_scripted_message(&response_tx, turn, &text, aimed.as_deref());
+                    }
+                    answer => {
+                        // The notes: the words the turn sent, written down
+                        // where only the model reads them. A silent turn
+                        // writes nothing, exactly as before — and a held
+                        // turn wrote them before it was held.
+                        if let Some(text) = answer.filter(|_| (closing || notes_only) && !was_held)
+                        {
+                            let _ = response_tx
+                                .send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                            let _ = response_tx
+                                .send(ProviderResponse::Event(StreamEvent::TextDelta { text }));
+                        }
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: StopReason::EndTurn,
+                            }));
+                    }
                 }
-                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
-                    usage: agent_ledger::providers::Usage::default(),
-                    stop_reason: StopReason::EndTurn,
-                }));
                 // The trailing done real wires send after every completed
                 // turn: the framework settles the dispatch state on the
                 // closed signal, so a scripted turn ending without it would
@@ -482,6 +635,225 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
         (request_tx, responses)
     });
     (provider, handle)
+}
+
+/// The newest thing a PERSON said in one projected request — what every
+/// scripted answer is derived from.
+///
+/// Not simply the newest message: from unit 55 a turn takes several rounds,
+/// and the newest message of a later round is the send's own result. A tool
+/// result is user-voiced on this wire, so the role alone does not tell the
+/// two apart and the parts do: a message carrying one is machinery, never
+/// an ask. A request with no ask at all answers the empty string, which no
+/// cue matches and which the ordinary answer names plainly.
+pub fn newest_ask(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::User && !carries_tool_result(message))
+        .map(message_text)
+        .unwrap_or_default()
+}
+
+/// The provider id every scripted SEND is made under — what tells a send's
+/// own result apart from any other tool's, inside the fixture and without
+/// reading a sentence the core writes for the model.
+const SEND_CALL_ID: &str = "send-";
+
+/// Whether one projected request's NEWEST message is a SEND's own result —
+/// the cue that this round closes a turn whose message is already in the
+/// chat.
+///
+/// The newest and not "any", which is the whole of the distinction: every
+/// round after the first send carries that send's result somewhere in the
+/// history, and a round that read history as its cue would never send
+/// again. And a send's result and not any result, so a script that calls a
+/// lookup first still gets its closing round.
+pub fn answers_a_send(messages: &[Message]) -> bool {
+    messages
+        .last()
+        .is_some_and(|message| tool_result_ids(message).any(|id| id.starts_with(SEND_CALL_ID)))
+}
+
+/// The call ids one projected message answers.
+fn tool_result_ids(message: &Message) -> impl Iterator<Item = &str> {
+    let parts = match &message.content {
+        MessageContent::Parts(parts) => parts.as_slice(),
+        MessageContent::Text(_) => &[],
+    };
+    parts.iter().filter_map(|part| match part {
+        WirePart::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+        _ => None,
+    })
+}
+
+/// Whether one projected request's NEWEST message answers a call of ANY
+/// tool — the cue that this round continues a turn whose call has just
+/// been resolved, rather than opening one.
+///
+/// Scoped to the newest message on purpose: a conversation that has
+/// answered a call before holds that result forever, and a script reading
+/// history as its cue would replay its closing round on every later turn.
+pub fn answers_any_call(messages: &[Message]) -> bool {
+    messages.last().is_some_and(carries_tool_result)
+}
+
+/// Whether one projected request carries the answer to a call of a tool
+/// that is NOT a sending tool, anywhere in its history — the cue a
+/// tool-scripted turn closes on.
+///
+/// It reads the whole history and not the newest message, because that is
+/// what the scripts mean by "my call has been answered": the script plays
+/// one call per conversation, and every later turn is the closing kind.
+/// The send's own results are excluded, or the closing round would read
+/// its own transport as its answer.
+pub fn a_call_was_answered(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .any(|message| tool_result_ids(message).any(|id| !id.starts_with(SEND_CALL_ID)))
+}
+
+/// How many of one request's tool results answer a SEND — what a
+/// round-indexed script subtracts, so its own rounds keep their numbers
+/// while the sends between them accumulate.
+pub fn send_results(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .map(|message| {
+            tool_result_ids(message)
+                .filter(|id| id.starts_with(SEND_CALL_ID))
+                .count()
+        })
+        .sum()
+}
+
+/// The same count for THIS TURN alone: the sends answered since the newest
+/// thing a person said.
+///
+/// A conversation keeps its history, so a whole-request count would carry
+/// every earlier turn's sends into the reading and tell a fresh turn it had
+/// already spoken. The newest ask is the turn's own boundary.
+pub fn send_results_this_turn(messages: &[Message]) -> usize {
+    let since = messages
+        .iter()
+        .rposition(|message| message.role == MessageRole::User && !carries_tool_result(message))
+        .map_or(0, |at| at + 1);
+    messages[since..]
+        .iter()
+        .map(|message| {
+            tool_result_ids(message)
+                .filter(|id| id.starts_with(SEND_CALL_ID))
+                .count()
+        })
+        .sum()
+}
+
+/// End a turn that has nothing more to write.
+fn continue_after_notes(response_tx: &mpsc::UnboundedSender<ProviderResponse>) {
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+        usage: agent_ledger::providers::Usage::default(),
+        stop_reason: StopReason::EndTurn,
+    }));
+}
+
+/// Emit one scripted send: the production event order — the message end
+/// carrying the tool-use stop reason, then the call's lifecycle — for a
+/// call of the plain sending tool carrying the given text, or of the reply
+/// tool where a target is named.
+///
+/// One emitter, because every scripted provider in this suite that puts
+/// words in a chat has to put them there the same way the real one does,
+/// and a second spelling of the call shape would be a second place for it
+/// to drift.
+pub fn send_scripted_message(
+    response_tx: &mpsc::UnboundedSender<ProviderResponse>,
+    turn: usize,
+    text: &str,
+    reply_to: Option<&str>,
+) {
+    let (tool, input) = match reply_to {
+        Some(target) => (
+            assistant_core::tools::reply::NAME,
+            serde_json::json!({ "text": text, "reply_to": target }),
+        ),
+        None => (
+            assistant_core::tools::send::NAME,
+            serde_json::json!({ "text": text }),
+        ),
+    };
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+        usage: agent_ledger::providers::Usage::default(),
+        stop_reason: StopReason::ToolUse,
+    }));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
+        id: format!("{SEND_CALL_ID}{turn}"),
+        name: tool.to_owned(),
+    }));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseInputDelta {
+        json: input.to_string(),
+    }));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+}
+
+/// The one message [`sending_stub`] puts in a chat, every turn.
+pub const SENT_LINE: &str = "The stub's sent message.";
+
+/// A provider whose every turn SENDS one fixed message and then ends.
+///
+/// The shape a budget pin needs from unit 55 on: a debt counts against a
+/// budget only once its turn delivered a message (AC13), so a provider that
+/// answers nothing spends nothing and every budget stays open forever. This
+/// one spends exactly one slot per turn, deterministically, without
+/// deriving anything from the request — which is what keeps the stamp pins
+/// reading stamps and not prose.
+pub fn sending_stub() -> Box<dyn ProviderModule> {
+    provider_stub("Sending stub", "sends one fixed message per turn", || {
+        let (request_tx, mut requests) = mpsc::unbounded_channel();
+        let (response_tx, responses) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut turn = 0_usize;
+            while let Some(request) = requests.recv().await {
+                let ProviderRequest::Stream { messages, .. } = request else {
+                    continue;
+                };
+                if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
+                    let _ = response_tx.send(ProviderResponse::Done);
+                    continue;
+                }
+                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
+                if answers_a_send(&messages) {
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                        usage: agent_ledger::providers::Usage::default(),
+                        stop_reason: StopReason::EndTurn,
+                    }));
+                } else {
+                    turn += 1;
+                    send_scripted_message(&response_tx, turn, SENT_LINE, None);
+                }
+                let _ = response_tx.send(ProviderResponse::Done);
+            }
+        });
+        (request_tx, responses)
+    })
+}
+
+/// Wait until one conversation holds `count` SENT messages whose calls have
+/// been settled — what a budget pin waits for between asks, because a debt
+/// counts only once its turn delivered.
+pub async fn await_sends(store: &Store, conversation_id: i64, count: usize) {
+    await_ledger(
+        store,
+        conversation_id,
+        "the delivered sends",
+        move |blocks| {
+            blocks
+                .iter()
+                .filter(|block| block.block_type == "tool_result")
+                .count()
+                >= count
+        },
+    )
+    .await;
 }
 
 /// A provider that accepts every stream request and never answers: the tail
@@ -522,13 +894,30 @@ pub struct ToolScript {
     pub tool: String,
     /// The call's input JSON, non-empty by the script's contract.
     pub input: String,
-    /// Prose streamed before the call, for the narration variant.
+    /// Prose streamed before the call, for the narration variant: the
+    /// model's own notes, which reach nobody (unit 55).
     pub narration: Option<String>,
+    /// A line the round SENDS beside its call, where the script has one —
+    /// the heads-up before slow work, which from unit 55 is a message like
+    /// any other and not prose the relay carried.
+    pub announce: Option<String>,
 }
 
 /// The closing prose the tool script streams once a request carries an
 /// answered call.
 pub const CLOSING_ANSWER: &str = "The scripted closing answer.";
+
+/// A distinctive clause of the core's rules-acknowledgment instruction —
+/// the one-shot generation the observation surface runs when a real rules
+/// delta lands. It is NOT a turn: its whole product is the text the item
+/// carries, so the scripted providers answer it with text and never with a
+/// send (unit 55).
+pub const ACKNOWLEDGMENT_MARK: &str = "the group's newly pinned rules";
+
+/// Whether one request is that one-shot generation.
+pub fn is_acknowledgment_request(messages: &[Message]) -> bool {
+    messages.iter().any(|m| carries(m, ACKNOWLEDGMENT_MARK))
+}
 
 /// A distinctive opening clause of the core's compaction instructions — the
 /// harness message a compaction appends to its temporary conversation, and
@@ -577,6 +966,7 @@ fn answer_compaction(response_tx: &mpsc::UnboundedSender<ProviderResponse>) {
 /// framework's duplicate-turn window is closed, so a replay is a regression
 /// the suite's turn counts and ledger shapes fail loudly on instead of a
 /// tolerated echo.
+#[allow(clippy::too_many_lines)]
 pub fn tool_scripted_provider(
     script: ToolScript,
     hold: Option<Arc<TurnHold>>,
@@ -624,31 +1014,48 @@ pub fn tool_scripted_provider(
                         }
                         continue;
                     }
-                    let answered = messages.iter().any(carries_tool_result);
+                    // How many sends this script owes before its closing
+                    // one: the announce, where the script has a line to
+                    // announce with. Counting them is what tells the
+                    // closing round from the round after it, on a wire
+                    // where both carry a send's result.
+                    let announces = usize::from(script.announce.is_some());
+                    let sent = send_results_this_turn(&messages) > announces;
+                    let answered = a_call_was_answered(&messages);
                     // The sufficiency script: a question carrying the
                     // don't-know cue closes with the plain don't-know prose
                     // after its lookup — the taught reaction to a result
                     // that did not contain the claim — while every other
                     // turn closes with the ordinary answer.
                     let missed = messages.iter().any(|m| carries(m, DONT_KNOW_CUE));
+                    let closing_text = if missed {
+                        DONT_KNOW_LINE
+                    } else {
+                        CLOSING_ANSWER
+                    };
                     let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                     seen.lock().unwrap().push(messages);
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
-                    if answered {
+                    // The round after the send: the message is in the chat,
+                    // so the turn writes down what it said and ends.
+                    if sent {
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
                         let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: if missed {
-                                DONT_KNOW_LINE.into()
-                            } else {
-                                CLOSING_ANSWER.into()
-                            },
+                            text: closing_text.into(),
                         }));
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
                                 usage: agent_ledger::providers::Usage::default(),
                                 stop_reason: StopReason::EndTurn,
                             }));
+                        let _ = response_tx.send(ProviderResponse::Done);
+                        continue;
+                    }
+                    // The scripted call is answered: the closing words go
+                    // to the chat the one way anything does.
+                    if answered {
+                        send_scripted_message(&response_tx, turn, closing_text, None);
                         let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
@@ -672,6 +1079,24 @@ pub fn tool_scripted_provider(
                         usage: agent_ledger::providers::Usage::default(),
                         stop_reason: StopReason::ToolUse,
                     }));
+                    // The announce, where the script has one: a SEND beside
+                    // the call, in the same round (unit 55). It used to be
+                    // prose ahead of the call, which the relay carried; the
+                    // relay is gone, so a line the chat must read before
+                    // the slow work is a message like any other.
+                    if let Some(announce) = &script.announce {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
+                                id: format!("{SEND_CALL_ID}{turn}"),
+                                name: assistant_core::tools::send::NAME.to_owned(),
+                            }));
+                        let _ = response_tx.send(ProviderResponse::Event(
+                            StreamEvent::ToolUseInputDelta {
+                                json: serde_json::json!({ "text": announce }).to_string(),
+                            },
+                        ));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                    }
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
                         id: format!("call-{turn}"),
                         name: script.tool.clone(),
@@ -725,9 +1150,9 @@ pub fn same_round_calls_provider(calls: Vec<RoundCall>) -> (Box<dyn ProviderModu
                     let ProviderRequest::Stream { messages, .. } = request else {
                         continue;
                     };
-                    turns.fetch_add(1, Ordering::SeqCst);
+                    let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
-                    if messages.iter().any(carries_tool_result) {
+                    if answers_a_send(&messages) {
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
                         let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
@@ -738,6 +1163,8 @@ pub fn same_round_calls_provider(calls: Vec<RoundCall>) -> (Box<dyn ProviderModu
                                 usage: agent_ledger::providers::Usage::default(),
                                 stop_reason: StopReason::EndTurn,
                             }));
+                    } else if answers_any_call(&messages) {
+                        send_scripted_message(&response_tx, turn, CLOSING_ANSWER, None);
                     } else {
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
@@ -843,11 +1270,31 @@ pub fn round_scripted_provider(
                         let _ = response_tx.send(ProviderResponse::Done);
                         continue;
                     }
-                    let resolved = tool_result_parts(&messages);
+                    // The rounds are numbered by the script's OWN resolved
+                    // calls: a send's result is transport, not a round, so
+                    // it is subtracted and the script keeps its numbering.
+                    let resolved = tool_result_parts(&messages) - send_results(&messages);
                     let round = rounds[resolved.min(rounds.len() - 1)];
-                    turns.fetch_add(1, Ordering::SeqCst);
+                    let turn = turns.fetch_add(1, Ordering::SeqCst) + 1;
+                    let sent = answers_a_send(&messages);
                     seen.lock().unwrap().push(messages);
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
+                    // The round after a send: the words are in the chat, so
+                    // the turn writes them down and ends.
+                    if sent {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
+                            text: CLOSING_ANSWER.into(),
+                        }));
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: StopReason::EndTurn,
+                            }));
+                        let _ = response_tx.send(ProviderResponse::Done);
+                        continue;
+                    }
                     if let Some(narration) = round.narration {
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
@@ -881,16 +1328,7 @@ pub fn round_scripted_provider(
                             break;
                         }
                     } else {
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-                            text: CLOSING_ANSWER.into(),
-                        }));
-                        let _ =
-                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
-                                usage: agent_ledger::providers::Usage::default(),
-                                stop_reason: StopReason::EndTurn,
-                            }));
+                        send_scripted_message(&response_tx, turn, CLOSING_ANSWER, None);
                     }
                     let _ = response_tx.send(ProviderResponse::Done);
                 }
@@ -978,7 +1416,7 @@ pub fn binding() -> ModelBinding {
 /// assembly exposes no accessor for them, so a test reads the ledger and the
 /// event order through the clones it kept.
 pub struct Fixture {
-    pub assistant: Assistant,
+    pub assistant: Arc<Assistant>,
     pub script: ScriptHandle,
     pub store: Store,
     pub bus: Arc<EventBus<CoreEvent>>,
@@ -1310,22 +1748,92 @@ pub async fn start_assistant_config(
     tools: ToolSet,
     config: assistant_core::AssemblyConfig,
 ) -> Fixture {
+    let fixture = start_assistant_unreported(store, provider, script, tools, config).await;
+    spawn_delivery_reporter(&fixture.assistant).await;
+    fixture
+}
+
+/// The same assembly with NOBODY reporting its deliveries — for a test that
+/// reports the platform's answer itself, because what it is about is what a
+/// send that failed, or one cut short, does to the call behind it.
+///
+/// Two reporters would each answer the same send from their own edge, and
+/// the first resolution wins: a test scripting a failure needs to be the
+/// only one answering.
+pub async fn start_assistant_unreported(
+    store: Store,
+    provider: Box<dyn ProviderModule>,
+    script: ScriptHandle,
+    tools: ToolSet,
+    config: assistant_core::AssemblyConfig,
+) -> Fixture {
     let bus: Arc<EventBus<CoreEvent>> = Arc::new(EventBus::new());
-    let assistant = Assistant::start(
-        store.clone(),
-        Arc::clone(&bus),
-        registry_of(provider),
-        tools,
-        config,
-    )
-    .await
-    .expect("the assembly starts");
+    let assistant = Arc::new(
+        Assistant::start(
+            store.clone(),
+            Arc::clone(&bus),
+            registry_of(provider),
+            tools,
+            config,
+        )
+        .await
+        .expect("the assembly starts"),
+    );
     Fixture {
         assistant,
         script,
         store,
         bus,
     }
+}
+
+/// The platform ids the suite's stand-in adapter mints, in order.
+static MINTED_DELIVERIES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The platform id the stand-in adapter minted for the nth message it sent,
+/// counting from one — what a test names when it replies to one of the
+/// assistant's own messages.
+#[must_use]
+pub fn minted_delivery(nth: usize) -> String {
+    format!("hers-{nth}")
+}
+
+/// Spawn the suite's stand-in adapter: one outbound edge of its own,
+/// minting a platform id per message it takes and reporting it back through
+/// the receipt door.
+///
+/// It exists because a send is a PENDING call (unit 55): the sending tool
+/// files the message and the delivery report is what settles the call, so a
+/// suite with nobody reporting would leave every answered turn open on its
+/// own send and the next turn undispatched behind it. A real deployment has
+/// an adapter doing exactly this; the suite would otherwise be testing a
+/// half-connected machine.
+///
+/// It takes an edge of ITS OWN, so a test's edge still sees every item: two
+/// edges on one adapter each keep their own cursor and each deliver
+/// everything. The test reads what the chat would show; this one does what
+/// the chat would answer.
+pub async fn spawn_delivery_reporter(assistant: &Arc<Assistant>) {
+    let mut items = assistant
+        .outbound(ADAPTER)
+        .await
+        .expect("the reporter's outbound edge opens");
+    let reporting = Arc::clone(assistant);
+    tokio::spawn(async move {
+        while let Some(item) = items.recv().await {
+            let Outbound::Reply(reply) = item else {
+                continue;
+            };
+            let nth = MINTED_DELIVERIES.fetch_add(1, Ordering::SeqCst) + 1;
+            reporting
+                .report_delivery(
+                    reply.delivery,
+                    &[minted_delivery(nth)],
+                    &assistant_core::SendOutcome::Whole,
+                )
+                .await;
+        }
+    });
 }
 
 /// The operator every test assembly is configured with, on the suite's
@@ -1391,7 +1899,9 @@ pub async fn authorize(assistant: &Assistant, channel: &ChannelKey) {
 /// about the seam.
 pub async fn report_delivery(assistant: &Assistant, delivery: DeliveryHandle, origins: &[&str]) {
     let origins: Vec<String> = origins.iter().map(|origin| (*origin).to_owned()).collect();
-    assistant.report_delivery(delivery, &origins).await;
+    assistant
+        .report_delivery(delivery, &origins, &assistant_core::SendOutcome::Whole)
+        .await;
 }
 
 /// The item one judged observation delivers, or `None` where it delivers
@@ -1797,7 +2307,11 @@ pub async fn await_ledger(
             "timed out awaiting {what}; ledger: {:?}",
             blocks
                 .iter()
-                .map(|b| b.block_type.as_str())
+                .map(|b| format!(
+                    "{}{}",
+                    b.block_type,
+                    optional_field(b, "name").map_or(String::new(), |n| format!("({n})"))
+                ))
                 .collect::<Vec<_>>()
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1831,16 +2345,67 @@ pub async fn await_ledger(
 /// it is written, and how it reaches the model — is pinned by the suite's
 /// `date_marker` module, and what the receipts record by its `delivery`
 /// module; both read the raw ledger on purpose.
+/// A SEND's own machinery (unit 55, 2026-09-02) is filtered for the
+/// receipt's reason, restated: the call the model made, the outgoing block
+/// it filed and the resolution that settled it are the transport of ONE
+/// message, exactly as the receipt is the record of it. The suites' counts
+/// and positional reads are about what the conversation holds, and every
+/// answered turn gaining three transport rows would have renumbered them
+/// all while saying nothing new.
+///
+/// Filtered NARROWLY, by pairing: a call of a sending tool, the outgoing
+/// block, and the resolution carrying that call's own provider echo. Every
+/// other tool's call and result stay in the view, because a lookup, a
+/// report and a reaction are things the turn DID and the suites pin them
+/// there.
+///
+/// What a send records — the block, its columns, its call and its
+/// settlement — is pinned by the suite's `sending` module, which reads the
+/// raw ledger on purpose.
 #[must_use]
 pub fn consumer_view(blocks: &[Block]) -> Vec<Block> {
+    let sending: Vec<String> = blocks
+        .iter()
+        .filter(|block| block.block_type == "tool_call" && names_a_sending_tool(block))
+        .filter_map(|block| optional_field(block, "tool_call_id"))
+        .collect();
     blocks
         .iter()
         .filter(|block| {
             !DateMarker::KINDS.contains(&block.block_type.as_str())
                 && block.block_type != assistant_core::delivery::DELIVERED_KIND
+                && block.block_type != assistant_core::outgoing::OUTGOING_MESSAGE_KIND
+                && !(block.block_type == "tool_call" && names_a_sending_tool(block))
+                && !settles_a_send(block, &sending)
         })
         .cloned()
         .collect()
+}
+
+/// Whether one recorded call names a sending tool.
+fn names_a_sending_tool(block: &Block) -> bool {
+    optional_field(block, "name").is_some_and(|name| {
+        name == assistant_core::tools::send::NAME || name == assistant_core::tools::reply::NAME
+    })
+}
+
+/// Whether one block is the resolution of one of the given calls — paired
+/// by the provider's own echo, which is what the framework itself pairs a
+/// call and its answer by.
+fn settles_a_send(block: &Block, sending: &[String]) -> bool {
+    matches!(block.block_type.as_str(), "tool_result" | "tool_error")
+        && optional_field(block, "tool_call_id").is_some_and(|echo| sending.contains(&echo))
+}
+
+/// One text field of a loaded block, absent where the row holds none —
+/// the pairing reads above take an absence as "not a send", never as an
+/// empty string.
+fn optional_field(block: &Block, name: &str) -> Option<String> {
+    block
+        .fields
+        .get(name)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
 }
 
 /// Poll one conversation until `accept` says its CONSUMER VIEW
@@ -1985,6 +2550,152 @@ pub fn tool_choice_names(blocks: &[Block]) -> Vec<String> {
         .find(|block| block.block_type == "tool_choice")
         .expect("the conversation records a tool choice");
     choice_names(block)
+}
+
+/// The block kinds that mean a turn is still MID-FLIGHT — the machinery a
+/// round writes between its start and its end.
+///
+/// A conversation whose newest block is one of these has work in the air:
+/// the framework is running a call, a send is filed and unsettled, or a
+/// resolution is waiting for the round it re-drives. Everything else — a
+/// member's message, one of the assistant's committed texts, a note, a
+/// report, a reaction — is a settled tail.
+const IN_FLIGHT_KINDS: &[&str] = &[
+    "tool_call",
+    "tool_result",
+    "tool_error",
+    "streaming_text",
+    "streaming_tool_call",
+    "outgoing_message",
+    assistant_core::delivery::DELIVERED_KIND,
+];
+
+/// The longest the edge below waits for a turn to finish before handing the
+/// test what it already has. A bound and not a condition to meet: a test that
+/// deliberately holds a stream open never settles, and it must still read its
+/// item.
+const SETTLE_WAIT: Duration = Duration::from_secs(3);
+
+/// The suite's outbound edge: the core's own edge, with every item held
+/// back until the turn that produced it has finished (unit 55,
+/// 2026-09-02).
+///
+/// A send is a PENDING call, so an answered turn now spans two rounds — the
+/// round that sends, and the round the delivery report re-drives. The
+/// message reaches the chat in the FIRST of them, so a test reading a reply
+/// and ingesting again straight away would land its next message inside the
+/// still-open turn and have it absorbed. That is honest production
+/// behaviour and useless as a fixture: it makes every ledger shape depend
+/// on which of two tasks won.
+///
+/// So the edge waits for the conversation's machinery to settle before
+/// handing an item over. A turn that sends twice hands over both, in order,
+/// once the turn is done; a turn that never settles hands over anyway at
+/// [`SETTLE_WAIT`], because a held stream is a shape the suite drives on
+/// purpose.
+pub async fn outbound(fixture: &Fixture) -> mpsc::UnboundedReceiver<Outbound> {
+    outbound_of(&fixture.assistant, &fixture.store).await
+}
+
+/// The same edge for a test holding its assembly and its store apart.
+pub async fn outbound_of(
+    assistant: &Assistant,
+    store: &Store,
+) -> mpsc::UnboundedReceiver<Outbound> {
+    let mut items = assistant
+        .outbound(ADAPTER)
+        .await
+        .expect("the outbound edge opens");
+    let (settled, receiver) = mpsc::unbounded_channel();
+    let store = store.clone();
+    tokio::spawn(async move {
+        while let Some(item) = items.recv().await {
+            await_settled(&store).await;
+            if settled.send(item).is_err() {
+                break;
+            }
+        }
+    });
+    receiver
+}
+
+/// Wait until no conversation in the store has a turn in the air, or until
+/// [`SETTLE_WAIT`] runs out. A read failure ends the wait: this is a test
+/// fixture's patience, not an assertion.
+async fn await_settled(store: &Store) {
+    let deadline = std::time::Instant::now() + SETTLE_WAIT;
+    while std::time::Instant::now() < deadline {
+        let Ok(conversations) = store.list_conversations().await else {
+            return;
+        };
+        let mut in_flight = false;
+        for conversation in conversations {
+            let Ok(blocks) = store.list_blocks(conversation.id).await else {
+                return;
+            };
+            if blocks
+                .last()
+                .is_some_and(|block| IN_FLIGHT_KINDS.contains(&block.block_type.as_str()))
+            {
+                in_flight = true;
+                break;
+            }
+        }
+        if !in_flight {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Every message one conversation SENT, in ledger order: the stored text of
+/// its outgoing blocks (unit 55, 2026-09-02).
+///
+/// What a suite used to read off the answer block. The two are not the same
+/// text any more and must not be confused: the assistant's committed `text`
+/// block is the turn's private notes, and THIS is what the chat received —
+/// the disclosure line included, since that line is composed into the
+/// stored outgoing text before the send.
+pub async fn sent_texts(store: &Store, conversation_id: i64) -> Vec<String> {
+    store
+        .list_blocks(conversation_id)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .filter_map(|block| {
+            match <assistant_core::kind::AssistantKind as agent_ledger::FromBlock>::from_block(
+                block,
+            ) {
+                assistant_core::kind::AssistantKind::OutgoingMessage(sent) => sent.text,
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Every tool resolution one ledger holds, in order, EXCLUDING a SEND's
+/// own (unit 55): a send's result is the transport reporting back, not one
+/// of the turn's acts, and a case counting what the model's calls came to
+/// is counting the acts.
+///
+/// Paired by the provider's own echo, the way the framework pairs a call
+/// with its answer.
+#[must_use]
+pub fn tool_outcomes(blocks: &[Block]) -> Vec<String> {
+    let sending: Vec<String> = blocks
+        .iter()
+        .filter(|block| block.block_type == "tool_call" && names_a_sending_tool(block))
+        .filter_map(|block| optional_field(block, "tool_call_id"))
+        .collect();
+    blocks
+        .iter()
+        .filter(|block| !settles_a_send(block, &sending))
+        .filter_map(|block| match block.block_type.as_str() {
+            "tool_result" => optional_field(block, "content"),
+            "tool_error" => optional_field(block, "error"),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Await the next item on the outbound edge, or name the stall.

@@ -31,6 +31,7 @@ async fn looking_up(handle: &str) -> support::Fixture {
             tool: standing::NAME.into(),
             input: json!({ standing::PARAMETER_HANDLE: handle }).to_string(),
             narration: None,
+            announce: None,
         },
         None,
     );

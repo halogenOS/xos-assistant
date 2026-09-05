@@ -444,15 +444,23 @@ pub struct DeliveryHandle {
     /// line, whose block declares no quotable column, and every
     /// deterministic item, which is fixed prose and stored nowhere.
     pub(crate) quotable_block: Option<i64>,
+    /// The tool call this send answers, where one is waiting on it (unit
+    /// 55, 2026-09-02): the model asked for the message, the call stayed
+    /// pending, and the report of what the platform did is what settles it.
+    /// `None` for every send nobody asked for — a report's line, a
+    /// deterministic item — which settles nothing because nothing is
+    /// waiting.
+    pub(crate) call_block: Option<i64>,
 }
 
 impl DeliveryHandle {
     /// The handle of a send that carries no quotable block of the
-    /// assistant's own.
+    /// assistant's own and answers no waiting call.
     pub(crate) fn in_conversation(conversation_id: i64) -> Self {
         Self {
             conversation_id,
             quotable_block: None,
+            call_block: None,
         }
     }
 
@@ -465,6 +473,11 @@ impl DeliveryHandle {
         }
     }
 
+    /// The same handle, naming the tool call this send answers.
+    pub(crate) fn answering(self, call_block: Option<i64>) -> Self {
+        Self { call_block, ..self }
+    }
+
     /// The conversation the delivery record is appended to.
     pub(crate) fn conversation_id(self) -> i64 {
         self.conversation_id
@@ -474,6 +487,37 @@ impl DeliveryHandle {
     pub(crate) fn quotable_block(self) -> Option<i64> {
         self.quotable_block
     }
+
+    /// The tool call waiting on this send, where one is.
+    pub(crate) fn call_block(self) -> Option<i64> {
+        self.call_block
+    }
+}
+
+/// How one send ended, as the adapter alone can report it (unit 55,
+/// 2026-09-02).
+///
+/// It rides beside the delivered ids because the two answer different
+/// questions and neither implies the other: the ids say what reached the
+/// chat, this says whether that was the whole message. A send past the
+/// platform's message cap goes out as several messages, and one of them
+/// failing leaves the earlier ones standing in the group — so "some ids and
+/// it worked" and "some ids and the rest was lost" are different outcomes,
+/// and only the adapter knows which one happened.
+///
+/// The core decides what each one MEANS: a whole send completes the model's
+/// pending call with its ids, and either failing shape fails it with the
+/// reason. The adapter reports and decides nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SendOutcome {
+    /// The platform took the whole message.
+    Whole,
+    /// The send failed. The reason is the adapter's own rendering of what
+    /// the platform said, which the model reads back verbatim.
+    Failed {
+        /// Why the send did not complete.
+        reason: String,
+    },
 }
 
 /// One deterministic item an observation returns, with the handle its send
@@ -588,7 +632,9 @@ impl IngestReceipt {
 /// adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplyKind {
-    /// A finalized answer from the model.
+    /// One message the model filed through a sending tool, on its way to
+    /// the chat. The model's written text is not this and never leaves the
+    /// ledger (unit 55).
     Answer,
     /// A filed report's fixed line (decided 2026-08-23): the core's own
     /// machinery text, delivered threaded onto the reported message.
@@ -601,9 +647,10 @@ pub enum ReplyKind {
 /// runs, is never stored, and owes nothing across a restart. The core
 /// derives it from the turn lifecycle; the authoritative statement of when
 /// the cue is on lives on the composing edge (`crate::composing`) — in
-/// short, on while the model is composing (its thinking and its streaming),
-/// and off during a tool call and a human wait, so a deterministic reply,
-/// which takes no turn, never composes.
+/// short, on from the moment one of the sending tools' calls starts until
+/// that message is sent, its send fails, or the stream ends, and dark for
+/// written text, for every other tool, and for a deterministic reply, which
+/// takes no turn at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposingState {
     /// The assistant is composing an answer on the channel.
@@ -718,10 +765,10 @@ pub struct OutboundReply {
     /// origin into the platform's reply parameters with send-without-reply
     /// tolerance — a deleted target degrades to a plain send — and threads
     /// only the first chunk. A report's delivery names the reported
-    /// message's origin; an answer names the origin of the one message
-    /// that addressed the assistant this turn, and `None` says the reply
-    /// goes out plain: an answer nobody or several addressed, and an
-    /// answer whose prose carries the moderation command shape
+    /// message's origin; one of the assistant's own messages names the
+    /// message the MODEL aimed it at (unit 55, 2026-09-02), and `None` says
+    /// the send goes out plain: a message the model sent without naming a
+    /// target, and one whose text carries the moderation command shape
     /// (2026-08-24).
     pub reply_target: Option<ReplyThread>,
     /// Where this reply's send is recorded (unit 38, 2026-08-30): the

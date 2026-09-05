@@ -53,11 +53,7 @@ async fn an_ambiguous_question_draws_the_clarifying_question_delivered_whole() {
     );
 
     let fixture = helpful_fixture().await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-ambiguous").await;
 
     let receipt = support::ingest_recorded(
@@ -109,11 +105,7 @@ async fn an_ambiguous_question_draws_the_clarifying_question_delivered_whole() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_clear_question_is_answered_directly_not_interrogated() {
     let fixture = helpful_fixture().await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-clear").await;
 
     support::ingest_recorded(
@@ -146,11 +138,7 @@ async fn a_clear_question_is_answered_directly_not_interrogated() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_disambiguation_is_a_normal_two_turn_exchange() {
     let fixture = helpful_fixture().await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-two-turns").await;
 
     let receipt = support::ingest_recorded(
@@ -205,16 +193,21 @@ async fn the_disambiguation_is_a_normal_two_turn_exchange() {
     );
 
     let seen = fixture.script.seen.lock().unwrap();
-    assert_eq!(seen.len(), 2, "two sequential model turns ran");
+    assert_eq!(
+        seen.len(),
+        4,
+        "two sequential model turns ran, two rounds each: the round that \
+         sends and the round the delivery report re-drives"
+    );
     assert!(
-        seen[1]
+        seen[2]
             .iter()
             .any(|message| carries(message, CLARIFYING_QUESTION)),
         "the prior clarifying question is visible in the second turn's \
          projected context"
     );
     assert!(
-        seen[1]
+        seen[2]
             .iter()
             .any(|message| carries(message, "on my device, not building it myself")),
         "the disambiguating reply is the second turn's newest question"
@@ -228,11 +221,7 @@ async fn the_disambiguation_is_a_normal_two_turn_exchange() {
 async fn a_clarifying_question_raises_the_typing_cue() {
     let fixture = helpful_fixture().await;
     let mut composing = fixture.assistant.composing(support::ADAPTER);
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-clarify-cue").await;
 
     support::ingest_recorded(
@@ -272,11 +261,7 @@ async fn a_clarifying_question_raises_the_typing_cue() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_first_clarifying_question_carries_the_disclosure_line() {
     let fixture = helpful_fixture().await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-first-question").await;
 
     support::ingest_recorded(

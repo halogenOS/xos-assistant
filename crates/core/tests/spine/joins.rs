@@ -90,6 +90,15 @@ fn projected(block: &Block) -> Option<String> {
     JoinNotice::parse(block).llm_text()
 }
 
+/// The same line with the envelope stripped away — what these cases pin.
+///
+/// The envelope's `date` is the platform's own live clock, so pinning it
+/// here would pin a timestamp; what it renders is pinned byte for byte at
+/// the kind, and the id it declares is asserted separately below.
+fn projected_line(block: &Block) -> Option<String> {
+    projected(block).map(|line| support::without_envelope(&line))
+}
+
 /// The tool names of every recorded choice one conversation holds, oldest
 /// first — the supersession pins read the newest one back.
 async fn stored_choices(store: &Store, conversation_id: i64) -> Vec<Vec<String>> {
@@ -244,17 +253,24 @@ async fn a_join_event_lands_one_marked_block_per_joiner() {
 
     assert_eq!(field(&joins[0], join::COLUMN_NAME), "Ada Lovelace");
     assert_eq!(field(&joins[0], join::COLUMN_HANDLE), "ada");
-    let lines: Vec<Option<String>> = joins.iter().map(projected).collect();
+    let lines: Vec<Option<String>> = joins.iter().map(projected_line).collect();
     assert_eq!(
         lines,
         vec![
-            Some("[origin-join-1] A member joined the group: Ada Lovelace (@ada)".to_owned()),
-            Some("[origin-join-1] A member joined the group: @bo".to_owned()),
-            Some("[origin-join-1] A member joined the group: Grace Hopper".to_owned()),
-            Some("[origin-join-1] A member joined the group.".to_owned()),
+            Some("A member joined the group: Ada Lovelace (@ada)".to_owned()),
+            Some("A member joined the group: @bo".to_owned()),
+            Some("A member joined the group: Grace Hopper".to_owned()),
+            Some("A member joined the group.".to_owned()),
         ],
-        "each joiner projects one marked platform-fact line"
+        "each joiner projects one platform-fact line"
     );
+    for line in joins.iter().filter_map(projected) {
+        assert!(
+            line.contains("msgid: origin-join-1"),
+            "and each declares the event's own id, which a report names it \
+             by: {line}"
+        );
+    }
     assert_eq!(
         JoinNotice::parse(&joins[0]).group_role(),
         Some(Role::System),
@@ -456,10 +472,8 @@ async fn a_windowed_join_reaches_the_models_request() {
         requests
             .iter()
             .any(|messages| messages.iter().any(|message| {
-                support::carries(
-                    message,
-                    "[origin-join-2] A member joined the group: Ada Lovelace (@ada)",
-                )
+                support::carries(message, "msgid: origin-join-2")
+                    && support::carries(message, "A member joined the group: Ada Lovelace (@ada)")
             })),
         "the join's marked line rides the request the turn composed"
     );
@@ -748,6 +762,7 @@ async fn a_windowed_join_is_reported_against_its_event() {
             tool: report::NAME.into(),
             input: r#"{"message_id":"origin-join-7"}"#.into(),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -759,11 +774,7 @@ async fn a_windowed_join_is_reported_against_its_event() {
         ProtectionConfig::default(),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = support::authorized_group(&fixture.assistant, "room-join-report").await;
 
     observe_join(
@@ -829,6 +840,7 @@ async fn a_plural_join_event_files_once_and_names_no_single_person() {
             tool: report::NAME.into(),
             input: r#"{"message_id":"origin-join-8"}"#.into(),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -898,11 +910,7 @@ async fn a_plural_join_event_files_once_and_names_no_single_person() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_windowed_join_changes_neither_the_disclosure_nor_the_threading() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = support::authorized_group(&fixture.assistant, "room-join-threading").await;
     observe_join(
         &fixture.assistant,
@@ -915,7 +923,12 @@ async fn a_windowed_join_changes_neither_the_disclosure_nor_the_threading() {
     support::ingest_recorded(
         &fixture.assistant,
         support::with_origin(
-            inbound(&key, ChannelKind::Group, "asker", "the first question"),
+            inbound(
+                &key,
+                ChannelKind::Group,
+                "asker",
+                &format!("the first question {cue}", cue = support::REPLY_CUE),
+            ),
             "origin-asker-1",
         ),
     )
@@ -923,13 +936,16 @@ async fn a_windowed_join_changes_neither_the_disclosure_nor_the_threading() {
     let reply = recv_reply(&mut replies).await;
     assert_eq!(
         reply.text,
-        support::first_answer_to("the first question"),
-        "the first answer to this person still opens with the disclosure line, once"
+        support::first_answer_to(&format!(
+            "the first question {cue}",
+            cue = support::REPLY_CUE
+        )),
+        "the first message to this person still opens with the disclosure line, once"
     );
     assert_eq!(
         reply.reply_target,
         Some(ReplyThread::OntoOrPlainly("origin-asker-1".into())),
-        "the answer threads onto the one message that addressed the assistant"
+        "the send threads onto the message the model named"
     );
 }
 
@@ -1018,8 +1034,12 @@ async fn erasing_a_joiner_nulls_their_block_their_event_reference_and_nothing_el
         "an erased join projects nothing at all"
     );
     assert_eq!(
-        projected(&joins[1]),
-        Some("[origin-join-10] A member joined the group: Grace Hopper (@bo)".to_owned())
+        projected_line(&joins[1]),
+        Some("A member joined the group: Grace Hopper (@bo)".to_owned())
+    );
+    assert!(
+        projected(&joins[1]).is_some_and(|line| line.contains("msgid: origin-join-10")),
+        "the surviving row keeps the event's id"
     );
 
     let reply_targets: Vec<Option<String>> = domain_run(&fixture.store.tx(), DOMAIN, |conn| {
@@ -1112,6 +1132,7 @@ async fn a_filed_plural_event(room: &str, origin: &str) -> (support::Fixture, Ch
             tool: report::NAME.into(),
             input: format!(r#"{{"message_id":"{origin}"}}"#),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -1214,9 +1235,13 @@ async fn erasing_one_joiner_of_a_reported_event_nulls_the_filing_and_spares_the_
     let joins = join_blocks(&fixture.store, conversation).await;
     assert_eq!(projected(&joins[0]), None);
     assert_eq!(
-        projected(&joins[1]),
-        Some("[origin-join-15] A member joined the group: Ada Lovelace (@ada)".to_owned()),
+        projected_line(&joins[1]),
+        Some("A member joined the group: Ada Lovelace (@ada)".to_owned()),
         "the event stands for the joiner who did not ask to be forgotten"
+    );
+    assert!(
+        projected(&joins[1]).is_some_and(|line| line.contains("msgid: origin-join-15")),
+        "and it keeps the event's id"
     );
 }
 

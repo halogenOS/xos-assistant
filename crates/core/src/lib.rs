@@ -33,9 +33,15 @@
 //! - [`commands`] — the command catalogue: the one list of commands this
 //!   assistant answers, the recognition that folds ASCII case, and the
 //!   reading of who is offered each command in which kind of channel.
+//! - [`contract`] — the contract-notice kind: the one system-voiced block
+//!   recording where a conversation crossed from relayed answers into sent
+//!   ones.
 //! - [`delivery`] — the delivery-receipt kind: one message the assistant
 //!   successfully sent, recorded through [`Assistant::report_delivery`] so
 //!   a reply to it can quote her stored words.
+//! - [`outgoing`] — the outgoing-message kind: one message a sending tool
+//!   filed, which the outbound edge delivers and the delivery receipt
+//!   settles.
 //! - [`join`] — the join-notice kind: one person's recorded entry into a
 //!   group, stored through the observation surface and erased with the
 //!   person.
@@ -68,6 +74,7 @@ mod authorization;
 pub mod commands;
 mod compaction;
 mod composing;
+pub mod contract;
 pub mod delivery;
 mod disclosure;
 mod erasure;
@@ -82,6 +89,7 @@ mod message;
 pub mod mirror;
 pub mod note;
 mod outbound;
+pub mod outgoing;
 pub mod privacy;
 #[cfg(feature = "chat_completions")]
 pub mod provider;
@@ -110,14 +118,14 @@ pub use message::{
     Authority, ChannelKey, ChannelKind, ChannelReset, ComposingState, ComposingUpdate,
     DeliveryHandle, DeliveryItem, InboundMessage, IngestOutcome, IngestReceipt, InvokedCommand,
     JoinedMember, Observation, ObserveOutcome, ObservedDelivery, ObservedFact, Outbound,
-    OutboundMark, OutboundReply, QuotedExcerpt, ReplyKind, ReplyTarget, ReplyThread,
+    OutboundMark, OutboundReply, QuotedExcerpt, ReplyKind, ReplyTarget, ReplyThread, SendOutcome,
     SenderIdentity,
 };
 pub use outbound::{PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED, RULES_ACKNOWLEDGMENT};
 pub use retention::RetentionConfig;
 pub use teaching::{
     CLOSING_PROHIBITIONS, Capabilities, MODERATION_TEACHING, REACT_TEACHING, SEARCH_TEACHING,
-    composed_system_prompt, moderation_taught,
+    SENDING_CONTRACT, composed_system_prompt, moderation_taught,
 };
 pub use window::{
     ACKNOWLEDGMENT_WINDOW, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, RESET_REPLY_CAP,

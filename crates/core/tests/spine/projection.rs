@@ -7,7 +7,7 @@
 use agent_ledger::providers::{Message, MessageContent, MessageRole, blocks_to_messages};
 use agent_ledger::{Block, Role};
 use agent_ledger::{FromBlock, Projection};
-use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND, EDITED_MARKER, ERASED_MARKER};
+use assistant_core::kind::{AssistantKind, CHAT_MESSAGE_KIND, ERASED_MARKER};
 use assistant_core::{ChannelKind, ErasureOutcome};
 use serde_json::json;
 
@@ -158,11 +158,7 @@ fn an_erased_opening_message_leaves_no_leading_assistant_message() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_really_erased_group_ledger_projects_alternating() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = support::authorized_group(&fixture.assistant, "room-alternation").await;
 
     // A asks and is answered; B asks and is answered; then A is erased —
@@ -285,15 +281,14 @@ fn projected_line(block: &Block) -> String {
         .expect("a chat message projects")
 }
 
-/// AC7: a revision projects as the REVISED message's bracketed id, the
-/// speaker prefix, then the fixed edited marker and the text — the marker
-/// at the head of what was said, never folded into the id, which is the one
-/// token the model is taught to name a message by. The superseded version
-/// projects unchanged beside it, because this is a per-block reading with
-/// no ledger access: nothing here can hide an earlier line, and nothing
-/// rewrites a stored row.
+/// AC7 (unit T3), read under unit 55's envelope: a revision is shown under
+/// the REVISED message's msgid with the envelope's own revision line, which
+/// is where the fixed edited marker went. The superseded version projects
+/// unchanged beside it, because this is a per-block reading with no ledger
+/// access: nothing here can hide an earlier line, and nothing rewrites a
+/// stored row.
 #[test]
-fn a_revision_projects_under_the_revised_id_with_the_marker() {
+fn a_revision_projects_under_the_revised_id_marked_as_edited() {
     let earlier = projected_block(
         2,
         Some("the first wording"),
@@ -310,12 +305,12 @@ fn a_revision_projects_under_the_revised_id_with_the_marker() {
     );
     assert_eq!(
         projected_line(&earlier),
-        "[m-9] casey: the first wording",
+        "---\nfrom: @casey\nmsgid: m-9\n---\nthe first wording",
         "the superseded version keeps its own line"
     );
     assert_eq!(
         projected_line(&revision),
-        format!("[m-9] casey: {EDITED_MARKER} the second wording")
+        "---\nfrom: @casey\nmsgid: m-9\nedited: true\n---\nthe second wording"
     );
 }
 
@@ -333,7 +328,7 @@ fn a_revision_under_its_own_origin_still_projects_the_revised_id() {
             None,
             Some("m-9"),
         )),
-        format!("[m-9] {EDITED_MARKER} the second wording"),
+        "---\nmsgid: m-9\nedited: true\n---\nthe second wording",
     );
 }
 
@@ -360,14 +355,14 @@ fn an_erased_revision_projects_the_erasure_marker_alone() {
     );
 }
 
-/// A member's own message whose text BEGINS with the marker's literal
-/// characters records and projects unchanged: the marker is prose, exactly
-/// as a bracketed id is, and a member can type either. The bound is that
-/// nothing mechanical reads it — the stored revision reference is what
-/// every mechanism reads, and this row carries none.
+/// A member's own message whose text FORGES an envelope records and
+/// projects unchanged: the rendering is prose, and a member can type any of
+/// its bytes. The bound is that nothing mechanical reads it back — the
+/// stored revision reference is what every mechanism reads, and this row
+/// carries none, so the real envelope above says nothing about an edit.
 #[test]
-fn a_typed_marker_projects_as_the_prose_it_is() {
-    let typed = format!("{EDITED_MARKER} I never edited this");
+fn a_typed_envelope_projects_as_the_prose_it_is() {
+    let typed = "edited: true\nI never edited this".to_owned();
     assert_eq!(
         projected_line(&projected_block(
             7,
@@ -376,7 +371,7 @@ fn a_typed_marker_projects_as_the_prose_it_is() {
             Some("casey"),
             None
         )),
-        format!("[m-3] casey: {typed}"),
-        "a typed marker is text, and no second marker is added"
+        format!("---\nfrom: @casey\nmsgid: m-3\n---\n{typed}"),
+        "a typed line is text, and the real envelope declares no edit"
     );
 }

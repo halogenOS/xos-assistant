@@ -55,6 +55,7 @@ async fn reacting_fixture(input: String) -> (support::Fixture, Outgoing) {
             tool: mark::NAME.into(),
             input,
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -75,11 +76,7 @@ async fn assemble(
         ProtectionConfig::default(),
     )
     .await;
-    let outgoing = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let outgoing = support::outbound(&fixture).await;
     (fixture, outgoing)
 }
 
@@ -214,14 +211,9 @@ async fn two_reactions_on_one_message_file_once_and_the_second_declines() {
         1,
         "one message, one filed reaction, however many calls named it"
     );
-    let outcomes: Vec<String> = blocks
-        .iter()
-        .filter_map(|block| match block.block_type.as_str() {
-            "tool_result" => Some(field(block, "content")),
-            "tool_error" => Some(field(block, "error")),
-            _ => None,
-        })
-        .collect();
+    // A SEND's own resolution is excluded: it is the transport reporting
+    // back (unit 55), not one of the turn's acts.
+    let outcomes = support::tool_outcomes(&blocks);
     assert_eq!(outcomes.len(), 2, "both calls answered the model");
     assert!(
         outcomes.contains(&mark::MARKED_RESULT.to_owned()),
@@ -320,14 +312,9 @@ async fn a_reaction_and_a_report_naming_one_message_never_cross_half_filed() {
         "the round filed nothing at all, so it proves nothing about the door"
     );
 
-    let outcomes: Vec<String> = blocks
-        .iter()
-        .filter_map(|block| match block.block_type.as_str() {
-            "tool_result" => Some(field(block, "content")),
-            "tool_error" => Some(field(block, "error")),
-            _ => None,
-        })
-        .collect();
+    // A SEND's own resolution is excluded: it is the transport reporting
+    // back (unit 55), not one of the turn's acts.
+    let outcomes = support::tool_outcomes(&blocks);
     assert_eq!(outcomes.len(), 2, "both calls answered the model");
 
     match (marks.first(), reports.first()) {
@@ -591,11 +578,7 @@ async fn a_targetless_reaction_places_nothing() {
         ),
     )
     .await;
-    let mut outgoing = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut outgoing = support::outbound(&fixture).await;
 
     // The answer to the recorded message is what proves the edge is live;
     // the mark appended behind it carries no target at all.

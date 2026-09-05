@@ -13,8 +13,9 @@ use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    TempStateFile, answer_to, await_chat_messages, await_conversations, first_answer_to,
-    message_id_of, private_update, recording_sleep, spawn_adapter, start_assistant,
+    self, REPLY_CUE, TempStateFile, answer_to, await_chat_messages, await_conversations,
+    first_answer_to, message_id_of, private_update, recording_sleep, spawn_adapter,
+    start_assistant,
 };
 
 /// Two rate-limited attempts, then success: each refusal hands its stated
@@ -241,7 +242,9 @@ async fn a_failed_later_chunk_ends_the_reply_and_the_tail_is_never_sent() {
     );
 
     // The next send is the follow-up's reply: the abandoned tail never went
-    // out after the failure.
+    // out after the failure. The cut send's own turn finishes first, so the
+    // follow-up summons a turn of its own instead of being absorbed.
+    support::await_quiet(&fixture.store).await;
     server.push_update(private_update(2, 5, "after the cut"));
     let sends = server.await_recorded("sendMessage", 3).await;
     assert_eq!(
@@ -259,6 +262,9 @@ async fn a_failed_later_chunk_ends_the_reply_and_the_tail_is_never_sent() {
 /// The answer arrives instead of being dropped, and exactly one retry is
 /// spent — the second message's pair of sends is what proves the count, since
 /// an unbounded retry would fill the wire between them.
+///
+/// The target is the model's from unit 55 on: the scripted turn AIMS its
+/// reply at the ask's own msgid, because nothing derives a thread any more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_refused_threaded_send_retries_plain_and_the_answer_arrives() {
     let fixture = start_assistant().await;
@@ -268,14 +274,15 @@ async fn a_refused_threaded_send_retries_plain_and_the_answer_arrives() {
     // A 400 is the platform declining the request itself, which is what
     // says the send was not performed.
     server.refuse_threaded_sends(400, "Bad Request: message thread not found");
-    server.push_update(private_update(1, 5, "the threaded ask"));
+    let asked = format!("the threaded ask {REPLY_CUE}");
+    server.push_update(private_update(1, 5, &asked));
 
     let state = TempStateFile::new("refused-thread");
     let (sleep, _) = recording_sleep();
     let _adapter = spawn_adapter(&server, state.path(), Arc::clone(&fixture.assistant), sleep);
 
-    // The direct chat addresses the assistant, so the answer threads onto
-    // the ask; the refusal sends it plain.
+    // The turn aimed its reply at the ask, so the answer threads onto it;
+    // the refusal sends it plain.
     let sends = server.await_recorded("sendMessage", 2).await;
     assert_eq!(
         sends[0].body["reply_parameters"]["message_id"],
@@ -289,14 +296,16 @@ async fn a_refused_threaded_send_retries_plain_and_the_answer_arrives() {
     );
     assert_eq!(
         sends[1].body["text"],
-        json!(first_answer_to("the threaded ask")),
+        json!(first_answer_to(&asked)),
         "the same text arrives; the answer is not lost to the thread"
     );
     assert_eq!(sends[1].body["chat_id"], json!(5));
 
     // The next answer takes its own two sends and no more: one refused
     // threaded attempt, one plain retry.
-    server.push_update(private_update(2, 5, "the second ask"));
+    let again = format!("the second ask {REPLY_CUE}");
+    support::await_quiet(&fixture.store).await;
+    server.push_update(private_update(2, 5, &again));
     let sends = server.await_recorded("sendMessage", 4).await;
     assert_eq!(sends.len(), 4, "two sends per answer: one retry each");
     assert_eq!(
@@ -305,7 +314,7 @@ async fn a_refused_threaded_send_retries_plain_and_the_answer_arrives() {
     );
     assert_eq!(
         sends[3].body["text"],
-        json!(answer_to("the second ask")),
+        json!(answer_to(&again)),
         "the second answer arrives plain, bare of the disclosure line"
     );
 }
@@ -326,7 +335,7 @@ async fn a_server_error_on_a_threaded_send_is_never_re_sent_plain() {
     let fixture = start_assistant().await;
     let server = BotApiServer::start().await;
     server.refuse_threaded_sends(500, "Internal Server Error: try again later");
-    server.push_update(private_update(1, 5, "the first ask"));
+    server.push_update(private_update(1, 5, &format!("the first ask {REPLY_CUE}")));
 
     let state = TempStateFile::new("threaded-server-error");
     let (sleep, _) = recording_sleep();
@@ -336,10 +345,13 @@ async fn a_server_error_on_a_threaded_send_is_never_re_sent_plain() {
     assert_eq!(
         sends[0].body["reply_parameters"]["message_id"],
         json!(message_id_of(1)),
-        "the answer threads onto the ask"
+        "the answer threads onto the ask the turn aimed at"
     );
 
-    server.push_update(private_update(2, 5, "the second ask"));
+    // The failed send's own turn finishes first: a message pushed while it
+    // still runs is absorbed by it instead of summoning its own turn.
+    support::await_quiet(&fixture.store).await;
+    server.push_update(private_update(2, 5, &format!("the second ask {REPLY_CUE}")));
     let sends = server.await_recorded("sendMessage", 2).await;
     assert_eq!(
         sends.len(),

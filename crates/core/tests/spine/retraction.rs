@@ -177,11 +177,7 @@ async fn retract(fixture: &support::Fixture, message: InboundMessage) -> Option<
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_administrators_reply_retracts_the_whole_delivery_once() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-retract-once").await;
     answered_and_delivered(
         &fixture,
@@ -239,11 +235,7 @@ async fn an_administrators_reply_retracts_the_whole_delivery_once() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_members_deletion_command_retracts_nothing_and_still_draws_an_answer() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-retract-member").await;
     let answer = answered_and_delivered(
         &fixture,
@@ -302,11 +294,7 @@ async fn a_members_deletion_command_retracts_nothing_and_still_draws_an_answer()
 #[allow(clippy::too_many_lines)]
 async fn the_retracted_answer_leaves_the_model_view_with_every_quote_of_it() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-retract-view").await;
     let answer = answered_and_delivered(
         &fixture,
@@ -379,10 +367,14 @@ async fn the_retracted_answer_leaves_the_model_view_with_every_quote_of_it() {
 
     let served = mapped_conversation(&fixture.store, &room).await;
     assert_ne!(served, source, "the channel is served from the fork");
-    let view = projected_whole(&fixture.store, served).await;
+    // The retracted block is the message she SENT (unit 55) — the words
+    // the group read — and it is gone from the fork with every quote of
+    // it. Her turn's own notes stand: they are the model's private record
+    // and were never in the chat, so a retraction has nothing to take
+    // there.
     assert!(
-        !view.contains(&words),
-        "the retracted answer is out of the model's view: {view}"
+        support::sent_texts(&fixture.store, served).await.is_empty(),
+        "the retracted message is out of the fork"
     );
     assert!(
         !fixture
@@ -418,9 +410,19 @@ async fn the_retracted_answer_leaves_the_model_view_with_every_quote_of_it() {
     let next = recv_reply(&mut replies).await;
     assert_eq!(next.kind, ReplyKind::Answer);
     assert!(
-        !newest_request(&fixture.script).contains(&words),
-        "the model's next request carries no trace of the retracted answer"
+        !newest_request(&fixture.script).contains(&quoted_back(&words)),
+        "the model's next request carries no QUOTE of the retracted \
+         message: the quote resolved her sent words under an \
+         administrator's own line, and it went with the message"
     );
+}
+
+/// One line as a QUOTE of it renders — the `> `-prefixed form the
+/// framework resolves a quote block into. What a retraction takes out of
+/// the model's view is the message the group read and every quote of it;
+/// the turn's own notes stand, being the model's private record.
+fn quoted_back(words: &str) -> String {
+    format!("> {words}")
 }
 
 /// AC4: a deletion command arriving while a turn is in flight settles that
@@ -430,11 +432,7 @@ async fn the_retracted_answer_leaves_the_model_view_with_every_quote_of_it() {
 async fn a_retraction_settles_an_in_flight_turn_before_it_forks() {
     let hold = support::TurnHold::new();
     let fixture = support::start_assistant(Some(std::sync::Arc::clone(&hold))).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-retract-held").await;
 
     // The first turn is released, so its answer stands and records its
@@ -456,7 +454,7 @@ async fn a_retraction_settles_an_in_flight_turn_before_it_forks() {
     hold.started().await;
     hold.release();
     let answer = recv_reply(&mut replies).await;
-    let words = answer
+    let _words = answer
         .text
         .lines()
         .next_back()
@@ -511,9 +509,7 @@ async fn a_retraction_settles_an_in_flight_turn_before_it_forks() {
     let served = mapped_conversation(&fixture.store, &room).await;
     assert_ne!(served, source, "the retracted target still forked away");
     assert!(
-        !projected_whole(&fixture.store, served)
-            .await
-            .contains(&words),
+        support::sent_texts(&fixture.store, served).await.is_empty(),
         "and the retracted answer is out of the fork's view"
     );
     assert!(
@@ -537,11 +533,7 @@ async fn a_retraction_settles_an_in_flight_turn_before_it_forks() {
 #[allow(clippy::too_many_lines)]
 async fn a_retraction_below_a_compaction_boundary_scrubs_the_digest() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-retract-compacted").await;
     answered_and_delivered(
         &fixture,
@@ -553,6 +545,8 @@ async fn a_retraction_below_a_compaction_boundary_scrubs_the_digest() {
     )
     .await;
     let source = mapped_conversation(&fixture.store, &room).await;
+    // The block a retraction takes is the message she SENT (unit 55), not
+    // the turn's own notes.
     let answer_block = fixture
         .store
         .list_blocks(source)
@@ -560,8 +554,8 @@ async fn a_retraction_below_a_compaction_boundary_scrubs_the_digest() {
         .expect("the ledger reads")
         .into_iter()
         .rev()
-        .find(|block| block.role == Some(agent_ledger::Role::Assistant))
-        .expect("the answer is stored")
+        .find(|block| block.block_type == assistant_core::outgoing::OUTGOING_MESSAGE_KIND)
+        .expect("the sent message is stored")
         .id;
 
     // Enough traffic behind the answer that the ledger splits with the
@@ -657,11 +651,7 @@ async fn a_retraction_below_a_compaction_boundary_scrubs_the_digest() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_edited_deletion_command_retracts_nothing() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-retract-edited").await;
     let answer = answered_and_delivered(
         &fixture,

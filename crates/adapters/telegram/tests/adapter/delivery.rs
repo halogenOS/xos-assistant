@@ -12,17 +12,19 @@
 use std::sync::Arc;
 
 use agent_ledger::agency::Quote;
-use agent_ledger::{Block, LeafKind, Role};
+use agent_ledger::{Block, LeafKind};
 use serde_json::json;
 
 use crate::server::BotApiServer;
 use crate::support::{
-    TempStateFile, answer_to, authorize_group, await_conversations, await_receipts, pin_update,
-    private_update, receipts, recording_sleep, reply_to_bot_message, spawn_adapter,
+    TempStateFile, answer_to, authorize_group, await_conversations, await_quiet, await_receipts,
+    pin_update, private_update, receipts, recording_sleep, reply_to_bot_message, spawn_adapter,
     start_assistant,
 };
 
-/// The assistant's own stored answer block in one conversation.
+/// The block she said her answer AS: the outgoing message a sending tool
+/// filed, which is what the chat received. Her turn's own text is private
+/// notes from unit 55 on, so a receipt names this block and never that.
 async fn her_answer(store: &agent_ledger::Store, conversation_id: i64) -> Block {
     store
         .list_blocks(conversation_id)
@@ -30,7 +32,7 @@ async fn her_answer(store: &agent_ledger::Store, conversation_id: i64) -> Block 
         .expect("the ledger reads")
         .into_iter()
         .rev()
-        .find(|block| block.role == Some(Role::Assistant))
+        .find(|block| block.block_type == assistant_core::outgoing::OUTGOING_MESSAGE_KIND)
         .expect("her answer is stored")
 }
 
@@ -233,7 +235,10 @@ async fn a_reply_to_a_later_chunk_quotes_her_whole_answer() {
         "both chunks carry the send's first id as the delivery key"
     );
 
-    // The reply names the SECOND chunk, which the platform gave id two.
+    // The reply names the SECOND chunk, which the platform gave id two. It
+    // waits for the answering turn to finish first: a message pushed while
+    // that turn still runs is absorbed by it instead of summoning its own.
+    await_quiet(&fixture.store).await;
     server.push_update(reply_to_bot_message(
         2,
         "private",
@@ -254,7 +259,7 @@ async fn a_reply_to_a_later_chunk_quotes_her_whole_answer() {
         .collect();
     assert_eq!(quotes.len(), 1, "one reply to her, one quote block");
     let whole = i64::try_from(
-        answer.fields["content"]
+        answer.fields[assistant_core::outgoing::COLUMN_TEXT]
             .as_str()
             .expect("her stored answer carries its text")
             .chars()

@@ -1,13 +1,33 @@
 //! The outbound edge: a subscription that yields what the assistant puts
-//! on one adapter's channels — a reply of words, or a reaction to place —
+//! on one adapter's channels — a message to send, or a reaction to place —
 //! each bound to the channel key it belongs on.
 //!
 //! The framework's event subscription is the wake signal only. Events carry
-//! no answer text, so on a completed stream the edge re-reads the answer
-//! block from the ledger and maps the conversation back to its channel key.
-//! Each edge serves exactly one adapter and skips every other adapter's
-//! conversations, so two adapters run two edges and neither consumes the
-//! other's items.
+//! no text, so on a completed stream the edge re-reads the conversation's
+//! undelivered blocks from the ledger and maps the conversation back to its
+//! channel key. Each edge serves exactly one adapter and skips every other
+//! adapter's conversations, so two adapters run two edges and neither
+//! consumes the other's items.
+//!
+//! # The model's text goes nowhere (unit 55, 2026-09-02)
+//!
+//! This edge no longer classifies an assistant text block as anything. The
+//! framework still commits every turn's prose as one, and that prose is the
+//! model's private notes: it is stored, it is projected back to the model,
+//! and no chat ever sees it. What goes out is an OUTGOING MESSAGE block —
+//! one message the model asked for by calling a sending tool — carrying the
+//! words, the target the model aimed them at, and the call that stays
+//! pending until the adapter reports what the platform did with them.
+//!
+//! Everything the relay used to carry moved onto that block: the leaked
+//! reasoning cut, which still narrows the wire text only; the
+//! first-interaction disclosure, still composed into the stored block
+//! before the send; the chunking, which was always the adapter's; and the
+//! reply-command protection, the same rule at the same edge. What did NOT
+//! move is the derived threading — the guess at which absorbed message an
+//! answer was for — because the model now says which message it is
+//! answering, and the empty-answer skip, because the model now chooses
+//! silence by not calling a tool at all.
 //!
 //! # The delivery contract, stated honestly
 //!
@@ -100,72 +120,53 @@
 //!
 //! # The wire text drops a leaked reasoning prefix (unit 43, 2026-08-30)
 //!
-//! A model whose reasoning escapes into its answer leaves one closing
-//! think-tag standing in the text with the whole trace in front of it.
-//! This edge is the one place an answer's text becomes a platform's
-//! message, so this is where the trace is cut: [`without_leaked_reasoning`]
-//! states the rule — exactly one closer is the leak and dies with
-//! everything before it, every other count stands byte for byte — the
-//! answer arm applies it in one place, and the deterministic replies never
-//! meet it.
+//! A model whose reasoning escapes into its text leaves one closing
+//! think-tag standing in it with the whole trace in front. This edge is the
+//! one place a stored message becomes a platform's message, so this is
+//! where the trace is cut: [`without_leaked_reasoning`] states the rule —
+//! exactly one closer is the leak and dies with everything before it, every
+//! other count stands byte for byte — the sending arm applies it in one
+//! place, and the report's fixed line never meets it.
 //!
 //! The cut reads the model's own prose, under any disclosure line an
 //! earlier delivery already stored ([`Disclosure::prose_of`]), and it runs
-//! ahead of both judgments below. So an answer that is nothing but
-//! reasoning is silence, and the introduction is composed back in front of
-//! the cut text instead of dying inside it — the wire text of an answer is
-//! decided here, in one expression, and nowhere else.
+//! ahead of the introduction below, so the line is composed back in front
+//! of the cut text instead of dying inside it.
 //!
 //! The stored block keeps the model's words whole — under the disclosure
-//! line where a first delivery wrote one in (that line is the one
-//! person-written prefix a stored answer may carry). The channel sees the
-//! same content without the leaked prefix: stored and wire text differ by
-//! exactly what the send cut.
+//! line where a first send wrote one in, which is the one person-written
+//! prefix a stored message may carry. The channel sees the same content
+//! without the leaked prefix: stored and wire text differ by exactly what
+//! the send cut. A text the cut empties is sent as it stands rather than
+//! withheld: the model asked for this message by calling a tool, and a
+//! withheld send would leave its call waiting on something nobody will ever
+//! do.
 //!
-//! # An empty answer delivers nothing (unit 22, 2026-08-24)
+//! # The first send introduces the assistant (2026-08-23)
 //!
-//! The model chooses silence by ending its turn without writing any text,
-//! and the framework commits that turn as a real empty assistant text
-//! block. This edge is where the choice takes effect: an undelivered
-//! answer whose spoken text trims to nothing — the stored text with a
-//! leaked reasoning prefix already cut, judged before any disclosure
-//! resolution — is accounted delivered and yields nothing: no
-//! empty send, no first-interaction introduction, the turn already closed
-//! by its own committed block. The check precedes the disclosure prepend
-//! on purpose: a prepended line would both fill the empty answer and
-//! record an introduction nobody received. When the model was addressed
-//! and could not back an answer with a lookup, it says "I don't know" in
-//! its own words — ordinary prose to this edge, delivered like any answer
-//! with no special routing.
+//! A message whose summoning people include anyone never yet introduced has
+//! the disclosure line written into its stored block before the send — the
+//! disclosure module owns the resolution and the receipt, and the resolved
+//! [`Disclosure`] value arrives with the edge — and the line opens the text
+//! that goes out, which is the stored text with any leaked reasoning prefix
+//! cut. The report line is a fixed text a person wrote and is never
+//! touched.
 //!
-//! # The first delivery introduces the assistant (2026-08-23)
+//! # A message threads where the model aimed it (unit 55, 2026-09-02)
 //!
-//! An undelivered answer whose summoning people include anyone never yet
-//! introduced has the disclosure line written into its stored block before
-//! the send — the disclosure module owns the resolution and the receipt,
-//! and the resolved [`Disclosure`] value arrives with the edge — and the
-//! line opens the text that goes out, which is the stored answer with any
-//! leaked reasoning prefix cut. The report line is a fixed text a person
-//! wrote and is never touched.
-//!
-//! # An answer threads onto the one person who addressed the assistant
-//! (unit 26, 2026-08-24)
-//!
-//! An answer is delivered as a reply to the message it answers when the
-//! turn absorbed exactly one message that literally addressed the
-//! assistant; [`answer_target`] below states the whole rule. The
-//! summoning frontier is deliberately not consulted — it names whatever
-//! line the dispatch woke on, routinely a bystander's — so the target is
-//! read from the turn's absorbed messages instead, where the addressed
-//! fact is stored per message. Nobody addressed the assistant, or several
-//! did, and the answer goes out plain; in no case is it withheld.
+//! The reply tool's target rides on the outgoing block, so the thread is
+//! the model's own statement and this edge simply carries it. One rule
+//! still overrides it, unchanged: a text carrying a reply-acted command
+//! shape goes out UNTHREADED ([`unless_command_shaped`]), because a
+//! threaded copy of a moderation command would become a real command
+//! against the message it threaded onto.
 //!
 //! The thread carries its own recovery, stated here and obeyed by the
-//! adapter ([`ReplyThread`]): an answer whose threaded send the platform
-//! refuses goes out once more plain, because an answer must never be lost
-//! to a courtesy, while a report's line is threaded or not delivered —
-//! it is the moderation bot's command shape, which files nothing when it
-//! is not a reply and would stand in the group as a bare command line.
+//! adapter ([`ReplyThread`]): a message whose threaded send the platform
+//! refuses goes out once more plain, because words must never be lost to a
+//! courtesy, while a report's line is threaded or not delivered — it is the
+//! moderation bot's command shape, which files nothing when it is not a
+//! reply and would stand in the group as a bare command line.
 //!
 //! # The report's delivery (2026-08-23)
 //!
@@ -209,17 +210,16 @@ use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use agent_ledger::store::{StoreTx, domain_run};
-use agent_ledger::{Block, BlockKind, CoreEvent, FromBlock, Role, RuntimeContext, StoreError};
+use agent_ledger::{Block, CoreEvent, FromBlock, RuntimeContext, StoreError};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
 use crate::disclosure::{Disclosure, Introduction};
-use crate::kind::{AssistantKind, FrameworkKind};
+use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{
     DeliveryHandle, Outbound, OutboundMark, OutboundReply, ReplyKind, ReplyThread,
 };
-use crate::tools::provenance;
 
 /// The rules acknowledgment's deterministic fallback (unit 20, 2026-08-24;
 /// the fixed primary of 2026-08-23 until then). A real rules delta is
@@ -322,6 +322,38 @@ pub(crate) async fn spawn_edge(
                         "the failed turn passes without a word in the chat"
                     );
                 }
+                // A filed send cannot wait for the next stream event (unit
+                // 55, 2026-09-02). The call it answers stays PENDING until
+                // the delivery is reported, and the report cannot happen
+                // until the message goes out — so a send woken only by a
+                // stream event would be waiting for a stream event that is
+                // waiting for it. The framework's own block-change signal
+                // breaks that circle: it fires for every content-table
+                // write, so it fires for the tool's append.
+                //
+                // Narrowed to exactly the kind that closes the circle. One
+                // bounded row read per change says whether this is a send,
+                // and only a send costs the full stored-state pass; a mark,
+                // a report and a receipt keep riding the stream events they
+                // always rode, because the turn that files them goes on.
+                Ok(CoreEvent::BlocksChanged {
+                    conversation_id,
+                    block_id,
+                }) => {
+                    if names_a_send(&ctx, block_id).await
+                        && let Err(error) = deliver_stored_items(
+                            &ctx,
+                            &adapter,
+                            &disclosure,
+                            conversation_id,
+                            &mut cursors,
+                            &items,
+                        )
+                        .await
+                    {
+                        tracing::error!(conversation_id, %error, "outbound delivery failed");
+                    }
+                }
                 Ok(_) => {}
                 Err(RecvError::Lagged(missed)) => {
                     tracing::warn!(missed, "outbound edge lagged; re-reading stored state");
@@ -336,6 +368,28 @@ pub(crate) async fn spawn_edge(
         }
     });
     Ok(receiver)
+}
+
+/// Whether one changed block is a filed send — the narrow question the
+/// block-change wake asks before it costs anything (unit 55, 2026-09-02).
+///
+/// One bounded row read, never a ledger load: this runs for every write to
+/// every block table of every conversation, and hydrating a conversation
+/// per receipt row would be a different cost class. A block the store
+/// cannot answer for — deleted between the change and this read, or a read
+/// that failed — is not a send: the failure is logged and the wake is
+/// dropped, because a lost wake costs a delivery until the next one and a
+/// propagated error would take the whole edge down.
+async fn names_a_send(ctx: &RuntimeContext<AssistantKind, CoreEvent>, block_id: i64) -> bool {
+    match ctx.store().find_block(block_id).await {
+        Ok(block) => {
+            block.is_some_and(|block| block.block_type == crate::outgoing::OUTGOING_MESSAGE_KIND)
+        }
+        Err(error) => {
+            tracing::warn!(block_id, %error, "a block-change wake could not be read; dropped");
+            false
+        }
+    }
 }
 
 /// The history boundary: every conversation mapped for this adapter starts
@@ -413,39 +467,34 @@ async fn deliver_stored_items(
                 kind,
                 threading,
                 quotable_block,
+                call_block,
             } => {
-                // An answer's whole path to the wire, in the order the
-                // three steps must run. Only the model's own prose takes
-                // it: the report line and every other deterministic reply
-                // is a fixed text a person wrote and passes through the
-                // other branch untouched — neither cut nor introduced.
+                // The send's whole path to the wire, in the order the two
+                // steps must run. Only the model's own message takes it:
+                // the report line is a fixed text a person wrote and passes
+                // through untouched — neither cut nor introduced.
                 let text = if kind == ReplyKind::Answer {
                     // The cut comes FIRST (unit 43), and it reads the
                     // model's own prose: a block re-delivered after an
                     // earlier send already carries the disclosure line, and
                     // a cut over that line would drop the introduction
                     // instead of the trace. What is left is what the
-                    // channel sees, so both steps below work on it.
+                    // channel sees, so the step below works on it.
+                    //
+                    // Nothing is withheld for being empty. The model chose
+                    // silence by not calling a sending tool at all, so a
+                    // filed send is a message it asked for; a text the cut
+                    // emptied goes to the platform as it stands, and the
+                    // platform's own answer settles the model's pending
+                    // call — which is the honest outcome and, unlike a
+                    // silent skip, one that never leaves a call waiting on
+                    // a send nobody will ever make.
                     let spoken = without_leaked_reasoning(disclosure.prose_of(&text));
-                    // The empty-answer check (unit 22): the model ended
-                    // its turn without speaking, so the answer is
-                    // accounted delivered and yields nothing — and no
-                    // disclosure resolution runs, since a spoken-to-nobody
-                    // answer introduces nobody.
-                    if spoken.trim().is_empty() {
-                        tracing::debug!(
-                            conversation_id,
-                            block_id,
-                            "the answer is empty; the turn speaks nothing"
-                        );
-                        *cursor = block_id;
-                        continue;
-                    }
-                    // The first delivery resolves the first-interaction
+                    // The first send resolves the first-interaction
                     // disclosure (decision 0079): the line is written into
                     // the stored block before the send, and the resolution
                     // answers with nothing but which of the two openings
-                    // this answer goes out under. The composition is here,
+                    // this message goes out under. The composition is here,
                     // over the spoken text, so no seam can be handed a
                     // text the cut never saw.
                     match disclosure
@@ -458,18 +507,15 @@ async fn deliver_stored_items(
                 } else {
                     text
                 };
-                // The thread's target, where the block named a rule instead
-                // of an origin (unit 26): the lookup walks the turn's
-                // absorbed messages, so it belongs here, where the loaded
-                // ledger already is, and not in the block-pure reading
-                // below. It runs on the text that goes out, disclosure line
-                // included, because that is the prose the moderation
-                // command shape is read from.
+                // The reply-command protection (decision 0108), the one
+                // judgment left that needs the text: it runs on what goes
+                // out, disclosure line included, because that is the prose
+                // the moderation command shape is read from.
                 let reply_target = match threading {
                     Threading::Onto(thread) => Some(thread),
-                    Threading::OntoTheAddressedMessage => {
-                        answer_target(&blocks, block_id, &text).map(ReplyThread::OntoOrPlainly)
-                    }
+                    Threading::OntoNamed(origin) => unless_command_shaped(block_id, &text)
+                        .then_some(ReplyThread::OntoOrPlainly(origin)),
+                    Threading::Plain => None,
                 };
                 let reply = OutboundReply {
                     channel: channel.clone(),
@@ -477,7 +523,8 @@ async fn deliver_stored_items(
                     kind,
                     reply_target,
                     delivery: DeliveryHandle::in_conversation(conversation_id)
-                        .quoting(quotable_block),
+                        .quoting(quotable_block)
+                        .answering(call_block),
                 };
                 if items.send(Outbound::Reply(reply)).is_err() {
                     return Ok(());
@@ -628,30 +675,37 @@ async fn recover_from_lag(
     Ok(())
 }
 
-/// Where a deliverable reply threads, as far as one block can state it:
-/// the block either names the thread itself or names the rule that
-/// resolves one. A rule exists because [`deliverable_of`] reads a single
-/// block and holds no ledger, while the answer's target is a fact about
-/// the turn around it.
+/// Where a deliverable reply threads, as the block itself states it. Every
+/// arm is now read off one block: the report carries the target its filing
+/// resolved, and one of the assistant's own messages carries the target the
+/// MODEL named through the reply tool — the derived threading of unit 26,
+/// which guessed a target from the turn's absorbed messages, went with the
+/// relay it existed to serve (unit 55, 2026-09-02).
 enum Threading {
-    /// The thread the block carries — the report's stored target, onto
-    /// which the line goes or nowhere.
+    /// The thread the block carries and cannot do without — the report's
+    /// stored target, onto which the line goes or nowhere.
     Onto(ReplyThread),
-    /// Onto the one message that addressed the assistant this turn,
-    /// resolved by the caller over the loaded ledger ([`answer_target`]).
-    OntoTheAddressedMessage,
+    /// The origin the model aimed this message at. The send still goes out
+    /// plain where the platform refuses the thread, because the words mean
+    /// what they mean either way, and it goes out plain where its own text
+    /// carries a reply-acted command shape.
+    OntoNamed(String),
+    /// Onto nothing: a message the model sent without naming a target.
+    Plain,
 }
 
 /// What one undelivered block means to this edge.
 enum Deliverable {
-    /// A reply to yield: an answer's prose, or a report's stored line,
-    /// each with where it threads and which stored block a member
-    /// replying to it quotes.
+    /// A reply to yield: one of the assistant's own messages, or a
+    /// report's stored line, each with where it threads, which stored
+    /// block a member replying to it quotes, and which pending call the
+    /// delivery report settles.
     Reply {
         text: String,
         kind: ReplyKind,
         threading: Threading,
         quotable_block: Option<i64>,
+        call_block: Option<i64>,
     },
     /// A reaction to place: the stored emoji and the message it goes on
     /// (unit 39, 2026-08-30).
@@ -668,35 +722,48 @@ enum Deliverable {
 }
 
 /// The delivery reading of one block, `None` for everything this edge does
-/// not carry. Decoded through the composed kind's one parse path: the
-/// framework ingests a completed stream as a committed text block in the
-/// assistant's voice, streaming tails parse to their own kinds, and the
-/// report kind carries its stored line and target. The report names its
-/// own origin, and names it as the only place its line can go — the line
-/// is the moderation bot's command shape, which files nothing as a plain
-/// message; the answer names the rule instead of an origin, since the
-/// message it answers is a fact about the turn and this reading holds one
-/// block.
+/// not carry. Decoded through the composed kind's one parse path.
+///
+/// An assistant TEXT block is deliberately not here (unit 55, 2026-09-02).
+/// The framework still commits every turn's prose as one, and it is the
+/// model's private notes: nothing about it goes to a chat. What goes out is
+/// a filed outgoing block — one message the model asked for through a
+/// sending tool — carrying its own words, its own target and the call
+/// waiting on it.
+///
+/// The report names its own origin, and names it as the only place its line
+/// can go: the line is the moderation bot's command shape, which files
+/// nothing as a plain message. One of the assistant's own messages names
+/// the origin the model aimed it at, or none.
 ///
 /// Which block a member replying to this send would quote is decided here
-/// too, once per kind (unit 38, 2026-08-30): an answer names its own
+/// too, once per kind (unit 38, 2026-08-30): a message names its own
 /// block, whose stored text is the model's own words under any disclosure
 /// line the channel read, less nothing — the leaked-prefix cut narrows the
-/// wire text only (unit 43) — and a report's
-/// line names none: the report block declares no quotable column, and that
-/// declaration is not this unit's to reopen.
+/// wire text only (unit 43) — and a report's line names none: the report
+/// block declares no quotable column, and that declaration is not this
+/// unit's to reopen.
 fn deliverable_of(block: &Block) -> Option<Deliverable> {
     let block_id = block.id;
     match AssistantKind::from_block(block) {
-        AssistantKind::Core(FrameworkKind(BlockKind::Text(text)))
-            if text.role == Some(Role::Assistant) =>
-        {
-            Some(Deliverable::Reply {
-                text: text.content,
-                kind: ReplyKind::Answer,
-                threading: Threading::OntoTheAddressedMessage,
-                quotable_block: Some(block_id),
-            })
+        AssistantKind::OutgoingMessage(outgoing) => {
+            match (outgoing.text, outgoing.call_block) {
+                (Some(text), Some(call_block)) => Some(Deliverable::Reply {
+                    text,
+                    kind: ReplyKind::Answer,
+                    threading: outgoing
+                        .reply_to
+                        .map_or(Threading::Plain, Threading::OntoNamed),
+                    quotable_block: Some(block_id),
+                    call_block: Some(call_block),
+                }),
+                // A row the store did not produce: its call cannot be
+                // named, so nothing could ever settle a send made from it.
+                // Accounted delivered so the re-reads stop meeting it.
+                _ => Some(Deliverable::Skipped {
+                    undeliverable: crate::outgoing::OUTGOING_MESSAGE_KIND,
+                }),
+            }
         }
         AssistantKind::Report(report) => match (report.line, report.target_origin) {
             (Some(line), Some(target)) => Some(Deliverable::Reply {
@@ -704,6 +771,7 @@ fn deliverable_of(block: &Block) -> Option<Deliverable> {
                 kind: ReplyKind::Report,
                 threading: Threading::Onto(ReplyThread::OntoOnly(target)),
                 quotable_block: None,
+                call_block: None,
             }),
             _ => Some(Deliverable::Skipped {
                 undeliverable: crate::tools::report::REPORT_KIND,
@@ -726,51 +794,35 @@ fn deliverable_of(block: &Block) -> Option<Deliverable> {
     }
 }
 
-/// The origin an answer threads onto, `None` for a plain send (unit 26,
-/// 2026-08-24).
+/// Whether one of the assistant's own messages may keep the thread the
+/// model aimed it with — the reply-command protection (decision 0108,
+/// widened 2026-08-27), at the same edge and with the same rule it always
+/// had.
 ///
-/// The turn's absorbed messages are walked — the same reading the tool
-/// admission and the report's aiming take, over the ledger already loaded
-/// — and the target is the stored origin of the one message that
-/// literally addressed the assistant. Exactly one yields a target: none
-/// means nobody addressed it, which is every helpful-mode answer to
-/// ordinary chatter, and several mean the turn answered a crowd, where
-/// naming one tells the others they were ignored. Never the newest, never
-/// the summoning frontier: the frontier is the line the dispatch woke on,
-/// which is routinely a bystander's. An addressed message whose origin an
-/// erasure nulled, or one recorded before the origin was stored, yields
-/// nothing and the answer goes out plain.
+/// A text carrying a reply-acted command shape goes out UNTHREADED. The
+/// moderation bot files a report from a REPLY carrying the report shape and
+/// deletes from a REPLY carrying the deletion command, so a threaded
+/// message repeating either — a member asking what the command does, a
+/// model slip, an injected line — would become a real command against the
+/// message it threaded onto, bypassing every check the real path performs.
+/// The shapes come from the one list in [`crate::reply_commands`].
 ///
-/// An answer whose own prose carries a reply-acted command shape threads
-/// onto nothing. The moderation bot files a report from a REPLY carrying
-/// the report shape and deletes from a REPLY carrying the deletion
-/// command, so a threaded answer repeating either — a member asking what
-/// the command does, a model slip, an injected line — would become a real
-/// command against the message it threaded onto, bypassing every check
-/// the real path performs. The shapes come from the one list in
-/// [`crate::reply_commands`] (decision 0108, widened 2026-08-27). This is
-/// a routing choice and not prose sanitation: nothing is rewritten,
-/// stripped, refused or withheld, and the text goes out exactly as
-/// written.
-fn answer_target(ledger: &[Block], answer_block_id: i64, text: &str) -> Option<String> {
-    if let Some(shape) = crate::reply_commands::ACTED_FROM_REPLIES
+/// This is a routing choice and not prose sanitation: nothing is rewritten,
+/// stripped, refused or withheld, and the text goes out exactly as the
+/// model wrote it.
+fn unless_command_shaped(block_id: i64, text: &str) -> bool {
+    let Some(shape) = crate::reply_commands::ACTED_FROM_REPLIES
         .iter()
         .find(|lead| text.contains(*lead))
-    {
-        tracing::debug!(
-            answer_block_id,
-            shape,
-            "the answer's prose carries a reply-acted command shape; it goes out plain"
-        );
-        return None;
-    }
-    let mut addressed = provenance::co_summoners(ledger, answer_block_id)
-        .into_iter()
-        .filter(|message| message.literal_addressed == Some(true));
-    match (addressed.next(), addressed.next()) {
-        (Some(only), None) => only.origin,
-        _ => None,
-    }
+    else {
+        return true;
+    };
+    tracing::debug!(
+        block_id,
+        shape,
+        "the message carries a reply-acted command shape; it goes out plain"
+    );
+    false
 }
 
 /// The closing reasoning tag, exactly as a model emits it. Matched as
@@ -811,15 +863,17 @@ fn without_leaked_reasoning(text: &str) -> &str {
 mod tests {
     use std::sync::Arc;
 
-    use agent_ledger::{EventBus, ProviderRegistry, Store, ToolRegistry};
+    use agent_ledger::store::ToolCallInsert;
+    use agent_ledger::{EventBus, ProviderRegistry, Role, Store, ToolRegistry};
 
     use super::*;
 
     use crate::message::{ChannelKey, ChannelKind};
+    use crate::outgoing::{OUTGOING_MESSAGE_KIND, OutgoingMessage};
     use crate::schema::store_config;
 
     /// One outbound item as the reply it must be. Every test in this
-    /// module drives prose, so a mark arriving here is a routing defect
+    /// module drives words, so a mark arriving here is a routing defect
     /// and says so instead of being quietly unwrapped.
     fn as_reply(item: Outbound) -> OutboundReply {
         match item {
@@ -840,25 +894,12 @@ mod tests {
         )
     }
 
-    /// The lag-recovery path, driven directly: an answer stored after the
-    /// seed whose completion signal fell into a dropped-event window is
-    /// still delivered, because the lag notice triggers the full re-read.
-    /// The answer here is written through the public write surface with no
-    /// dispatch anchor, so its summoners are unreadable and the delivery
-    /// carries the disclosure line — the documented fold toward the line.
-    ///
-    /// The runtime is single-threaded, so the edge task cannot run between
-    /// the synchronous emits below: the flood provably overflows the
-    /// subscriber's backlog before the task reads one event, the earliest
-    /// events — the answer's window — are dropped, and the task's first
-    /// receive reports the lag.
-    #[tokio::test]
-    async fn a_lagged_edge_recovers_the_owed_answer_from_stored_state() {
-        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
-        let ctx = quiet_ctx(store.clone());
+    /// One mapped conversation on the quiet adapter, under the given
+    /// channel id.
+    async fn mapped_conversation(store: &Store, channel: &str) -> (ChannelKey, i64) {
         let key = ChannelKey {
             adapter: "quiet".into(),
-            channel: "dm-lag".into(),
+            channel: channel.into(),
         };
         let conversation = store
             .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
@@ -867,44 +908,11 @@ mod tests {
         mapping::claim(&store.tx(), &key, ChannelKind::Direct, conversation)
             .await
             .expect("the mapping claims");
-
-        let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
-        let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
-            .await
-            .expect("the edge opens");
-
-        // The answer arrives after the seed, so the edge owes it.
-        store
-            .insert_final_text_block(
-                conversation,
-                Role::Assistant,
-                "the owed answer".into(),
-                None,
-            )
-            .await
-            .expect("the answer stores");
-
-        // Flood past the subscriber backlog so the answer's own window is
-        // dropped and the edge's next receive is the lag notice.
-        for _ in 0..300 {
-            ctx.bus().emit(CoreEvent::UnlatchRequested {
-                conversation_id: conversation,
-            });
-        }
-
-        let reply = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the lag recovery delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
-        assert_eq!(reply.channel, key);
-        assert_eq!(reply.text, disclosure.disclosed("the owed answer"));
+        (key, conversation)
     }
 
     /// One recorded member message with the given literal-addressed fact —
-    /// summoned either way, the two mirrored cases' one difference — and
-    /// its block id, for anchoring the turn's answer on it.
+    /// summoned either way — and its block id, for anchoring a turn on it.
     async fn summoning_message(store: &Store, conversation: i64, literal: bool) -> i64 {
         store
             .append_consumer_block(
@@ -912,15 +920,18 @@ mod tests {
                 Some(Role::User),
                 crate::kind::CHAT_MESSAGE_KIND,
                 crate::kind::ChatMessage::stored_fields(
-                    "the unanswerable ask",
+                    "the ask",
                     crate::kind::RecordedSender {
                         principal_id: 7,
                         authority: crate::message::Authority::Member,
                         speaker: None,
                     },
-                    crate::kind::RecordedOrigin::default(),
+                    crate::kind::RecordedOrigin {
+                        origin: Some("member-1"),
+                        revises: None,
+                    },
                     None,
-                    "2026-08-24T00:00:00Z",
+                    "2026-09-02T00:00:00Z",
                     crate::kind::Stamp::compose(
                         crate::kind::Summons {
                             summoned: true,
@@ -937,23 +948,59 @@ mod tests {
             .expect("the message appends")
     }
 
-    /// One finalized assistant answer anchored on the given summons, the
-    /// way the framework's dispatch stamps it — the anchor set through the
-    /// domain seam, since the anchored destination is the framework's own.
-    async fn anchored_answer(store: &Store, conversation: i64, anchor: i64, content: &str) {
-        let answer = store
-            .insert_final_text_block(conversation, Role::Assistant, content.into(), None)
+    /// One filed send, the way a sending tool files one: the model's call
+    /// block, anchored on the summoning message where the caller names one,
+    /// and the outgoing block answering it. Answers the outgoing block's
+    /// id.
+    ///
+    /// The call block is real rather than a bare number, because every
+    /// per-person reading behind a send — the disclosure fold above all —
+    /// walks the ledger from THAT block's dispatch anchor.
+    async fn filed_send(
+        store: &Store,
+        conversation: i64,
+        anchor: Option<i64>,
+        text: &str,
+        reply_to: Option<&str>,
+    ) -> i64 {
+        let call = store
+            .insert_tool_call_block(
+                conversation,
+                Role::Assistant,
+                ToolCallInsert {
+                    tool_call_id: format!("call-{text:.8}"),
+                    name: crate::tools::send::NAME.into(),
+                    input: "{}".into(),
+                    interactive: false,
+                },
+                None,
+            )
             .await
-            .expect("the answer inserts");
-        agent_ledger::store::domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
-            conn.execute(
-                "UPDATE blocks SET dispatch_anchor = ?2 WHERE id = ?1",
-                [answer, anchor],
-            )?;
-            Ok(())
-        })
-        .await
-        .expect("the anchor writes");
+            .expect("the call block appends");
+        if let Some(anchor) = anchor {
+            // The anchor the framework's own dispatch stamps on a call, set
+            // through the domain seam: the anchored destination is the
+            // framework's own and no consumer door offers it.
+            agent_ledger::store::domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
+                conn.execute(
+                    "UPDATE blocks SET dispatch_anchor = ?2 WHERE id = ?1",
+                    [call, anchor],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("the anchor writes");
+        }
+        store
+            .append_consumer_block(
+                conversation,
+                None,
+                OUTGOING_MESSAGE_KIND,
+                OutgoingMessage::stored_fields(text, reply_to, call),
+                None,
+            )
+            .await
+            .expect("the outgoing block appends")
     }
 
     /// Wake the edge for one conversation, the completed-stream way.
@@ -966,150 +1013,106 @@ mod tests {
         });
     }
 
-    /// Every stored answer text of one conversation, in ledger order: the
-    /// ledger's own record, read back through the same block parse the
+    /// Every stored outgoing text of one conversation, in ledger order —
+    /// the ledger's own record, read back through the same block parse the
     /// edge delivers from.
-    async fn stored_answers(store: &Store, conversation: i64) -> Vec<String> {
+    async fn stored_sends(store: &Store, conversation: i64) -> Vec<String> {
         store
             .list_blocks(conversation)
             .await
             .expect("the ledger reads")
             .iter()
-            .filter(|block| block.block_type == "text")
-            .filter_map(|block| match super::deliverable_of(block) {
-                Some(Deliverable::Reply { text, .. }) => Some(text),
+            .filter_map(|block| match AssistantKind::from_block(block) {
+                AssistantKind::OutgoingMessage(outgoing) => outgoing.text,
                 _ => None,
             })
             .collect()
     }
 
-    /// One mapped conversation on the quiet adapter, under the given
-    /// channel id. Each empty-answer case takes its own, so a wake for one
-    /// never meets another's half-written turn: the production finalize
-    /// commits an answer with its anchor in one transaction, while the
-    /// helpers above write them in two steps.
-    async fn mapped_conversation(store: &Store, channel: &str) -> (ChannelKey, i64) {
-        let key = ChannelKey {
-            adapter: "quiet".into(),
-            channel: channel.into(),
-        };
-        let conversation = store
-            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
-            .await
-            .expect("a conversation row");
-        mapping::claim(&store.tx(), &key, ChannelKind::Direct, conversation)
-            .await
-            .expect("the mapping claims");
-        (key, conversation)
+    /// The next item on the edge, inside a bounded await.
+    async fn next_reply(items: &mut mpsc::UnboundedReceiver<Outbound>) -> OutboundReply {
+        as_reply(
+            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
+                .await
+                .expect("the edge delivers before the deadline")
+                .expect("the edge outlives the test"),
+        )
     }
 
-    /// AC2's first-asker half (unit 22), deterministically at the edge: a
-    /// turn whose committed answer block is empty — whitespace included,
-    /// the trim's boundary — delivers nothing, prepends no disclosure and
-    /// introduces nobody. The next spoken answer is the first thing the
-    /// channel hears, and it still carries the first-interaction line,
-    /// proving the empty answer resolved no disclosure. The stored empty
-    /// block stays untouched: the ledger keeps the honest empty record.
+    /// The lag-recovery path, driven directly: a message filed after the
+    /// seed whose completion signal fell into a dropped-event window is
+    /// still delivered, because the lag notice triggers the full re-read.
+    ///
+    /// The runtime is single-threaded, so the edge task cannot run between
+    /// the synchronous emits below: the flood provably overflows the
+    /// subscriber's backlog before the task reads one event, the earliest
+    /// events — the send's window — are dropped, and the task's first
+    /// receive reports the lag.
     #[tokio::test]
-    async fn a_first_askers_empty_answer_delivers_nothing_and_introduces_nobody() {
+    async fn a_lagged_edge_recovers_the_owed_message_from_stored_state() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
-        let (key, conversation) = mapped_conversation(&store, "dm-empty-first").await;
+        let (key, conversation) = mapped_conversation(&store, "dm-lag").await;
         let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
         let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
             .await
             .expect("the edge opens");
 
-        // The silent turn: an addressed summons whose committed answer is
-        // whitespace-only — the framework writes the truly empty block;
-        // the whitespace here pins the trimmed boundary on top of it. The
-        // spoken turn behind it is written before the one wake, so the
-        // edge's single ordered pass meets both fully written turns — the
-        // helpers write an answer and its anchor in two steps, so a wake
-        // between them would meet a half-written turn.
-        let asked = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, asked, "  \n").await;
-        let spoken = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, spoken, "the spoken answer").await;
+        filed_send(&store, conversation, None, "the owed message", None).await;
+
+        // Flood past the subscriber backlog so the send's own window is
+        // dropped and the edge's next receive is the lag notice.
+        for _ in 0..300 {
+            ctx.bus().emit(CoreEvent::UnlatchRequested {
+                conversation_id: conversation,
+            });
+        }
+
+        let reply = next_reply(&mut items).await;
+        assert_eq!(reply.channel, key);
+        assert_eq!(reply.text, disclosure.disclosed("the owed message"));
+    }
+
+    /// AC4's silent half: a turn whose written text is long and whose sends
+    /// are none puts NOTHING in the chat. The framework's committed
+    /// assistant text block is the model's private notes, and this edge no
+    /// longer classifies it as anything.
+    ///
+    /// Proven by the ordered channel: a filed send behind the notes is the
+    /// first thing that arrives, so nothing the notes could have produced
+    /// sits in front of it.
+    #[tokio::test]
+    async fn a_turn_of_notes_and_no_send_puts_nothing_in_the_chat() {
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let ctx = quiet_ctx(store.clone());
+        let (key, conversation) = mapped_conversation(&store, "dm-notes").await;
+        let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
+        let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
+            .await
+            .expect("the edge opens");
+
+        store
+            .insert_final_text_block(
+                conversation,
+                Role::Assistant,
+                "I have thought about this at length and will keep it to myself.".into(),
+                None,
+            )
+            .await
+            .expect("the notes store");
+        filed_send(&store, conversation, None, "the one sent message", None).await;
         wake(&ctx, conversation);
 
-        let reply = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the spoken answer delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
+        let reply = next_reply(&mut items).await;
         assert_eq!(reply.channel, key);
         assert_eq!(
             reply.text,
-            disclosure.disclosed("the spoken answer"),
-            "the empty answer delivered nothing and introduced nobody: the \
-             spoken answer behind it is the introduction"
+            disclosure.disclosed("the one sent message"),
+            "the notes reached nobody: the filed send is the first thing on the channel"
         );
         assert!(
             items.try_recv().is_err(),
-            "exactly one reply: the empty answer never reached the channel"
-        );
-
-        // The honest record stands: the empty block keeps its stored text.
-        assert_eq!(
-            stored_answers(&store, conversation).await,
-            vec!["  \n".to_owned(), disclosure.disclosed("the spoken answer")],
-            "no delivery rewrote the empty answer's stored block"
-        );
-    }
-
-    /// AC2's returning-asker half (unit 22): once a person is introduced,
-    /// a later empty answer still delivers nothing — no empty send reaches
-    /// the channel — and the follow-up spoken answer arrives bare, without
-    /// a repeated line. The ordered reply channel is the proof: nothing
-    /// sits between the two spoken deliveries.
-    #[tokio::test]
-    async fn a_returning_askers_empty_answer_sends_nothing() {
-        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
-        let ctx = quiet_ctx(store.clone());
-        let (_, conversation) = mapped_conversation(&store, "dm-empty-return").await;
-        let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
-        let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
-            .await
-            .expect("the edge opens");
-
-        // The introduction: the asker's first answer carries the line.
-        let first = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, first, "the first answer").await;
-        wake(&ctx, conversation);
-        let introduced = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the first answer delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
-        assert_eq!(introduced.text, disclosure.disclosed("the first answer"));
-
-        // The silent turn, then a follow-up spoken one — both fully
-        // written before the one wake, since the helpers write an answer
-        // and its anchor in two steps. The next delivery is the
-        // follow-up's bare text, so the empty answer sent nothing.
-        let quiet = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, quiet, "").await;
-        let followed = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, followed, "the follow-up answer").await;
-        wake(&ctx, conversation);
-
-        let reply = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the follow-up delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
-        assert_eq!(
-            reply.text, "the follow-up answer",
-            "the returning asker's empty answer produced no send, and the \
-             follow-up arrives bare — the person was already introduced"
-        );
-        assert!(
-            items.try_recv().is_err(),
-            "no empty message sits on the channel"
+            "exactly one item: the model's text is not a message"
         );
     }
 
@@ -1139,8 +1142,7 @@ mod tests {
 
     /// AC2 at the function: every other closer count leaves the text
     /// exactly as the model wrote it — none, two, three, an opener on its
-    /// own, and the empty text. Two and more is a shape nobody has seen
-    /// leak, so the send delivers it instead of guessing.
+    /// own, and the empty text.
     #[test]
     fn any_other_closer_count_passes_through_whole() {
         for text in [
@@ -1159,13 +1161,12 @@ mod tests {
         }
     }
 
-    /// AC1 at the edge: the live leak shape — a trace ending in the closing
-    /// tag, the real answer behind it — reaches the channel as the answer
-    /// alone, under the first-interaction line. The stored block keeps the
-    /// model's full text under that same line: the ledger and the model's
-    /// history are what the model wrote, and only the send cut anything.
+    /// AC7's cut half (unit 55, continuing unit 43): the live leak shape
+    /// filed as a send reaches the channel as the message alone, under the
+    /// first-interaction line — and the STORED block keeps the model's full
+    /// text under that same line. The wire narrows; the ledger does not.
     #[tokio::test]
-    async fn a_leaked_reasoning_prefix_never_reaches_the_channel() {
+    async fn the_cut_narrows_the_wire_text_and_leaves_the_stored_text() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
         let (key, conversation) = mapped_conversation(&store, "dm-leaked-trace").await;
@@ -1175,83 +1176,130 @@ mod tests {
             .expect("the edge opens");
 
         let leaked = "they asked again, keep it short.</think>Haha, no, I am a machine.";
-        let asked = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, asked, leaked).await;
+        filed_send(&store, conversation, None, leaked, None).await;
         wake(&ctx, conversation);
 
-        let reply = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the answer delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
+        let reply = next_reply(&mut items).await;
         assert_eq!(reply.channel, key);
         assert_eq!(
             reply.text,
             disclosure.disclosed("Haha, no, I am a machine."),
-            "the channel sees the answer alone, with the line in front of it"
+            "the channel sees the message alone, with the line in front of it"
         );
         assert_eq!(
-            stored_answers(&store, conversation).await,
+            stored_sends(&store, conversation).await,
             vec![disclosure.disclosed(leaked)],
             "the stored block keeps the model's full text under the line"
         );
     }
 
-    /// AC2 at the edge: an answer carrying two closing tags and one
-    /// carrying none are delivered byte for byte, the first under the
-    /// introduction and the second bare. Two closers is not the leak shape,
-    /// and the send delivers what it was given rather than guessing which
-    /// tag a trace ended at.
+    /// AC7's disclosure half: the line is composed into the STORED text,
+    /// ONCE. The first send to a never-introduced person carries it in the
+    /// ledger and on the wire; the second send of the same turn to the same
+    /// person reads the receipt and goes out bare, so nothing stacks a
+    /// second line anywhere.
     #[tokio::test]
-    async fn a_two_closer_answer_and_a_clean_answer_go_out_byte_identical() {
+    async fn the_disclosure_line_is_composed_into_the_stored_text_once() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
-        let (_, conversation) = mapped_conversation(&store, "dm-two-closers").await;
+        let (_, conversation) = mapped_conversation(&store, "dm-introduced").await;
         let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
         let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
             .await
             .expect("the edge opens");
 
-        // Both turns are written before the one wake, since the helpers
-        // write an answer and its anchor in two steps.
-        let tagged = "A block reads <think>like this</think>, and a bare </think> closes nothing.";
         let asked = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, asked, tagged).await;
-        let again = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, again, "a clean answer").await;
+        filed_send(&store, conversation, Some(asked), "the first message", None).await;
+        filed_send(
+            &store,
+            conversation,
+            Some(asked),
+            "the second message",
+            None,
+        )
+        .await;
         wake(&ctx, conversation);
 
-        let first = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the tagged answer delivers before the deadline")
-                .expect("the edge outlives the test"),
+        let first = next_reply(&mut items).await;
+        assert_eq!(first.text, disclosure.disclosed("the first message"));
+        let second = next_reply(&mut items).await;
+        assert_eq!(
+            second.text, "the second message",
+            "the person was introduced by the first message of the same turn"
         );
         assert_eq!(
-            first.text,
-            disclosure.disclosed(tagged),
-            "a two-closer answer goes out exactly as the model wrote it"
-        );
-        let second = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the clean answer delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
-        assert_eq!(
-            second.text, "a clean answer",
-            "a text with no tags is untouched, and the asker is introduced once"
+            stored_sends(&store, conversation).await,
+            vec![
+                disclosure.disclosed("the first message"),
+                "the second message".to_owned()
+            ],
+            "one line, written into the stored text of the send that carried it"
         );
     }
 
-    /// AC3: an answer that is nothing but reasoning takes the empty-answer
-    /// path, now reading the text the channel would see — nothing is sent,
-    /// the answer is accounted delivered, and no disclosure is resolved, so
-    /// the next spoken answer is still the asker's introduction. The stored
-    /// block keeps the whole trace, unlined.
+    /// AC7's threading half: a send whose own text carries a reply-acted
+    /// command shape goes out UNTHREADED, though the model named a target —
+    /// and the stored text is untouched, because this is a routing choice
+    /// and not prose sanitation. A send naming the same target with
+    /// ordinary words keeps its thread.
     #[tokio::test]
-    async fn an_all_reasoning_answer_delivers_nothing_and_introduces_nobody() {
+    async fn a_command_shaped_message_goes_out_unthreaded_and_stored_whole() {
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let ctx = quiet_ctx(store.clone());
+        let (_, conversation) = mapped_conversation(&store, "dm-command-shape").await;
+        let disclosure = Arc::new(Disclosure::resolve(None, "Probe"));
+        let mut items = spawn_edge(ctx.clone(), "quiet".into(), Arc::clone(&disclosure))
+            .await
+            .expect("the edge opens");
+
+        let shaped = format!(
+            "You report a message like this: {shape}",
+            shape = crate::reply_commands::ACTED_FROM_REPLIES[0]
+        );
+        filed_send(&store, conversation, None, &shaped, Some("member-1")).await;
+        filed_send(
+            &store,
+            conversation,
+            None,
+            "an ordinary answer",
+            Some("member-1"),
+        )
+        .await;
+        wake(&ctx, conversation);
+
+        let guarded = next_reply(&mut items).await;
+        assert_eq!(
+            guarded.reply_target, None,
+            "a command-shaped text threads onto nothing"
+        );
+        assert_eq!(
+            guarded.text,
+            disclosure.disclosed(&shaped),
+            "the text goes out exactly as written: routing changed, prose did not"
+        );
+        let threaded = next_reply(&mut items).await;
+        assert_eq!(
+            threaded.reply_target,
+            Some(ReplyThread::OntoOrPlainly("member-1".to_owned())),
+            "an ordinary message keeps the thread the model aimed it with"
+        );
+        assert_eq!(
+            stored_sends(&store, conversation).await,
+            vec![
+                disclosure.disclosed(&shaped),
+                disclosure.disclosed("an ordinary answer")
+            ],
+            "the stored text of both sends is the model's own, under the line \
+             each carried"
+        );
+    }
+
+    /// A text the cut empties goes out AS IT STANDS. The model asked for
+    /// this message by calling a tool, so withholding it would leave the
+    /// call waiting on a send nobody would ever make; the platform's own
+    /// answer settles it instead.
+    #[tokio::test]
+    async fn a_message_the_cut_empties_still_reaches_the_adapter() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
         let (_, conversation) = mapped_conversation(&store, "dm-all-reasoning").await;
@@ -1260,63 +1308,29 @@ mod tests {
             .await
             .expect("the edge opens");
 
-        let all_reasoning = "no rule covers this, stay quiet.</think>  \n";
-        let asked = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, asked, all_reasoning).await;
-        let spoke = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, spoke, "the spoken answer").await;
+        let all_reasoning = "no rule covers this, stay quiet.</think>";
+        filed_send(&store, conversation, None, all_reasoning, None).await;
         wake(&ctx, conversation);
 
-        let reply = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the spoken answer delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
+        let reply = next_reply(&mut items).await;
         assert_eq!(
             reply.text,
-            disclosure.disclosed("the spoken answer"),
-            "the all-reasoning answer introduced nobody: the spoken answer \
-             behind it carries the line"
+            disclosure.disclosed(""),
+            "the cut left the line and nothing else, and that is what goes out"
         );
-        assert_eq!(
-            stored_answers(&store, conversation).await,
-            vec![
-                all_reasoning.to_owned(),
-                disclosure.disclosed("the spoken answer")
-            ],
-            "the silent answer's stored trace is untouched and unlined"
-        );
-
-        // Nothing sat between the two: the reply channel keeps the order it
-        // was written in, so the next item to arrive proves what did not.
-        // One more spoken turn, and the next reply is its text — had the
-        // all-reasoning answer sent anything, that would be arriving here.
-        let asked_again = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, asked_again, "the follow-up answer").await;
-        wake(&ctx, conversation);
-        let next = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the follow-up delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
-        assert_eq!(
-            next.text, "the follow-up answer",
-            "the follow-up is the very next item on the channel: the \
-             all-reasoning answer put nothing there"
+        assert!(
+            reply.delivery.call_block().is_some(),
+            "the send carries the call its report settles"
         );
     }
 
-    /// A lined block delivers as its line over the CUT prose (unit 43).
-    /// The lined state is PLANTED here, not produced by an earlier
-    /// delivery: the test pins the edge's reading of a block that already
-    /// opens with the line — the shape at-least-once re-delivery produces —
-    /// without driving the crash window itself. The cut reads the model's
-    /// words under the line, so the trace dies and the introduction does
-    /// not die with it, and the block gains no second line.
+    /// A lined block delivers as its line over the CUT prose. The lined
+    /// state is PLANTED here, not produced by an earlier delivery: the test
+    /// pins the edge's reading of a block that already opens with the line
+    /// — the shape at-least-once re-delivery produces — without driving the
+    /// crash window itself.
     #[tokio::test]
-    async fn a_relined_answer_keeps_its_introduction_and_loses_the_trace() {
+    async fn a_relined_message_keeps_its_introduction_and_loses_the_trace() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
         let (key, conversation) = mapped_conversation(&store, "dm-relined-trace").await;
@@ -1326,32 +1340,27 @@ mod tests {
             .expect("the edge opens");
 
         let lined = disclosure.disclosed("they asked again, keep it short.</think>Haha, no.");
-        let asked = summoning_message(&store, conversation, true).await;
-        anchored_answer(&store, conversation, asked, &lined).await;
+        filed_send(&store, conversation, None, &lined, None).await;
         wake(&ctx, conversation);
 
-        let reply = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the answer delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
+        let reply = next_reply(&mut items).await;
         assert_eq!(reply.channel, key);
         assert_eq!(
             reply.text,
             disclosure.disclosed("Haha, no."),
-            "the line the block already carried opens the cut answer"
+            "the line the block already carried opens the cut message"
         );
         assert_eq!(
-            stored_answers(&store, conversation).await,
+            stored_sends(&store, conversation).await,
             vec![lined],
             "the stored block keeps its one line over the model's full text"
         );
     }
 
-    /// AC5: the cut is the answer arm's alone. A deterministic reply whose
+    /// The cut is the sending arm's alone. A deterministic reply whose
     /// fixed text happens to carry the tag bytes — the report's stored line
-    /// here — arrives whole, because the other arm never calls the cut.
+    /// here — arrives whole, because the other arm never calls the cut, and
+    /// it settles no call.
     #[tokio::test]
     async fn a_fixed_reply_carrying_the_tag_bytes_arrives_whole() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
@@ -1378,32 +1387,31 @@ mod tests {
             .expect("the report block appends");
         wake(&ctx, conversation);
 
-        let reply = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the report delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
+        let reply = next_reply(&mut items).await;
         assert_eq!(reply.channel, key);
         assert_eq!(reply.kind, ReplyKind::Report);
         assert_eq!(
             reply.text, line,
             "a fixed reply is a person's own text and reaches the channel whole"
         );
+        assert_eq!(
+            reply.delivery.call_block(),
+            None,
+            "nobody is waiting on a report's line"
+        );
     }
 
     /// A conversation id its previous holder left behind (unit 53): the id's
-    /// new holder has its first answer DELIVERED, never swallowed as history
-    /// somebody else made.
+    /// new holder has its first message DELIVERED, never swallowed as
+    /// history somebody else made.
     ///
     /// The deletion here is the shape both a retention sweep and an erasure
     /// leave — the mapping row, then the conversation, then the blocks
-    /// nothing holds any more — which is what puts the reissued id in front
-    /// of a cursor standing above every block that id now holds. The
-    /// premise is asserted, not assumed: if the store ever stops reissuing,
-    /// this case says so instead of passing on a race it no longer runs.
+    /// nothing holds any more. The premise is asserted, not assumed: if the
+    /// store ever stops reissuing, this case says so instead of passing on
+    /// a race it no longer runs.
     #[tokio::test]
-    async fn a_reissued_conversation_id_delivers_its_new_holders_first_answer() {
+    async fn a_reissued_conversation_id_delivers_its_new_holders_first_message() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
         let (key, first) = mapped_conversation(&store, "dm-reissued").await;
@@ -1412,22 +1420,14 @@ mod tests {
             .await
             .expect("the edge opens");
 
-        // Three answers, so the cursor this edge keeps for the id ends up
+        // Three messages, so the cursor this edge keeps for the id ends up
         // well above the single block its next holder will hold.
         for line in ["one", "two", "three"] {
-            store
-                .insert_final_text_block(first, Role::Assistant, line.into(), None)
-                .await
-                .expect("the answer stores");
+            filed_send(&store, first, None, line, None).await;
         }
         wake(&ctx, first);
         for _ in 0..3 {
-            as_reply(
-                tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                    .await
-                    .expect("the first holder's answers deliver before the deadline")
-                    .expect("the edge outlives the test"),
-            );
+            next_reply(&mut items).await;
         }
 
         mapping::delete_by_conversation(&store.tx(), first)
@@ -1448,28 +1448,15 @@ mod tests {
             "the premise: the store hands the freed id to the next conversation"
         );
         assert_eq!(again, key, "and the same channel maps to it");
-        store
-            .insert_final_text_block(
-                second,
-                Role::Assistant,
-                "the new holder's first answer".into(),
-                None,
-            )
-            .await
-            .expect("the answer stores");
+        filed_send(&store, second, None, "the new holder's first message", None).await;
         wake(&ctx, second);
 
-        let reply = as_reply(
-            tokio::time::timeout(std::time::Duration::from_secs(10), items.recv())
-                .await
-                .expect("the new holder's first answer delivers before the deadline")
-                .expect("the edge outlives the test"),
-        );
+        let reply = next_reply(&mut items).await;
         assert_eq!(reply.channel, key);
         assert_eq!(
             reply.text,
-            disclosure.disclosed("the new holder's first answer"),
-            "the stale cursor re-seeded, so the answer reaches the chat"
+            disclosure.disclosed("the new holder's first message"),
+            "the stale cursor re-seeded, so the message reaches the chat"
         );
     }
 
@@ -1483,17 +1470,11 @@ mod tests {
     /// IS the newest one. Re-seeding there would drop the cursor to the
     /// inherited boundary — zero for a conversation forked from nothing —
     /// and send the whole conversation to the chat again on the next pass
-    /// that meets no new block, which is what a failed turn's wake and every
-    /// lag recovery bring. The narrower shape the strict reading leaves open
-    /// — a reissued id whose new holder's newest block lands on exactly the
-    /// old cursor's number — costs that holder one swallowed answer, and no
-    /// reading of ids alone can tell it from this case.
+    /// that meets no new block, which is what a failed turn's wake and
+    /// every lag recovery bring.
     ///
     /// The pass is driven directly, so the equality is the case's premise
-    /// and not a scheduling accident: through the event task, a wake with
-    /// nothing new can be read after the next answer is already stored, and
-    /// then the cursor is BELOW the newest block and the case proves
-    /// nothing.
+    /// and not a scheduling accident.
     #[tokio::test]
     async fn a_second_pass_over_a_delivered_conversation_sends_nothing_again() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
@@ -1504,10 +1485,7 @@ mod tests {
         let mut cursors = DeliveryCursors::new();
         cursors.insert(conversation, 0);
 
-        store
-            .insert_final_text_block(conversation, Role::Assistant, "the one answer".into(), None)
-            .await
-            .expect("the answer stores");
+        filed_send(&store, conversation, None, "the one message", None).await;
         deliver_stored_items(
             &ctx,
             "quiet",
@@ -1518,9 +1496,9 @@ mod tests {
         )
         .await
         .expect("the first pass reads stored state");
-        let reply = as_reply(sent.try_recv().expect("the answer goes out"));
+        let reply = as_reply(sent.try_recv().expect("the message goes out"));
         assert_eq!(reply.channel, key);
-        assert_eq!(reply.text, disclosure.disclosed("the one answer"));
+        assert_eq!(reply.text, disclosure.disclosed("the one message"));
 
         let newest = store
             .list_blocks(conversation)

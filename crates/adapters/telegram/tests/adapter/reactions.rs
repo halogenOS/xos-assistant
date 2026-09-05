@@ -35,6 +35,7 @@ fn react_to(update_id: i64, emoji: &str) -> ToolScript {
         })
         .to_string(),
         narration: None,
+        announce: None,
     }
 }
 

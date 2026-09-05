@@ -128,11 +128,7 @@ fn assert_dated_line_stands_alone(request: &[Message], dated_lines: usize) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_framework_dates_the_ledger_once_per_day_ahead_of_the_message() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
 
     let key = channel("dm-dates");
     let receipt = support::ingest_recorded(
@@ -205,8 +201,9 @@ async fn the_framework_dates_the_ledger_once_per_day_ahead_of_the_message() {
     let seen = fixture.script.seen.lock().expect("the requests read");
     assert_eq!(
         seen.len(),
-        2,
-        "two asks, two answered turns, each recording its own request"
+        4,
+        "two asks, two answered turns, two rounds each: the round that \
+         sends and the round the delivery report re-drives"
     );
     assert_dated_line_stands_alone(
         seen.first().expect("the first turn recorded its request"),

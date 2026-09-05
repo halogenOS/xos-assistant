@@ -162,11 +162,7 @@ async fn assemble(
     protection: ProtectionConfig,
 ) -> (support::Fixture, Replies) {
     let fixture = support::start_assistant_full(store, provider, handle, tools, protection).await;
-    let replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let replies = support::outbound(&fixture).await;
     (fixture, replies)
 }
 
@@ -184,6 +180,7 @@ async fn the_commit_lookup_decodes_the_forge_answer() {
         tool: commit::NAME.into(),
         input: COMMIT_INPUT.into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
@@ -235,7 +232,12 @@ async fn the_commit_lookup_decodes_the_forge_answer() {
     {
         use agent_ledger::providers::{ContentPart as WirePart, MessageContent};
         let requests = fixture.script.seen.lock().unwrap();
-        assert_eq!(requests.len(), 2, "one turn: the call, then the close");
+        assert_eq!(
+            requests.len(),
+            3,
+            "one turn: the lookup call, the round that sends the close, and \
+             the round the delivery report re-drives"
+        );
         assert!(
             requests[1].iter().any(|message| matches!(
                 &message.content,
@@ -285,6 +287,7 @@ async fn the_release_lookup_decodes_the_mirror_answer_and_sends_the_token() {
         tool: release::NAME.into(),
         input: r#"{"tag":"20260707.2230.36-rb"}"#.into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
@@ -371,6 +374,7 @@ async fn an_absent_token_sends_no_header_and_the_default_is_the_latest_release()
         tool: release::NAME.into(),
         input: "{\"tag\":null}".into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
     support::ingest_recorded(
@@ -447,6 +451,7 @@ async fn an_error_status_and_a_timeout_become_tool_errors_the_model_sees() {
                 tool: tool_name.into(),
                 input: input.into(),
                 narration: None,
+                announce: None,
             };
             let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
@@ -506,6 +511,7 @@ async fn a_redirect_answer_is_a_tool_error_and_is_not_followed() {
         tool: commit::NAME.into(),
         input: COMMIT_INPUT.into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
@@ -591,6 +597,7 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
             tool: commit::NAME.into(),
             input: COMMIT_INPUT.into(),
             narration: None,
+            announce: None,
         },
         None,
     );
@@ -637,7 +644,9 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
             assistant_core::tools::no_reply_needed::NAME.to_owned(),
             assistant_core::tools::rights::NAME.to_owned(),
             assistant_core::tools::mark::NAME.to_owned(),
+            assistant_core::tools::reply::NAME.to_owned(),
             assistant_core::tools::runtime::NAME.to_owned(),
+            assistant_core::tools::send::NAME.to_owned(),
             assistant_core::tools::work_is_done::NAME.to_owned()
         ],
         "the appended choice names the registered set, the unconfigured tools included"
@@ -662,11 +671,7 @@ async fn a_pre_unit_conversation_gains_the_registered_tools_on_first_activity() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_created_conversation_names_exactly_the_registered_set_direct_and_group_alike() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
 
     let direct = support::ingest_recorded(
         &fixture.assistant,
@@ -710,7 +715,9 @@ async fn a_created_conversation_names_exactly_the_registered_set_direct_and_grou
                 assistant_core::tools::no_reply_needed::NAME.to_owned(),
                 assistant_core::tools::rights::NAME.to_owned(),
                 assistant_core::tools::mark::NAME.to_owned(),
+                assistant_core::tools::reply::NAME.to_owned(),
                 assistant_core::tools::runtime::NAME.to_owned(),
+                assistant_core::tools::send::NAME.to_owned(),
                 assistant_core::tools::work_is_done::NAME.to_owned()
             ],
             "the choice names the three lookups and the seven always-registered tools"
@@ -865,6 +872,7 @@ async fn a_tool_outside_the_conversations_choice_is_refused_before_its_handler()
         tool: "member_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
         narration: None,
+        announce: None,
     };
     let (fixture, _replies) = tool_fixture(script, None, tools).await;
 
@@ -966,6 +974,7 @@ async fn a_member_call_is_admitted_for_a_member_level_tool() {
         tool: "member_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
@@ -1009,6 +1018,7 @@ async fn an_admin_summoned_turn_admits_an_admin_tool() {
         tool: "admin_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
@@ -1068,6 +1078,7 @@ async fn a_member_summoned_turn_declines_an_admin_tool() {
         tool: "admin_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
@@ -1135,6 +1146,7 @@ async fn an_admin_absorbed_mid_narration_cannot_escalate_a_member_summons() {
         tool: "admin_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
         narration: Some("One moment.".into()),
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, Some(hold.clone()), tools).await;
     let key = support::authorized_group(&fixture.assistant, "room-narrated-absorption").await;
@@ -1308,6 +1320,7 @@ async fn a_resting_member_before_the_summons_lies_outside_the_interval() {
         tool: "admin_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
     let key = support::authorized_group(&fixture.assistant, "room-pre-summons-member").await;
@@ -1385,6 +1398,7 @@ async fn unaddressed_bystanders_absorbed_mid_turn_contribute_nothing() {
         tool: "admin_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
         narration: Some("One moment.".into()),
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, Some(hold.clone()), tools).await;
     let key = support::authorized_group(&fixture.assistant, "room-bystanders").await;
@@ -1447,13 +1461,19 @@ async fn unaddressed_bystanders_absorbed_mid_turn_contribute_nothing() {
     recv_closing(&mut replies).await;
 }
 
-/// A refused line is not a veto (decision 0043, refined 2026-08-22): under
-/// a one-answer channel budget the admin summons consumes the slot, so the
+/// A refused line is not a veto (decision 0043, refined 2026-08-22): the
 /// addressed member line absorbed mid-turn is recorded limited — the
-/// protection unit refused it service — and joins no fold: the admin tool
-/// is admitted. The budgets and the gate agree on one opened-debt
+/// protection unit refused it service — and joins no fold, so the admin
+/// tool is admitted. The budgets and the gate agree on one opened-debt
 /// predicate; a message outside it neither spends budget nor lowers
 /// provenance.
+///
+/// The slot is spent by the MEMBER's OWN earlier turn, in a room of their
+/// own, and the budget is the principal's (unit 55): a debt counts only
+/// once its turn DELIVERED, so a held turn spends nothing and a channel
+/// budget cannot be exhausted from inside the very turn this case holds
+/// open. The principal budget counts across conversations, which is
+/// exactly the room this needs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
     let (probe, executed) = ProbeTool::new("admin_probe", Authority::Admin);
@@ -1464,14 +1484,29 @@ async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
         tool: "admin_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
         narration: Some("One moment.".into()),
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture_configured(
         script,
         Some(hold.clone()),
         tools,
-        support::budgets(None, Some((1, 600))),
+        support::budgets(Some((1, 600)), None),
     )
     .await;
+
+    // The member spends their one slot in a room of their own, on a turn
+    // that completes and delivers.
+    let spent = support::authorized_group(&fixture.assistant, "room-limited-spend").await;
+    let spending = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(&spent, ChannelKind::Group, "m", "the member's own ask"),
+    )
+    .await;
+    hold.started().await;
+    hold.release();
+    support::await_sends(&fixture.store, spending.conversation_id, 1).await;
+    recv_closing(&mut replies).await;
+
     let key = support::authorized_group(&fixture.assistant, "room-limited-line").await;
 
     let receipt = support::ingest_recorded(
@@ -1487,9 +1522,9 @@ async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
     .await;
     let conv = receipt.conversation_id;
 
-    // The narration is mid-stream when the flooder's addressed line lands:
-    // the channel budget's one slot is already the summons's, so the line
-    // is recorded limited.
+    // The narration is mid-stream when the member's addressed line lands:
+    // their own principal slot is already spent, so the line is recorded
+    // limited.
     hold.started().await;
     await_streaming_tail(&fixture.store, conv).await;
     support::ingest_recorded(
@@ -1523,7 +1558,7 @@ async fn a_limited_line_absorbed_mid_turn_does_not_veto() {
     // The premise: the absorbed line is addressed AND limited — the
     // budget refused its debt, so it opened none and co-summons nothing.
     assert_eq!(blocks[3].fields["addressed"], json!(true));
-    assert_eq!(blocks[3].fields["limited"], json!("channel"));
+    assert_eq!(blocks[3].fields["limited"], json!("principal"));
     assert_eq!(blocks[3].fields["answer_due"], json!(false));
     assert!(executed.load(Ordering::SeqCst), "the admitted body ran");
     assert_eq!(field(&blocks[6], "content"), "the probe ran");
@@ -1738,6 +1773,7 @@ fn a_propagating_frontier_reads_the_admins_debt_and_admits() {
                 tool: "admin_probe".into(),
                 input: r#"{"ask":"run"}"#.into(),
                 narration: None,
+                announce: None,
             },
             None,
         );
@@ -1836,6 +1872,7 @@ async fn an_absorbed_message_opens_a_fresh_debt_at_its_own_authority() {
         tool: "member_probe".into(),
         input: r#"{"ask":"run"}"#.into(),
         narration: Some("One moment.".into()),
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, Some(hold.clone()), tools).await;
     let key = support::authorized_group(&fixture.assistant, "room-fresh-debt").await;
@@ -1937,9 +1974,10 @@ async fn the_redispatch_window_dispatches_no_echo_turn() {
     recv_closing(&mut replies).await;
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
-        2,
-        "exactly the turn's two requests: the call round and the close — \
-         the window dispatched no third"
+        3,
+        "exactly the turn's three requests: the call round, the round that \
+         sends the close, and the round the delivery report re-drives — \
+         the window dispatched no fourth"
     );
 }
 
@@ -1957,6 +1995,7 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
             tool: commit::NAME.into(),
             input: COMMIT_INPUT.into(),
             narration: None,
+            announce: None,
         },
         None,
         commit_tools(forge.base(), commit::DEFAULT_TIMEOUT),
@@ -2041,8 +2080,9 @@ async fn a_tool_turn_takes_one_slot_and_a_limited_message_summons_no_tools() {
     // exact two keeps the no-turn claim falsifiable.
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
-        2,
-        "one answer slot: the opening and closing requests of one turn"
+        3,
+        "one answer slot: the opening request, the round that sends the \
+         close, and the round the delivery report re-drives"
     );
     let extra = replies.try_recv();
     assert!(
@@ -2078,6 +2118,7 @@ async fn the_wiki_lookup_reads_a_page_end_to_end() {
         tool: wiki::NAME.into(),
         input: r#"{"page":"Home"}"#.into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 
@@ -2144,6 +2185,7 @@ async fn a_missing_wiki_page_and_a_timeout_become_tool_errors() {
             tool: wiki::NAME.into(),
             input: r#"{"page":"Guessed-Page"}"#.into(),
             narration: None,
+            announce: None,
         };
         let (fixture, mut replies) = tool_fixture(script, None, tools).await;
         let receipt = support::ingest_recorded(
@@ -2341,6 +2383,7 @@ async fn the_wiki_enumeration_lists_every_page_end_to_end() {
         tool: wiki::NAME.into(),
         input: "{}".into(),
         narration: None,
+        announce: None,
     };
     let (fixture, mut replies) = tool_fixture(script, None, tools).await;
 

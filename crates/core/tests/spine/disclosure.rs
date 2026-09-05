@@ -47,11 +47,7 @@ fn the_disclosure_copy_composes_from_the_name() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_first_answer_carries_the_line_and_the_second_does_not() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = channel("dm-disclosure");
 
     let receipt = support::ingest_recorded(
@@ -83,8 +79,15 @@ async fn the_first_answer_carries_the_line_and_the_second_does_not() {
     assert_eq!(blocks[3].role, Some(Role::Assistant));
     assert_eq!(
         blocks[3].fields["content"],
-        json!(first_answer_to("the first question")),
-        "the stored answer block opens with the line"
+        json!(answer_to("the first question")),
+        "the turn's own notes carry no line: the line belongs to the \
+         message that was sent"
+    );
+    assert_eq!(
+        support::sent_texts(&fixture.store, conv).await,
+        vec![first_answer_to("the first question")],
+        "the STORED outgoing message opens with the line, so the ledger \
+         holds the introduction the channel received"
     );
 
     // The same person's second answer: no line, stored or delivered.
@@ -109,11 +112,7 @@ async fn the_first_answer_carries_the_line_and_the_second_does_not() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_second_new_person_in_the_same_conversation_gets_their_own_line() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-two-people").await;
 
     support::ingest_recorded(
@@ -173,11 +172,7 @@ async fn a_second_new_person_in_the_same_conversation_gets_their_own_line() {
 async fn an_absorbed_new_co_summoner_draws_the_line_and_counts_as_introduced() {
     let hold = support::TurnHold::new();
     let fixture = support::start_assistant(Some(hold.clone())).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-absorbed").await;
 
     // A is introduced by their own first answer.
@@ -260,11 +255,7 @@ async fn an_absorbed_new_co_summoner_draws_the_line_and_counts_as_introduced() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_person_returning_after_deletion_gets_the_line_again() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-return").await;
 
     let receipt = support::ingest_recorded(
@@ -351,11 +342,7 @@ async fn a_person_returning_after_deletion_gets_the_line_again() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn deterministic_replies_carry_no_disclosure() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-fixed-lines").await;
 
     // The privacy command, from a person the store has never answered.

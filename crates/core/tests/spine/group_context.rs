@@ -259,14 +259,7 @@ async fn an_observation_disagreeing_with_the_mapped_channel_kind_is_refused() {
         inbound(&key, ChannelKind::Direct, "42", "a direct message"),
     )
     .await;
-    recv_reply(
-        &mut fixture
-            .assistant
-            .outbound(support::ADAPTER)
-            .await
-            .expect("the outbound edge opens"),
-    )
-    .await;
+    recv_reply(&mut support::outbound(&fixture).await).await;
 
     let refusal = fixture
         .assistant
@@ -359,6 +352,8 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
                  DROP TABLE {delivered};
                  DROP TABLE {marks};
                  DROP TABLE {retractions};
+                 DROP TABLE {outgoing};
+                 DROP TABLE {notices};
                  ALTER TABLE principals ADD COLUMN display_name TEXT NOT NULL DEFAULT '';
                  ALTER TABLE principals DROP COLUMN opted_out;
                  {V5_CHAT_MESSAGE_DDL}",
@@ -368,6 +363,8 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
                 delivered = assistant_core::delivery::DELIVERED_TABLE,
                 marks = assistant_core::tools::mark::MESSAGE_MARK_TABLE,
                 retractions = assistant_core::delivery::RETRACTION_TABLE,
+                outgoing = assistant_core::outgoing::OUTGOING_MESSAGE_TABLE,
+                notices = assistant_core::contract::CONTRACT_NOTICE_TABLE,
             ))?;
             // Non-vacuity: the rebuilt table really is the two-kind
             // version-five shape — the command stamp the widening step
@@ -396,7 +393,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
             .expect("the version-five store reopens under the shipped configuration");
         assert_eq!(
             support::domain_migration_version(&store).await,
-            21,
+            23,
             "the appended steps advanced the domain's version"
         );
         let fixture = support::start_assistant_on(store.clone(), None).await;
@@ -463,11 +460,7 @@ fn a_version_five_store_upgrades_with_the_backfill_and_the_widened_stamp() {
 async fn a_rules_change_appends_on_delta_acknowledges_each_delta_and_projects_in_the_system_voice()
 {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = channel("group-rules");
     authorize(&fixture.assistant, &key).await;
 
@@ -828,11 +821,7 @@ async fn the_privacy_command_answers_the_configured_address_without_a_turn() {
         Some("https://example.org/privacy".into()),
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let mut events = fixture.bus.subscribe();
     let key = channel("dm-privacy");
 
@@ -899,7 +888,12 @@ async fn the_privacy_command_answers_the_configured_address_without_a_turn() {
     .await;
     let reply = recv_reply(&mut replies).await;
     assert!(reply.text.contains("a real question"));
-    assert_eq!(fixture.script.turns.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fixture.script.turns.load(Ordering::SeqCst),
+        2,
+        "the command drew no turn: the count is the follow-up's own two \
+         rounds"
+    );
     assert_eq!(
         drain_unlatches(&mut events),
         1,
@@ -1043,11 +1037,7 @@ async fn an_exhausted_answer_window_records_the_command_and_answers_with_silence
     let fixture =
         support::start_assistant_configured(store, None, support::budgets(None, Some((1, 600))))
             .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = channel("group-exhausted");
     authorize(&fixture.assistant, &key).await;
 
@@ -1567,7 +1557,7 @@ async fn a_note_over_a_failed_turns_marker_stays_a_settled_tail() {
 /// would append, and the count below would fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_racing_equal_observations_append_one_note() {
-    let mut fixture = support::start_assistant(None).await;
+    let fixture = support::start_assistant(None).await;
     let key = channel("group-race");
     let both_inside_the_window = Arc::new(tokio::sync::Barrier::new(2));
     let barrier = Arc::clone(&both_inside_the_window);
@@ -1726,7 +1716,9 @@ async fn an_observation_supersedes_a_stale_choice_once_per_process() {
             assistant_core::tools::no_reply_needed::NAME.to_owned(),
             assistant_core::tools::rights::NAME.to_owned(),
             assistant_core::tools::mark::NAME.to_owned(),
+            assistant_core::tools::reply::NAME.to_owned(),
             assistant_core::tools::runtime::NAME.to_owned(),
+            assistant_core::tools::send::NAME.to_owned(),
             assistant_core::tools::work_is_done::NAME.to_owned()
         ],
         "the delta carries this process's registered set"

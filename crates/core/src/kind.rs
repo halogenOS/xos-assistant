@@ -195,39 +195,89 @@ pub const COLUMN_REVISES: &str = "revises";
 /// of the person's words, so the erasure's promise holds.
 pub const ERASED_MARKER: &str = "[message erased]";
 
-/// What a revision carries at the head of its text, so the model reads the
-/// line as what the room sees: the same message, said differently (unit T3,
-/// 2026-08-31). A fixed constant beside the erased marker, and prose like
-/// the speaker prefix and the id mark — a member can type these characters
-/// into their own message and nothing distinguishes the bytes.
-///
-/// The bound is that NOTHING mechanical reads it: no stamp, no tool, no
-/// erasure pass and no admission consults the marker, so a forgery can
-/// mislead the model's reading and reach nothing else, exactly as
-/// [`projected_origin_mark`]'s own documentation bounds a forged id. The
-/// stored fact the marker speaks for is [`COLUMN_REVISES`], and every
-/// mechanism reads that column instead.
-///
-/// It sits after the speaker prefix and ahead of the text, never inside the
-/// bracketed id: the id is the one token the model is taught to name a
-/// message by, and folding a word into it would corrupt exactly that token.
-pub const EDITED_MARKER: &str = "(edited)";
+/// The fence that opens and closes a projected message's envelope — the
+/// YAML front matter shape the operator asked for (2026-09-01, unit 55).
+pub const ENVELOPE_FENCE: &str = "---";
 
-/// The projected id mark of one recorded message: the stored origin in
-/// brackets, ahead of the speaker prefix and the text (unit 15,
-/// 2026-08-24). The mark is what lets the model NAME a message — the
-/// report tool takes the id it shows, validated against the turn's own
-/// assessment set — so it rides every user-voiced live message that has a
-/// stored origin, in every mode: the projection is a per-block reading
-/// with no configuration access, and an id beside a message is honest
-/// context wherever it appears. The erased placeholder never carries it
-/// (erasure nulls the origin with the text), and the mark is prose like
-/// the speaker prefix: a member who types a bracketed id into their
-/// message forges bytes the model cannot tell apart, and the tool's
-/// co-summoner validation is what bounds where such a forgery can aim.
+/// The envelope's author line, leading the handle. The handle is shown with
+/// the platform's own `@` sigil, which is how a member is addressed in a
+/// chat and how the operator wrote the shape.
+pub const ENVELOPE_FROM: &str = "from: @";
+
+/// The envelope's time line, leading the stored platform send time — never
+/// a store clock and never the framework's (the operator, 2026-09-01: the
+/// date is the platform's metadata and must not be made factually false by
+/// the machinery around it).
+pub const ENVELOPE_DATE: &str = "date: ";
+
+/// The envelope's id line, leading the one token the model names a message
+/// by. It is what a reply and a report and a reaction all aim with, so it
+/// rides every live record that has an id to show.
+pub const ENVELOPE_MSGID: &str = "msgid: ";
+
+/// The envelope's revision line, written on a message shown under the id it
+/// revised (unit T3's fact, unit 55's spelling): the same message, said
+/// differently. Present or absent — there is no false form of it.
+pub const ENVELOPE_EDITED: &str = "edited: true";
+
+/// One projected record's envelope: who wrote it, when the platform says it
+/// was sent, the id it is named by, and whether it is a later version of
+/// the message under that id.
+///
+/// Every field is optional because every stored fact behind one can be
+/// absent, and an absent fact is left out rather than filled: a handleless
+/// sender mints no substitute identifier (decision 0056), a row without a
+/// stored send time states no time, and an erasure that nulled an id leaves
+/// nothing to name. An envelope with no line at all renders nothing, so a
+/// record with nothing to declare projects its words bare instead of an
+/// empty pair of fences.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Envelope<'a> {
+    /// The author's stored handle, without the sigil.
+    pub from: Option<&'a str>,
+    /// The stored platform send time, verbatim.
+    pub date: Option<&'a str>,
+    /// The id the model names this record by.
+    pub msgid: Option<&'a str>,
+    /// Whether this is a later version of the message its id names.
+    pub edited: bool,
+}
+
+/// One record as the model reads it: the envelope's fenced front matter,
+/// then the words (unit 55, 2026-09-02).
+///
+/// The lines are written in one fixed order — author, time, id, revision —
+/// so the model reads one shape everywhere and a field's absence shifts
+/// nothing else. The body follows the closing fence untouched, whatever it
+/// contains: a member whose own message carries a fence line is quoted
+/// exactly as they wrote it, and the envelope is still the block above the
+/// FIRST closing fence. That is prose, like every projected mark before it —
+/// a member can type these bytes and nothing distinguishes them — and the
+/// bound is that nothing mechanical reads the rendering back: every tool
+/// validates a named id against the stored columns, never against what the
+/// projection drew.
 #[must_use]
-pub fn projected_origin_mark(origin: &str) -> String {
-    format!("[{origin}]")
+pub fn enveloped(envelope: Envelope<'_>, body: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(from) = envelope.from {
+        lines.push(format!("{ENVELOPE_FROM}{from}"));
+    }
+    if let Some(date) = envelope.date {
+        lines.push(format!("{ENVELOPE_DATE}{date}"));
+    }
+    if let Some(msgid) = envelope.msgid {
+        lines.push(format!("{ENVELOPE_MSGID}{msgid}"));
+    }
+    if envelope.edited {
+        lines.push(ENVELOPE_EDITED.to_owned());
+    }
+    if lines.is_empty() {
+        return body.to_owned();
+    }
+    format!(
+        "{ENVELOPE_FENCE}\n{lines}\n{ENVELOPE_FENCE}\n{body}",
+        lines = lines.join("\n"),
+    )
 }
 
 /// Why a message's own debt was never taken — the stored vocabulary of the
@@ -673,50 +723,53 @@ impl ChatMessage {
         self.addressed == Some(true) && self.limited.is_none()
     }
 
-    /// The message's projected contribution: its text, or [`ERASED_MARKER`]
-    /// when erasure nulled it. Only erasure produces the absent text — the
-    /// adapter never records an empty message and the schema stores the
-    /// column NOT NULL — so the marker speaks exactly for erased messages.
+    /// The message's projected contribution: its envelope and its text, or
+    /// [`ERASED_MARKER`] when erasure nulled it. Only erasure produces the
+    /// absent text — the adapter never records an empty message and the
+    /// schema stores the column NOT NULL — so the marker speaks exactly for
+    /// erased messages, and it speaks alone: an erased row declares no
+    /// author, no time and no id, because every one of those was nulled
+    /// with the words.
     ///
-    /// A user-voiced message with a stored speaker projects as the speaker,
-    /// a colon and a space, then the text (decision 0066) — the handle the
-    /// model may address the person by — and a user-voiced message with a
-    /// stored origin opens with [`projected_origin_mark`] ahead of that
-    /// (unit 15, 2026-08-24): the id the model names when it reports.
-    /// Everything else projects bare: a handleless sender's message (no
-    /// substitute identifier leaves the machine, per decision 0056), any
-    /// non-user voice, and the erased marker — the erasure pass nulls the
-    /// speaker and the origin with the text, and even a row it
-    /// half-reached keeps the placeholder exactly as it is, unmarked.
+    /// A user-voiced message projects under the envelope the operator asked
+    /// for (2026-09-01, unit 55): the author's stored handle, the stored
+    /// platform send time verbatim, the id the model names the message by,
+    /// and — on a later version of one message — the revision line. Each
+    /// line is present exactly when its stored fact is: a handleless
+    /// sender's message declares no author, minting no substitute
+    /// identifier (decision 0056), and a message with nothing at all to
+    /// declare projects its words bare.
     ///
-    /// A revision — a row carrying [`COLUMN_REVISES`] — differs in two
-    /// places (unit T3, 2026-08-31). It projects under the REVISED
-    /// message's id, so every version of one message shows the model one
-    /// token to name it by and the report resolves that token through
-    /// either column. And [`EDITED_MARKER`] opens its text, after the
-    /// speaker prefix, so the model reads which version it is looking at.
-    /// The superseded version keeps projecting its own words untouched:
-    /// this is a per-block reading with no ledger access, so folding
-    /// history is not something it can do, and rewriting a stored row is
-    /// not something an append-only ledger does.
+    /// A revision — a row carrying [`COLUMN_REVISES`] — is shown under the
+    /// REVISED message's id (unit T3, 2026-08-31), so every version of one
+    /// message shows the model one token to name it by and every tool
+    /// resolves that token through either column, with the envelope's own
+    /// revision line saying which version this is. The superseded version
+    /// keeps projecting its own words untouched: this is a per-block
+    /// reading with no ledger access, so folding history is not something
+    /// it can do, and rewriting a stored row is not something an
+    /// append-only ledger does.
+    ///
+    /// The assistant's own voice projects bare, and that is the whole of
+    /// what unit 55 left of it: her text is private notes, her sends are a
+    /// tool call and its result, and neither is a message with an author,
+    /// a time and an id to declare.
     fn projected_text(&self) -> String {
         let Some(text) = &self.text else {
             return ERASED_MARKER.to_owned();
         };
-        let said = match &self.revises {
-            Some(_) => format!("{EDITED_MARKER} {text}"),
-            None => text.clone(),
-        };
-        let line = match &self.speaker {
-            Some(speaker) if self.role == Some(Role::User) => format!("{speaker}: {said}"),
-            _ => said,
-        };
-        match self.revises.as_deref().or(self.origin.as_deref()) {
-            Some(named) if self.role == Some(Role::User) => {
-                format!("{} {line}", projected_origin_mark(named))
-            }
-            _ => line,
+        if self.role != Some(Role::User) {
+            return text.clone();
         }
+        enveloped(
+            Envelope {
+                from: self.speaker.as_deref(),
+                date: self.sent_at.as_deref(),
+                msgid: self.revises.as_deref().or(self.origin.as_deref()),
+                edited: self.revises.is_some(),
+            },
+            text,
+        )
     }
 }
 
@@ -1296,40 +1349,49 @@ pub(crate) struct RecordedVersion {
 // by their differing tenth byte and degrade the window into a
 // calendar-date test.
 //
-// A debt answered by an empty answer is excluded (unit 14, 2026-08-23;
-// re-keyed by unit 22, 2026-08-24): the window bounds what the assistant
-// SAYS, and a silent turn said nothing — the framework commits it as a
-// real empty assistant text block — so the count subtracts every debt
-// whose stored answer trims to nothing, matched through the answer's
-// dispatch anchor, the id of the summoning frontier every block a turn
-// writes carries. The reach is exactly the anchor's: a co-summoner
-// absorbed into a silent turn keeps its own row's slot spent, because the
-// anchor names the frontier alone — accepted, recorded with the decision.
-// The `blocks` and `block_text` names are the framework's, the deliberate
-// coupling decisions 0032 and 0079 record. The SQL trims the ASCII
-// whitespace the wire realistically wraps an answer in; the edge's own
-// check trims the full whitespace class, and the one divergence — an
-// answer of nothing but exotic whitespace — errs toward counting, the
-// limiting direction.
+// A debt whose turn DELIVERED nothing is excluded (unit 14, 2026-08-23;
+// re-keyed by unit 22, 2026-08-24; re-keyed again by unit 55, 2026-09-02):
+// the window bounds what the assistant SAYS in the chat, and a turn that
+// posted no message said nothing there. The empty-answer clause is
+// REPLACED, not extended — from unit 55 the model's written text goes
+// nowhere at all, so an empty one and a long one are equally silent, and
+// what tells a spending turn from a free one is whether it filed a message
+// that reached the chat.
+//
+// A delivered message is an outgoing block whose call COMPLETED: the
+// framework's resolution writes a `tool_result` row naming that call, and a
+// send that failed writes a `tool_error` instead, so the result row is the
+// stored fact of a message the platform took. The join walks the turn from
+// the debt's row: an outgoing block carries the id of the call it answers,
+// the call carries the summoning frontier as its dispatch anchor, and the
+// frontier is the message row. The reach is exactly that anchor's: a
+// co-summoner absorbed into a turn keeps its own row's slot spent unless
+// the turn was anchored on it — accepted, the same bound the empty-answer
+// clause carried and recorded with it.
+//
+// The framework table names — `blocks`, `block_tool_call`,
+// `block_tool_result` — are the deliberate coupling decision 0032 records,
+// extended here to the resolution tables because they are the one place a
+// send's outcome is stored.
 
 /// The counted-debt predicate both budget counts share, over the message
 /// alias `m` and the block-header alias `b`: an opened debt — summoned,
 /// not limited — younger than the window, whose modifier arrives as the
-/// query's second parameter, and not answered by an empty answer — the
-/// framework's committed record of a turn that said nothing. One fragment
-/// on purpose: what consumes budget is one definition, and two spellings
-/// of it could drift apart.
+/// query's second parameter, whose turn put at least one message in the
+/// chat. One fragment on purpose: what consumes budget is one definition,
+/// and two spellings of it could drift apart.
 static COUNTED_DEBT_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "m.{COLUMN_ADDRESSED} = 1 AND m.{COLUMN_LIMITED} IS NULL \
          AND datetime(b.created_at) > datetime('now', ?2) \
-         AND NOT EXISTS (\
-           SELECT 1 FROM blocks ab \
-           JOIN block_text at ON at.block_id = ab.id \
-           WHERE ab.dispatch_anchor = m.block_id \
-           AND at.role = 'assistant' \
-           AND trim(at.content, ' ' || char(9) || char(10) || char(13)) = ''\
-         )"
+         AND EXISTS (\
+           SELECT 1 FROM {outgoing} o \
+           JOIN blocks cb ON cb.id = o.{call_block} \
+           JOIN block_tool_result tr ON tr.source_block_id = o.{call_block} \
+           WHERE cb.dispatch_anchor = m.block_id\
+         )",
+        outgoing = crate::outgoing::OUTGOING_MESSAGE_TABLE,
+        call_block = crate::outgoing::COLUMN_CALL_BLOCK,
     )
 });
 
@@ -1566,6 +1628,14 @@ pub enum AssistantKind {
     /// module owns the kind; it composes here so one parse path reads every
     /// block).
     Retraction(crate::delivery::Retraction),
+    /// One message a sending tool filed, awaiting the chat (the outgoing
+    /// module owns the kind; it composes here so one parse path reads every
+    /// block).
+    OutgoingMessage(crate::outgoing::OutgoingMessage),
+    /// The recorded moment this conversation crossed into the sending
+    /// contract (the contract module owns the kind; it composes here so one
+    /// parse path reads every block).
+    ContractNotice(crate::contract::ContractNotice),
 }
 
 /// A text field read by column name from a loaded block's fields, absent when
@@ -1675,33 +1745,61 @@ mod tests {
             .expect("the message appends")
     }
 
-    /// One finalized assistant answer, anchored on the given summons the
-    /// way the framework's dispatch writes it — the anchor set through the
-    /// domain seam, since the anchored destination is the framework's own.
-    async fn anchored_answer(store: &Store, conversation: i64, anchor: i64, content: &str) {
-        let answer = store
-            .insert_final_text_block(conversation, Role::Assistant, content.into(), None)
+    /// One turn on the given summons: its call block, anchored on that
+    /// message the way the framework's dispatch stamps a call, and the
+    /// outgoing block the sending tool filed against it. Answers the call's
+    /// block id, so the caller can settle it.
+    ///
+    /// The anchor is set through the domain seam, since the anchored
+    /// destination is the framework's own and no consumer door offers it.
+    async fn anchored_send(store: &Store, conversation: i64, anchor: i64, text: &str) -> i64 {
+        let call = store
+            .insert_tool_call_block(
+                conversation,
+                Role::Assistant,
+                agent_ledger::store::ToolCallInsert {
+                    tool_call_id: format!("call-{text}"),
+                    name: crate::tools::send::NAME.into(),
+                    input: "{}".into(),
+                    interactive: false,
+                },
+                None,
+            )
             .await
-            .expect("the answer inserts");
+            .expect("the call block inserts");
         domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
             conn.execute(
                 "UPDATE blocks SET dispatch_anchor = ?2 WHERE id = ?1",
-                [answer, anchor],
+                [call, anchor],
             )?;
             Ok(())
         })
         .await
         .expect("the anchor writes");
+        store
+            .append_consumer_block(
+                conversation,
+                None,
+                crate::outgoing::OUTGOING_MESSAGE_KIND,
+                crate::outgoing::OutgoingMessage::stored_fields(text, None, call),
+                None,
+            )
+            .await
+            .expect("the send files");
+        call
     }
 
-    /// The window's silence refund on its new key (unit 22, AC4): a debt
-    /// whose anchored answer trims to nothing — the framework's committed
-    /// empty block, surrounding whitespace tolerated — stops counting in
-    /// both budget counts, while a debt answered with real text keeps its
-    /// slot spent, a spoken "I don't know" included. The window bounds
-    /// what the assistant SAYS.
+    /// AC13 (unit 55): a debt counts when its turn DELIVERED a message, and
+    /// not otherwise.
+    ///
+    /// Three turns, one per shape the criterion names. A turn of notes and
+    /// no send costs the person nothing — the model's text goes nowhere, so
+    /// a long turn of it is as silent as an empty one, which is why the
+    /// empty-answer clause was replaced and not extended. A turn whose only
+    /// send FAILED costs nothing either: nothing reached the chat. A turn
+    /// with a delivered send spends its slot, in both counts.
     #[tokio::test]
-    async fn a_debt_answered_by_an_empty_answer_stops_counting() {
+    async fn a_debt_counts_exactly_when_its_turn_delivered_a_message() {
         let store =
             Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
         let conversation = store
@@ -1711,46 +1809,83 @@ mod tests {
         let tx = store.tx();
         let window = NonZeroU64::new(600).expect("a nonzero window");
 
-        let first = summoned_message(&store, conversation, "the silent ask").await;
-        assert_eq!(
-            opened_debts_by_principal(&tx, 7, window)
-                .await
-                .expect("the count runs"),
-            1,
-            "an unanswered debt counts"
-        );
-
-        anchored_answer(&store, conversation, first, "  \n").await;
+        // A turn of notes: the framework commits the model's prose, and no
+        // sending tool was ever called.
+        let noted = summoned_message(&store, conversation, "the ask answered in notes").await;
+        let answer = store
+            .insert_final_text_block(
+                conversation,
+                Role::Assistant,
+                "pages of private reasoning".into(),
+                None,
+            )
+            .await
+            .expect("the notes insert");
+        domain_run(&store.tx(), crate::schema::DOMAIN, move |conn| {
+            conn.execute(
+                "UPDATE blocks SET dispatch_anchor = ?2 WHERE id = ?1",
+                [answer, noted],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the anchor writes");
         assert_eq!(
             opened_debts_by_principal(&tx, 7, window)
                 .await
                 .expect("the count runs"),
             0,
-            "the silent debt spends no slot"
+            "a turn of notes and no send costs the person nothing"
+        );
+
+        // A turn whose one send failed: filed, and settled as a failure.
+        let failed = summoned_message(&store, conversation, "the ask whose send failed").await;
+        let failing_call = anchored_send(&store, conversation, failed, "never arrived").await;
+        store
+            .resolve_tool_call(
+                conversation,
+                failing_call,
+                agent_ledger::ToolCallResult::Error {
+                    error: "the chat refused it".into(),
+                },
+            )
+            .await
+            .expect("the failure settles");
+        assert_eq!(
+            opened_debts_by_principal(&tx, 7, window)
+                .await
+                .expect("the count runs"),
+            0,
+            "a send that reached nobody spends no slot"
+        );
+
+        // A turn with a delivered send: the resolution the receipt door
+        // writes when the platform took the message.
+        let spoken = summoned_message(&store, conversation, "the ask that was answered").await;
+        let sent_call = anchored_send(&store, conversation, spoken, "the sent answer").await;
+        store
+            .resolve_tool_call(
+                conversation,
+                sent_call,
+                agent_ledger::ToolCallResult::Success {
+                    content: "The message was sent. Its id in this chat is 12345.".into(),
+                },
+            )
+            .await
+            .expect("the delivery settles");
+        assert_eq!(
+            opened_debts_by_principal(&tx, 7, window)
+                .await
+                .expect("the count runs"),
+            1,
+            "the turn that put a message in the chat spends its slot"
         );
         assert_eq!(
             opened_debts_in_conversation(&tx, conversation, window)
                 .await
                 .expect("the count runs"),
-            0,
-            "the channel count excludes it the same way"
-        );
-
-        let second = summoned_message(&store, conversation, "the answered ask").await;
-        anchored_answer(
-            &store,
-            conversation,
-            second,
-            "I don't know — I could not confirm this with a lookup.",
-        )
-        .await;
-        assert_eq!(
-            opened_debts_by_principal(&tx, 7, window)
-                .await
-                .expect("the count runs"),
             1,
-            "a spoken answer keeps its slot spent, the model's own don't-know \
-             included: real text is what the window bounds"
+            "the channel count reads the same one definition"
         );
     }
 
@@ -1796,21 +1931,25 @@ mod tests {
         );
     }
 
-    /// The projected id mark (unit 15), every branch at the kind: a
-    /// user-voiced message with a stored origin opens with the bracketed
-    /// id — ahead of the speaker prefix where one stands, ahead of the
-    /// bare text where none does — while a non-user voice, an origin-less
-    /// row and the erased placeholder all project unmarked. The mark is
-    /// what the model names a message by when it reports, so its exact
-    /// composition is pinned here beside the rule.
+    /// AC8 (unit 55): the envelope, every shape, pinned byte for byte at
+    /// the kind that renders it.
+    ///
+    /// A plain message declares its author, the stored send time verbatim
+    /// and its id; a message without a stored speaker declares no author
+    /// and mints no substitute (decision 0056); a revision is shown under
+    /// the REVISED message's id with the revision line; an erased row is
+    /// the fixed marker and no envelope at all, because everything an
+    /// envelope declares was nulled with the words; the assistant's own
+    /// voice is bare, being private notes; and a row with nothing to
+    /// declare projects its words with no empty pair of fences.
     #[test]
-    fn the_projection_marks_exactly_the_user_voiced_messages_with_an_origin() {
-        assert_eq!(projected_origin_mark("id-9"), "[id-9]");
-
+    fn the_envelope_renders_exactly_as_the_operator_asked() {
         let row = |role: Option<Role>,
                    text: Option<&str>,
                    speaker: Option<&str>,
-                   origin: Option<&str>| {
+                   origin: Option<&str>,
+                   revises: Option<&str>,
+                   sent_at: Option<&str>| {
             let mut fields = serde_json::Map::new();
             if let Some(text) = text {
                 fields.insert(COLUMN_TEXT.into(), json!(text));
@@ -1821,6 +1960,12 @@ mod tests {
             if let Some(origin) = origin {
                 fields.insert(COLUMN_ORIGIN.into(), json!(origin));
             }
+            if let Some(revises) = revises {
+                fields.insert(COLUMN_REVISES.into(), json!(revises));
+            }
+            if let Some(sent_at) = sent_at {
+                fields.insert(COLUMN_SENT_AT.into(), json!(sent_at));
+            }
             <ChatMessage as agent_ledger::LeafKind>::parse(&Block {
                 id: 1,
                 role,
@@ -1830,38 +1975,106 @@ mod tests {
                 fields,
             })
         };
+        let sent = Some("2026-08-31T22:33:46Z");
 
         assert_eq!(
-            row(Some(Role::User), Some("the ask"), Some("ada"), Some("id-9")).projected_text(),
-            "[id-9] ada: the ask",
-            "the mark leads, then the speaker prefix, then the text"
+            row(
+                Some(Role::User),
+                Some("The actual message"),
+                Some("handle"),
+                Some("12345"),
+                None,
+                sent
+            )
+            .projected_text(),
+            "---\nfrom: @handle\ndate: 2026-08-31T22:33:46Z\nmsgid: 12345\n---\n\
+             The actual message",
+            "the shape the operator wrote, line for line"
         );
         assert_eq!(
-            row(Some(Role::User), Some("the ask"), None, Some("id-9")).projected_text(),
-            "[id-9] the ask",
-            "a handleless message still shows its id"
+            row(
+                Some(Role::User),
+                Some("The actual message"),
+                None,
+                Some("12345"),
+                None,
+                sent
+            )
+            .projected_text(),
+            "---\ndate: 2026-08-31T22:33:46Z\nmsgid: 12345\n---\nThe actual message",
+            "no stored speaker, no author line, and no substitute identifier"
         );
         assert_eq!(
-            row(Some(Role::User), Some("the ask"), None, None).projected_text(),
-            "the ask",
-            "no stored origin, no mark"
+            row(
+                Some(Role::User),
+                Some("The second wording"),
+                Some("handle"),
+                Some("12346"),
+                Some("12345"),
+                sent
+            )
+            .projected_text(),
+            "---\nfrom: @handle\ndate: 2026-08-31T22:33:46Z\nmsgid: 12345\n\
+             edited: true\n---\nThe second wording",
+            "a revision shows under the revised message's id, marked as edited"
+        );
+        assert_eq!(
+            row(Some(Role::User), None, None, Some("12345"), None, sent).projected_text(),
+            ERASED_MARKER,
+            "an erased row is the marker and no envelope, even where a \
+             half-reached pass left an identifier behind"
         );
         assert_eq!(
             row(
                 Some(Role::Assistant),
-                Some("the answer"),
+                Some("my own notes"),
+                Some("handle"),
+                Some("12345"),
                 None,
-                Some("id-9")
+                sent
             )
             .projected_text(),
-            "the answer",
-            "only the user's voice carries the mark"
+            "my own notes",
+            "the assistant's own voice is bare: its text is private notes"
         );
         assert_eq!(
-            row(Some(Role::User), None, None, Some("id-9")).projected_text(),
-            ERASED_MARKER,
-            "the erased placeholder projects unmarked, even on a synthetic \
-             row whose origin outlived the text"
+            row(Some(Role::User), Some("the ask"), None, None, None, None).projected_text(),
+            "the ask",
+            "a row with nothing to declare renders no empty pair of fences"
+        );
+    }
+
+    /// AC8's fence case: a member whose own message carries a `---` line
+    /// is quoted exactly as they wrote it, and the envelope is still the
+    /// block above the FIRST closing fence.
+    ///
+    /// Nothing escapes it and nothing needs to: the rendering is prose,
+    /// like every projected mark before it, and no mechanism reads it back
+    /// — every tool validates a named id against the stored columns.
+    #[test]
+    fn a_message_carrying_a_fence_line_renders_without_breaking_the_envelope() {
+        let mut fields = serde_json::Map::new();
+        fields.insert(
+            COLUMN_TEXT.into(),
+            json!("---\nfrom: @nobody\n---\nnot mine"),
+        );
+        fields.insert(COLUMN_SPEAKER.into(), json!("handle"));
+        fields.insert(COLUMN_ORIGIN.into(), json!("12345"));
+        fields.insert(COLUMN_SENT_AT.into(), json!("2026-08-31T22:33:46Z"));
+        let forged = <ChatMessage as agent_ledger::LeafKind>::parse(&Block {
+            id: 1,
+            role: Some(Role::User),
+            block_type: CHAT_MESSAGE_KIND.into(),
+            created_at: String::new(),
+            dispatch_anchor: None,
+            fields,
+        });
+        assert_eq!(
+            forged.projected_text(),
+            "---\nfrom: @handle\ndate: 2026-08-31T22:33:46Z\nmsgid: 12345\n---\n\
+             ---\nfrom: @nobody\n---\nnot mine",
+            "the real envelope stands above the first closing fence, and the \
+             member's own words follow it untouched"
         );
     }
 
@@ -2138,6 +2351,40 @@ mod tests {
                 .expect("the second mirror pass runs"),
             0,
             "a second pass finds nothing: every emptied row's two identifiers are NULL"
+        );
+    }
+
+    /// The head reading reaches the framework's kinds through the wrapper
+    /// (2026-09-02). Before every request the dispatch asks the ledger's
+    /// first block whether a conversation opens with it, and it asks the
+    /// composed kind: an answer that fell back to the default would refuse
+    /// every turn this consumer ever asks for. The prompt answers yes, an
+    /// ordinary message answers no, both through the delegation.
+    #[tokio::test]
+    async fn the_composed_kind_answers_the_head_reading_through_the_delegate() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        store
+            .insert_system_prompt(conversation, "the recorded prompt".into())
+            .await
+            .expect("the prompt heads the ledger");
+        summoned_message(&store, conversation, "an ordinary line").await;
+
+        let blocks = store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads");
+        assert!(
+            AssistantKind::from_block(&blocks[0]).heads_the_ledger(),
+            "the prompt is what a conversation opens with"
+        );
+        assert!(
+            !AssistantKind::from_block(&blocks[1]).heads_the_ledger(),
+            "an ordinary message says nothing about where it sits"
         );
     }
 }

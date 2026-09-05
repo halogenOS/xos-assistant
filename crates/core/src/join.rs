@@ -32,7 +32,7 @@ use agent_ledger::{
 use serde_json::{Value, json};
 
 use crate::erasure::OriginSource;
-use crate::kind::{projected_origin_mark, storable_speaker};
+use crate::kind::{Envelope, enveloped, storable_speaker};
 
 /// The stored type string of the join-notice kind.
 pub const JOIN_NOTICE_KIND: &str = "join_notice";
@@ -138,12 +138,15 @@ impl JoinNotice {
     /// all, not even a placeholder, because the fact it stated was about
     /// the person it no longer names.
     ///
-    /// A live row opens with the event's bracketed origin mark, exactly as
-    /// a live message does: the report tool's parameter IS that id, so an
-    /// unmarked join would be visible to the model and unnameable by it.
-    /// Then the platform-fact statement of the shown name, with the handle
-    /// beside it where one is stored; an absent name falls back to the
-    /// handle alone, and a joiner with neither reads as the unnamed entry.
+    /// A live row carries the same envelope a live message does (unit 55,
+    /// 2026-09-02): the joiner's handle as its author, the platform's own
+    /// send time for the service message, and the event's id — the one the
+    /// report tool and the reply tool both name it by, so a join without an
+    /// envelope would be visible to the model and unnameable by it. Under
+    /// the envelope stands the platform-fact statement of the shown name,
+    /// with the handle beside it where one is stored; an absent name falls
+    /// back to the handle alone, and a joiner with neither reads as the
+    /// unnamed entry.
     fn line(&self) -> Option<String> {
         let name = self.name.as_deref()?;
         let statement = match (name.is_empty(), self.handle.as_deref()) {
@@ -152,10 +155,15 @@ impl JoinNotice {
             (true, Some(handle)) => format!("{JOIN_NOTICE_LEAD}@{handle}"),
             (true, None) => UNNAMED_JOINER_LINE.to_owned(),
         };
-        Some(match &self.origin {
-            Some(origin) => format!("{} {statement}", projected_origin_mark(origin)),
-            None => statement,
-        })
+        Some(enveloped(
+            Envelope {
+                from: self.handle.as_deref(),
+                date: self.joined_at.as_deref(),
+                msgid: self.origin.as_deref(),
+                edited: false,
+            },
+            &statement,
+        ))
     }
 }
 
@@ -415,28 +423,42 @@ mod tests {
         assert_eq!(join.joined_at.as_deref(), Some("2026-08-29T00:00:00Z"));
     }
 
-    /// The projected line, every shape: the bracketed event id ahead of the
-    /// platform-fact statement, the handle beside the name where one
-    /// exists, the handle alone where the platform showed no name, and the
-    /// unnamed entry where it showed neither.
+    /// AC8's join half (unit 55): the same envelope a message carries —
+    /// the joiner's handle, the platform's send time, the event's id — over
+    /// the platform-fact statement, with the handle beside the name where
+    /// one exists, the handle alone where the platform showed no name, and
+    /// the unnamed entry where it showed neither.
     #[test]
     fn the_line_marks_the_event_and_falls_back_from_name_to_handle() {
         assert_eq!(
             notice("Ada Lovelace", Some("ada")).llm_text().as_deref(),
-            Some("[origin-join-1] A member joined the group: Ada Lovelace (@ada)")
+            Some(
+                "---\nfrom: @ada\ndate: 2026-08-29T00:00:00Z\nmsgid: origin-join-1\n---\n\
+                 A member joined the group: Ada Lovelace (@ada)"
+            )
         );
         assert_eq!(
             notice("Ada Lovelace", None).llm_text().as_deref(),
-            Some("[origin-join-1] A member joined the group: Ada Lovelace")
+            Some(
+                "---\ndate: 2026-08-29T00:00:00Z\nmsgid: origin-join-1\n---\n\
+                 A member joined the group: Ada Lovelace"
+            ),
+            "a joiner with no stored handle declares no author"
         );
         assert_eq!(
             notice("", Some("ada")).llm_text().as_deref(),
-            Some("[origin-join-1] A member joined the group: @ada"),
+            Some(
+                "---\nfrom: @ada\ndate: 2026-08-29T00:00:00Z\nmsgid: origin-join-1\n---\n\
+                 A member joined the group: @ada"
+            ),
             "an absent name falls back to the handle"
         );
         assert_eq!(
             notice("", None).llm_text().as_deref(),
-            Some("[origin-join-1] A member joined the group."),
+            Some(
+                "---\ndate: 2026-08-29T00:00:00Z\nmsgid: origin-join-1\n---\n\
+                 A member joined the group."
+            ),
             "neither name nor handle invents no identifier"
         );
     }
@@ -449,7 +471,10 @@ mod tests {
         assert_eq!(join.handle, None);
         assert_eq!(
             join.llm_text().as_deref(),
-            Some("[origin-join-1] A member joined the group: Ada")
+            Some(
+                "---\ndate: 2026-08-29T00:00:00Z\nmsgid: origin-join-1\n---\n\
+                 A member joined the group: Ada"
+            )
         );
     }
 

@@ -19,7 +19,7 @@
 //!
 //! The window the model READS is wider than the set it may aim at, so no
 //! wording here says otherwise: a join notice and an unsummoned bot's
-//! message are both projected, bracketed id and all, while neither is a
+//! message are both projected, envelope and all, while neither is a
 //! co-summoner. The decline therefore states what the model may react to,
 //! never what it is reading — a decline that claimed the model was not
 //! reading a line the projection just showed it would be false in two
@@ -303,7 +303,7 @@ pub const NAME: &str = "react";
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 
 /// The target parameter: the message named by the id the projection shows
-/// in brackets ahead of it.
+/// as the msgid of its envelope.
 pub const PARAMETER_MESSAGE_ID: &str = "message_id";
 
 /// The vocabulary parameter: the emoji itself. The core states the bound
@@ -337,7 +337,7 @@ pub const MARKED_RESULT: &str = "The reaction is filed. Do not react to this mes
 ///
 /// It speaks of what may be reacted to, not of what the model is reading,
 /// and the distinction is load-bearing: the projection shows a join notice
-/// and an unsummoned bot's message with their bracketed ids, so a decline
+/// and an unsummoned bot's message with their own msgids, so a decline
 /// telling the model it is not reading one of those would state a
 /// falsehood about a line right in front of it.
 pub const NOT_ASSESSED_ERROR: &str = "declined: that message is not one you may react to this \
@@ -363,7 +363,7 @@ pub const ALREADY_REPORTED_ERROR: &str = "declined: that message is already repo
 /// The missing-target decline: the call named no message id, and a
 /// reaction names its target.
 pub const NEEDS_TARGET_ERROR: &str = "declined: a reaction names its target — the id shown in \
-     brackets ahead of the message. Do not call this tool again this turn; answer from what \
+     the message's envelope as its msgid. Do not call this tool again this turn; answer from what \
      you already have.";
 
 /// The unrecorded-target refusal: the named message resolves to no
@@ -537,8 +537,8 @@ impl ToolHandler<CoreEvent> for MarkTool {
         ToolDefinition {
             name: NAME.into(),
             description: "Put one emoji reaction on a message, instead of writing a reply \
-                 that would add nothing. Name the message by its id, shown in brackets \
-                 ahead of it; it must be one of the messages that opened this turn, which \
+                 that would add nothing. Name the message by its id, shown as the msgid \
+                 of its envelope; it must be one of the messages that opened this turn, which \
                  is not every message you can see. Give the emoji you choose. React to a \
                  message at most once — a second call naming it is declined — and never \
                  react to a message you also answer in words."
@@ -548,8 +548,8 @@ impl ToolHandler<CoreEvent> for MarkTool {
                 "properties": {
                     PARAMETER_MESSAGE_ID: {
                         "type": "string",
-                        "description": "The message's id, exactly as shown in brackets \
-                             ahead of it"
+                        "description": "The message's id, exactly as shown as the msgid \
+                             of its envelope"
                     },
                     PARAMETER_EMOJI: {
                         "type": "string",
@@ -732,7 +732,7 @@ mod tests {
             !NOT_ASSESSED_ERROR.contains("reading"),
             "the decline states what may be reacted to, never what the model is reading: a \
              join notice and an unsummoned bot's message are both projected with their \
-             bracketed ids while neither is markable, so the reading claim would be false"
+             own msgids while neither is markable, so the reading claim would be false"
         );
         assert_eq!(
             ALREADY_MARKED_ERROR,
@@ -748,9 +748,9 @@ mod tests {
         );
         assert_eq!(
             NEEDS_TARGET_ERROR,
-            "declined: a reaction names its target — the id shown in brackets ahead of the \
-             message. Do not call this tool again this turn; answer from what you already \
-             have."
+            "declined: a reaction names its target — the id shown in the message's \
+             envelope as its msgid. Do not call this tool again this turn; answer from \
+             what you already have."
         );
         assert_eq!(
             UNRECORDED_TARGET_ERROR,
@@ -917,8 +917,8 @@ mod tests {
     /// third case this one refusal answers and the reason no separate
     /// own-message decline exists: her voice writes no chat rows, so an id
     /// of hers is an id outside the set, which the arbitrary-id case above
-    /// already pins. Both are projected with their bracketed
-    /// ids — the join in the system voice, the bot's line as an ordinary
+    /// already pins. Both are projected with their own
+    /// msgids — the join in the system voice, the bot's line as an ordinary
     /// user row summoning nothing since decision 0153 — and neither is a
     /// co-summoner, so both take the anti-aiming decline with no clause of
     /// their own. This is the reachable case the decline's wording is

@@ -295,7 +295,7 @@ pub const NAME: &str = "report_spam";
 pub const REQUIRED_AUTHORITY: Authority = Authority::Member;
 
 /// The one parameter: the violating record — a message, or since unit 36 a
-/// join notice — named by the id the projection shows in brackets ahead of
+/// join notice — named by the msgid the projection shows in its envelope, above
 /// it. The key keeps its shipped spelling while the descriptions carry the
 /// widened vocabulary: what the model may name is decided by the
 /// reportable resolution alone, and the definition states that decision
@@ -329,7 +329,7 @@ pub const ALREADY_REPORTED_ERROR: &str = "declined: that message is already repo
 /// The missing-target decline: the call named no message id, and a report
 /// names its target.
 pub const NEEDS_TARGET_ERROR: &str = "declined: a report names its target — the id shown \
-     in brackets ahead of the violating message. Do not call this tool again this turn; \
+     as the msgid of the violating message's envelope. Do not call this tool again this turn; \
      answer from what you already have.";
 
 /// The self-report refusal: the named message resolves to the assistant's
@@ -646,7 +646,7 @@ impl ToolHandler<CoreEvent> for ReportTool {
             description: "File a report with the group's moderation bot for a message that \
                  violates the group's pinned rules, or for a join notice whose shown name \
                  does. Name the violating message or join notice by its id, shown in \
-                 brackets ahead of it; it must be a message or join notice you are \
+                 its envelope as the msgid; it must be a message or join notice you are \
                  assessing in this turn. The report is an assessment only — the group's \
                  administrators decide. This tool is the only way to report — never write \
                  the report command into an answer yourself."
@@ -657,7 +657,7 @@ impl ToolHandler<CoreEvent> for ReportTool {
                     PARAMETER_MESSAGE_ID: {
                         "type": "string",
                         "description": "The violating message's or join notice's id, exactly \
-                             as shown in brackets ahead of it"
+                             as shown in its envelope's msgid line"
                     }
                 },
                 "required": [PARAMETER_MESSAGE_ID]
@@ -784,9 +784,9 @@ mod tests {
         );
         assert_eq!(
             NEEDS_TARGET_ERROR,
-            "declined: a report names its target — the id shown in brackets ahead of the \
-             violating message. Do not call this tool again this turn; answer from what \
-             you already have."
+            "declined: a report names its target — the id shown as the msgid of the \
+             violating message's envelope. Do not call this tool again this turn; answer \
+             from what you already have."
         );
         assert_eq!(
             SELF_REPORT_ERROR,

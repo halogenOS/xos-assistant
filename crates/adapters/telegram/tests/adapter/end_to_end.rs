@@ -58,7 +58,10 @@ async fn a_group_message_round_trips_to_a_send() {
         json!("2023-11-14T22:13:21+00:00")
     );
 
-    // The finalized answer stands in the ledger too.
+    // The sent message stands in the ledger too — the outgoing block a
+    // sending tool filed, carrying the words the chat received, disclosure
+    // line and all. Her turn's own text is private notes from unit 55 on,
+    // so what went out lives here and nowhere else.
     let deadline = std::time::Instant::now() + support::DEADLINE;
     loop {
         let blocks = fixture
@@ -67,13 +70,15 @@ async fn a_group_message_round_trips_to_a_send() {
             .await
             .expect("the ledger reads");
         if blocks.iter().any(|block| {
-            block.block_type == "text" && block.fields["content"] == json!(first_answer_to(&asked))
+            block.block_type == assistant_core::outgoing::OUTGOING_MESSAGE_KIND
+                && block.fields[assistant_core::outgoing::COLUMN_TEXT]
+                    == json!(first_answer_to(&asked))
         }) {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "timed out awaiting the finalized answer block"
+            "timed out awaiting the sent message's block"
         );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
@@ -87,6 +92,7 @@ async fn a_group_message_round_trips_to_a_send() {
     // The same person's second ask over the wire: the answer arrives bare —
     // the introduction rode the first answer and never repeats.
     let again = format!("@{} And the second question?", support::BOT_USERNAME);
+    support::await_quiet(&fixture.store).await;
     server.push_update(group_update(2, chat, 7, &again));
     let sends = server.await_recorded("sendMessage", 2).await;
     assert_eq!(sends[1].body["chat_id"], json!(chat));

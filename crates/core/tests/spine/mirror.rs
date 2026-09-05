@@ -61,10 +61,7 @@ async fn ingest_silent(fixture: &support::Fixture, message: InboundMessage) {
 async fn an_administrators_reply_deletion_nulls_exactly_the_target_row() {
     let fixture = support::start_assistant(None).await;
     let assistant = &fixture.assistant;
-    let mut replies = assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound_of(assistant, &fixture.store).await;
     let room = support::authorized_group(assistant, "room-mirror").await;
 
     let target = support::with_reply(
@@ -424,10 +421,7 @@ async fn the_mirror_inside_an_absorption_window_leaves_the_turn_untouched() {
     let hold = support::TurnHold::new();
     let fixture = support::start_assistant(Some(std::sync::Arc::clone(&hold))).await;
     let assistant = &fixture.assistant;
-    let mut replies = assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound_of(assistant, &fixture.store).await;
     let room = support::authorized_group(assistant, "room-absorb").await;
 
     support::ingest_recorded(
@@ -483,7 +477,7 @@ async fn the_mirror_inside_an_absorption_window_leaves_the_turn_untouched() {
             .script
             .turns
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
+        2,
         "one turn ran; the mirror summoned none"
     );
 }

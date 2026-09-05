@@ -35,6 +35,8 @@
 //! erasure by person and by event),
 //! projection (role alternation under erasure, and the revised message's
 //! marked line beside the version it supersedes),
+//! `previous_build` (a database an older build wrote, opened under this
+//! build's migrations and rendered against the same values recorded now),
 //! reactions (the react tool: the filed mark block, the outbound edge's
 //! second arm, the aiming and duplicate declines, the read-through that
 //! keeps a question owed behind a reaction, and both nulling paths),
@@ -64,7 +66,12 @@
 //! boundary, the floor and the direct-chat fence, and the unattended
 //! compaction), search (the web search's envelope over a scripted vendor, its
 //! guard and person bound refusing before the wire, its taught failures,
-//! and the one predicate deciding whether the tool exists), sourcing (the lookup-backed answer discipline: the literal
+//! and the one predicate deciding whether the tool exists),
+//! sending (everything a message can come to besides arriving: the refused
+//! send, the cut-short one, the turn of notes that delivers nothing, the
+//! startup sweep and the retirement, the budget's counted delivery, and
+//! the notice an old conversation is told the contract by),
+//! sourcing (the lookup-backed answer discipline: the literal
 //! addressed fact beside the summons, the silent empty turn and the
 //! model's own spoken don't-know), standing (the member-standing lookup an
 //! ordinary member reaches in a group, stating what a person's last message
@@ -102,6 +109,7 @@ mod helpful;
 mod joins;
 mod lookup_wire;
 mod mirror;
+mod previous_build;
 mod privacy_rights;
 mod projection;
 mod protection;
@@ -114,6 +122,7 @@ mod retention;
 mod retraction;
 mod runtime_facts;
 mod search;
+mod sending;
 mod sourcing;
 mod speaker;
 mod standing;

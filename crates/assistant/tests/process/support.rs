@@ -290,33 +290,50 @@ impl Drop for CompletionsServer {
     }
 }
 
-/// What one scripted completion answers: the text delta stream, or one tool
-/// call with the given name and arguments JSON.
+/// What one scripted completion answers: one tool call, or the finish that
+/// ends the turn with nothing more.
+///
+/// Every round is scripted by how many tool-voiced messages the request
+/// already carries, which is the same content-scripting the core suite's
+/// providers use, so a rerun answers a rerun identically:
+///
+/// - no tool message yet — the opening turn: the scripted tool call where a
+///   script names one, and otherwise the SEND that puts [`ANSWER`] in the
+///   chat;
+/// - one, under a tool script — the scripted call is answered, so this
+///   round sends [`ANSWER`];
+/// - anything past that — the send is answered, and the turn ends with
+///   nothing more to say.
+///
+/// The send is a tool call because from unit 55 that is the only way words
+/// reach a chat: a turn streaming its answer as content would be a turn of
+/// private notes, and nothing would ever be sent.
 fn completion_events(tool_script: Option<&(String, String)>, body: &Value) -> String {
-    if let Some((tool, arguments)) = tool_script {
-        let request = body.to_string();
-        // A request already carrying a tool-voiced message is the closing
-        // turn; anything else — the title derivation included, which never
-        // acts on tools — gets the scripted call.
-        if !request.contains("\"role\":\"tool\"") {
-            let call = serde_json::json!({
-                "choices": [{ "delta": { "tool_calls": [{
-                    "index": 0,
-                    "id": "call-1",
-                    "type": "function",
-                    "function": { "name": tool, "arguments": arguments }
-                }]}}]
-            });
-            return format!(
-                "data: {call}\n\n\
-                 data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
-                 data: [DONE]\n\n"
-            );
-        }
-    }
+    let answered = body.to_string().matches("\"role\":\"tool\"").count();
+    let call = match (tool_script, answered) {
+        (Some((tool, arguments)), 0) => Some((tool.clone(), arguments.clone())),
+        (None, 0) | (Some(_), 1) => Some((
+            assistant_core::tools::send::NAME.to_owned(),
+            serde_json::json!({ "text": ANSWER }).to_string(),
+        )),
+        _ => None,
+    };
+    let Some((tool, arguments)) = call else {
+        return "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+                data: [DONE]\n\n"
+            .to_owned();
+    };
+    let streamed = serde_json::json!({
+        "choices": [{ "delta": { "tool_calls": [{
+            "index": 0,
+            "id": format!("call-{answered}"),
+            "type": "function",
+            "function": { "name": tool, "arguments": arguments }
+        }]}}]
+    });
     format!(
-        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"{ANSWER}\"}}}}]}}\n\n\
-         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\n\
+        "data: {streamed}\n\n\
+         data: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\n\
          data: [DONE]\n\n"
     )
 }

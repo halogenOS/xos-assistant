@@ -151,6 +151,7 @@ fn reset_wiring(
             // A held turn has to have written something before it stops, or
             // there is no streaming tail for the settle to read.
             narration: hold.as_ref().map(|_| HELD_NARRATION.to_owned()),
+            announce: None,
         },
         hold,
     );
@@ -570,7 +571,17 @@ async fn the_compacted_thread_delivers_its_own_answers_and_never_the_inherited_o
         .filter(|block| Text::KINDS.contains(&block.block_type.as_str()))
         .map(|block| support::block_text(block, "content"))
         .collect();
-    assert_eq!(delivered_answer, vec![support::disclosed(CLOSING_ANSWER)]);
+    assert_eq!(
+        delivered_answer,
+        vec![CLOSING_ANSWER.to_owned()],
+        "the turn's own committed notes, bare: the disclosure line belongs \
+         to the message that was sent"
+    );
+    assert_eq!(
+        support::sent_texts(&fixture.store, source).await,
+        vec![support::disclosed(CLOSING_ANSWER)],
+        "and what the chat received carries the line"
+    );
 
     invoke(
         &fixture.assistant,
@@ -1109,7 +1120,7 @@ async fn a_channel_the_walk_re_forked_compacts_with_one_prompt_at_its_head() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_reset_that_loses_its_claim_says_nothing_and_leaves_the_winner_governing() {
     for token in [WIPE_COMMAND, COMPACT_COMMAND] {
-        let (mut fixture, mut replies) = reset_fixture().await;
+        let (fixture, mut replies) = reset_fixture().await;
         let (key, source, source_ids) = flooded_group(&fixture, &mut replies, "claim-room").await;
 
         let armed = Arc::new(AtomicBool::new(true));
@@ -1173,7 +1184,7 @@ async fn a_reset_that_loses_its_claim_says_nothing_and_leaves_the_winner_governi
 /// acknowledgment of the update means nothing would ever redeliver it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_message_queued_across_an_unattended_compact_lands_in_the_surviving_session() {
-    let (mut fixture, mut replies) = reset_fixture().await;
+    let (fixture, mut replies) = reset_fixture().await;
     let (key, source, _) = flooded_group(&fixture, &mut replies, "straddle-room").await;
 
     let (reached_tx, mut reached_rx) = tokio::sync::mpsc::unbounded_channel();

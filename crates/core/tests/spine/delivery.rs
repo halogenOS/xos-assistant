@@ -72,11 +72,7 @@ async fn projected(store: &Store, conversation_id: i64) -> Vec<(MessageRole, Str
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_send_records_a_receipt_per_message_and_shows_the_model_nothing() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = channel("dm-delivery-record");
 
     let asked = support::ingest_recorded(
@@ -91,11 +87,28 @@ async fn one_send_records_a_receipt_per_message_and_shows_the_model_nothing() {
     .await;
     let answer = recv_reply(&mut replies).await;
     assert_eq!(answer.kind, ReplyKind::Answer);
+    // The snapshot is taken once the turn has settled: its own notes land
+    // in the closing round the delivery report re-drives, and this case is
+    // about what the RECEIPTS add, not about that.
+    support::settle(&fixture.store, asked.conversation_id, "the sending turn", 4).await;
     let before = projected(&fixture.store, asked.conversation_id).await;
 
     support::report_delivery(&fixture.assistant, answer.delivery, &["31", "32"]).await;
 
-    let rows = receipts(&fixture.store, asked.conversation_id).await;
+    // The suite's own stand-in adapter reported this send first, under a
+    // minted id of its own (unit 55): a send is a pending call and
+    // something has to settle it, or the turn would never end. Its row is
+    // filtered here, so this case still reads exactly the chunked report
+    // it makes.
+    let rows: Vec<_> = receipts(&fixture.store, asked.conversation_id)
+        .await
+        .into_iter()
+        .filter(|row| {
+            !row.origin
+                .as_deref()
+                .is_some_and(|id| id.starts_with("hers-"))
+        })
+        .collect();
     assert_eq!(rows.len(), 2, "one receipt per delivered platform message");
     assert_eq!(
         rows.iter()
@@ -108,18 +121,20 @@ async fn one_send_records_a_receipt_per_message_and_shows_the_model_nothing() {
         rows.iter().all(|row| row.delivery.as_deref() == Some("31")),
         "every message of one send carries the send's first id as the key"
     );
-    let stored_answer = fixture
+    // The block a reply resolves to is the OUTGOING message she sent, not
+    // the turn's own committed notes (unit 55): the receipt names the words
+    // the chat received.
+    let sent = fixture
         .store
         .list_blocks(asked.conversation_id)
         .await
         .expect("the ledger reads")
         .into_iter()
         .rev()
-        .find(|block| block.role == Some(Role::Assistant))
-        .expect("the answer is stored");
+        .find(|block| block.block_type == assistant_core::outgoing::OUTGOING_MESSAGE_KIND)
+        .expect("the sent message is stored");
     assert!(
-        rows.iter()
-            .all(|row| row.answer_block == Some(stored_answer.id)),
+        rows.iter().all(|row| row.answer_block == Some(sent.id)),
         "a reply to any chunk resolves the one block she said it as"
     );
 
@@ -148,11 +163,7 @@ async fn one_send_records_a_receipt_per_message_and_shows_the_model_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_receipt_at_the_tail_buries_no_standing_debt() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let mut events = fixture.bus.subscribe();
     let key = support::authorized_group(&fixture.assistant, "room-delivery-debt").await;
 

@@ -190,11 +190,7 @@ async fn a_swept_serving_channel_answers_the_next_message() {
     support::age_receipts(&store, PAST_THE_SPAN).await;
 
     let restarted = process_with_retention(store.clone()).await;
-    let mut replies = restarted
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&restarted).await;
     await_swept(&store, opened.conversation_id, "the quiet channel").await;
     assert_eq!(
         mapped_conversation(&store, &room).await,
@@ -264,11 +260,7 @@ async fn a_swept_serving_channel_answers_the_next_message() {
 async fn an_expired_ancestor_is_swept_and_its_thread_serves_on() {
     let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
     let first = support::start_assistant_on(store.clone(), None).await;
-    let mut replies = first
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&first).await;
     let room = support::authorized_group(&first.assistant, "room-compacted-quiet").await;
 
     // The answer that will sit BELOW the cut, then enough traffic that the
@@ -348,11 +340,7 @@ async fn an_expired_ancestor_is_swept_and_its_thread_serves_on() {
     support::age_conversation_days(&store, source, 91).await;
 
     let restarted = process_with_retention(store.clone()).await;
-    let mut replies = restarted
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&restarted).await;
     await_swept(&store, source, "the compacted ancestor").await;
 
     assert!(

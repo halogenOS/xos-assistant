@@ -1,28 +1,40 @@
 //! The composing edge: a subscription that yields one adapter's composing
-//! transitions — the assistant began writing an answer in a channel, it
+//! transitions — the assistant began preparing a message for a channel, it
 //! stopped — derived from the turn lifecycle the framework broadcasts.
 //!
-//! The begin is the framework's `responding` stream status (unit 22,
-//! 2026-08-24): raised once per stream at the first non-empty text delta
-//! — the moment real user-visible text starts flowing — and never during
-//! thinking, never at a text block's open, never for a stream that
-//! finalizes empty. So the cue lights exactly when a reply is actually
-//! coming: a turn that says nothing raises no cue at all, and the
-//! pre-text thinking window stays dark. The stop is the stream's terminal
-//! — its done, its error, or its close, the same terminal set the stream
-//! observer keys on — so the completion that committed the streamed text
-//! and the failure that killed it clear the signal through one reading.
-//! Two derivations were rejected with the unit: the begin from the
-//! conversation state, because that state cannot tell thinking from
-//! flowing text — the one distinction the cue exists for — and the stop
-//! from the conversation state's `work_due`, because the scheduler drops
-//! `work_due` the moment the owed turn is dispatched, which is while the
-//! text still streams; a stop keyed on it would end the cue the instant
-//! it lit. A turn whose text flows in several streams around its tool
-//! calls raises one begin/stop pair per text-bearing stream: the cue is
-//! on exactly while a reply's text is on the wire.
-//! A deterministic reply never composes by construction: a command-stamped
-//! or unaddressed message opens no debt, so no turn is ever owed for it.
+//! # The begin is a send starting (unit 55, 2026-09-02)
+//!
+//! The cue lights on the framework's `starting_tool_call` status when the
+//! tool that started is one of the two SENDING tools. That status is raised
+//! once per recorded call, carrying the tool's name, at the moment the
+//! reader records the call's start — which is as early as the wire allows,
+//! and that is the honest bound: on the shipped wires the arguments have
+//! already arrived by then, so the cue precedes the send by little.
+//!
+//! It used to light on `responding`, the first non-empty text delta, and
+//! that reading died with the relay: the model's text is private notes now,
+//! so text flowing says nothing about whether anyone will hear from the
+//! assistant. A turn that writes pages and sends nothing must leave the
+//! chat quiet, and a turn that writes nothing and sends one message must
+//! not.
+//!
+//! `RUNNING_TOOLS` keeps its own meaning — one signal for the whole turn,
+//! execution began — and is not read here: it cannot say WHICH tool, and a
+//! lookup running is not a message coming.
+//!
+//! # The stops
+//!
+//! Three carriers, each for a different ending:
+//!
+//! - the adapter stops the chat's own indicator the moment it takes a
+//!   message to send, which is the ordinary end: the message IS the visible
+//!   end of the composing it announced;
+//! - a send that FAILED stops the signal here, through the failure channel
+//!   the receipt door writes to ([`SendStops`]). Nothing reached the chat,
+//!   so nothing will end the indicator on the adapter's side, and the model
+//!   may well spend several more rounds before the turn ends;
+//! - the stream's terminal — its done, its error, or its close — stops it
+//!   as it always did, and the lifetime sweeper below stays the backstop.
 //!
 //! # A presence cue, stated honestly
 //!
@@ -33,12 +45,13 @@
 //! channel is stopped and the set cleared; a stop lost inside the lag
 //! stays stopped, the failure direction a presence cue wants. The stop is
 //! still delivered at most once end-to-end, and a turn can end without
-//! any further state event reaching this edge, so no open signal may depend on a stop arriving: every begin
-//! carries a deadline of [`COMPOSING_SIGNAL_LIFETIME`], and a signal
-//! still open at its deadline is stopped on the edge's own clock (refined
-//! 2026-08-23, after a lost stop left an adapter refreshing an indicator
-//! on an idle conversation). The expiry also clears the edge's own entry,
-//! so a stale open signal never swallows the next turn's begin.
+//! any further state event reaching this edge, so no open signal may depend
+//! on a stop arriving: every begin carries a deadline of
+//! [`COMPOSING_SIGNAL_LIFETIME`], and a signal still open at its deadline
+//! is stopped on the edge's own clock (refined 2026-08-23, after a lost
+//! stop left an adapter refreshing an indicator on an idle conversation).
+//! The expiry also clears the edge's own entry, so a stale open signal
+//! never swallows the next send's begin.
 //! The signal stays keyed per conversation, which suffices: a
 //! conversation's turns run serially, so one open signal per conversation
 //! is one open signal per turn, and the deadline bounds any missed clear.
@@ -51,6 +64,7 @@ use std::time::Duration;
 
 use agent_ledger::event::stream_status;
 use agent_ledger::{CoreEvent, RuntimeContext};
+use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -58,6 +72,39 @@ use tokio::time::Instant;
 use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{ChannelKey, ComposingState, ComposingUpdate};
+
+/// Where the receipt door tells the composing edges that a send FAILED, by
+/// the conversation it failed in (unit 55, 2026-09-02).
+///
+/// A channel of its own and not an event on the framework's bus: the bus
+/// carries the runtime's own vocabulary, and a consumer's fact about a
+/// consumer's send is not one of its variants. Broadcast, because every
+/// adapter runs an edge of its own and each must hear it; lossy in the same
+/// direction everything else here is, since a dropped stop is caught by the
+/// lifetime sweeper.
+pub(crate) type SendStops = broadcast::Sender<i64>;
+
+/// How many failed sends the stop channel holds for a slow edge. Small on
+/// purpose: an edge that fell this far behind is one whose signals the
+/// lifetime sweeper will end anyway, and a deep buffer would only delay a
+/// cue nobody is watching.
+const STOP_BACKLOG: usize = 64;
+
+/// The stop channel every composing edge of one assembly shares.
+pub(crate) fn stops() -> SendStops {
+    broadcast::channel(STOP_BACKLOG).0
+}
+
+/// Whether one `starting_tool_call` status names a tool that is about to
+/// put a message in the chat — the cue's whole begin condition, read
+/// against the sending pair's own enumeration so this edge and the contract
+/// notice can never disagree about which tools speak.
+///
+/// The subtitle carries the name the model called the tool by, verbatim
+/// from the provider, so a name no registry holds simply matches neither.
+fn a_send_is_starting(subtitle: Option<&str>) -> bool {
+    subtitle.is_some_and(crate::tools::sending::is_sending_tool)
+}
 
 /// The longest one composing signal may hold open. The stop transition is
 /// delivered at most once — a lost final state event, an idle conversation
@@ -85,8 +132,10 @@ struct OpenSignal {
 pub(crate) fn spawn_edge(
     ctx: RuntimeContext<AssistantKind, CoreEvent>,
     adapter: String,
+    stops: &SendStops,
 ) -> mpsc::UnboundedReceiver<ComposingUpdate> {
     let mut events = ctx.bus().subscribe();
+    let mut failed_sends = stops.subscribe();
     let (updates, receiver) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         // The channels currently composing, by conversation: the key is
@@ -105,41 +154,44 @@ pub(crate) fn spawn_edge(
                 // signal instead of never — and clearing the entry lets
                 // the next genuine begin through.
                 () = earliest(deadline) => {
-                    let now = Instant::now();
-                    let due: Vec<i64> = open
-                        .iter()
-                        .filter(|(_, signal)| signal.expires_at <= now)
-                        .map(|(&conversation_id, _)| conversation_id)
-                        .collect();
-                    for conversation_id in due {
-                        if let Some(signal) = open.remove(&conversation_id) {
-                            tracing::warn!(
-                                conversation_id,
-                                "a composing signal reached its lifetime without a stop; stopped"
-                            );
-                            let _ = updates.send(ComposingUpdate {
-                                channel: signal.channel,
-                                state: ComposingState::Stopped,
-                            });
-                        }
+                    stop_expired(&mut open, &updates);
+                    continue;
+                }
+                // A send that failed: nothing reached the chat, so no
+                // adapter will end the indicator this cue lit. The channel
+                // is lossy like every other carrier here, and its loss is
+                // caught by the deadline above.
+                failed = failed_sends.recv() => {
+                    match failed {
+                        Ok(conversation_id) => stop_one(&mut open, &updates, conversation_id),
+                        Err(RecvError::Lagged(missed)) => tracing::warn!(
+                            missed,
+                            "the composing edge missed failed sends; their signals expire on \
+                             the edge's own clock"
+                        ),
+                        // The assembly outlives its edges, so a closed
+                        // channel means the assembly is gone and the
+                        // receiver below is on its way out too.
+                        Err(RecvError::Closed) => break,
                     }
                     continue;
                 }
                 event = events.recv() => event,
             };
             match event {
-                // The begin: real user-visible text started flowing — the
-                // framework raises this once per stream at its first
-                // non-empty text delta, never for thinking and never for a
-                // stream that finalizes empty, so a turn that says nothing
-                // lights no cue. The dedup keeps a repeated status (a
-                // re-begin after the expiry aside) from repeating the
-                // transition.
+                // The begin: a send is starting — the framework raises this
+                // once per recorded call, carrying the tool's name, when
+                // the reader records the call's start. A call of any other
+                // tool, and every other status, lights nothing: a lookup
+                // running is not a message coming. The dedup keeps a
+                // second send in one turn from repeating the transition.
                 Ok(CoreEvent::StreamStatus {
                     conversation_id,
                     label,
-                    ..
-                }) if label == stream_status::RESPONDING => {
+                    subtitle,
+                }) if label == stream_status::STARTING_TOOL_CALL
+                    && a_send_is_starting(subtitle.as_deref()) =>
+                {
                     if open.contains_key(&conversation_id) {
                         continue;
                     }
@@ -177,14 +229,7 @@ pub(crate) fn spawn_edge(
                     | CoreEvent::StreamClosed {
                         conversation_id, ..
                     },
-                ) => {
-                    if let Some(signal) = open.remove(&conversation_id) {
-                        let _ = updates.send(ComposingUpdate {
-                            channel: signal.channel,
-                            state: ComposingState::Stopped,
-                        });
-                    }
-                }
+                ) => stop_one(&mut open, &updates, conversation_id),
                 Ok(_) => {}
                 // The lag answer, mirroring the stream observer: stop
                 // everything open. A still-running turn loses its cue for
@@ -205,6 +250,43 @@ pub(crate) fn spawn_edge(
         }
     });
     receiver
+}
+
+/// Stop one conversation's open signal, if it has one. A conversation with
+/// nothing open has nothing to stop, which is what keeps the transition
+/// delivered at most once.
+fn stop_one(
+    open: &mut HashMap<i64, OpenSignal>,
+    updates: &mpsc::UnboundedSender<ComposingUpdate>,
+    conversation_id: i64,
+) {
+    if let Some(signal) = open.remove(&conversation_id) {
+        let _ = updates.send(ComposingUpdate {
+            channel: signal.channel,
+            state: ComposingState::Stopped,
+        });
+    }
+}
+
+/// Stop every signal whose lifetime ran out, clearing each entry so the next
+/// genuine begin is not swallowed by a stale one.
+fn stop_expired(
+    open: &mut HashMap<i64, OpenSignal>,
+    updates: &mpsc::UnboundedSender<ComposingUpdate>,
+) {
+    let now = Instant::now();
+    let due: Vec<i64> = open
+        .iter()
+        .filter(|(_, signal)| signal.expires_at <= now)
+        .map(|(&conversation_id, _)| conversation_id)
+        .collect();
+    for conversation_id in due {
+        tracing::warn!(
+            conversation_id,
+            "a composing signal reached its lifetime without a stop; stopped"
+        );
+        stop_one(open, updates, conversation_id);
+    }
 }
 
 /// Resolves at the earliest lifetime deadline among the open signals, and
@@ -291,10 +373,19 @@ mod tests {
         }
     }
 
-    /// The framework's `responding` stream status for one conversation —
-    /// the begin the edge keys on.
-    fn responding_event(conversation_id: i64) -> CoreEvent {
-        status_event(conversation_id, stream_status::RESPONDING)
+    /// The framework's call-start status naming a sending tool — the begin
+    /// the edge keys on.
+    fn sending_event(conversation_id: i64) -> CoreEvent {
+        named_call_event(conversation_id, crate::tools::send::NAME)
+    }
+
+    /// The same status naming whatever tool the caller says.
+    fn named_call_event(conversation_id: i64, tool: &str) -> CoreEvent {
+        CoreEvent::StreamStatus {
+            conversation_id,
+            label: stream_status::STARTING_TOOL_CALL.into(),
+            subtitle: Some(tool.to_owned()),
+        }
     }
 
     fn status_event(conversation_id: i64, label: &str) -> CoreEvent {
@@ -316,19 +407,22 @@ mod tests {
         }
     }
 
-    /// The whole shape in one pass (AC7): real text begins the signal, a
-    /// repeated status does not repeat it, and the stream's terminal stops
-    /// it — exactly one transition each way.
+    /// The whole shape in one pass (AC12): a send starting begins the
+    /// signal, a second one does not repeat it, and the stream's terminal
+    /// stops it — exactly one transition each way.
     #[tokio::test]
-    async fn real_text_begins_the_cue_and_the_streams_terminal_stops_it() {
+    async fn a_starting_send_begins_the_cue_and_the_streams_terminal_stops_it() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
         let (conversation, key) = mapped_conversation(&store, "quiet", "dm-compose").await;
-        let mut updates = spawn_edge(ctx.clone(), "quiet".into());
+        let stops = stops();
+        let mut updates = spawn_edge(ctx.clone(), "quiet".into(), &stops);
 
-        ctx.bus().emit(responding_event(conversation));
-        // A repeated status: the dedup keeps it from repeating the begin.
-        ctx.bus().emit(responding_event(conversation));
+        ctx.bus().emit(sending_event(conversation));
+        // A second send in one turn: the dedup keeps it from repeating the
+        // begin.
+        ctx.bus()
+            .emit(named_call_event(conversation, crate::tools::reply::NAME));
         ctx.bus().emit(done_event(conversation));
 
         let begun = updates.recv().await.expect("the edge yields the begin");
@@ -343,23 +437,28 @@ mod tests {
         );
     }
 
-    /// The dark windows (AC7): the pre-text turn states — the owed turn,
-    /// the thinking window, the tool window — and every non-`responding`
-    /// stream status raise no cue, and a whole turn that says nothing (no
-    /// `responding` ever fires) yields no transition at all. Proven by the
-    /// ordered channel: the first update is the marker conversation's
-    /// begin, emitted after all of them.
+    /// The dark windows (AC12): every turn state and every other stream
+    /// status raise no cue — the owed turn, the thinking window, the tool
+    /// window, the running-tools signal, and A TEXT DELTA, which is the one
+    /// this unit took the cue away from: the model's text reaches nobody,
+    /// so text flowing says nothing about whether the chat will hear from
+    /// the assistant. A call of another tool lights nothing either: a
+    /// lookup running is not a message coming. Proven by the ordered
+    /// channel: the first update is the marker conversation's begin,
+    /// emitted after all of them.
     #[tokio::test]
-    async fn pre_text_windows_and_a_turn_that_says_nothing_raise_no_cue() {
+    async fn a_text_delta_and_every_other_window_raise_no_cue() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
         let (silent, _) = mapped_conversation(&store, "quiet", "dm-silent").await;
         let (marker, marker_key) = mapped_conversation(&store, "quiet", "dm-marker").await;
-        let mut updates = spawn_edge(ctx.clone(), "quiet".into());
+        let stops = stops();
+        let mut updates = spawn_edge(ctx.clone(), "quiet".into(), &stops);
 
-        // The silent turn's whole lifecycle: owed and thinking, the tool
-        // window, the pre-text statuses, then the end — real text never
-        // flowed, so no `responding` ever fires and no cue may light.
+        // The silent turn's whole lifecycle: owed and thinking, the
+        // pre-text statuses, a text delta, a lookup's own call start, the
+        // tool window, then the end — no sending tool ever started, so no
+        // cue may light.
         ctx.bus().emit(state_event(
             silent,
             true,
@@ -375,18 +474,26 @@ mod tests {
             false,
             Some(agent_ledger::Awaiting::System),
         ));
+        // The text delta: it lit the cue before unit 55 and lights nothing
+        // now.
+        ctx.bus()
+            .emit(status_event(silent, stream_status::RESPONDING));
+        // Another tool's call start: named, and not a sending tool.
+        ctx.bus()
+            .emit(named_call_event(silent, crate::tools::mark::NAME));
         ctx.bus()
             .emit(status_event(silent, stream_status::RUNNING_TOOLS));
         ctx.bus().emit(status_event(silent, ""));
         ctx.bus().emit(state_event(silent, false, false, None));
         ctx.bus().emit(done_event(silent));
 
-        ctx.bus().emit(responding_event(marker));
+        ctx.bus().emit(sending_event(marker));
 
         let first = updates.recv().await.expect("the marker's begin arrives");
         assert_eq!(
             first.channel, marker_key,
-            "no pre-text window and no silent turn may signal ahead of the marker"
+            "no window, no text delta and no other tool's call may signal ahead of \
+             the marker"
         );
         assert_eq!(first.state, ComposingState::Composing);
     }
@@ -405,9 +512,10 @@ mod tests {
         let ctx = quiet_ctx(store.clone());
         let (conversation, key) = mapped_conversation(&store, "quiet", "dm-mid-turn").await;
         let (marker, marker_key) = mapped_conversation(&store, "quiet", "dm-mid-marker").await;
-        let mut updates = spawn_edge(ctx.clone(), "quiet".into());
+        let stops = stops();
+        let mut updates = spawn_edge(ctx.clone(), "quiet".into(), &stops);
 
-        ctx.bus().emit(responding_event(conversation));
+        ctx.bus().emit(sending_event(conversation));
         // The dispatched turn's real mid-stream state — `work_due` already
         // false while the text flows — and a tool window behind it: the
         // stream is still open, so the cue holds.
@@ -419,7 +527,7 @@ mod tests {
             false,
             Some(agent_ledger::Awaiting::System),
         ));
-        ctx.bus().emit(responding_event(marker));
+        ctx.bus().emit(sending_event(marker));
         ctx.bus().emit(done_event(conversation));
 
         let begun = updates.recv().await.expect("the begin arrives");
@@ -439,7 +547,7 @@ mod tests {
 
     /// A failed stream stops the open cue through its error terminal — the
     /// failure ending clears the signal through the same reading as the
-    /// completion. A foreign adapter's `responding` is none of this edge's
+    /// completion. A foreign adapter's own send is none of this edge's
     /// business: the marker proves it produced nothing.
     #[tokio::test]
     async fn a_stream_error_stops_the_cue_and_foreign_conversations_yield_nothing() {
@@ -448,17 +556,18 @@ mod tests {
         let (failing, failing_key) = mapped_conversation(&store, "quiet", "dm-failing").await;
         let (foreign, _) = mapped_conversation(&store, "elsewhere", "dm-foreign").await;
         let (marker, marker_key) = mapped_conversation(&store, "quiet", "dm-error-marker").await;
-        let mut updates = spawn_edge(ctx.clone(), "quiet".into());
+        let stops = stops();
+        let mut updates = spawn_edge(ctx.clone(), "quiet".into(), &stops);
 
-        ctx.bus().emit(responding_event(failing));
-        ctx.bus().emit(responding_event(foreign));
-        // The failure: the turn dies after its first text.
+        ctx.bus().emit(sending_event(failing));
+        ctx.bus().emit(sending_event(foreign));
+        // The failure: the turn dies after its first send.
         ctx.bus().emit(CoreEvent::StreamError {
             conversation_id: failing,
             error: "the scripted stream failure".into(),
             generation: None,
         });
-        ctx.bus().emit(responding_event(marker));
+        ctx.bus().emit(sending_event(marker));
 
         let begun = updates.recv().await.expect("the begin arrives");
         assert_eq!(begun.channel, failing_key);
@@ -473,6 +582,49 @@ mod tests {
         assert_eq!(third.channel, marker_key);
     }
 
+    /// AC12's second stop: a send that FAILED ends the cue, through the
+    /// channel the receipt door writes to.
+    ///
+    /// It is the carrier that has to exist. The adapter stops the chat's
+    /// own indicator when it takes a message to send, so a message that
+    /// reached the platform ends the cue there; a send that reached nobody
+    /// ends nothing on that side, and the model may spend several more
+    /// rounds before the turn's terminal arrives. Another conversation's
+    /// failure stops nothing here — the stop is keyed on the conversation
+    /// that failed.
+    #[tokio::test]
+    async fn a_failed_send_stops_the_cue() {
+        let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
+        let ctx = quiet_ctx(store.clone());
+        let (conversation, key) = mapped_conversation(&store, "quiet", "dm-failed-send").await;
+        let (other, _) = mapped_conversation(&store, "quiet", "dm-other-send").await;
+        let stops = stops();
+        let mut updates = spawn_edge(ctx.clone(), "quiet".into(), &stops);
+
+        ctx.bus().emit(sending_event(conversation));
+        let begun = updates.recv().await.expect("the begin arrives");
+        assert_eq!(begun.channel, key);
+        assert_eq!(begun.state, ComposingState::Composing);
+
+        // Somebody else's failure first: it must not end this signal.
+        stops.send(other).expect("the edge is listening");
+        stops.send(conversation).expect("the edge is listening");
+
+        let stopped = tokio::time::timeout(std::time::Duration::from_secs(10), updates.recv())
+            .await
+            .expect("the failed send's stop arrives before the deadline")
+            .expect("the edge outlives the test");
+        assert_eq!(
+            stopped.channel, key,
+            "another conversation's failed send stops nothing here"
+        );
+        assert_eq!(stopped.state, ComposingState::Stopped);
+        assert!(
+            updates.try_recv().is_err(),
+            "one stop, and nothing for the conversation that had no open signal"
+        );
+    }
+
     /// The lag answer: every open signal is stopped, so a dropped stop
     /// event cannot leave an adapter refreshing an indicator forever. The
     /// flood works exactly like the outbound edge's lag test: the
@@ -483,9 +635,10 @@ mod tests {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
         let (conversation, key) = mapped_conversation(&store, "quiet", "dm-lag").await;
-        let mut updates = spawn_edge(ctx.clone(), "quiet".into());
+        let stops = stops();
+        let mut updates = spawn_edge(ctx.clone(), "quiet".into(), &stops);
 
-        ctx.bus().emit(responding_event(conversation));
+        ctx.bus().emit(sending_event(conversation));
         let begun = updates.recv().await.expect("the begin arrives");
         assert_eq!(begun.state, ComposingState::Composing);
 
@@ -508,7 +661,7 @@ mod tests {
     /// a conversation that then idles — and the stop still arrives, on the
     /// edge's own clock, inside a bounded await. The clock is paused after
     /// the begin, so the five-minute deadline elapses virtually and the
-    /// bound is proven, not waited out. The next turn's `responding` then
+    /// bound is proven, not waited out. The next turn's own send then
     /// re-begins the signal: the expiry cleared the edge's entry instead
     /// of swallowing the begin.
     #[tokio::test]
@@ -516,9 +669,10 @@ mod tests {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
         let (conversation, key) = mapped_conversation(&store, "quiet", "dm-lost-stop").await;
-        let mut updates = spawn_edge(ctx.clone(), "quiet".into());
+        let stops = stops();
+        let mut updates = spawn_edge(ctx.clone(), "quiet".into(), &stops);
 
-        ctx.bus().emit(responding_event(conversation));
+        ctx.bus().emit(sending_event(conversation));
         let begun = updates.recv().await.expect("the begin arrives");
         assert_eq!(begun.state, ComposingState::Composing);
 
@@ -537,10 +691,10 @@ mod tests {
         assert_eq!(stopped.channel, key);
         assert_eq!(stopped.state, ComposingState::Stopped);
 
-        // The expiry cleared the edge's entry: the next turn's real text
+        // The expiry cleared the edge's entry: the next turn's own send
         // re-begins the signal instead of being swallowed by a stale open
         // entry.
-        ctx.bus().emit(responding_event(conversation));
+        ctx.bus().emit(sending_event(conversation));
         let rearmed = updates.recv().await.expect("the re-begin arrives");
         assert_eq!(rearmed.channel, key);
         assert_eq!(rearmed.state, ComposingState::Composing);

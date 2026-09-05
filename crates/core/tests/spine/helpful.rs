@@ -39,11 +39,7 @@ fn message_rows(blocks: &[agent_ledger::Block]) -> Vec<&agent_ledger::Block> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unaddressed_group_question_is_answered_with_the_line() {
     let fixture = helpful_fixture(assistant_core::ProtectionConfig::default()).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-helpful").await;
 
     let receipt = support::ingest_recorded(
@@ -84,11 +80,7 @@ async fn a_silent_turn_speaks_nothing_and_spends_no_window_slot() {
     // One principal answer per window: the whole test rides on which turns
     // consume it.
     let fixture = helpful_fixture(support::budgets(Some((1, 600)), None)).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-silent").await;
 
     // The first message draws the scripted silence: the turn runs, ends
@@ -136,7 +128,12 @@ async fn a_silent_turn_speaks_nothing_and_spends_no_window_slot() {
     // delegate, so the model reads its own silence back.
     {
         let seen = fixture.script.seen.lock().unwrap();
-        assert_eq!(seen.len(), 2, "two turns ran");
+        assert_eq!(
+            seen.len(),
+            3,
+            "two turns ran: the silent one, which takes a single round \
+             because it sends nothing, and the spoken one, which takes two"
+        );
         assert!(
             seen[1].iter().any(|message| carries(message, SILENT_CUE)),
             "the first question still projects to the second turn"
@@ -175,8 +172,9 @@ async fn a_silent_turn_speaks_nothing_and_spends_no_window_slot() {
             .script
             .turns
             .load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "the refused debt opened no third turn"
+        3,
+        "the refused debt opened no further turn: the count still stands at \
+         the silent turn's one round and the spoken turn's two"
     );
 }
 
@@ -188,11 +186,7 @@ async fn a_silent_turn_speaks_nothing_and_spends_no_window_slot() {
 async fn the_cue_stays_dark_for_a_silent_turn_and_lights_for_a_spoken_one() {
     let fixture = helpful_fixture(assistant_core::ProtectionConfig::default()).await;
     let mut composing = fixture.assistant.composing(support::ADAPTER);
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-cue").await;
 
     // The silent turn runs to its committed empty answer first, so every
@@ -246,11 +240,7 @@ async fn the_cue_stays_dark_for_a_silent_turn_and_lights_for_a_spoken_one() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rate_limited_members_message_opens_no_turn() {
     let fixture = helpful_fixture(support::budgets(Some((1, 600)), None)).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-limited").await;
 
     let receipt = support::ingest_recorded(
@@ -286,8 +276,9 @@ async fn a_rate_limited_members_message_opens_no_turn() {
             .script
             .turns
             .load(std::sync::atomic::Ordering::SeqCst),
-        1,
-        "the rate-limited message cost zero model calls"
+        2,
+        "the rate-limited message cost zero model calls: the count is the \
+         admitted turn's own two rounds and nothing more"
     );
 }
 
@@ -297,11 +288,7 @@ async fn a_rate_limited_members_message_opens_no_turn() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_answer_with_real_text_is_never_swallowed() {
     let fixture = helpful_fixture(assistant_core::ProtectionConfig::default()).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-prose").await;
 
     let text = "when do you stay silent instead of answering?";
@@ -329,6 +316,7 @@ async fn an_absorbed_question_and_the_intervening_answer_reach_the_model() {
             tool: wiki::NAME.into(),
             input: r#"{"page":"Home"}"#.into(),
             narration: None,
+            announce: None,
         },
         Some(hold.clone()),
     );
@@ -356,11 +344,7 @@ async fn an_absorbed_question_and_the_intervening_answer_reach_the_model() {
         },
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-absorbed-helpful").await;
 
     // The opening question summons the tool turn, held open before its
@@ -433,11 +417,7 @@ async fn a_revision_summons_answers_and_spends_a_budget_slot() {
     // revision takes the second, and a third message meets the spent
     // window.
     let fixture = helpful_fixture(support::budgets(Some((2, 600)), None)).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-revision-budget").await;
 
     let asked = support::with_origin(
@@ -462,10 +442,7 @@ async fn a_revision_summons_answers_and_spends_a_budget_slot() {
     support::ingest_recorded(&fixture.assistant, support::revising(corrected, "ask-1")).await;
     assert_eq!(
         recv_reply(&mut replies).await.text,
-        support::answer_to(&format!(
-            "{marker} what is the release cadence?",
-            marker = assistant_core::kind::EDITED_MARKER,
-        )),
+        support::answer_to("what is the release cadence?"),
         "the revision draws its own answer, off the version the person now means"
     );
     support::settle(&fixture.store, conversation, "the revision's turn", 6).await;
@@ -514,11 +491,7 @@ async fn a_revision_arriving_mid_turn_is_absorbed_like_any_message() {
         AnsweringMode::Helpful,
     )
     .await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let room = support::authorized_group(&fixture.assistant, "room-revision-midturn").await;
 
     let asked = support::with_origin(
@@ -581,13 +554,15 @@ async fn a_revision_arriving_mid_turn_is_absorbed_like_any_message() {
         "the superseded version keeps its line: {later:?}"
     );
     assert!(
-        later.iter().any(|message| carries(
-            message,
-            &format!(
-                "{marker} the second wording",
-                marker = assistant_core::kind::EDITED_MARKER
-            )
-        )),
-        "the later version reaches the model marked: {later:?}"
+        later
+            .iter()
+            .any(|message| carries(message, "the second wording")),
+        "the later version reaches the model: {later:?}"
+    );
+    assert!(
+        later
+            .iter()
+            .any(|message| carries(message, assistant_core::kind::ENVELOPE_EDITED)),
+        "and it reaches the model marked as edited, in its envelope: {later:?}"
     );
 }

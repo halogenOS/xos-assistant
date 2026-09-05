@@ -195,6 +195,7 @@ async fn stage_two_principals(fixture: &support::Fixture) -> Staged {
 /// AC3, block by block. Two principals share a group conversation and hold a
 /// direct conversation each; erasing one must reach exactly that principal's
 /// data — prose included — and nothing else's.
+#[allow(clippy::too_many_lines)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn erasing_one_principal_reaches_its_prose_and_nothing_else() {
     let fixture = support::start_assistant(None).await;
@@ -215,6 +216,15 @@ async fn erasing_one_principal_reaches_its_prose_and_nothing_else() {
         .iter()
         .map(|b| b.id)
         .collect();
+    // AC14 (unit 55): the messages the assistant SENT into the group are her
+    // words, not the erased person's, so the erasure must leave every one of
+    // them standing.
+    let sent_before = support::sent_texts(store, conv_group).await;
+    assert_eq!(
+        sent_before.len(),
+        2,
+        "non-vacuity: the group holds the two messages she sent into it"
+    );
     assert_eq!(stored_principals(store).await, vec!["A", "B"]);
 
     // The one call under test.
@@ -273,6 +283,12 @@ async fn erasing_one_principal_reaches_its_prose_and_nothing_else() {
         principal_b,
     )
     .await;
+    assert_eq!(
+        support::sent_texts(store, conv_group).await,
+        sent_before,
+        "the messages she sent into the group are hers: the erasure reaches \
+         the person's words and leaves every one of these standing"
+    );
 
     // A principal id matching nothing reports the not-found outcome — the
     // never-existed case and the second call after a completed erasure alike

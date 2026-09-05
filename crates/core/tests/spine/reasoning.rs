@@ -10,10 +10,9 @@
 //! think-tag, the send delivers the prose behind it alone, while the ledger
 //! keeps what the model wrote.
 
-use agent_ledger::{Role, Store};
+use agent_ledger::Store;
 use assistant_core::schema::store_config;
 use assistant_core::{ChannelKind, ProtectionConfig, ReasoningLevel};
-use serde_json::json;
 
 use crate::support;
 use crate::support::{channel, inbound, recv_reply};
@@ -52,11 +51,7 @@ async fn start_assistant_reasoning(level: ReasoningLevel) -> support::Fixture {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_created_conversation_carries_the_configured_reasoning_level() {
     let fixture = start_assistant_reasoning(ReasoningLevel::Medium).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
 
     let dm = channel("reasoning-dm");
     support::ingest_recorded(
@@ -100,8 +95,15 @@ async fn every_created_conversation_carries_the_configured_reasoning_level() {
     let reasonings = fixture.script.reasonings.lock().unwrap().clone();
     assert_eq!(
         reasonings,
-        vec![Some(ReasoningLevel::Medium), Some(ReasoningLevel::Medium)],
-        "every turn's provider request carried the configured level"
+        vec![
+            Some(ReasoningLevel::Medium),
+            Some(ReasoningLevel::Medium),
+            Some(ReasoningLevel::Medium),
+            Some(ReasoningLevel::Medium)
+        ],
+        "every ROUND of both turns carried the configured level — two each \
+         since unit 55, the round that sends and the round the delivery \
+         report re-drives"
     );
 }
 
@@ -114,11 +116,7 @@ async fn every_created_conversation_carries_the_configured_reasoning_level() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leaked_reasoning_trace_never_reaches_the_channel() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let dm = channel("dm-leaked-reasoning");
 
     let asked = "how do I install it?</think>Install it from the recovery.";
@@ -136,19 +134,11 @@ async fn a_leaked_reasoning_trace_never_reaches_the_channel() {
         "the channel sees the prose behind the one closer, under the line"
     );
 
-    let stored = fixture
-        .store
-        .list_blocks(receipt.conversation_id)
-        .await
-        .expect("the ledger reads")
-        .into_iter()
-        .rev()
-        .find(|block| block.role == Some(Role::Assistant))
-        .expect("the answer is stored");
     assert_eq!(
-        stored.fields["content"],
-        json!(support::disclosed(&support::answer_to(asked))),
-        "the ledger keeps the model's full text under the same line"
+        support::sent_texts(&fixture.store, receipt.conversation_id).await,
+        vec![support::disclosed(&support::answer_to(asked))],
+        "the ledger keeps the model's full text under the same line: the \
+         cut narrows the WIRE text and never the stored one"
     );
 }
 
@@ -160,11 +150,7 @@ async fn a_leaked_reasoning_trace_never_reaches_the_channel() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leaked_reasoning_trace_is_cut_in_a_group_too() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let group = support::authorized_group(&fixture.assistant, "leak-group").await;
 
     let asked = "what broke?</think>The updater; flash the latest build.";

@@ -103,8 +103,9 @@ fn the_report_teaching_moved_from_the_prompt_to_the_composition() {
         "the prompt no longer teaches the report tool; the composition does"
     );
     assert!(
-        flattened(&prompt).contains("rule enforcement with a light reminder in text"),
-        "the prose reminder stays the prompt's own enforcement voice"
+        flattened(&prompt).contains("rule enforcement with a light reminder you send"),
+        "the prose reminder stays the prompt's own enforcement voice, now named as \
+         the send it is (unit 55)"
     );
 
     let teaching = assistant_core::MODERATION_TEACHING;
@@ -1886,8 +1887,9 @@ fn the_announce_units_decisions_are_recorded_and_the_line_is_taught() {
         },
     );
     for fact in [
-        "Before you run a search, say in one short line what you are about \
-         to look up, then run the search, then answer",
+        "Before you run a search, send one short line with send_message \
+         saying what you are about to look up, then run the search, then \
+         send the answer",
         "one line and no more",
         "never a placeholder standing in for an answer",
         "never a restatement of the words the member just wrote",
@@ -1959,7 +1961,7 @@ fn the_reaction_copy_ships_in_the_prompt_and_the_composed_teaching() {
     assert!(
         prompt.contains(&flattened(
             "Match your response to the message's weight: a casual share earns an emoji \
-             reaction, not a written reply; a real question earns a real answer, and \
+             reaction, not a message; a real question earns a real answer, and \
              restating someone's own words back at them adds nothing."
         )),
         "the conduct line names the reaction, pinned byte for byte"

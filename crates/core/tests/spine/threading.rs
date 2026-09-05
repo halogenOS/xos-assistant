@@ -1,9 +1,13 @@
-//! Which message an answer is delivered as a reply to (unit 26): the one
-//! message the turn absorbed that addressed the assistant, when exactly
-//! one did. Nobody addressed it, or several did, and the answer goes out
-//! plain — never silent, never a guess. An answer whose own prose carries
-//! the moderation command shape goes out plain too, with its text
-//! untouched.
+//! Which message one of the assistant's own messages threads onto (unit
+//! 26, re-keyed by unit 55, 2026-09-02): the one the MODEL named, through
+//! the reply tool. The derived threading is gone with the relay it served —
+//! the edge no longer guesses which absorbed message an answer was for —
+//! and a send the model aimed at nothing goes out plain.
+//!
+//! One rule survives the change untouched, and it is the reason this
+//! module exists: a send whose own text carries a reply-acted command shape
+//! goes out UNTHREADED, with its words byte-for-byte as the model wrote
+//! them.
 
 use agent_ledger::Store;
 use assistant_core::kind::CHAT_MESSAGE_KIND;
@@ -30,11 +34,7 @@ async fn threading_fixture(
     let fixture =
         support::start_assistant_answering(store, hold, ProtectionConfig::default(), answering)
             .await;
-    let replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let replies = support::outbound(&fixture).await;
     (fixture, replies)
 }
 
@@ -57,16 +57,17 @@ async fn await_messages(fixture: &support::Fixture, conversation_id: i64, count:
     .await;
 }
 
-/// AC2: the answer is delivered as a reply to the member who addressed the
-/// assistant, and to nobody else. Three members speak into one turn: the
-/// warm-up line summons it under helpful answering and becomes the
-/// dispatch frontier, the asker's mention is absorbed into the open
-/// stream, and a bystander's chatter is absorbed behind it. The addressed
-/// message is therefore neither the frontier nor the newest — the two
-/// messages an anchor-threaded or newest-threaded delivery would quote —
-/// and it is the one the answer names.
+/// AC6 and AC7 (unit 55): a send threads onto the message the MODEL named,
+/// and only onto that one.
+///
+/// The turn is crowded on purpose — an unaddressed frontier, an addressed
+/// message absorbed behind it, a bystander behind that — which is exactly
+/// the shape the old derived threading was built to read. It reads nothing
+/// now: the target is the id the model handed the reply tool, and here that
+/// is the FRONTIER's, the one line the deleted rule would never have
+/// picked, since it picked the message that addressed the assistant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_one_addressed_message_in_a_crowded_turn_is_the_answers_target() {
+async fn a_send_threads_onto_the_message_the_model_named() {
     let hold = support::TurnHold::new();
     let (fixture, mut replies) =
         threading_fixture(AnsweringMode::Helpful, Some(hold.clone())).await;
@@ -77,7 +78,12 @@ async fn the_one_addressed_message_in_a_crowded_turn_is_the_answers_target() {
     let receipt = support::ingest_recorded(
         &fixture.assistant,
         with_origin(
-            inbound_unaddressed(&room, ChannelKind::Group, "C", "morning all"),
+            inbound_unaddressed(
+                &room,
+                ChannelKind::Group,
+                "C",
+                &format!("morning all {cue}", cue = support::REPLY_CUE),
+            ),
             "origin-warm-up",
         ),
     )
@@ -85,7 +91,8 @@ async fn the_one_addressed_message_in_a_crowded_turn_is_the_answers_target() {
     hold.started().await;
 
     // Absorbed into the open turn: the one member who addresses the
-    // assistant, then a bystander's line behind them.
+    // assistant, then a bystander's line behind them. Neither is what the
+    // send aims at.
     support::ingest_recorded(
         &fixture.assistant,
         with_origin(
@@ -108,20 +115,17 @@ async fn the_one_addressed_message_in_a_crowded_turn_is_the_answers_target() {
     let reply = recv_reply(&mut replies).await;
     assert_eq!(
         reply.reply_target,
-        Some(ReplyThread::OntoOrPlainly("origin-asker".into())),
-        "the answer is delivered as a reply to the member who addressed \
-         the assistant — not to the frontier, not to the newest line — and \
-         plainly if the platform refuses that thread"
+        Some(ReplyThread::OntoOrPlainly("origin-warm-up".into())),
+        "the send threads onto the id the model named — and not onto the \
+         message that addressed the assistant, which the deleted derived \
+         threading would have picked"
     );
 }
 
-/// AC3, the ambiguous half: two members address the assistant in one turn
-/// and the answer names neither. Picking one would tell the other they
-/// were ignored, and picking the newest is the same guess decision 0018
-/// refused. The answer still arrives — ambiguity costs the thread, never
-/// the answer.
+/// A send the model aimed at nothing goes out plain, however many people
+/// addressed the assistant in the turn. There is no guess left to make.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_addressed_messages_in_one_turn_deliver_the_answer_plainly() {
+async fn a_send_the_model_aimed_at_nothing_goes_out_plain() {
     let hold = support::TurnHold::new();
     let (fixture, mut replies) =
         threading_fixture(AnsweringMode::Addressed, Some(hold.clone())).await;
@@ -150,7 +154,7 @@ async fn two_addressed_messages_in_one_turn_deliver_the_answer_plainly() {
     let reply = recv_reply(&mut replies).await;
     assert_eq!(
         reply.reply_target, None,
-        "two askers name no single target, and neither is quoted"
+        "the model named no target, so the message quotes nobody"
     );
     assert_eq!(
         reply.text,
@@ -158,7 +162,7 @@ async fn two_addressed_messages_in_one_turn_deliver_the_answer_plainly() {
         // so the scripted answer echoes it; the second ask joined the turn
         // behind the request and is answered by the same turn.
         first_answer_to("does it support my device?"),
-        "the answer itself is delivered whole"
+        "the message itself is delivered whole"
     );
 }
 
@@ -194,20 +198,24 @@ async fn a_helpful_mode_answer_to_nobodys_question_delivers_plainly() {
     );
 }
 
-/// AC5: an answer whose prose carries the moderation command shape is
-/// delivered plainly, with its text byte-for-byte as the model wrote it.
-/// The moderation bot files a report from a reply carrying that shape, so
-/// a threaded answer repeating it would file a real report against the
+/// AC5, and AC7's threading half in unit 55: a message whose text carries
+/// the moderation command shape is delivered plainly EVEN THOUGH the model
+/// aimed it, with its text byte-for-byte as the model wrote it. The
+/// moderation bot files a report from a reply carrying that shape, so a
+/// threaded message repeating it would file a real report against the
 /// message it threaded onto. Nothing is rewritten, stripped or withheld —
 /// the routing changes, the words do not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_answer_carrying_the_moderation_command_shape_delivers_plainly() {
+async fn a_send_carrying_the_moderation_command_shape_delivers_plainly() {
     let (fixture, mut replies) = threading_fixture(AnsweringMode::Addressed, None).await;
     let room = support::authorized_group(&fixture.assistant, "room-command-prose").await;
 
     // The scripted answer echoes the ask, so an ask about the command puts
     // the command shape into the assistant's own prose.
-    let ask = format!("what does {REPORT_LINE_LEAD}moderator_bot actually do?");
+    let ask = format!(
+        "what does {REPORT_LINE_LEAD}moderator_bot actually do? {cue}",
+        cue = support::REPLY_CUE
+    );
     support::ingest_recorded(
         &fixture.assistant,
         with_origin(
@@ -233,12 +241,13 @@ async fn an_answer_carrying_the_moderation_command_shape_delivers_plainly() {
         "the text goes out exactly as written: no sanitation, no refusal"
     );
 
-    // The routing is the whole difference: an answer with the same shape
-    // absent threads onto the asker as usual.
+    // The routing is the whole difference: the same aim with the shape
+    // absent keeps its thread.
+    let ordinary = format!("and where are the rules? {cue}", cue = support::REPLY_CUE);
     support::ingest_recorded(
         &fixture.assistant,
         with_origin(
-            inbound(&room, ChannelKind::Group, "A", "and where are the rules?"),
+            inbound(&room, ChannelKind::Group, "A", &ordinary),
             "origin-ordinary-asker",
         ),
     )
@@ -247,9 +256,9 @@ async fn an_answer_carrying_the_moderation_command_shape_delivers_plainly() {
     assert_eq!(
         reply.reply_target,
         Some(ReplyThread::OntoOrPlainly("origin-ordinary-asker".into())),
-        "the same asker's ordinary question is answered as a reply to them"
+        "the same aim, with no command shape in the words, keeps its thread"
     );
-    assert_eq!(reply.text, answer_to("and where are the rules?"));
+    assert_eq!(reply.text, answer_to(&ordinary));
 }
 
 /// The second reply-acted shape holds the same guard as the first.
@@ -261,11 +270,14 @@ async fn an_answer_carrying_the_moderation_command_shape_delivers_plainly() {
 /// the shapes come from the one list in `reply_commands.rs`, which
 /// this pin holds to its word.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_answer_carrying_the_deletion_command_shape_delivers_plainly() {
+async fn a_send_carrying_the_deletion_command_shape_delivers_plainly() {
     let (fixture, mut replies) = threading_fixture(AnsweringMode::Addressed, None).await;
     let room = support::authorized_group(&fixture.assistant, "room-deletion-prose").await;
 
-    let ask = format!("what does {DELETION_COMMAND} do in this group?");
+    let ask = format!(
+        "what does {DELETION_COMMAND} do in this group? {cue}",
+        cue = support::REPLY_CUE
+    );
     support::ingest_recorded(
         &fixture.assistant,
         with_origin(

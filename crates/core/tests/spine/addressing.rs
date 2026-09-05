@@ -22,11 +22,7 @@ use crate::support::{
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unaddressed_message_rests_and_joins_the_next_context() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = support::authorized_group(&fixture.assistant, "room-rest").await;
 
     let receipt = support::ingest_recorded(
@@ -71,7 +67,12 @@ async fn an_unaddressed_message_rests_and_joins_the_next_context() {
         "the asker's first answer opens with the disclosure line"
     );
     assert_eq!(reply.kind, ReplyKind::Answer);
-    assert_eq!(fixture.script.turns.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fixture.script.turns.load(Ordering::SeqCst),
+        2,
+        "one turn, two rounds: the round that sends and the round the \
+         delivery report re-drives"
+    );
     let requests = fixture.script.seen.lock().unwrap();
     assert!(
         requests[0].iter().any(|m| carries(m, "a resting remark")),
@@ -85,11 +86,7 @@ async fn an_unaddressed_message_rests_and_joins_the_next_context() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_system_prompt_is_recorded_and_projected() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = channel("dm-prompt");
 
     let receipt = support::ingest_recorded(
@@ -140,11 +137,7 @@ async fn the_system_prompt_is_recorded_and_projected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_failed_turn_says_nothing_and_the_next_addressed_message_reengages() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let mut events = fixture.bus.subscribe();
     let key = channel("dm-failure");
 
@@ -199,11 +192,7 @@ async fn a_failed_turn_says_nothing_and_the_next_addressed_message_reengages() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_wording_of_a_failure_leaves_the_chat_with_nothing() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let mut events = fixture.bus.subscribe();
     let key = channel("dm-no-balance");
 
@@ -408,11 +397,7 @@ async fn an_erased_tail_propagates_no_debt() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_paid_debt_does_not_propagate() {
     let fixture = support::start_assistant(None).await;
-    let mut replies = fixture
-        .assistant
-        .outbound(support::ADAPTER)
-        .await
-        .expect("the outbound edge opens");
+    let mut replies = support::outbound(&fixture).await;
     let key = support::authorized_group(&fixture.assistant, "room-paid").await;
 
     let receipt = support::ingest_recorded(
@@ -442,8 +427,9 @@ async fn a_paid_debt_does_not_propagate() {
     assert_eq!(aside.fields["answer_due"], json!(false));
     assert_eq!(
         fixture.script.turns.load(Ordering::SeqCst),
-        1,
-        "the aside draws no second turn"
+        2,
+        "the aside draws no second turn: the count is the answered turn's \
+         own two rounds"
     );
 }
 

@@ -134,8 +134,13 @@ pub struct ToolScript {
     pub tool: String,
     /// The call's input JSON, non-empty by the script's contract.
     pub input: String,
-    /// Prose streamed before the call, for the narration variant.
+    /// Prose streamed before the call: the model's own notes, which reach
+    /// nobody from unit 55 on.
     pub narration: Option<String>,
+    /// A line the opening round SENDS beside its call, where the script has
+    /// one — the heads-up before slow work, which from unit 55 is a message
+    /// like any other and not prose a relay carried.
+    pub announce: Option<String>,
 }
 
 /// The closing prose a tool-scripted turn streams once its request carries
@@ -143,11 +148,11 @@ pub struct ToolScript {
 /// model's second request.
 pub const TOOL_CLOSING_ANSWER: &str = "The scripted closing answer.";
 
-/// The opening line a held FAILING turn streams before it awaits its
-/// release: real text, so the core's typing cue — keyed on the first
-/// non-empty text delta since unit 22 — is provably up while the stream
-/// is held, and the scripted error then ends the turn before anything
-/// finalizes.
+/// The words a held FAILING turn opens its send with before it awaits its
+/// release. Only the call's START reaches the wire: the core's typing cue
+/// — keyed on a sending tool's recorded call start since unit 55 — is
+/// provably up while the stream is held, and the scripted error then kills
+/// the turn before the call ever completes, so nothing is ever sent.
 pub const HELD_TURN_OPENING: &str = "Let me look into that.";
 
 /// Stream one opened text block's prose — the start event and its delta,
@@ -168,11 +173,10 @@ struct ScriptedChat {
     /// Every turn request's projected messages, for the projection pins.
     seen: Arc<Mutex<Vec<Vec<Message>>>>,
     tool_script: Option<ToolScript>,
-    /// When set, every chat turn streams its opening text and then awaits
-    /// one release before it ends — the composing pins' fixture: the
-    /// core's typing cue begins at the first real text delta, so a held
-    /// turn shows the cue while its answer provably has not reached the
-    /// wire.
+    /// When set, every chat turn records its sending tool's call and then
+    /// awaits one release before it ends — the composing pins' fixture:
+    /// the core's typing cue begins at that call's start, so a held turn
+    /// shows the cue while its message provably has not reached the wire.
     turn_hold: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
     /// The error text a scripted failure streams; see
     /// [`Fixture::word_failures_as`].
@@ -212,6 +216,7 @@ impl ProviderModule for ScriptedChat {
         Box::pin(async { Ok(Vec::new()) })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn bind(
         &self,
         _conversation_id: i64,
@@ -234,6 +239,20 @@ impl ProviderModule for ScriptedChat {
                 };
                 // Titles are off (decision 0077): count the regression,
                 // answer nothing.
+                // The rules acknowledgment is a one-shot generation and not
+                // a turn: its whole product is the text the item carries, so
+                // it is answered with text and never with a send (unit 55).
+                if messages.iter().any(|m| carries(m, ACKNOWLEDGMENT_MARK)) {
+                    let rules =
+                        without_envelope(&messages.last().map(message_text).unwrap_or_default());
+                    stream_text(&response_tx, answer_to(&rules));
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                        usage: agent_ledger::providers::Usage::default(),
+                        stop_reason: StopReason::EndTurn,
+                    }));
+                    let _ = response_tx.send(ProviderResponse::Done);
+                    continue;
+                }
                 if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
                     title_requests.fetch_add(1, Ordering::SeqCst);
                     let _ = response_tx.send(ProviderResponse::Done);
@@ -249,13 +268,30 @@ impl ProviderModule for ScriptedChat {
                     })
                     .is_ok()
                 {
-                    // A held failing turn streams an opening line first:
-                    // real text raises the core's typing cue, so the
-                    // refresh loop under test provably runs while the
-                    // stream is held open — and the error then kills the
-                    // turn before anything finalizes, so no send follows.
+                    // A held failing turn OPENS a send first: a sending
+                    // tool's recorded call start raises the core's typing
+                    // cue, so the refresh loop under test provably runs
+                    // while the stream is held open. Only the start
+                    // reaches the wire — the error then kills the turn
+                    // before the call can complete, so the tool never runs
+                    // and nothing is ever sent.
                     if let Some(hold) = &hold {
-                        stream_text(&response_tx, HELD_TURN_OPENING.into());
+                        calls += 1;
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                                usage: agent_ledger::providers::Usage::default(),
+                                stop_reason: StopReason::ToolUse,
+                            }));
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
+                                id: format!("{SEND_CALL_ID}{calls}"),
+                                name: assistant_core::tools::send::NAME.to_owned(),
+                            }));
+                        let _ = response_tx.send(ProviderResponse::Event(
+                            StreamEvent::ToolUseInputDelta {
+                                json: serde_json::json!({ "text": HELD_TURN_OPENING }).to_string(),
+                            },
+                        ));
                         hold.notified().await;
                     }
                     let error = failure_text.lock().expect("the failure text locks").clone();
@@ -268,16 +304,30 @@ impl ProviderModule for ScriptedChat {
                     hold.notified().await;
                 }
                 if let Some(script) = &tool_script {
-                    // Scripted by ledger content: a request already carrying
-                    // an answered call closes with the fixed prose, the
-                    // opening turn narrates (when scripted) and calls.
-                    if messages.iter().any(carries_tool_result) {
+                    // How many sends this script owes before its closing
+                    // one: the announce, where the script has a line to
+                    // announce with. Counting them is what tells the
+                    // closing round from the round after it, on a wire
+                    // where both carry a send's result.
+                    let announces = usize::from(script.announce.is_some());
+                    // Scripted by ledger content: the round after the
+                    // closing send writes the notes down and ends, a
+                    // request carrying the answered call sends the closing
+                    // prose, and the opening turn narrates (when scripted),
+                    // announces (when scripted) and calls.
+                    if send_results_this_turn(&messages) > announces {
                         stream_text(&response_tx, TOOL_CLOSING_ANSWER.into());
                         let _ =
                             response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
                                 usage: agent_ledger::providers::Usage::default(),
                                 stop_reason: StopReason::EndTurn,
                             }));
+                        let _ = response_tx.send(ProviderResponse::Done);
+                        continue;
+                    }
+                    if a_call_was_answered(&messages) {
+                        calls += 1;
+                        send_scripted_message(&response_tx, calls, TOOL_CLOSING_ANSWER, None);
                         // The trailing done real wires send after every
                         // completed turn: the framework settles the dispatch
                         // state on the closed signal, so a scripted turn
@@ -298,6 +348,24 @@ impl ProviderModule for ScriptedChat {
                         usage: agent_ledger::providers::Usage::default(),
                         stop_reason: StopReason::ToolUse,
                     }));
+                    // The announce, where the script has one: a SEND beside
+                    // the call, in the same round (unit 55). It used to be
+                    // prose ahead of the call, which the relay carried; the
+                    // relay is gone, so a line the chat must read before the
+                    // slow work is a message like any other.
+                    if let Some(announce) = &script.announce {
+                        let _ =
+                            response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
+                                id: format!("{SEND_CALL_ID}{calls}"),
+                                name: assistant_core::tools::send::NAME.to_owned(),
+                            }));
+                        let _ = response_tx.send(ProviderResponse::Event(
+                            StreamEvent::ToolUseInputDelta {
+                                json: serde_json::json!({ "text": announce }).to_string(),
+                            },
+                        ));
+                        let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+                    }
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
                         id: format!("call-{calls}"),
                         name: script.tool.clone(),
@@ -310,21 +378,37 @@ impl ProviderModule for ScriptedChat {
                     let _ = response_tx.send(ProviderResponse::Done);
                     continue;
                 }
-                let answer = answer_to(&without_origin_marks(
-                    &messages.last().map(message_text).unwrap_or_default(),
-                ));
-                stream_text(&response_tx, answer);
-                // The hold sits between the streamed text and the message
-                // end: the answer's text is on the stream — so the core's
+                // The closing round: this request carries the send's own
+                // result, so the message is already in the chat and the
+                // turn writes down what it said and ends.
+                let ask = newest_ask(&messages);
+                let answer = answer_to(&without_envelope(&ask));
+                if send_results_this_turn(&messages) > 0 {
+                    stream_text(&response_tx, answer);
+                    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+                        usage: agent_ledger::providers::Usage::default(),
+                        stop_reason: StopReason::EndTurn,
+                    }));
+                    let _ = response_tx.send(ProviderResponse::Done);
+                    continue;
+                }
+                calls += 1;
+                // The threaded script: an ask carrying the cue is answered
+                // with the reply tool aimed at that ask's own msgid — the
+                // way the model chooses a target from unit 55 on, instead
+                // of the edge deriving one.
+                let aimed = ask
+                    .contains(REPLY_CUE)
+                    .then(|| newest_msgid(&ask))
+                    .flatten();
+                send_scripted_message(&response_tx, calls, &answer, aimed.as_deref());
+                // The hold sits between the send's own call events and the
+                // stream's close: the call is recorded — so the core's
                 // typing cue is up — while the turn provably has not
                 // completed and nothing can be delivered.
                 if let Some(hold) = &hold {
                     hold.notified().await;
                 }
-                let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
-                    usage: agent_ledger::providers::Usage::default(),
-                    stop_reason: StopReason::EndTurn,
-                }));
                 let _ = response_tx.send(ProviderResponse::Done);
             }
         });
@@ -339,6 +423,118 @@ fn carries_tool_result(message: &Message) -> bool {
         if parts.iter().any(|part| matches!(part, WirePart::ToolResult { .. })))
 }
 
+/// A distinctive clause of the core's rules-acknowledgment instruction —
+/// the one-shot generation the observation surface runs when a real rules
+/// delta lands.
+const ACKNOWLEDGMENT_MARK: &str = "the group's newly pinned rules";
+
+/// The provider id every scripted SEND is made under — what tells a send's
+/// own result apart from any other tool's, inside the fixture.
+const SEND_CALL_ID: &str = "send-";
+
+/// The call ids one projected message answers.
+fn tool_result_ids(message: &Message) -> impl Iterator<Item = &str> {
+    let parts = match &message.content {
+        MessageContent::Parts(parts) => parts.as_slice(),
+        MessageContent::Text(_) => &[],
+    };
+    parts.iter().filter_map(|part| match part {
+        WirePart::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+        _ => None,
+    })
+}
+
+/// How many SENDS this turn has already had answered — the cue that a
+/// scripted turn is done, since a send is a PENDING call and the round
+/// after it is the turn's last (unit 55, 2026-09-02).
+fn send_results_this_turn(messages: &[Message]) -> usize {
+    let since = messages
+        .iter()
+        .rposition(|message| {
+            message.role == agent_ledger::providers::MessageRole::User
+                && !carries_tool_result(message)
+        })
+        .map_or(0, |at| at + 1);
+    messages[since..]
+        .iter()
+        .map(|message| {
+            tool_result_ids(message)
+                .filter(|id| id.starts_with(SEND_CALL_ID))
+                .count()
+        })
+        .sum()
+}
+
+/// Emit one scripted SEND: the production event order — the message end
+/// carrying the tool-use stop reason, then the call's lifecycle — for a
+/// call of the plain sending tool carrying the given text, or of the reply
+/// tool where a target is named.
+///
+/// Words reach a chat the one way anything does from unit 55 on: through a
+/// sending tool. A provider that streamed its answer as text would be a
+/// turn of private notes, and nothing would ever be sent.
+fn send_scripted_message(
+    response_tx: &tokio::sync::mpsc::UnboundedSender<ProviderResponse>,
+    turn: usize,
+    text: &str,
+    reply_to: Option<&str>,
+) {
+    let (tool, input) = match reply_to {
+        Some(target) => (
+            assistant_core::tools::reply::NAME,
+            serde_json::json!({ "text": text, "reply_to": target }),
+        ),
+        None => (
+            assistant_core::tools::send::NAME,
+            serde_json::json!({ "text": text }),
+        ),
+    };
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
+        usage: agent_ledger::providers::Usage::default(),
+        stop_reason: StopReason::ToolUse,
+    }));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseStart {
+        id: format!("{SEND_CALL_ID}{turn}"),
+        name: tool.to_owned(),
+    }));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseInputDelta {
+        json: input.to_string(),
+    }));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::ToolUseEnd));
+}
+
+/// The cue that scripts a THREADED send: a turn whose newest ask carries
+/// this text is answered with the reply tool, aimed at that ask's own
+/// msgid.
+pub const REPLY_CUE: &str = "(the threaded cue)";
+
+/// The msgid one projected ask declares, read off its own envelope.
+///
+/// The LAST one in the text, because a projected user turn joins several
+/// contributions under one message and the newest is the one at the end —
+/// which is the one a model aiming at "what was just said" would name.
+fn newest_msgid(ask: &str) -> Option<String> {
+    ask.lines()
+        .filter_map(|line| line.strip_prefix(assistant_core::kind::ENVELOPE_MSGID))
+        .next_back()
+        .map(ToOwned::to_owned)
+}
+
+/// Whether one projected request carries the answer to a call of a tool
+/// that is NOT a sending tool, anywhere in its history — the cue a
+/// tool-scripted turn closes on.
+///
+/// It reads the whole history and not the newest message, because that is
+/// what the scripts mean by "my call has been answered": the script plays
+/// one call per conversation, and every later turn is the closing kind. The
+/// send's own results are excluded, or the closing round would read its own
+/// transport as its answer.
+fn a_call_was_answered(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .any(|message| tool_result_ids(message).any(|id| !id.starts_with(SEND_CALL_ID)))
+}
+
 /// Whether one projected message carries this text, in either content mode.
 fn carries(message: &Message, needle: &str) -> bool {
     match &message.content {
@@ -349,11 +545,53 @@ fn carries(message: &Message, needle: &str) -> bool {
     }
 }
 
-/// The projected text with every message's bracketed id mark removed —
-/// what the scripted answer derives from. The core's projection opens each
-/// recorded message with its origin in brackets (unit 15), the way a model
-/// reads past an id to the words; stripping here keeps the suite's answer
-/// pins about the words.
+/// The newest thing a PERSON said in one projected request — what every
+/// scripted answer is derived from. A tool result is user-voiced on this
+/// wire and carries no words of anybody's, so it is skipped.
+fn newest_ask(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .rev()
+        .find(|message| {
+            message.role == agent_ledger::providers::MessageRole::User
+                && !carries_tool_result(message)
+        })
+        .map(message_text)
+        .unwrap_or_default()
+}
+
+/// The projected text with the envelope stripped — what the scripted answer
+/// derives from. Every recorded message projects under a fenced envelope
+/// naming its author, its send time and its msgid (unit 55), the way a
+/// model reads past the header to the words; stripping here keeps the
+/// suite's answer pins about the words.
+fn without_envelope(text: &str) -> String {
+    let mut body = String::new();
+    let mut rest = text;
+    loop {
+        let opens_at = if rest.starts_with("---\n") {
+            Some(0)
+        } else {
+            rest.find("\n---\n").map(|at| at + 1)
+        };
+        let Some(opens_at) = opens_at else {
+            body.push_str(rest);
+            return body;
+        };
+        body.push_str(&rest[..opens_at]);
+        let after_open = &rest[opens_at + "---\n".len()..];
+        if let Some((_, under)) = after_open.split_once("\n---\n") {
+            rest = under;
+        } else {
+            // A fence with no closing fence is a member's own prose.
+            body.push_str(&rest[opens_at..]);
+            return body;
+        }
+    }
+}
+
+/// The old bracketed-mark strip, kept for the cases that still name it.
+#[allow(dead_code)]
 fn without_origin_marks(text: &str) -> String {
     text.lines()
         .map(|line| match line.find("] ") {
@@ -1215,6 +1453,54 @@ pub async fn await_conversations(store: &Store, count: usize) -> Vec<i64> {
             std::time::Instant::now() < deadline,
             "timed out awaiting {count} conversations; have {}",
             ids.len()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// The stillness [`await_quiet`] reads as a settled turn: long enough that
+/// a turn between two of its own rounds is still moving, short enough to
+/// cost a suite nothing.
+const QUIET: Duration = Duration::from_millis(600);
+
+/// Await every conversation falling quiet — no ledger of the store grew
+/// across a whole [`QUIET`] window.
+///
+/// A turn takes several rounds since unit 55: the answer goes out through
+/// a sending tool mid-turn, and the turn writes its own notes in the round
+/// behind it. So a message pushed the instant the chat receives an answer
+/// lands INSIDE the turn that answered, where it is absorbed rather than
+/// summoning a turn of its own. A case that means "and then, later, she is
+/// asked again" waits here first, or it is timing the wire instead of
+/// testing the assistant.
+pub async fn await_quiet(store: &Store) {
+    let deadline = std::time::Instant::now() + DEADLINE;
+    let mut seen = 0_usize;
+    let mut since = std::time::Instant::now();
+    loop {
+        let mut blocks = 0_usize;
+        for conversation in store
+            .list_conversations()
+            .await
+            .expect("the conversation list reads")
+        {
+            blocks += store
+                .list_blocks(conversation.id)
+                .await
+                .expect("the ledger reads")
+                .len();
+        }
+        if blocks == seen {
+            if since.elapsed() >= QUIET {
+                return;
+            }
+        } else {
+            seen = blocks;
+            since = std::time::Instant::now();
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out awaiting the conversations to fall quiet"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
