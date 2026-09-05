@@ -41,15 +41,16 @@ up again. The refusal lives in the pending memory itself, which holds the stoppi
 pending this process would refuse to confirm cannot be built, whichever surface asks.
 
 On the tool surface the refused ask is the framework's typed refusal, not a completed call:
-the model spent a round and got a standing no, and a model looping on the ask reaches the
-forced end of its turn on the framework's own count. The refused ask costs the person none of
-their shared privacy-reply grants — it changed nothing and recorded nothing, so the reply
-window hands the grant back, on the command surface exactly as on the tool's.
+the model spent a round and got a standing no.
 
-The refused confirm spends its grant. It consumes the pending it found, and consuming it is a
-state change: the person's request is gone from this process, which is what the stopping line
-tells them. A confirm that finds no pending spends its grant too, its own line being an answer
-the bound is there to bound.
+Every answer the privacy reply window delivers spends a grant, on the command surface and the
+tool's alike, the refused ask included. The framework ends a turn on a trailing run of
+refusals among the open turn's own outcomes (decision 0196). Model text resets nothing, and
+any other outcome of that turn in between starts the count over, so the count is no spend
+ceiling on the window. The window is the bound on both surfaces, which is what it is for: it
+bounds a person's own commands and what the tool does on that person's behalf alike, as it
+has since 2026-08-23 (decision 0076), and either one repeated during a shutdown drain reaches
+its silence like any other flood.
 
 ## Rejected alternatives
 
@@ -60,11 +61,10 @@ the bound is there to bound.
   the flow where forgetting errs safe. Persisting it would store a person's deletion intent to
   survive a restart — a new personal record for a state whose loss already has a correct
   answer, the nothing-pending line and a fresh ask.
-- **Letting the refused ask spend a reply grant like any answered ask.** Rejected: one looping
-  turn during a shutdown would drain the person's bound on refusals alone and then withhold
-  their own `/privacyout`. The bound exists against a flood of lines that carried a change,
-  and the refused ask changes nothing. The refused confirm is the other case and spends its
-  grant, since it consumes the pending it found.
+- **Handing the reply grant back on the refused ask.** Rejected: which answers are free would
+  become a per-arm judgment with no rule behind it. A confirm that finds nothing, an opt-out
+  already standing and this refusal all deliver a line and change nothing, and only one of
+  them would have been free. A delivered line is what the bound bounds.
 - **Waiting for the compaction as well.** Rejected: a compaction sits inside a model turn, so
   a shutdown that waited for it would be as slow as the provider. What it leaves behind is a
   few blocks served to nobody, which the sweep reclaims.

@@ -63,7 +63,7 @@ use serde_json::{Value, json};
 use crate::message::Authority;
 use crate::tools::lookup::{MemoryCache, ORGANIZATION, truncated};
 use crate::tools::provenance::sole_principal;
-use crate::window::{Change, ReplyWindow, SEARCH_BUDGET_CAP, SEARCH_BUDGET_WINDOW};
+use crate::window::{ReplyWindow, SEARCH_BUDGET_CAP, SEARCH_BUDGET_WINDOW};
 
 /// The registered name the model calls the tool by.
 pub const NAME: &str = "search_web";
@@ -442,21 +442,13 @@ impl WebSearch {
             return Ok(self.rendered(&ask, &rows).await);
         }
         let principal_id = person.await?;
-        let search = async {
-            self.provider
-                .search(&ask.query, ask.page)
-                .await
-                .map(Change::Applied)
-        };
+        let search = self.provider.search(&ask.query, ask.page);
         let rows = match self.budget.grant_with(principal_id, search).await {
             None => return Err(budget_spent_result()),
             // The grant was handed back before this: a failed request bills
             // nothing, so it must not cost the person a search.
             Some(Err(failure)) => return Err(failure.taught().to_owned()),
-            // A search that answered spent the provider call, so this
-            // producer builds only [`Change::Applied`] and the answer read
-            // out here is that one.
-            Some(Ok(change)) => change.answer(),
+            Some(Ok(rows)) => rows,
         };
         self.cache.remember(key, rows.clone()).await;
         Ok(self.rendered(&ask, &rows).await)

@@ -37,9 +37,12 @@
 //! the command family: an exhausted window withholds the state change with
 //! the reply — never a silent change — and answers the transient result,
 //! which is also what a failed write answers: nothing was recorded, and the
-//! commands remain the direct path. The stopping refusal stands down inside
-//! that bound and hands its grant back, so a shutdown costs the person none
-//! of the replies their own commands still need (decision 0200).
+//! commands remain the direct path. The stopping refusal spends its grant
+//! like every other answer the bound delivers, `PRIVACY_REPLY_CAP` of them
+//! per `PRIVACY_REPLY_WINDOW`. The framework's forced end (decision 0196)
+//! ends a model looping on that refusal, the window (decision 0076) bounds
+//! the rest, and decision 0200 records how the shutdown's refusal joins
+//! them.
 
 use std::sync::Arc;
 
@@ -54,7 +57,7 @@ use crate::privacy::{
     CONFIRM_INSTRUCTION, DELETION_STOPPING, Filing, OPT_OUT_DONE, PendingDeletions,
 };
 use crate::tools::provenance::sole_principal;
-use crate::window::{Change, ReplyWindow};
+use crate::window::ReplyWindow;
 
 /// The registered name the model calls the tool by.
 pub const NAME: &str = "privacy_request";
@@ -190,22 +193,17 @@ impl PrivacyTool {
                 // — and the relayed line is the same honored right.
                 Action::OptOut => identity::set_opt_out(&tx, principal_id)
                     .await
-                    .map(|_| Change::Applied(opt_out_result())),
+                    .map(|_| ToolOutcome::Done(opt_out_result())),
                 // The pending memory refuses the file once the shutdown has
                 // begun — a pending filed there would invite a confirm this
-                // same process refuses — and the tool relays its answer. The
-                // refusal stands down inside the bound, so it hands its
-                // grant back: it changed nothing and recorded nothing, and
-                // a shutdown must not cost the person the replies their own
-                // commands still need.
+                // same process refuses — and the tool relays its answer.
                 Action::RequestDeletion => {
                     Ok(deletion_answer(self.pending.file(principal_id).await))
                 }
             }
         };
         match self.window.grant_with(principal_id, change).await {
-            Some(Ok(Change::Applied(recorded))) => ToolOutcome::Done(recorded),
-            Some(Ok(Change::StoodDown(refused))) => ToolOutcome::Refused(refused),
+            Some(Ok(answered)) => answered,
             Some(Err(error)) => {
                 tracing::warn!(
                     conversation_id,
@@ -222,13 +220,13 @@ impl PrivacyTool {
 }
 
 /// The answer a filing attempt earns: the pending memory decided it, and
-/// the tool only puts the matching fixed line in front of the model. A
-/// refused filing stood down, so it carries that word to the window as
-/// well as to the outcome.
-fn deletion_answer(filing: Filing) -> Change<String> {
+/// the tool only puts the matching fixed line in front of the model. The
+/// stopping refusal is the typed refusal the runner counts toward the
+/// forced end of a looping turn (decision 0196).
+fn deletion_answer(filing: Filing) -> ToolOutcome {
     match filing {
-        Filing::Filed => Change::Applied(request_deletion_result()),
-        Filing::RefusedStopping => Change::StoodDown(stopping_result()),
+        Filing::Filed => ToolOutcome::Done(request_deletion_result()),
+        Filing::RefusedStopping => ToolOutcome::Refused(stopping_result()),
     }
 }
 
@@ -325,25 +323,25 @@ mod tests {
         }
     }
 
-    /// The tool relays the pending memory's own decision, both ways, and
-    /// tells the reply bound which of the two it was: a filed pending
-    /// earns the confirm instruction and spends its grant, the memory's
-    /// stopping refusal earns the stopping line and stands down. The
-    /// refusal itself is the memory's, proven there; what is proven here is
-    /// that neither answer is invented at this surface and neither settles
-    /// the grant the other way.
+    /// The tool relays the pending memory's own decision, both ways, in the
+    /// outcome each one earns: a filed pending is a done call carrying the
+    /// confirm instruction, the memory's stopping refusal is the typed
+    /// refusal carrying the stopping line. The refusal itself is the
+    /// memory's, proven there; what is proven here is that neither answer is
+    /// invented at this surface and neither reaches the model as the other's
+    /// outcome.
     #[tokio::test]
     async fn the_tool_relays_what_the_pending_memory_answered() {
         let stopping = Arc::new(ServiceStopping::default());
         let pending = PendingDeletions::new(Arc::clone(&stopping));
-        let Change::Applied(filed) = deletion_answer(pending.file(1).await) else {
-            panic!("a filed pending applies its change");
+        let ToolOutcome::Done(filed) = deletion_answer(pending.file(1).await) else {
+            panic!("a filed pending is a done call");
         };
         assert!(filed.starts_with("The deletion request is filed. "));
         assert!(filed.ends_with(CONFIRM_INSTRUCTION));
         stopping.begin();
-        let Change::StoodDown(refused) = deletion_answer(pending.file(2).await) else {
-            panic!("the stopping refusal stands down");
+        let ToolOutcome::Refused(refused) = deletion_answer(pending.file(2).await) else {
+            panic!("the stopping refusal is the typed refusal");
         };
         assert!(refused.starts_with("The deletion request is not filed. "));
         assert!(refused.ends_with(DELETION_STOPPING));

@@ -902,11 +902,11 @@ async fn a_plain_language_deletion_ask_relays_the_confirm_token_and_confirms() {
 /// files nothing, and the tool answers the framework's typed REFUSAL
 /// carrying the stopping result — so the ledger records a standing no and a
 /// model looping on the ask reaches the forced end of its turn (decision
-/// 0196). Nothing is left to confirm, and the refusal costs the person none
-/// of their shared reply grants: the last grant of the window is still
-/// theirs to spend on a command of their own afterwards.
+/// 0196). Nothing is left to confirm, and the refusal spends its grant like
+/// every other answer the window delivers: eight answers reach the person
+/// inside the window, the refusal among them, and the ninth is silence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_deletion_ask_after_the_shutdown_began_refuses_and_spends_no_grant() {
+async fn a_deletion_ask_after_the_shutdown_began_refuses_and_leaves_nothing_pending() {
     let fixture = privacy_tool_fixture(privacy_tool::ACTION_REQUEST_DELETION, None, None).await;
     let room = support::authorized_group(&fixture.assistant, "room-tool-stopping").await;
 
@@ -961,11 +961,10 @@ async fn a_deletion_ask_after_the_shutdown_began_refuses_and_spends_no_grant() {
         "no erasure was started: the identity row stands"
     );
 
-    // The whole window is still the person's: the confirm above and every
-    // command after it up to the cap are answered, and only the one past
-    // the cap is silence. A refusal that had spent a grant would have made
-    // the last of these silent.
-    for _ in 1..PRIVACY_REPLY_CAP {
+    // The window's arithmetic with the refusal inside it: the refusal is
+    // the first of the eight answers, the confirm above the second, and six
+    // more commands fill the cap. The ninth answer is the recorded silence.
+    for _ in 2..PRIVACY_REPLY_CAP {
         assert_eq!(
             bounded_command_reply(&fixture.assistant, &room, "A", privacy::OPT_IN_COMMAND).await,
             Some(privacy::OPT_IN_ALREADY.to_owned()),

@@ -11,7 +11,7 @@ behavior lives in a platform-neutral core: conversation handling, knowledge look
 semantics, rate and abuse protection. Each platform connects through an adapter that only
 translates between the platform's API and the core's message model.
 
-Two invariants hold at every commit:
+Three invariants hold at every commit:
 
 - An adapter contains no behavior.
 - The core contains no platform vocabulary.

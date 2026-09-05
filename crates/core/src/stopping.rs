@@ -14,9 +14,8 @@
 /// construction), which files no pending whose confirm this same process
 /// would refuse. Nobody is promised an erasure this process will not run.
 ///
-/// The promise the fact carries is proven where the whole assembly runs, in
-/// the spine's `a_confirm_after_the_shutdown_began_starts_no_erasure` and
-/// `an_ask_after_the_shutdown_began_files_no_pending`.
+/// The fact is raised inside the worker lock by the shutdown, re-checked
+/// there by the erasure spawn, and read by the pending memory.
 #[derive(Debug, Default)]
 pub(crate) struct ServiceStopping(std::sync::atomic::AtomicBool);
 

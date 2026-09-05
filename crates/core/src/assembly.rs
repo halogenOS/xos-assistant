@@ -64,8 +64,8 @@ use crate::tools::send::SendMessage;
 use crate::tools::standing::StandingLookup;
 use crate::tools::work_is_done::WorkIsDone;
 use crate::window::{
-    ACKNOWLEDGMENT_WINDOW, Change, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW,
-    RESET_REPLY_CAP, RESET_REPLY_WINDOW, ReplyWindow,
+    ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, RESET_REPLY_CAP,
+    RESET_REPLY_WINDOW, ReplyWindow,
 };
 use crate::{
     authorization, delivery, identity, join, lineage, mapping, mirror, outbound, privacy, session,
@@ -2859,33 +2859,30 @@ impl Assistant {
             match command {
                 RightsCommand::OptOut => {
                     identity::set_opt_out(tx, principal_id).await.map(|raised| {
-                        Change::Applied(if raised {
+                        if raised {
                             privacy::OPT_OUT_DONE
                         } else {
                             privacy::OPT_OUT_ALREADY
-                        })
+                        }
                     })
                 }
                 RightsCommand::OptIn => {
                     identity::clear_opt_out(tx, principal_id)
                         .await
                         .map(|cleared| {
-                            Change::Applied(if cleared {
+                            if cleared {
                                 privacy::OPT_IN_DONE
                             } else {
                                 privacy::OPT_IN_ALREADY
-                            })
+                            }
                         })
                 }
                 // The memory itself refuses to file once the shutdown has
-                // begun; the command only relays which answer it gave. The
-                // refusal stood down — nothing filed, nothing recorded — so
-                // it hands its grant back and the person keeps the replies
-                // their other commands still need.
+                // begun; the command only relays which answer it gave.
                 RightsCommand::Delete => {
                     Ok(match self.pending_deletions.file(principal_id).await {
-                        Filing::Filed => Change::Applied(privacy::CONFIRM_INSTRUCTION),
-                        Filing::RefusedStopping => Change::StoodDown(privacy::DELETION_STOPPING),
+                        Filing::Filed => privacy::CONFIRM_INSTRUCTION,
+                        Filing::RefusedStopping => privacy::DELETION_STOPPING,
                     })
                 }
                 RightsCommand::Confirm => {
@@ -2928,7 +2925,7 @@ impl Assistant {
                             }
                         });
                         if started {
-                            Ok(Change::Applied(privacy::DELETION_STARTED))
+                            Ok(privacy::DELETION_STARTED)
                         } else {
                             // The service is stopping and nothing would wait
                             // for the run, so no erasure starts. The pending
@@ -2936,10 +2933,10 @@ impl Assistant {
                             // process's memory alone, so handing it back
                             // would promise a state the next process cannot
                             // hold. The person is told to ask again there.
-                            Ok(Change::Applied(privacy::DELETION_STOPPING))
+                            Ok(privacy::DELETION_STOPPING)
                         }
                     } else {
-                        Ok(Change::Applied(privacy::NOTHING_PENDING))
+                        Ok(privacy::NOTHING_PENDING)
                     }
                 }
             }
@@ -2949,7 +2946,7 @@ impl Assistant {
             .grant_with(principal_id, change)
             .await?
         {
-            Ok(settled) => Some(DeliveryItem::CommandAnswer(settled.answer().to_owned())),
+            Ok(line) => Some(DeliveryItem::CommandAnswer(line.to_owned())),
             Err(error) => {
                 tracing::warn!(
                     principal_id,
@@ -3078,7 +3075,7 @@ impl Assistant {
     ///
     /// The change answers what to say AND what the adapter must forget, so
     /// the directive is decided by the operation that made it and not
-    /// re-derived from the command afterwards. It answers `None` when the
+    /// re-derived from the command afterwards. It answers `Ok(None)` when the
     /// reset made nothing of its own — a mapping claim lost to a concurrent
     /// racer — and then the chat hears nothing and no directive fires: the
     /// surviving session is the racer's, and this command has nothing to
@@ -3091,19 +3088,14 @@ impl Assistant {
         command: Command,
         change: impl Future<Output = Result<Option<(&'static str, ChannelReset)>, CoreError>>,
     ) -> (Option<DeliveryItem>, ChannelReset) {
-        let applied = async { change.await.map(Change::Applied) };
-        match self.reset_replies.grant_with(principal_id, applied).await {
-            // The reset builds only [`Change::Applied`], so the answer read
-            // out here is that one.
-            Some(Ok(settled)) => match settled.answer() {
-                Some((line, reset)) => (Some(DeliveryItem::CommandAnswer(line.to_owned())), reset),
-                // A claim lost to a racer: this command made nothing to
-                // report, so it says nothing and fires no directive.
-                None => (None, ChannelReset::Kept),
-            },
-            // The exhausted window: the reply was withheld and its change
-            // with it, which is the same silence.
-            None => (None, ChannelReset::Kept),
+        match self.reset_replies.grant_with(principal_id, change).await {
+            Some(Ok(Some((line, reset)))) => {
+                (Some(DeliveryItem::CommandAnswer(line.to_owned())), reset)
+            }
+            // `Some(Ok(None))` is the claim lost to a racer, described
+            // above; `None` is the exhausted window, which never ran the
+            // change and spent nothing.
+            Some(Ok(None)) | None => (None, ChannelReset::Kept),
             Some(Err(error)) => {
                 tracing::warn!(
                     principal_id,
