@@ -1500,12 +1500,24 @@ impl SendEndings {
         Self(assistant.finished_sends())
     }
 
-    /// Nothing has declared a send done yet: the send is on its way.
+    /// Nothing has declared a send done yet: the send is on its way. Only an
+    /// EMPTY channel says so — a lagged one dropped endings this reading
+    /// cannot see, and a closed one ended the carrier the case is watching.
     pub fn none_yet(&mut self) {
-        assert!(
-            self.0.try_recv().is_err(),
-            "the send is on its way and nothing has declared it done yet"
-        );
+        match self.0.try_recv() {
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(missed)) => {
+                panic!("the carrier dropped {missed} endings, so what it holds is unreadable")
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                panic!("the carrier closed while the send was on its way")
+            }
+            Ok(conversation_id) => {
+                panic!(
+                    "conversation {conversation_id} was declared done while its send is on its way"
+                )
+            }
+        }
     }
 
     /// The next ending, which must be this conversation's — the stop the

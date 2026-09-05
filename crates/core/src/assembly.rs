@@ -22,7 +22,7 @@ use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{ProviderInstance, StoreTx};
 use agent_ledger::{
     Block, BlockKind, CoreEvent, EventBus, FromBlock, ProviderRegistry, Role, RuntimeContext,
-    Store, ToolCallResult, spawn_reactor,
+    Store, ToolCallResult, ToolRegistry, spawn_reactor,
 };
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
@@ -45,10 +45,11 @@ use crate::message::{
 };
 use crate::note::{self, ContextNote, NoteTopic};
 use crate::outgoing;
-use crate::privacy::{PendingDeletions, PrivacyCommand, RightsCommand};
+use crate::privacy::{Filing, PendingDeletions, PrivacyCommand, RightsCommand};
 use crate::quoting;
 use crate::retention::{self, RetentionConfig};
 use crate::session::{CompactOutcome, InheritedRows, SessionCoordination, Sessions, WipeOutcome};
+use crate::stopping::ServiceStopping;
 use crate::streams::StreamObserver;
 use crate::tools::ToolSet;
 use crate::tools::changelog::HarnessChangelog;
@@ -63,8 +64,8 @@ use crate::tools::send::SendMessage;
 use crate::tools::standing::StandingLookup;
 use crate::tools::work_is_done::WorkIsDone;
 use crate::window::{
-    ACKNOWLEDGMENT_WINDOW, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW, RESET_REPLY_CAP,
-    RESET_REPLY_WINDOW, ReplyWindow,
+    ACKNOWLEDGMENT_WINDOW, Change, LineWindow, PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW,
+    RESET_REPLY_CAP, RESET_REPLY_WINDOW, ReplyWindow,
 };
 use crate::{
     authorization, delivery, identity, join, lineage, mapping, mirror, outbound, privacy, session,
@@ -452,15 +453,8 @@ pub struct Assistant {
     /// memory, forgotten on restart — deletion is the flow where forgetting
     /// errs safe.
     pending_deletions: Arc<PendingDeletions>,
-    /// The observation race's test seam; unset in production. A
-    /// write-once cell, the session's own seam shape: a seam is installed
-    /// before the assembly serves anything, so it needs no reach past a
-    /// shared handle and never changes under a running conversation.
-    note_read_pause: OnceLock<ScriptedPause>,
-    /// The suppression race's test seam, run between the pre-lock standing
-    /// read and the stamp lock; unset in production, write-once like the
-    /// seam above it.
-    standing_read_pause: OnceLock<ScriptedPause>,
+    /// The race seams a suite installs, all unset in production.
+    seams: Seams,
     /// The conversations whose recorded tool choice this process already
     /// compared against the registered set — the once-per-process memory
     /// of the on-delta supersession (decided 2026-08-23), bounded by
@@ -481,15 +475,53 @@ pub struct Assistant {
     /// contract is on [`composing::SendStops`].
     send_stops: composing::SendStops,
     /// The unattended tasks this assembly started and can end: the
-    /// compaction driver and the retention sweep, the two that write to the
-    /// store with nobody waiting on them. [`Assistant::shutdown`] takes them
-    /// out of here, so a second call finds nothing left to stop.
+    /// compaction driver, the retention sweep, and each confirmed erasure —
+    /// everything that writes to the store with nobody waiting on it.
+    /// [`Assistant::shutdown`] takes them out of here, so a second call
+    /// finds nothing left to stop.
     ///
     /// The reactor is NOT among them: the framework spawns it and hands back
     /// no handle, so this assembly cannot end it. What ends its work is the
     /// per-conversation interrupt — a latched conversation stands its
     /// delivery down — and the process exiting.
-    workers: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    workers: std::sync::Mutex<Workers>,
+    /// Whether the shutdown has begun, the one record of that fact: raised
+    /// inside the worker lock so no erasure is spawned past the list the
+    /// shutdown took, and held by the pending-deletion memory too, so an
+    /// ask on either surface files nothing this process can no longer
+    /// honor.
+    stopping: Arc<ServiceStopping>,
+}
+
+/// The assembly's race seams: each one a pause a suite installs before
+/// anything is served and the assembly runs at one named point. Write-once
+/// cells, the session's own seam shape — a seam needs no reach past a shared
+/// handle and never changes under a running conversation — and every one of
+/// them is unset in production.
+#[derive(Default)]
+struct Seams {
+    /// Between the on-delta newest-note read and its append.
+    note_read: OnceLock<ScriptedPause>,
+    /// Between the pre-lock standing read and the stamp lock.
+    standing_read: OnceLock<ScriptedPause>,
+    /// At the head of a confirmed erasure's own task — the window a shutdown
+    /// arrives in while an erasure is under way.
+    erasure: OnceLock<ScriptedPause>,
+}
+
+/// The unattended tasks a running assembly holds, split by what a shutdown
+/// owes each kind.
+///
+/// The split is the point: the shutdown ABORTS a task whose half-done work
+/// costs a later sweep and nothing else, and AWAITS a task whose half-done
+/// work would be a broken promise to a person.
+#[derive(Default)]
+struct Workers {
+    /// The compaction driver and the retention sweep: long loops with no
+    /// end of their own, aborted wherever they stand.
+    aborted: Vec<tokio::task::JoinHandle<()>>,
+    /// The confirmed erasures still running, awaited to their end.
+    erasures: Vec<tokio::task::JoinHandle<()>>,
 }
 
 /// What the assembly itself adds to the embedder's tool set: the shared
@@ -547,9 +579,9 @@ struct AssembledTools {
 ///   they have to: from this unit on they are the ONLY way the model's
 ///   words reach a chat, so an assembly missing one would be an assistant
 ///   that cannot speak. They validate a reply target against stored
-///   origins, so they take the erasure fence, and they file against those
-///   origins, so they take the same filing door the report and the reaction
-///   take.
+///   origins, so they take the erasure fence, and they say when a send is
+///   over, so they take the composing cue's stop channel. The filing door
+///   is not theirs: it is the report's and the reaction's.
 fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
     let AssembledTools {
         moderation_handle,
@@ -728,19 +760,77 @@ async fn check_and_record_wiring(
 /// configured no span gets no task here at all, so the answer can hold one
 /// handle or two.
 ///
-/// Both handles are kept because these two write to the store with nobody
+/// The handles are kept because both tasks write to the store with nobody
 /// waiting on them. Either still ends on its own when the assembly is
-/// dropped, or on the exit signal a fatal failure inside it raises.
+/// dropped, or on the exit signal a fatal failure inside it raises. They go
+/// in as the aborted kind; a confirmed erasure joins the awaited kind later,
+/// through [`Assistant::spawn_erasure`].
 fn spawn_workers(
     sessions: &Arc<Sessions>,
     context: &Arc<ContextWatch>,
     fatal: &Arc<FatalExit>,
     retention: RetentionConfig,
-) -> std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>> {
+) -> std::sync::Mutex<Workers> {
     let driver =
         session::spawn_compaction_driver(sessions, sessions.context().bus(), context, fatal);
     let sweep = retention::spawn_sweep(sessions, retention, fatal);
-    std::sync::Mutex::new(std::iter::once(driver).chain(sweep).collect())
+    std::sync::Mutex::new(Workers {
+        aborted: std::iter::once(driver).chain(sweep).collect(),
+        erasures: Vec::new(),
+    })
+}
+
+/// The runtime context every path runs on, with the two bus readings built
+/// over it: the stream observer, and the compaction readings, which read
+/// the observer instead of subscribing a second time and seeing the same
+/// events twice.
+///
+/// Title derivation is switched off for good (decision 0077): nobody reads
+/// a group chat's derived title, so no conversation excerpt is ever sent
+/// anywhere for naming — zero title requests by construction, not by
+/// configuration.
+fn runtime_over(
+    store: Store,
+    bus: Arc<EventBus<CoreEvent>>,
+    providers: Arc<ProviderRegistry>,
+    registry: ToolRegistry<CoreEvent>,
+    tool_names: &[String],
+    binding: &ModelBinding,
+) -> (
+    RuntimeContext<AssistantKind, CoreEvent>,
+    Arc<StreamObserver>,
+    Arc<ContextWatch>,
+) {
+    let ctx: RuntimeContext<AssistantKind, CoreEvent> =
+        RuntimeContext::new(store, bus, providers, Arc::new(registry)).without_title_derivation();
+    let ctx = with_release_window(ctx, tool_names);
+    let streams = streams::spawn_observer(ctx.bus());
+    let context = Arc::new(ContextWatch::new(
+        Arc::clone(&streams),
+        binding.context_window,
+    ));
+    (ctx, streams, context)
+}
+
+/// The system prompt every new conversation records, composed once: each
+/// capability's teaching rides it exactly when the tool that answers for it
+/// registers, so the prompt never teaches a capability the assembly lacks.
+fn composed_prompt(
+    system_prompt: &str,
+    name: &str,
+    answering: AnsweringMode,
+    moderation_handle: Option<&str>,
+    web_search: Option<&SearchConfig>,
+) -> String {
+    crate::teaching::composed_system_prompt(
+        system_prompt,
+        name,
+        answering,
+        crate::teaching::Capabilities {
+            moderation_handle: moderation_handle.is_some(),
+            web_search: web_search.is_some(),
+        },
+    )
 }
 
 impl Assistant {
@@ -783,17 +873,14 @@ impl Assistant {
             web_search,
         } = config;
         // The two configured-value compositions, resolved once: the prompt
-        // every new conversation records — each capability's teaching
-        // riding it exactly when the tool below registers — and the
-        // disclosure every outbound edge introduces with.
-        let system_prompt = crate::teaching::composed_system_prompt(
+        // every new conversation records and the disclosure every outbound
+        // edge introduces with.
+        let system_prompt = composed_prompt(
             &system_prompt,
             &name,
             answering,
-            crate::teaching::Capabilities {
-                moderation_handle: moderation_handle.is_some(),
-                web_search: web_search.is_some(),
-            },
+            moderation_handle.as_deref(),
+            web_search.as_ref(),
         );
         let disclosure = Arc::new(crate::disclosure::Disclosure::resolve(
             disclosure.as_deref(),
@@ -806,7 +893,11 @@ impl Assistant {
         // tools and the receipt door both say a send is over on it.
         let (filing_door, send_stops) = (filing::door(), composing::stops());
         let privacy_replies = Arc::new(ReplyWindow::new(PRIVACY_REPLY_WINDOW, PRIVACY_REPLY_CAP));
-        let pending_deletions = Arc::new(PendingDeletions::new());
+        // The lifecycle fact and the deletion memory that reads it: both
+        // surfaces file into that memory, and it alone decides whether a
+        // pending may still be filed.
+        let stopping = Arc::new(ServiceStopping::default());
+        let pending_deletions = Arc::new(PendingDeletions::new(Arc::clone(&stopping)));
         let mut tools = tools;
         admit_assembled_tools(
             &mut tools,
@@ -826,22 +917,8 @@ impl Assistant {
         // calls against and the tool choice every new conversation records
         // are both derived from the set right here.
         let (registry, tool_names) = tools.into_registry();
-        // Title derivation is switched off for good (decision 0077): nobody
-        // reads a group chat's derived title, so no conversation excerpt is
-        // ever sent anywhere for naming — zero title requests by
-        // construction, not by configuration.
-        let ctx: RuntimeContext<AssistantKind, CoreEvent> =
-            RuntimeContext::new(store, bus, providers, Arc::new(registry))
-                .without_title_derivation();
-        let ctx = with_release_window(ctx, &tool_names);
-        let streams = streams::spawn_observer(ctx.bus());
-        // The one home of the compaction readings, built over the observer
-        // that already consumes the bus rather than a second subscriber
-        // seeing the same events.
-        let context = Arc::new(ContextWatch::new(
-            Arc::clone(&streams),
-            binding.context_window,
-        ));
+        let (ctx, streams, context) =
+            runtime_over(store, bus, providers, registry, &tool_names, &binding);
         // The two holds are handed to the sessions and kept there: every
         // path in this assembly takes them back through it, so neither has
         // a second home to drift from.
@@ -881,44 +958,98 @@ impl Assistant {
             privacy_replies,
             reset_replies: ReplyWindow::new(RESET_REPLY_WINDOW, RESET_REPLY_CAP),
             pending_deletions,
-            note_read_pause: OnceLock::new(),
-            standing_read_pause: OnceLock::new(),
+            seams: Seams::default(),
             choice_reconciled: Mutex::new(HashSet::new()),
             filing_door,
             send_stops,
             workers,
+            stopping,
         })
     }
 
-    /// End this assembly's unattended work and wait until it has ended: the
-    /// compaction driver and the retention sweep are aborted and awaited, so
-    /// once this returns neither can write to the store again.
+    /// Start a confirmed erasure as its own task and keep it where
+    /// [`Assistant::shutdown`] can await it. Answers whether the task was
+    /// started: a shutdown that has already begun accepts none, because the
+    /// list it awaits is taken and gone, and the caller answers the person
+    /// accordingly.
     ///
-    /// An abort and not a cancellation the loops observe, because there is
-    /// nothing to finish: a driver mid-compaction has written a fork nothing
-    /// is mapped to yet, which is the state a killed process leaves and which
-    /// the next start's walk already heals. Waiting for the model turn that
-    /// compaction is inside would make a shutdown as slow as a provider.
+    /// The erasures that have already finished are dropped on the way in, so
+    /// a long-lived process that erased many times holds only what is still
+    /// running.
+    fn spawn_erasure<F>(&self, erasure: F) -> bool
+    where
+        F: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let mut workers = self
+            .workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.stopping.begun() {
+            return false;
+        }
+        workers.erasures.retain(|erasure| !erasure.is_finished());
+        workers.erasures.push(tokio::spawn(erasure));
+        true
+    }
+
+    /// End this assembly's unattended work and wait until it has ended, each
+    /// kind the way its half-done state deserves: the compaction driver and
+    /// the retention sweep are aborted and awaited, every confirmed erasure
+    /// still running is awaited to its end. Once this returns none of them
+    /// can write to the store again.
+    ///
+    /// The driver and the sweep are aborted and not asked to finish, because
+    /// there is nothing to finish: a driver mid-compaction has written a
+    /// temporary fork nothing is mapped to yet, and that conversation is what
+    /// a killed process leaves behind too. Nothing serves it and its blocks
+    /// stop growing there, so under a configured retention span the sweep
+    /// names it like every other conversation its span has passed — the rule
+    /// reads a conversation's newest block and asks nothing about a mapping —
+    /// and it is deleted whole a span later. A deployment that configured no
+    /// span runs no sweep at all and keeps the temporary until somebody
+    /// removes it by hand: the fork is a few blocks and is served to nobody.
+    /// Waiting for the model turn that compaction is inside would make a
+    /// shutdown as slow as a provider.
+    ///
+    /// An erasure is awaited because aborting one is a broken promise. It
+    /// writes across several tables, and cut midway it leaves some of a
+    /// person's rows emptied and others standing, after that person was told
+    /// the deletion had started. It is short, it asks no provider, and it is
+    /// idempotent on a re-ask, so waiting for it costs a shutdown little and
+    /// buys the person the answer they were given.
     ///
     /// Idempotent: the handles are taken out here, so a second call has
-    /// nothing to stop. What this does NOT cover is the framework's reactor
-    /// and the per-conversation actors it spawns — the framework keeps those
-    /// handles — nor the outbound and composing edges, which end when the
-    /// adapter drops the receiver it holds.
+    /// nothing to stop. From the moment this begins no further erasure is
+    /// accepted — a privacy confirm arriving after it is answered as refused.
+    /// What this does NOT cover: the framework's reactor and the
+    /// per-conversation actors it spawns, whose handles the framework keeps
+    /// and which run until the process ends. The outbound and composing edges
+    /// are not covered either and do not need to be: each ends on its own
+    /// once the adapter drops the receiving end it holds, which the serving
+    /// path does when it stops serving.
     pub async fn shutdown(&self) {
-        let workers = std::mem::take(
-            &mut *self
+        let (aborted, erasures) = {
+            let mut workers = self
                 .workers
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for worker in &workers {
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.stopping.begin();
+            (
+                std::mem::take(&mut workers.aborted),
+                std::mem::take(&mut workers.erasures),
+            )
+        };
+        for worker in &aborted {
             worker.abort();
         }
-        for worker in workers {
+        for worker in aborted {
             // The join answers the abort itself; an unattended task that
             // panicked has already logged what it was.
             let _ = worker.await;
+        }
+        for erasure in erasures {
+            // No abort before it: this is the wait the person was promised.
+            let _ = erasure.await;
         }
     }
 
@@ -946,7 +1077,7 @@ impl Assistant {
     /// stamp lock — which is exactly why a suite can prove the lock holds
     /// the read-then-append window. Production never calls this.
     pub fn pause_between_note_read_and_append(&self, pause: ScriptedPause) {
-        let _ = self.note_read_pause.set(pause);
+        let _ = self.seams.note_read.set(pause);
     }
 
     /// Install the suppression race's test seam: the given pause runs
@@ -955,7 +1086,15 @@ impl Assistant {
     /// suite proves the under-lock re-read drops the racing message.
     /// Production never calls this.
     pub fn pause_between_standing_read_and_append(&self, pause: ScriptedPause) {
-        let _ = self.standing_read_pause.set(pause);
+        let _ = self.seams.standing_read.set(pause);
+    }
+
+    /// Install the shutdown race's test seam: the given pause runs at the
+    /// head of a confirmed erasure's task, so a suite can hold an erasure
+    /// under way while [`Assistant::shutdown`] runs and prove the shutdown
+    /// waits for it. Production never calls this.
+    pub fn pause_before_a_confirmed_erasure_runs(&self, pause: ScriptedPause) {
+        let _ = self.seams.erasure.set(pause);
     }
 
     /// Install the reset claim race's test seam: the given pause runs
@@ -1097,7 +1236,7 @@ impl Assistant {
             family,
             suppressed,
         } = sender;
-        if let Some(pause) = self.standing_read_pause.get() {
+        if let Some(pause) = self.seams.standing_read.get() {
             pause().await;
         }
 
@@ -1693,7 +1832,7 @@ impl Assistant {
                 // the same way an ingested message grants them.
                 self.reconcile_tool_choice(conversation_id).await?;
                 let newest = note::newest_text(self.ctx.store(), conversation_id, topic).await?;
-                if let Some(pause) = self.note_read_pause.get() {
+                if let Some(pause) = self.seams.note_read.get() {
                     pause().await;
                 }
                 if newest.as_deref() == Some(text.as_str()) {
@@ -2703,7 +2842,13 @@ impl Assistant {
     /// spawns the erasure as its own task, so it runs after this ingestion
     /// returns — the ingestion path holds the erasure fence for reading,
     /// the erasure takes it for writing, and running it inline would
-    /// deadlock on this very call.
+    /// deadlock on this very call. A shutdown already begun serves neither
+    /// half of the flow: the ask files no pending and the confirm consumes
+    /// the pending it finds without refiling it, and both answer the one
+    /// stopping line — nobody is told a deletion started that nothing runs,
+    /// and nobody is invited to confirm into a refusal. The consumed pending
+    /// stays gone because it lives in this process's memory alone, so
+    /// handing it back would promise a state the next process cannot hold.
     async fn rights_reply(
         &self,
         tx: &StoreTx,
@@ -2714,27 +2859,34 @@ impl Assistant {
             match command {
                 RightsCommand::OptOut => {
                     identity::set_opt_out(tx, principal_id).await.map(|raised| {
-                        if raised {
+                        Change::Applied(if raised {
                             privacy::OPT_OUT_DONE
                         } else {
                             privacy::OPT_OUT_ALREADY
-                        }
+                        })
                     })
                 }
                 RightsCommand::OptIn => {
                     identity::clear_opt_out(tx, principal_id)
                         .await
                         .map(|cleared| {
-                            if cleared {
+                            Change::Applied(if cleared {
                                 privacy::OPT_IN_DONE
                             } else {
                                 privacy::OPT_IN_ALREADY
-                            }
+                            })
                         })
                 }
+                // The memory itself refuses to file once the shutdown has
+                // begun; the command only relays which answer it gave. The
+                // refusal stood down — nothing filed, nothing recorded — so
+                // it hands its grant back and the person keeps the replies
+                // their other commands still need.
                 RightsCommand::Delete => {
-                    self.pending_deletions.file(principal_id).await;
-                    Ok(privacy::CONFIRM_INSTRUCTION)
+                    Ok(match self.pending_deletions.file(principal_id).await {
+                        Filing::Filed => Change::Applied(privacy::CONFIRM_INSTRUCTION),
+                        Filing::RefusedStopping => Change::StoodDown(privacy::DELETION_STOPPING),
+                    })
                 }
                 RightsCommand::Confirm => {
                     if self.pending_deletions.take(principal_id).await {
@@ -2747,7 +2899,11 @@ impl Assistant {
                         // instead of ending this one task and leaving the
                         // process serving over the state that failed it.
                         let fatal = Arc::clone(&self.fatal);
-                        tokio::spawn(async move {
+                        let pause = self.seams.erasure.get().map(Arc::clone);
+                        let started = self.spawn_erasure(async move {
+                            if let Some(pause) = pause {
+                                pause().await;
+                            }
                             match erase_behind_the_fence(sessions, streams, context, principal_id)
                                 .await
                             {
@@ -2771,9 +2927,19 @@ impl Assistant {
                                 }
                             }
                         });
-                        Ok(privacy::DELETION_STARTED)
+                        if started {
+                            Ok(Change::Applied(privacy::DELETION_STARTED))
+                        } else {
+                            // The service is stopping and nothing would wait
+                            // for the run, so no erasure starts. The pending
+                            // is consumed and stays gone: it lives in this
+                            // process's memory alone, so handing it back
+                            // would promise a state the next process cannot
+                            // hold. The person is told to ask again there.
+                            Ok(Change::Applied(privacy::DELETION_STOPPING))
+                        }
                     } else {
-                        Ok(privacy::NOTHING_PENDING)
+                        Ok(Change::Applied(privacy::NOTHING_PENDING))
                     }
                 }
             }
@@ -2783,7 +2949,7 @@ impl Assistant {
             .grant_with(principal_id, change)
             .await?
         {
-            Ok(line) => Some(DeliveryItem::CommandAnswer(line.to_owned())),
+            Ok(settled) => Some(DeliveryItem::CommandAnswer(settled.answer().to_owned())),
             Err(error) => {
                 tracing::warn!(
                     principal_id,
@@ -2925,15 +3091,19 @@ impl Assistant {
         command: Command,
         change: impl Future<Output = Result<Option<(&'static str, ChannelReset)>, CoreError>>,
     ) -> (Option<DeliveryItem>, ChannelReset) {
-        match self.reset_replies.grant_with(principal_id, change).await {
-            Some(Ok(Some((line, reset)))) => {
-                (Some(DeliveryItem::CommandAnswer(line.to_owned())), reset)
-            }
-            // Two silences of one shape: a claim lost to a racer, where
-            // this command made nothing to report, and an exhausted window,
-            // where the reply was withheld and its change with it. Neither
-            // says anything and neither fires a directive.
-            Some(Ok(None)) | None => (None, ChannelReset::Kept),
+        let applied = async { change.await.map(Change::Applied) };
+        match self.reset_replies.grant_with(principal_id, applied).await {
+            // The reset builds only [`Change::Applied`], so the answer read
+            // out here is that one.
+            Some(Ok(settled)) => match settled.answer() {
+                Some((line, reset)) => (Some(DeliveryItem::CommandAnswer(line.to_owned())), reset),
+                // A claim lost to a racer: this command made nothing to
+                // report, so it says nothing and fires no directive.
+                None => (None, ChannelReset::Kept),
+            },
+            // The exhausted window: the reply was withheld and its change
+            // with it, which is the same silence.
+            None => (None, ChannelReset::Kept),
             Some(Err(error)) => {
                 tracing::warn!(
                     principal_id,

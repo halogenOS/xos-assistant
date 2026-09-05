@@ -180,28 +180,62 @@ impl ReplyWindow {
     /// writing of the grant-exactly-with-the-reply protocol the command
     /// path and the privacy tool both ride (decided 2026-08-23). The grant
     /// is taken first, so a concurrent ask is bounded; the change runs only
-    /// when granted, so a state change never lands into recorded silence;
-    /// and a failed change hands the grant back before it is reported, so a
-    /// redelivered ask is not silenced by a failure that delivered nothing.
+    /// when granted, so a state change is never made into recorded silence;
+    /// and a change that neither stood nor changed anything hands the grant
+    /// back before it is reported, so a redelivered ask is not silenced by
+    /// an attempt that delivered nothing.
     ///
     /// `None` is the exhausted window — the change never ran. `Some(Ok(_))`
-    /// is the change standing with its grant. `Some(Err(_))` is the failed
-    /// change after the revoke; the caller supplies its own wording for
-    /// each.
+    /// carries what the change did with its grant, [`Change::Applied`]
+    /// having spent it and [`Change::StoodDown`] having handed it back.
+    /// `Some(Err(_))` is the failed change after the same hand-back; the
+    /// caller supplies its own wording for each.
     pub(crate) async fn grant_with<T, E>(
         &self,
         key: i64,
-        change: impl Future<Output = Result<T, E>>,
-    ) -> Option<Result<T, E>> {
+        change: impl Future<Output = Result<Change<T>, E>>,
+    ) -> Option<Result<Change<T>, E>> {
         if !self.grants(key).await {
             return None;
         }
         match change.await {
-            Ok(value) => Some(Ok(value)),
+            Ok(Change::Applied(value)) => Some(Ok(Change::Applied(value))),
+            Ok(Change::StoodDown(value)) => {
+                self.revoke(key).await;
+                Some(Ok(Change::StoodDown(value)))
+            }
             Err(error) => {
                 self.revoke(key).await;
                 Some(Err(error))
             }
+        }
+    }
+}
+
+/// What a granted change decided about its own grant: the two outcomes
+/// [`ReplyWindow::grant_with`] settles by. Both carry the change's own
+/// answer, so the caller reads one value either way.
+///
+/// The window cannot check the decision, so the producer holds it: a change
+/// answered [`StoodDown`](Change::StoodDown) has written nothing, to any
+/// table and to any memory this process keeps. A change that touched state
+/// is [`Applied`](Change::Applied) whatever its answer says, since the
+/// person's bound bounds the changes their asks make.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Change<T> {
+    /// The change stood: it spends the grant it was given.
+    Applied(T),
+    /// The producer refused to make its change and wrote nothing, so the
+    /// grant goes back and the person's bound is untouched.
+    StoodDown(T),
+}
+
+impl<T> Change<T> {
+    /// The change's own answer, whichever way it settled: what the caller
+    /// relays when the two outcomes read the same to it.
+    pub(crate) fn answer(self) -> T {
+        match self {
+            Self::Applied(answer) | Self::StoodDown(answer) => answer,
         }
     }
 }
@@ -229,24 +263,36 @@ mod tests {
 
     /// The one-operation protocol over the reply bound: an exhausted window
     /// never runs the change, a granted change spends its slot, and a
-    /// failed change hands the grant back — so a redelivery is not silenced
-    /// by a failure that delivered nothing.
+    /// change that failed or stood down hands the grant back — so a
+    /// redelivery is not silenced by an attempt that delivered nothing and
+    /// a refusal costs the person no reply of their own.
     #[tokio::test(start_paused = true)]
-    async fn a_granted_change_spends_and_a_failed_one_hands_the_grant_back() {
+    async fn a_granted_change_spends_and_a_failed_or_stood_down_one_hands_the_grant_back() {
         let window = ReplyWindow::new(PRIVACY_REPLY_WINDOW, 1);
-        let failed: Option<Result<&str, &str>> = window.grant_with(1, async { Err("down") }).await;
+        let failed: Option<Result<Change<&str>, &str>> =
+            window.grant_with(1, async { Err("down") }).await;
         assert_eq!(
             failed,
             Some(Err("down")),
             "the failed change is reported after the revoke"
         );
-        let granted: Option<Result<&str, &str>> = window.grant_with(1, async { Ok("stood") }).await;
+        let stood_down: Option<Result<Change<&str>, &str>> = window
+            .grant_with(1, async { Ok(Change::StoodDown("refused")) })
+            .await;
+        assert_eq!(
+            stood_down,
+            Some(Ok(Change::StoodDown("refused"))),
+            "the change that stood down is reported after the revoke"
+        );
+        let granted: Option<Result<Change<&str>, &str>> = window
+            .grant_with(1, async { Ok(Change::Applied("stood")) })
+            .await;
         assert_eq!(
             granted,
-            Some(Ok("stood")),
+            Some(Ok(Change::Applied("stood"))),
             "the handed-back grant is spendable again"
         );
-        let exhausted: Option<Result<&str, &str>> = window
+        let exhausted: Option<Result<Change<&str>, &str>> = window
             .grant_with(1, async {
                 panic!("an exhausted window never runs the change")
             })

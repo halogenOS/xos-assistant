@@ -66,7 +66,8 @@ enum StartError {
     /// the database's date arithmetic would return null and silently admit
     /// everything — the bound keeps the failure at the parse, loudly.
     #[error(
-        "the protection field `{field}` must be at most one year          (31536000 seconds); longer windows are refused"
+        "the protection field `{field}` must be at most one year (31536000 seconds); longer \
+         windows are refused"
     )]
     ProtectionWindowOverBound { field: &'static str },
 
@@ -591,11 +592,17 @@ async fn serve(inputs: ServeInputs) -> Result<(), StartError> {
             Ok(())
         }
         () = assistant.cannot_serve() => Err(StartError::CoreCannotServe),
-        outcome = adapter.run(Arc::clone(&assistant)) => Ok(outcome?),
+        outcome = adapter.run(Arc::clone(&assistant)) => outcome.map_err(StartError::Adapter),
     };
-    // Whichever arm answered, the serving is over: the core's unattended
-    // tasks are stopped here and awaited, so nothing writes to the database
-    // while the process is on its way out.
+    // Whichever arm answered, including the adapter's failure, the serving
+    // is over: the core's unattended tasks are ended here — the compaction
+    // driver and the retention sweep aborted, a confirmed erasure still
+    // running awaited to its end.
+    // The framework's reactor and the per-conversation actors it spawns are
+    // not the core's to stop and run until the process ends.
+    // The outbound and composing edges need no stopping: the select above
+    // dropped the adapter's run, and each edge ends itself once the
+    // receiving end that run held is dropped.
     assistant.shutdown().await;
     outcome
 }

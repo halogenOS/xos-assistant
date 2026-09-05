@@ -98,6 +98,7 @@ mod reply_commands;
 mod retention;
 pub mod schema;
 mod session;
+mod stopping;
 mod streams;
 mod teaching;
 pub mod tools;

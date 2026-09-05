@@ -1124,10 +1124,11 @@ async fn a_channel_the_walk_re_forked_compacts_with_one_prompt_at_its_head() {
 /// it the same marker on the same store moves nothing and pays for no
 /// summary turn — the ledger stands exactly as the marker left it.
 ///
-/// The second marker's own bus event is awaited before anything is asserted,
-/// on the subscription this test holds: a driver still watching takes that
-/// same fan-out, so the assertions run after the moment it would have woken
-/// on, not after a sleep that would pass either way.
+/// What makes the second answer readable is the shutdown itself: it aborts
+/// the driver and AWAITS its handle, so by the time it returns there is no
+/// task left that could take the second marker's fan-out. The assertions
+/// therefore rest on a joined task, not on a sleep that would pass either
+/// way.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_shut_down_assembly_stops_writing_to_the_store() {
     let (fixture, mut replies) = reset_fixture().await;
@@ -1158,7 +1159,6 @@ async fn a_shut_down_assembly_stops_writing_to_the_store() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     };
 
-    let mut wakes = fixture.bus.subscribe();
     let paid = requests();
     fixture.assistant.shutdown().await;
 
@@ -1173,19 +1173,6 @@ async fn a_shut_down_assembly_stops_writing_to_the_store() {
         .await
         .expect("the second forced turn end records its marker");
     let after_the_marker = kinds(&fixture.store, thread).await;
-    tokio::time::timeout(support::DEADLINE, async {
-        loop {
-            let event = wakes.recv().await.expect("the bus delivers the change");
-            if matches!(
-                event,
-                CoreEvent::BlocksChanged { conversation_id, .. } if conversation_id == thread
-            ) {
-                break;
-            }
-        }
-    })
-    .await
-    .expect("the late marker reaches the subscribers of the driver's own bus");
 
     assert_eq!(
         mapped_conversation(&fixture.store, &key).await,

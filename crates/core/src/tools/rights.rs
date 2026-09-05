@@ -23,16 +23,23 @@
 //! write the consumer's own identity-table fact when the write IS the
 //! honored right. `request_deletion` files the same principal-keyed pending
 //! state the `/privacydelete` command files and returns the fixed result
-//! carrying the literal confirm token for the model to relay verbatim; the
-//! prompt orders the relay, and a model garbling it costs one retry via the
-//! command path — the stated residual. Any other or absent action answers
-//! the fixed invalid-action result.
+//! carrying the literal confirm token for the model to relay verbatim —
+//! unless the shutdown has begun, where the pending memory files nothing
+//! and the tool answers the framework's typed refusal carrying the stopping
+//! line, because the confirm the pending would invite is refused past that
+//! point and a standing no is what the ledger must record; the prompt
+//! orders the relay,
+//! and a model garbling it costs one retry via the command path — the
+//! stated residual. Any other or absent action answers the fixed
+//! invalid-action result.
 //!
 //! The tool's deterministic replies share the per-person reply bound with
 //! the command family: an exhausted window withholds the state change with
 //! the reply — never a silent change — and answers the transient result,
 //! which is also what a failed write answers: nothing was recorded, and the
-//! commands remain the direct path.
+//! commands remain the direct path. The stopping refusal stands down inside
+//! that bound and hands its grant back, so a shutdown costs the person none
+//! of the replies their own commands still need (decision 0200).
 
 use std::sync::Arc;
 
@@ -43,9 +50,11 @@ use tokio::sync::RwLock;
 
 use crate::identity;
 use crate::message::Authority;
-use crate::privacy::{CONFIRM_INSTRUCTION, OPT_OUT_DONE, PendingDeletions};
+use crate::privacy::{
+    CONFIRM_INSTRUCTION, DELETION_STOPPING, Filing, OPT_OUT_DONE, PendingDeletions,
+};
 use crate::tools::provenance::sole_principal;
-use crate::window::ReplyWindow;
+use crate::window::{Change, ReplyWindow};
 
 /// The registered name the model calls the tool by.
 pub const NAME: &str = "privacy_request";
@@ -97,6 +106,15 @@ pub fn request_deletion_result() -> String {
     format!("The deletion request is filed. {RELAY_LEAD}{CONFIRM_INSTRUCTION}")
 }
 
+/// The deletion request's refused result once the service is stopping: no
+/// pending is filed, because the confirm it would invite is refused by the
+/// same stopping service. The person reads the one stopping line the
+/// command path answers with.
+#[must_use]
+pub fn stopping_result() -> String {
+    format!("The deletion request is not filed. {RELAY_LEAD}{DELETION_STOPPING}")
+}
+
 /// The privacy tool: member authority, no target parameter, one closed
 /// action vocabulary. Constructed by the assembly, which injects the shared
 /// pending-deletion memory, the shared per-person reply bound and the
@@ -128,20 +146,19 @@ impl PrivacyTool {
         }
     }
 
-    /// The whole request, under the erasure fence. `Err` carries the fixed
-    /// decline the runner records and the model reads.
-    async fn act(
-        &self,
-        action: Action,
-        ctx: &ToolContext<'_, CoreEvent>,
-    ) -> Result<String, String> {
+    /// The whole request, under the erasure fence. Every arm carries the
+    /// fixed line the runner records and the model reads; which outcome it
+    /// is decides what the ledger records the call as: a done call, this
+    /// consumer's typed refusal, which counts toward the forced end of a
+    /// looping turn (decision 0196), or an attempt that did not stand.
+    async fn act(&self, action: Action, ctx: &ToolContext<'_, CoreEvent>) -> ToolOutcome {
         let _no_erasure_mid_request = self.fence.read().await;
         let conversation_id = ctx.agency.conversation_id;
         let ledger = match ctx.agency.store.list_blocks(conversation_id).await {
             Ok(ledger) => ledger,
             Err(error) => {
                 tracing::warn!(conversation_id, %error, "the privacy tool's ledger read failed");
-                return Err(TRANSIENT_RESULT.to_owned());
+                return ToolOutcome::Error(TRANSIENT_RESULT.to_owned());
             }
         };
         // The subject: the one person behind the turn, resolved once in the
@@ -149,7 +166,7 @@ impl PrivacyTool {
         // taker whose stored principal is unreadable — is this tool's
         // ambiguity, never a smaller set to act on.
         let Some(principal_id) = sole_principal(&ledger, ctx.block_id) else {
-            return Err(AMBIGUOUS_RESULT.to_owned());
+            return ToolOutcome::Error(AMBIGUOUS_RESULT.to_owned());
         };
         // The person must still resolve: an erased row's principal id names
         // nobody the identity tables know, and acting on it would raise a
@@ -157,10 +174,10 @@ impl PrivacyTool {
         let tx = ctx.agency.store.tx();
         match identity::exists(&tx, principal_id).await {
             Ok(true) => {}
-            Ok(false) => return Err(AMBIGUOUS_RESULT.to_owned()),
+            Ok(false) => return ToolOutcome::Error(AMBIGUOUS_RESULT.to_owned()),
             Err(error) => {
                 tracing::warn!(conversation_id, %error, "the privacy tool's identity read failed");
-                return Err(TRANSIENT_RESULT.to_owned());
+                return ToolOutcome::Error(TRANSIENT_RESULT.to_owned());
             }
         }
         // The per-person bound, shared with the command family, through its
@@ -173,15 +190,22 @@ impl PrivacyTool {
                 // — and the relayed line is the same honored right.
                 Action::OptOut => identity::set_opt_out(&tx, principal_id)
                     .await
-                    .map(|_| opt_out_result()),
+                    .map(|_| Change::Applied(opt_out_result())),
+                // The pending memory refuses the file once the shutdown has
+                // begun — a pending filed there would invite a confirm this
+                // same process refuses — and the tool relays its answer. The
+                // refusal stands down inside the bound, so it hands its
+                // grant back: it changed nothing and recorded nothing, and
+                // a shutdown must not cost the person the replies their own
+                // commands still need.
                 Action::RequestDeletion => {
-                    self.pending.file(principal_id).await;
-                    Ok(request_deletion_result())
+                    Ok(deletion_answer(self.pending.file(principal_id).await))
                 }
             }
         };
         match self.window.grant_with(principal_id, change).await {
-            Some(Ok(filed)) => Ok(filed),
+            Some(Ok(Change::Applied(recorded))) => ToolOutcome::Done(recorded),
+            Some(Ok(Change::StoodDown(refused))) => ToolOutcome::Refused(refused),
             Some(Err(error)) => {
                 tracing::warn!(
                     conversation_id,
@@ -189,11 +213,22 @@ impl PrivacyTool {
                     %error,
                     "the privacy tool's flag write failed; nothing recorded"
                 );
-                Err(TRANSIENT_RESULT.to_owned())
+                ToolOutcome::Error(TRANSIENT_RESULT.to_owned())
             }
             // The exhausted window: the change never ran.
-            None => Err(TRANSIENT_RESULT.to_owned()),
+            None => ToolOutcome::Error(TRANSIENT_RESULT.to_owned()),
         }
+    }
+}
+
+/// The answer a filing attempt earns: the pending memory decided it, and
+/// the tool only puts the matching fixed line in front of the model. A
+/// refused filing stood down, so it carries that word to the window as
+/// well as to the outcome.
+fn deletion_answer(filing: Filing) -> Change<String> {
+    match filing {
+        Filing::Filed => Change::Applied(request_deletion_result()),
+        Filing::RefusedStopping => Change::StoodDown(stopping_result()),
     }
 }
 
@@ -253,10 +288,7 @@ impl ToolHandler<CoreEvent> for PrivacyTool {
             let Some(action) = parse_action(input) else {
                 return ToolOutcome::Error(INVALID_ACTION_RESULT.to_owned());
             };
-            match self.act(action, &ctx).await {
-                Ok(filed) => ToolOutcome::Done(filed),
-                Err(decline) => ToolOutcome::Error(decline),
-            }
+            self.act(action, &ctx).await
         })
     }
 }
@@ -267,12 +299,13 @@ mod tests {
 
     use super::*;
     use crate::schema::store_config;
+    use crate::stopping::ServiceStopping;
     use crate::window::{PRIVACY_REPLY_CAP, PRIVACY_REPLY_WINDOW};
 
     /// One tool over fresh shared state — the shape the assembly builds.
     fn fixture_tool() -> PrivacyTool {
         PrivacyTool::new(
-            Arc::new(PendingDeletions::new()),
+            Arc::new(PendingDeletions::new(Arc::new(ServiceStopping::default()))),
             Arc::new(ReplyWindow::new(PRIVACY_REPLY_WINDOW, PRIVACY_REPLY_CAP)),
             Arc::new(RwLock::new(())),
         )
@@ -290,6 +323,34 @@ mod tests {
             store,
             bus: Arc::new(EventBus::new()),
         }
+    }
+
+    /// The tool relays the pending memory's own decision, both ways, and
+    /// tells the reply bound which of the two it was: a filed pending
+    /// earns the confirm instruction and spends its grant, the memory's
+    /// stopping refusal earns the stopping line and stands down. The
+    /// refusal itself is the memory's, proven there; what is proven here is
+    /// that neither answer is invented at this surface and neither settles
+    /// the grant the other way.
+    #[tokio::test]
+    async fn the_tool_relays_what_the_pending_memory_answered() {
+        let stopping = Arc::new(ServiceStopping::default());
+        let pending = PendingDeletions::new(Arc::clone(&stopping));
+        let Change::Applied(filed) = deletion_answer(pending.file(1).await) else {
+            panic!("a filed pending applies its change");
+        };
+        assert!(filed.starts_with("The deletion request is filed. "));
+        assert!(filed.ends_with(CONFIRM_INSTRUCTION));
+        stopping.begin();
+        let Change::StoodDown(refused) = deletion_answer(pending.file(2).await) else {
+            panic!("the stopping refusal stands down");
+        };
+        assert!(refused.starts_with("The deletion request is not filed. "));
+        assert!(refused.ends_with(DELETION_STOPPING));
+        assert!(
+            !pending.take(2).await,
+            "the refused ask left nothing to confirm"
+        );
     }
 
     /// An invalid and an absent action each answer the fixed

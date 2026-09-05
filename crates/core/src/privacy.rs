@@ -28,6 +28,7 @@
 //! the window module.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
@@ -36,6 +37,7 @@ use tokio::time::Instant;
 use crate::commands::Command;
 use crate::message::InvokedCommand;
 use crate::outbound::{PRIVACY_ANSWER_LEAD, PRIVACY_UNPUBLISHED};
+use crate::stopping::ServiceStopping;
 
 /// The notice command's exact spelling. Recognition matches the invoked
 /// command the adapter reports beside the message — never the stored text,
@@ -148,6 +150,18 @@ pub const CONFIRM_INSTRUCTION: &str = "To delete your stored data, reply /confir
 pub const DELETION_STARTED: &str =
     "Deletion is underway. Your messages and identity data are being removed.";
 
+/// The deletion flow's answer once the service is stopping, to the ask and
+/// to the confirm alike: the erasure would have nothing running it to its
+/// end, so none is started, and an ask past this point files no pending
+/// either — filing one would invite a confirm the same stopping service
+/// refuses. The pending lives in this process's memory alone and is gone
+/// with the process, so the confirm consumes what stands, refiles nothing,
+/// and the line sends the person back through the ask and the confirm once
+/// the service is up again.
+pub const DELETION_STOPPING: &str = "The assistant is shutting down, so the deletion was not started. \
+     Your request is not kept. Once the assistant is back, ask again with /privacydelete \
+     and confirm with /confirmdelete.";
+
 /// The confirm's answer when nothing pending stood — never filed, lapsed,
 /// or already consumed alike: a lapsed pending IS nothing pending, and a
 /// second confirm after a completed run answers the same line.
@@ -176,22 +190,54 @@ const PENDING_DELETION_CAP: usize = 4096;
 /// re-asks. Entries lapse past [`CONFIRM_WINDOW`] and are swept on every
 /// access; the map is bounded by [`PENDING_DELETION_CAP`] and cleared whole
 /// at the cap, the established memory-cap shape.
+///
+/// The memory holds the stopping fact itself, so the shape it must never
+/// produce — a pending filed by a process that will refuse its confirm — is
+/// refused here and not avoided at the two surfaces that ask.
 pub(crate) struct PendingDeletions {
     filed: Mutex<HashMap<i64, Instant>>,
+    stopping: Arc<ServiceStopping>,
+}
+
+/// What [`PendingDeletions::file`] answers: the pending stands and the
+/// confirm instruction goes out, or the shutdown has begun and the person
+/// reads [`DELETION_STOPPING`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Filing {
+    /// The pending stands, its [`CONFIRM_WINDOW`] running.
+    Filed,
+    /// The shutdown has begun, so nothing was filed.
+    RefusedStopping,
 }
 
 impl PendingDeletions {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(stopping: Arc<ServiceStopping>) -> Self {
         Self {
             filed: Mutex::new(HashMap::new()),
+            stopping,
         }
     }
 
     /// File one principal's pending confirmation, opening — or refreshing —
     /// its window: `/privacydelete` is idempotent, and a re-ask starts the
     /// five minutes over.
-    pub(crate) async fn file(&self, principal_id: i64) {
+    ///
+    /// Once the shutdown has begun nothing is filed and the answer is
+    /// [`Filing::RefusedStopping`]: the confirm such a pending would invite
+    /// is refused by this same process.
+    ///
+    /// The two locks order nothing between them: an ask that reads the fact
+    /// down can still land its insert after the shutdown raised it. What
+    /// holds the promise is the erasure spawn's own re-check of the fact
+    /// under the worker lock — a pending that slipped in this way is found
+    /// there and its confirm starts no erasure, answering the same stopping
+    /// line. This read is what keeps the ordinary ask from being told to
+    /// confirm something that will be refused.
+    pub(crate) async fn file(&self, principal_id: i64) -> Filing {
         let mut filed = self.filed.lock().await;
+        if self.stopping.begun() {
+            return Filing::RefusedStopping;
+        }
         let now = Instant::now();
         filed.retain(|_, at| now.duration_since(*at) < CONFIRM_WINDOW);
         if filed.len() >= PENDING_DELETION_CAP {
@@ -199,6 +245,7 @@ impl PendingDeletions {
             filed.clear();
         }
         filed.insert(principal_id, now);
+        Filing::Filed
     }
 
     /// Consume one principal's pending confirmation: `true` exactly when a
@@ -290,8 +337,10 @@ mod tests {
         assert_eq!(OPT_IN_COMMAND, "/unblockprivacy");
     }
 
-    /// Every fixed line of the family, pinned verbatim against the unit
-    /// spec's copy.
+    /// Every fixed line of the family, held word for word against the copy
+    /// that owns it: the unit spec for the family's own lines, and decision
+    /// 0200 for the shutdown's answer, which is recorded there and nowhere
+    /// else.
     #[test]
     fn the_fixed_lines_match_the_spec_copy_verbatim() {
         assert_eq!(
@@ -320,6 +369,12 @@ mod tests {
             "Deletion is underway. Your messages and identity data are being removed."
         );
         assert_eq!(
+            DELETION_STOPPING,
+            "The assistant is shutting down, so the deletion was not started. Your request is \
+             not kept. Once the assistant is back, ask again with /privacydelete and \
+             confirm with /confirmdelete."
+        );
+        assert_eq!(
             NOTHING_PENDING,
             "There is no deletion waiting for confirmation. Start one with /privacydelete."
         );
@@ -336,9 +391,9 @@ mod tests {
     /// the spine suite; this pins the primitive's edges exactly.
     #[tokio::test(start_paused = true)]
     async fn a_pending_deletion_confirms_inside_the_window_and_lapses_past_it() {
-        let pending = PendingDeletions::new();
+        let pending = PendingDeletions::new(Arc::new(ServiceStopping::default()));
         assert!(!pending.take(1).await, "nothing filed is nothing pending");
-        pending.file(1).await;
+        assert_eq!(pending.file(1).await, Filing::Filed);
         tokio::time::advance(
             CONFIRM_WINDOW
                 .checked_sub(Duration::from_secs(1))
@@ -350,24 +405,49 @@ mod tests {
             !pending.take(1).await,
             "a consumed pending is nothing pending — a second confirm answers so"
         );
-        pending.file(2).await;
+        assert_eq!(pending.file(2).await, Filing::Filed);
         tokio::time::advance(CONFIRM_WINDOW + Duration::from_secs(1)).await;
         assert!(
             !pending.take(2).await,
             "a lapsed pending IS nothing pending"
         );
-        pending.file(3).await;
+        assert_eq!(pending.file(3).await, Filing::Filed);
         tokio::time::advance(
             CONFIRM_WINDOW
                 .checked_sub(Duration::from_secs(30))
                 .expect("the window is longer than half a minute"),
         )
         .await;
-        pending.file(3).await;
+        assert_eq!(pending.file(3).await, Filing::Filed);
         tokio::time::advance(Duration::from_mins(1)).await;
         assert!(
             pending.take(3).await,
             "a re-filed pending starts its five minutes over"
+        );
+    }
+
+    /// The refusal is the memory's own: once the shutdown has begun, a file
+    /// answers refused and leaves nothing behind for a confirm to consume.
+    /// Both surfaces relay this one answer, so neither can file past the
+    /// door by forgetting to ask.
+    #[tokio::test]
+    async fn the_pending_memory_refuses_to_file_once_the_shutdown_has_begun() {
+        let stopping = Arc::new(ServiceStopping::default());
+        let pending = PendingDeletions::new(Arc::clone(&stopping));
+        assert_eq!(pending.file(7).await, Filing::Filed);
+        assert!(
+            pending.take(7).await,
+            "the pending filed before the door closed stands"
+        );
+        stopping.begin();
+        assert_eq!(
+            pending.file(7).await,
+            Filing::RefusedStopping,
+            "the memory refuses the file itself"
+        );
+        assert!(
+            !pending.take(7).await,
+            "the refused file left nothing to confirm"
         );
     }
 

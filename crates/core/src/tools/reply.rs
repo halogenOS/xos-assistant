@@ -8,7 +8,7 @@
 //! and can answer several in one turn or none at all.
 //!
 //! The target is validated against the serving conversation's own ledger,
-//! and an id it does not hold is refused rather than sent plain: a silently
+//! and an id it does not hold is refused, never sent plain: a silently
 //! dropped thread would hide an invented id from the model. The validation,
 //! the caps, the filing and the sentences all live in
 //! [`sending`]; what this module owns is its
@@ -59,8 +59,8 @@ impl ToolHandler<CoreEvent> for ReplyMessage {
                  send_message are how the group hears from you. Name the message you are \
                  answering by the msgid shown in its envelope; it can be any message this \
                  conversation holds, of any age, one of your own included. An id this \
-                 conversation does not hold is declined rather than posted without the \
-                 reply. The result carries the id your message was posted under."
+                 conversation does not hold is declined, and no message is posted without \
+                 the reply. The result carries the id your message was posted under."
                 .into(),
             parameters: json!({
                 "type": "object",
@@ -117,8 +117,8 @@ mod tests {
             "Your written text is private and reaches nobody",
             "Name the message you are answering by the msgid shown in its envelope",
             "any message this conversation holds, of any age, one of your own included",
-            "An id this conversation does not hold is declined rather than posted without \
-             the reply",
+            "An id this conversation does not hold is declined, and no message is posted \
+             without the reply",
             "The result carries the id your message was posted under",
         ] {
             assert!(

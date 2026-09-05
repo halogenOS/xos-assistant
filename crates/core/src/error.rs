@@ -105,18 +105,25 @@ pub enum CoreError {
         conversation_id: i64,
     },
 
-    /// A stored ancestor reference names no conversation. The framework
-    /// loads that id from a NOT NULL column, so no row this code writes can
-    /// produce the shape: the database holds something this code never
-    /// wrote, and every lineage-scoped read behind it would answer as a
-    /// thread that continues nothing — a reader would find no trace of why
-    /// the inherited half went missing. It reaches as far as the store's own
+    /// A stored ancestor reference names no conversation: the framework's
+    /// read of that field answered nothing. It answers nothing for every
+    /// value it refuses — an absent field, one of the wrong type, and a
+    /// number that is not a positive id — and none of them is a shape this
+    /// code writes: the column behind it is a NOT NULL integer, and the only
+    /// value this code ever writes into it is the conversation's own
+    /// positive id. The column carries no check of its own, so a foreign
+    /// writer could store a non-positive number there; what the refusal
+    /// states is therefore about the writer, not about the column's range.
+    /// Every lineage-scoped read behind such a row would answer as a thread
+    /// that continues nothing — a reader would find no trace of why the
+    /// inherited half went missing. It reaches as far as the store's own
     /// refusals do, and for the same reason: the next read of the same row
     /// answers the same way.
     #[error(
         "block {block_id} of type `{block_type}` is an ancestor reference naming no \
-         conversation; the column it is loaded from is NOT NULL, so the database holds \
-         a shape this code never writes"
+         conversation; the column behind it is a NOT NULL integer that this code writes \
+         only with the conversation's own positive id, so a row that yields a refused \
+         value was written by nothing in this code"
     )]
     AncestorUnnamed {
         /// The reference block.

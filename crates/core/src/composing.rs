@@ -60,6 +60,13 @@
 //! down and the cue would hold open until the turn ended or the lifetime ran
 //! out.
 //!
+//! The bound that order costs, stated: a bus that never runs empty holds the
+//! finished sends behind it, so a cue can stay lit past the send that ended
+//! it. It cannot stay lit past the turn — the stream's terminal is itself a
+//! bus event, so it arrives on the branch being served — and the expiry sits
+//! AHEAD of the bus in the same order, so the lifetime still ends a signal on
+//! the edge's own clock whatever the bus is doing.
+//!
 //! # A presence cue, stated honestly
 //!
 //! The signal is live-only. Nothing is stored, nothing is seeded from
@@ -306,18 +313,17 @@ fn one_send_done(
     let Some(signal) = open.get_mut(&conversation_id) else {
         return;
     };
-    // An entry is created counting one and removed at zero, so a count that
-    // cannot pay for this ending means one send reported twice. The cue is
-    // stopped either way — the sends it was counting are over — and the
-    // second report is said out loud instead of subtracted into nothing.
-    if let Some(left) = signal.unfinished.checked_sub(1) {
-        signal.unfinished = left;
-    } else {
-        tracing::warn!(
-            conversation_id,
-            "a send was declared done twice; the cue stops on the first of them"
-        );
-    }
+    // The count trusts one ending per send. It cannot check that: the
+    // carrier is keyed by conversation, so a second ending for one send
+    // reads exactly like the ending of another send in the same
+    // conversation, and no detector exists at this key: a per-send key
+    // would need the begin to name the send, and the framework's
+    // call-start status carries only the conversation and the tool's
+    // name, so no begin can be paired with an ending. A doubled ending
+    // therefore darkens the cue early for that conversation, and the
+    // lifetime expiry bounds the other direction, an ending that never
+    // arrives.
+    signal.unfinished = signal.unfinished.saturating_sub(1);
     if signal.unfinished == 0 {
         stop_one(open, updates, conversation_id);
     }

@@ -101,14 +101,15 @@ pub fn is_sending_tool(name: &str) -> bool {
     NAMES.contains(&name)
 }
 
-/// The pair's answer to the framework's in-order hook, written once here
-/// and invoked inside each tool's `impl ToolHandler`.
+/// The pair's answer to the framework's in-order hook. This macro body is
+/// where the answer is written; each tool expands it inside the
+/// `impl ToolHandler` it already has, so a third sending tool takes the same
+/// line and changing the answer changes it here.
 ///
 /// The admission answer's shape, for the admission answer's reason: the
-/// method belongs to the handler each tool already implements, and a
-/// forwarder written once per tool is one sentence with two places to stop
-/// being true. A wrapping handler type would silently drop whatever trait
-/// method is added after the wrapper was written.
+/// method belongs to the handler each tool already implements. A wrapping
+/// handler type would silently drop whatever trait method is added after the
+/// wrapper was written.
 macro_rules! sends_in_order {
     () => {
         /// The sends run IN ORDER (unit 55, 2026-09-02): the framework parks
@@ -317,7 +318,7 @@ pub struct NamedSend {
 ///
 /// The text is NOT trimmed: it is content, and the core stores content as
 /// it was written. What the emptiness check reads is the trimmed form, so a
-/// message of nothing but spaces is refused rather than sent.
+/// message of nothing but spaces is refused and never sent.
 ///
 /// # Errors
 ///
@@ -380,7 +381,7 @@ fn reads_as_id(value: &Value) -> Option<String> {
 /// target's whole validation, over the vector the tool already loaded.
 ///
 /// Three kinds of record answer to an id, and each is read through its own
-/// parse rather than a column scan here:
+/// parse, never a column scan here:
 ///
 /// - a member's message, by the id it was recorded under or the id it was
 ///   revised under, since every version of one message shows the model one
@@ -738,7 +739,7 @@ mod tests {
     }
 
     /// The refusal names the tier and the moment it reopens, in UTC, and
-    /// tells the model to continue later rather than to retry now.
+    /// tells the model to continue later, never to retry now.
     #[test]
     fn the_cap_refusal_names_the_tier_and_its_reopening() {
         let reopens = DateTime::parse_from_rfc3339("2026-09-02T12:01:00Z")
@@ -1044,7 +1045,86 @@ mod tests {
         )
     }
 
-    /// The caps through the FRAMEWORK'S RUNNER against a real store (AC11):
+    /// What a spent minute tier is recorded as, read in both halves: the
+    /// sentence's two ends separately, so a failing assertion names which
+    /// end went wrong, and the standing-no stamp beside them — a spent tier
+    /// is a STANDING no, and it is this stored fact that a run of five of
+    /// them ends the turn on. Recorded as an ordinary failure it would read
+    /// as something the model could re-plan around inside the turn.
+    fn assert_spent_minute_refusal(refusal: &(String, agent_ledger::agency::Refusal)) {
+        assert!(
+            refusal.0.starts_with(
+                "declined: this conversation has sent its 5 messages for the last minute, and \
+                 this one was not sent. The allowance reopens at "
+            ),
+            "the refusal opens with the recorded sentence: {}",
+            refusal.0
+        );
+        assert!(
+            refusal
+                .0
+                .ends_with("Send nothing more this turn; continue on a later one."),
+            "the refusal closes with the recorded sentence: {}",
+            refusal.0
+        );
+        assert_eq!(
+            refusal.1,
+            agent_ledger::agency::Refusal::Refused,
+            "the spent tier is recorded as a refusal"
+        );
+    }
+
+    /// Drive the runner over the given calls in order, one call block per
+    /// (tool name, arguments) pair, and answer their block ids.
+    ///
+    /// Every call but the last is settled as delivered right after it runs:
+    /// that is what the platform's receipt does, it keeps the next in-order
+    /// call from parking behind this one, and it makes the send count as
+    /// one that reached the chat. The last is left open, because what these
+    /// tests read off the ledger is how it was answered.
+    async fn drive_calls(
+        runner: &ToolRunner<AssistantKind, CoreEvent>,
+        agency: &AgencyCtx<CoreEvent>,
+        calls: Vec<(&str, String)>,
+    ) -> Vec<i64> {
+        assert!(
+            !calls.is_empty(),
+            "drive_calls needs at least one call: it settles every call but the last"
+        );
+        let last = calls.len() - 1;
+        let mut blocks = Vec::new();
+        for (index, (name, arguments)) in calls.into_iter().enumerate() {
+            let call = runner
+                .insert_call(
+                    agency,
+                    false,
+                    format!("echo-{index}"),
+                    name.into(),
+                    arguments,
+                    CallOrigin::default(),
+                )
+                .await
+                .expect("the call block appends");
+            runner.run_wakeup(agency, false, call).await;
+            blocks.push(call);
+            if index < last {
+                agency
+                    .store
+                    .resolve_tool_call(
+                        agency.conversation_id,
+                        call,
+                        agent_ledger::ToolCallResult::Success {
+                            content: "sent".into(),
+                        },
+                    )
+                    .await
+                    .expect("the settlement writes");
+            }
+        }
+        blocks
+    }
+
+    /// The caps through the FRAMEWORK'S RUNNER against a real store:
     /// five calls of the registered tool inside one minute each file their
     /// message, and the sixth is refused with the recorded sentence and
     /// files nothing.
@@ -1074,38 +1154,19 @@ mod tests {
             bus: Arc::new(EventBus::new()),
         };
 
-        let mut calls = Vec::new();
-        for index in 0..6 {
-            let call = runner
-                .insert_call(
-                    &agency,
-                    false,
-                    format!("echo-{index}"),
-                    crate::tools::send::NAME.into(),
-                    json!({ PARAMETER_TEXT: format!("message {index}") }).to_string(),
-                    CallOrigin::default(),
-                )
-                .await
-                .expect("the call block appends");
-            runner.run_wakeup(&agency, false, call).await;
-            calls.push(call);
-            // The receipt the platform would report, so the next in-order
-            // call is not parked behind this one — and so the send counts
-            // as one that reached the chat.
-            if index < 5 {
-                agency
-                    .store
-                    .resolve_tool_call(
-                        conversation_id,
-                        call,
-                        agent_ledger::ToolCallResult::Success {
-                            content: "sent".into(),
-                        },
+        let calls = drive_calls(
+            &runner,
+            &agency,
+            (0..6)
+                .map(|index| {
+                    (
+                        crate::tools::send::NAME,
+                        json!({ PARAMETER_TEXT: format!("message {index}") }).to_string(),
                     )
-                    .await
-                    .expect("the settlement writes");
-            }
-        }
+                })
+                .collect(),
+        )
+        .await;
 
         let filed = filed_of(&agency.store, conversation_id).await;
         assert_eq!(
@@ -1119,41 +1180,144 @@ mod tests {
             "the five filed messages are the five admitted calls"
         );
 
-        let refusals: Vec<(String, agent_ledger::agency::Refusal)> = agency
-            .store
+        let refusals = refusals_of(&agency.store, conversation_id, calls[5]).await;
+        assert_eq!(refusals.len(), 1, "the sixth call is answered exactly once");
+        assert_spent_minute_refusal(&refusals[0]);
+    }
+
+    /// One member message stored in the given conversation under the given
+    /// origin: the target every threaded call in these runner tests names,
+    /// so the target validation is never what refuses a call.
+    async fn store_a_member_message(store: &Store, conversation_id: i64, origin: &str) {
+        store
+            .append_consumer_block(
+                conversation_id,
+                Some(Role::User),
+                crate::kind::CHAT_MESSAGE_KIND,
+                crate::kind::ChatMessage::stored_fields(
+                    "a recorded line",
+                    crate::kind::RecordedSender {
+                        principal_id: 7,
+                        authority: Authority::Member,
+                        speaker: None,
+                    },
+                    crate::kind::RecordedOrigin {
+                        origin: Some(origin),
+                        revises: None,
+                    },
+                    None,
+                    "2026-09-01T00:00:00Z",
+                    crate::kind::Stamp::compose(
+                        crate::kind::Summons {
+                            summoned: true,
+                            literal_addressed: true,
+                        },
+                        Authority::Member,
+                        None,
+                        None,
+                    ),
+                ),
+                None,
+            )
+            .await
+            .expect("the member message stores");
+    }
+
+    /// How the given call was answered, read off the ledger: the sentence
+    /// and the stamp of every failure recorded against it.
+    async fn refusals_of(
+        store: &Store,
+        conversation_id: i64,
+        call_block: i64,
+    ) -> Vec<(String, agent_ledger::agency::Refusal)> {
+        store
             .list_blocks(conversation_id)
             .await
             .expect("the ledger reads")
             .iter()
             .filter_map(|block| match agent_ledger::BlockKind::from_block(block) {
                 agent_ledger::BlockKind::ToolError(failure)
-                    if failure.call_block_id == Some(calls[5]) =>
+                    if failure.call_block_id == Some(call_block) =>
                 {
                     Some((failure.error, failure.refusal))
                 }
                 _ => None,
             })
-            .collect();
-        assert_eq!(refusals.len(), 1, "the sixth call is answered exactly once");
-        // The stamp, not only the sentence: a spent tier is a STANDING no,
-        // and it is this stored fact that a run of five of them ends the
-        // turn on. Recorded as an ordinary failure it would read as
-        // something the model could re-plan around inside the turn.
+            .collect()
+    }
+
+    /// ONE allowance for BOTH tools, through the framework's runner
+    /// against a real store: three `send_message` calls and two
+    /// `reply_message` calls file inside one minute, and the sixth call —
+    /// of either name — is refused with the recorded sentence.
+    ///
+    /// The mix is the point. A count kept per tool name would admit five of
+    /// each and pass every single-tool case; here it would let the sixth
+    /// call through and fail this test on the spot.
+    #[tokio::test]
+    async fn the_minute_is_one_allowance_across_both_sending_tools() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation_id = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let target = "member-1";
+        store_a_member_message(&store, conversation_id, target).await;
+        let fence: Arc<RwLock<()>> = Arc::new(RwLock::new(()));
+        let mut registry = ToolRegistry::<CoreEvent>::new();
+        registry.register(
+            crate::tools::send::NAME,
+            SendMessage::new(Arc::clone(&fence), crate::composing::stops()),
+        );
+        registry.register(
+            crate::tools::reply::NAME,
+            crate::tools::reply::ReplyMessage::new(fence, crate::composing::stops()),
+        );
+        let runner = ToolRunner::<AssistantKind, CoreEvent>::new(Arc::new(registry));
+        let agency = AgencyCtx {
+            conversation_id,
+            store,
+            bus: Arc::new(EventBus::new()),
+        };
+
+        // Three sends, two replies, and a sixth call of the other name than
+        // the fifth — so neither name reached five on its own.
+        let round = [
+            (crate::tools::send::NAME, false),
+            (crate::tools::send::NAME, false),
+            (crate::tools::reply::NAME, true),
+            (crate::tools::send::NAME, false),
+            (crate::tools::reply::NAME, true),
+            (crate::tools::send::NAME, false),
+        ];
+        let calls = drive_calls(
+            &runner,
+            &agency,
+            round
+                .into_iter()
+                .enumerate()
+                .map(|(index, (name, threaded))| {
+                    let arguments = if threaded {
+                        json!({ PARAMETER_TEXT: format!("message {index}"), PARAMETER_REPLY_TO: target })
+                    } else {
+                        json!({ PARAMETER_TEXT: format!("message {index}") })
+                    };
+                    (name, arguments.to_string())
+                })
+                .collect(),
+        )
+        .await;
+
+        let filed = filed_of(&agency.store, conversation_id).await;
         assert_eq!(
-            refusals[0].1,
-            agent_ledger::agency::Refusal::Refused,
-            "the spent tier is recorded as a refusal"
+            filed.iter().map(|send| send.call_block).collect::<Vec<_>>(),
+            calls[..5],
+            "the minute admits five messages across the two names and the sixth files none"
         );
-        assert!(
-            refusals[0].0.starts_with(
-                "declined: this conversation has sent its 5 messages for the last minute, and \
-                 this one was not sent. The allowance reopens at "
-            ) && refusals[0]
-                .0
-                .ends_with("Send nothing more this turn; continue on a later one."),
-            "the refusal is the recorded sentence: {}",
-            refusals[0].0
-        );
+        let refusals = refusals_of(&agency.store, conversation_id, calls[5]).await;
+        assert_eq!(refusals.len(), 1, "the sixth call is answered exactly once");
+        assert_spent_minute_refusal(&refusals[0]);
     }
 
     /// EVERY sending tool answers the in-order hook (AC19), asked of the
@@ -1232,29 +1396,9 @@ mod tests {
             store,
             bus: Arc::new(EventBus::new()),
         };
-        let call = agency
-            .store
-            .insert_tool_call_block(
-                conversation_id,
-                Role::Assistant,
-                ToolCallInsert {
-                    tool_call_id: "echo-refused".into(),
-                    name: crate::tools::send::NAME.into(),
-                    input: "{}".into(),
-                    interactive: false,
-                },
-                None,
-            )
-            .await
-            .expect("the call block appends");
-        let ctx = ToolContext {
-            agency: &agency,
-            tool_call_id: "echo-refused",
-            block_id: call,
-        };
         assert!(
             matches!(
-                sender.answer(&ctx, named_send("{}")).await,
+                answered(&sender, &agency, "echo-refused", "{}", named_send).await,
                 ToolOutcome::Error(refusal) if refusal == NEEDS_TEXT_ERROR
             ),
             "a call with no text is refused"
@@ -1267,6 +1411,58 @@ mod tests {
             filed_of(&agency.store, conversation_id).await.is_empty(),
             "a refused call files nothing"
         );
+
+        let unknown = r#"{"text":"t","reply_to":"404"}"#;
+        assert!(
+            matches!(
+                answered(&sender, &agency, "echo-unknown", unknown, named_reply).await,
+                ToolOutcome::Error(refusal) if refusal == UNKNOWN_TARGET_ERROR
+            ),
+            "a call naming a target the ledger does not hold is refused"
+        );
+        assert_eq!(
+            stopped
+                .try_recv()
+                .expect("the unknown target stops the cue"),
+            conversation_id
+        );
+        assert!(
+            filed_of(&agency.store, conversation_id).await.is_empty(),
+            "the unknown target filed nothing either"
+        );
+    }
+
+    /// One read call answered the way the runner asks it: the call block
+    /// appended first under the input the tool is handed, so the body sees
+    /// the call it is answering, then the tool's own answer over that block.
+    async fn answered(
+        sender: &Sender,
+        agency: &AgencyCtx<CoreEvent>,
+        tool_call_id: &str,
+        input: &str,
+        name: fn(&str) -> Result<NamedSend, &'static str>,
+    ) -> ToolOutcome {
+        let call = agency
+            .store
+            .insert_tool_call_block(
+                agency.conversation_id,
+                Role::Assistant,
+                ToolCallInsert {
+                    tool_call_id: tool_call_id.into(),
+                    name: crate::tools::send::NAME.into(),
+                    input: input.into(),
+                    interactive: false,
+                },
+                None,
+            )
+            .await
+            .expect("the call block appends");
+        let ctx = ToolContext {
+            agency,
+            tool_call_id,
+            block_id: call,
+        };
+        sender.answer(&ctx, name(input)).await
     }
 
     /// The stored text of one filed send, read back off the store.

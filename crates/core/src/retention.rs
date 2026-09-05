@@ -272,6 +272,7 @@ async fn expired_conversations(store: &Store, days: NonZeroU32) -> Result<Vec<i6
 #[cfg(test)]
 mod tests {
     use agent_ledger::providers::ReasoningLevel;
+    use agent_ledger::store::TemporaryFork;
     use agent_ledger::{CoreEvent, EventBus, ProviderRegistry, Role, RuntimeContext, ToolRegistry};
     use tokio::sync::{Mutex, RwLock};
 
@@ -597,6 +598,56 @@ mod tests {
                 .expect("the reading answers")
                 .contains(&empty),
             "a conversation whose junction holds no blocks is never named"
+        );
+    }
+
+    /// What an aborted compaction strands is swept like anything else: the
+    /// temporary conversation a driver forks before the swap is mapped to no
+    /// channel and stops growing where the abort left it, and the rule reads
+    /// a conversation's newest block without asking whether anything serves
+    /// it. This is what [`crate::Assistant::shutdown`] leaves behind, and
+    /// what a killed process leaves behind, and it is reclaimed the same way.
+    #[tokio::test]
+    async fn a_stranded_compaction_temporary_expires_like_any_conversation() {
+        let (sessions, store) = quiet_sessions();
+        let source = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let first_half_ends = store
+            .insert_final_text_block(source, Role::User, "the history to summarize".into(), None)
+            .await
+            .expect("the line stores");
+        let temporary = store
+            .fork_temporary(
+                source,
+                first_half_ends,
+                TemporaryFork {
+                    records: Vec::new(),
+                    instructions: "summarize what is above".into(),
+                },
+            )
+            .await
+            .expect("the fork stands")
+            .conversation_id;
+        // The abort: nothing was swapped, nothing is mapped to the fork, and
+        // its blocks stop here.
+        age(&store, temporary, 91).await;
+        // The source keeps being spoken in: the fork's junction carries the
+        // block the aging reached, so this line is what separates the two
+        // conversations for the rule and lets the surviving set name one.
+        store
+            .insert_final_text_block(source, Role::User, "spoken today".into(), None)
+            .await
+            .expect("the fresh line stores");
+
+        one_tick(&sessions, SPAN).await;
+
+        assert_eq!(
+            surviving(&store).await,
+            vec![source],
+            "the stranded temporary is deleted whole a span after its last block, and the \
+             source it was forked from is what stands"
         );
     }
 

@@ -898,6 +898,87 @@ async fn a_plain_language_deletion_ask_relays_the_confirm_token_and_confirms() {
     .await;
 }
 
+/// The plain-language deletion ask once the shutdown has begun: the memory
+/// files nothing, and the tool answers the framework's typed REFUSAL
+/// carrying the stopping result — so the ledger records a standing no and a
+/// model looping on the ask reaches the forced end of its turn (decision
+/// 0196). Nothing is left to confirm, and the refusal costs the person none
+/// of their shared reply grants: the last grant of the window is still
+/// theirs to spend on a command of their own afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deletion_ask_after_the_shutdown_began_refuses_and_spends_no_grant() {
+    let fixture = privacy_tool_fixture(privacy_tool::ACTION_REQUEST_DELETION, None, None).await;
+    let room = support::authorized_group(&fixture.assistant, "room-tool-stopping").await;
+
+    tokio::time::timeout(support::DEADLINE, fixture.assistant.shutdown())
+        .await
+        .expect("the shutdown returns: nothing unattended is running");
+
+    let receipt = support::ingest_recorded(
+        &fixture.assistant,
+        inbound(
+            &room,
+            ChannelKind::Group,
+            "A",
+            "please delete my stored data",
+        ),
+    )
+    .await;
+    let blocks = support::viewed_ledger(
+        &fixture.store,
+        receipt.conversation_id,
+        "the refused tool turn",
+        |blocks| {
+            blocks.iter().any(|block| block.block_type == "tool_error")
+                && blocks
+                    .last()
+                    .is_some_and(|block| block.block_type == "text")
+        },
+    )
+    .await;
+    let refusal = blocks
+        .iter()
+        .find(|block| block.block_type == "tool_error")
+        .expect("the refused call's block");
+    assert_eq!(
+        field(refusal, "error"),
+        privacy_tool::stopping_result(),
+        "the refusal carries exactly the stopping result"
+    );
+    assert_eq!(
+        refusal.fields["refusal"],
+        json!(true),
+        "the standing no is recorded a refusal, so a run of them ends the turn"
+    );
+
+    assert_eq!(
+        bounded_command_reply(&fixture.assistant, &room, "A", privacy::CONFIRM_COMMAND).await,
+        Some(privacy::NOTHING_PENDING.to_owned()),
+        "the refused ask filed no pending"
+    );
+    assert!(
+        principal_row(&fixture.store, "A").await.is_some(),
+        "no erasure was started: the identity row stands"
+    );
+
+    // The whole window is still the person's: the confirm above and every
+    // command after it up to the cap are answered, and only the one past
+    // the cap is silence. A refusal that had spent a grant would have made
+    // the last of these silent.
+    for _ in 1..PRIVACY_REPLY_CAP {
+        assert_eq!(
+            bounded_command_reply(&fixture.assistant, &room, "A", privacy::OPT_IN_COMMAND).await,
+            Some(privacy::OPT_IN_ALREADY.to_owned()),
+            "the person's own command is answered inside the bound"
+        );
+    }
+    assert_eq!(
+        bounded_command_reply(&fixture.assistant, &room, "A", privacy::OPT_IN_COMMAND).await,
+        None,
+        "the command past the cap is the recorded silence: the bound is real"
+    );
+}
+
 /// The absorbed co-summoner shape declines: a second person's addressed
 /// message lands mid-turn, the origin set holds two distinct principals,
 /// and the tool answers the fixed ambiguity result acting on nobody.
@@ -1386,4 +1467,172 @@ async fn a_version_twelve_store_upgrades_through_the_suppression_step_alone() {
         ),
     )
     .await;
+}
+
+// ─── The shutdown and a confirmed erasure ────────────────────────────────
+
+/// How long a shutdown is watched while the erasure it must wait for is
+/// held: long enough that a shutdown returning without the erasure would
+/// land inside it, short enough to cost the suite nothing.
+const HELD_STRETCH: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// A shutdown WAITS for an erasure that is under way. The seam holds the
+/// spawned run at its head and the shutdown runs against it from its own
+/// task: while the erasure is held the shutdown does not return, which a
+/// bounded wait reads by timing out, and it returns once the released run
+/// has ended with the identity row gone. A shutdown that ignored the
+/// erasure would return inside that bounded wait, so the two outcomes are
+/// told apart here and not merely both admitted.
+///
+/// This is the whole difference between the two kinds of unattended work: a
+/// compaction cut midway strands a temporary a sweep reclaims, an erasure
+/// cut midway leaves some of a person's rows emptied and others standing
+/// after that person was told the deletion started. An abort here would
+/// return with the row still in the table, which is what the last assertion
+/// reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shutdown_waits_for_the_erasure_it_finds_running() {
+    use std::sync::Arc;
+
+    let fixture = support::start_assistant(None).await;
+    let (reached_tx, mut reached_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let resume = Arc::new(tokio::sync::Semaphore::new(0));
+    {
+        let resume = Arc::clone(&resume);
+        fixture
+            .assistant
+            .pause_before_a_confirmed_erasure_runs(Arc::new(move || {
+                let reached_tx = reached_tx.clone();
+                let resume = Arc::clone(&resume);
+                Box::pin(async move {
+                    let _ = reached_tx.send(());
+                    tokio::time::timeout(support::DEADLINE, resume.acquire())
+                        .await
+                        .expect("the held erasure is released before the deadline")
+                        .expect("the semaphore outlives the test")
+                        .forget();
+                })
+            }));
+    }
+    let room = support::authorized_group(&fixture.assistant, "room-shutdown-erasure").await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&room, ChannelKind::Group, "A", "words to erase at shutdown"),
+    )
+    .await;
+    assert_eq!(
+        bounded_command_reply(&fixture.assistant, &room, "A", privacy::DELETE_COMMAND).await,
+        Some(privacy::CONFIRM_INSTRUCTION.to_owned())
+    );
+    assert_eq!(
+        bounded_command_reply(&fixture.assistant, &room, "A", privacy::CONFIRM_COMMAND).await,
+        Some(privacy::DELETION_STARTED.to_owned()),
+        "the confirm spawns the run"
+    );
+    tokio::time::timeout(support::DEADLINE, reached_rx.recv())
+        .await
+        .expect("the spawned erasure reaches the seam before the deadline")
+        .expect("the seam outlives the test");
+
+    // The shutdown runs against the held erasure from its own task, and
+    // nothing releases the erasure for this stretch: the wait below must
+    // time out, and it is the timing out that separates a shutdown which
+    // waits from one which ignores the run.
+    let mut shutting_down = tokio::spawn({
+        let assistant = Arc::clone(&fixture.assistant);
+        async move { assistant.shutdown().await }
+    });
+    assert!(
+        tokio::time::timeout(HELD_STRETCH, &mut shutting_down)
+            .await
+            .is_err(),
+        "the shutdown stays open while the erasure it owes the person is held"
+    );
+
+    resume.add_permits(1);
+    tokio::time::timeout(support::DEADLINE, shutting_down)
+        .await
+        .expect("the shutdown returns once the released erasure has ended")
+        .expect("the shutdown task ends without panicking");
+
+    assert!(
+        principal_row(&fixture.store, "A").await.is_none(),
+        "the erasure ran to its end before the shutdown returned"
+    );
+}
+
+/// A confirm arriving after the shutdown began spawns nothing and says so:
+/// the stopping line, the pending gone with the process that held it, and
+/// the identity row untouched. Nobody is told a deletion started that
+/// nothing runs, and nobody is left a pending the next process cannot see.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_confirm_after_the_shutdown_began_starts_no_erasure() {
+    let fixture = support::start_assistant(None).await;
+    let room = support::authorized_group(&fixture.assistant, "room-shutdown-confirm").await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&room, ChannelKind::Group, "A", "words the shutdown keeps"),
+    )
+    .await;
+    assert_eq!(
+        bounded_command_reply(&fixture.assistant, &room, "A", privacy::DELETE_COMMAND).await,
+        Some(privacy::CONFIRM_INSTRUCTION.to_owned())
+    );
+
+    tokio::time::timeout(support::DEADLINE, fixture.assistant.shutdown())
+        .await
+        .expect("the shutdown returns: nothing unattended is running");
+
+    assert_eq!(
+        bounded_command_reply(&fixture.assistant, &room, "A", privacy::CONFIRM_COMMAND).await,
+        Some(privacy::DELETION_STOPPING.to_owned()),
+        "the confirm is answered as refused, not as a deletion under way"
+    );
+    assert!(
+        principal_row(&fixture.store, "A").await.is_some(),
+        "no erasure was started: the identity row stands"
+    );
+    // The refusal consumed the pending and refiled nothing, so a second
+    // confirm has nothing to find — exactly what the person is told: ask
+    // again once the assistant is back.
+    assert_eq!(
+        bounded_command_reply(&fixture.assistant, &room, "A", privacy::CONFIRM_COMMAND).await,
+        Some(privacy::NOTHING_PENDING.to_owned()),
+        "the refused confirm left no pending behind"
+    );
+}
+
+/// An ASK arriving after the shutdown began files nothing and answers the
+/// same stopping line: the confirm instruction would invite a confirm this
+/// very service refuses, so the ask is refused at the same moment and on
+/// the same fact. The confirm that follows finds nothing pending, which is
+/// the proof no pending was filed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ask_after_the_shutdown_began_files_no_pending() {
+    let fixture = support::start_assistant(None).await;
+    let room = support::authorized_group(&fixture.assistant, "room-shutdown-ask").await;
+    support::ingest_recorded(
+        &fixture.assistant,
+        inbound_unaddressed(&room, ChannelKind::Group, "A", "words the shutdown keeps"),
+    )
+    .await;
+
+    tokio::time::timeout(support::DEADLINE, fixture.assistant.shutdown())
+        .await
+        .expect("the shutdown returns: nothing unattended is running");
+
+    assert_eq!(
+        bounded_command_reply(&fixture.assistant, &room, "A", privacy::DELETE_COMMAND).await,
+        Some(privacy::DELETION_STOPPING.to_owned()),
+        "the ask is answered as refused, not with the confirm instruction"
+    );
+    assert_eq!(
+        bounded_command_reply(&fixture.assistant, &room, "A", privacy::CONFIRM_COMMAND).await,
+        Some(privacy::NOTHING_PENDING.to_owned()),
+        "the refused ask filed no pending"
+    );
+    assert!(
+        principal_row(&fixture.store, "A").await.is_some(),
+        "no erasure was started: the identity row stands"
+    );
 }
