@@ -257,9 +257,10 @@ exposure is incidental, unsought and undetectable, and it is introduced by a thi
 act into a conversation the assistant only reads.
 
 What the controller owes for it is reactive, and it is honored. An erasure request reaches
-everything of the requesting person's own, immediately and by mechanism. A request about
-somebody else's message is answered by a person inside the month, on the same rights. An
-objection under Article 21 is honored the same way today, and by machine once the
+everything of the requesting person's own, immediately and by mechanism. Restated
+2026-09-04: a request about somebody else's message reaches a person, who weighs it
+against the writer's rights, decides, and tells the requester the outcome inside the
+month. An objection under Article 21 is honored the same way today, and by machine once the
 self-service unit ships. Since 2026-08-23 such content also travels to the processor with
 the speaker's handle beside it, attributable for the life of the request and no longer.
 

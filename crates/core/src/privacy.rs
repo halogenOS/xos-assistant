@@ -120,11 +120,12 @@ pub(crate) fn family_of(command: Command) -> Option<PrivacyCommand> {
 
 /// The opt-out's answer when the flag was just set. It states the plain
 /// reach openly: opting out stops collection going forward on this
-/// platform, what was stored before stands until deletion, and undoing is
-/// one command away.
-pub const OPT_OUT_DONE: &str = "Understood. From now on your messages here are not collected \
-     and not answered on this platform. What was stored before stays until you ask for \
-     deletion with /privacydelete. Undo with /unblockprivacy.";
+/// platform, the privacy commands keep working, what was stored before
+/// stands until deletion, and undoing is one command away.
+pub const OPT_OUT_DONE: &str = "Understood. From now on your messages here are not collected, \
+     and anything you send after this gets no answer. Your privacy commands still work. \
+     What was stored before stays until you ask for deletion with /privacydelete. \
+     Undo with /unblockprivacy.";
 
 /// The opt-out's answer when the flag already stood.
 pub const OPT_OUT_ALREADY: &str = "You are already opted out. Undo with /unblockprivacy, or delete stored data with \
@@ -345,9 +346,10 @@ mod tests {
     fn the_fixed_lines_match_the_spec_copy_verbatim() {
         assert_eq!(
             OPT_OUT_DONE,
-            "Understood. From now on your messages here are not collected and not answered \
-             on this platform. What was stored before stays until you ask for deletion with \
-             /privacydelete. Undo with /unblockprivacy."
+            "Understood. From now on your messages here are not collected, and anything \
+             you send after this gets no answer. Your privacy commands still work. What \
+             was stored before stays until you ask for deletion with /privacydelete. \
+             Undo with /unblockprivacy."
         );
         assert_eq!(
             OPT_OUT_ALREADY,

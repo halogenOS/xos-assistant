@@ -131,9 +131,9 @@ policy sentence this unit adds.
   `/privacyout`, `/privacydelete`, `/confirmdelete`, `/unblockprivacy` (the
   operator's name). The lines, exact copy, shipped as named constants:
   - opt-out done: `Understood. From now on your messages here are not
-    collected and not answered on this platform. What was stored before
-    stays until you ask for deletion with /privacydelete. Undo with
-    /unblockprivacy.`
+    collected, and anything you send after this gets no answer. Your
+    privacy commands still work. What was stored before stays until you ask
+    for deletion with /privacydelete. Undo with /unblockprivacy.`
   - opt-out already so: `You are already opted out. Undo with
     /unblockprivacy, or delete stored data with /privacydelete.`
   - opt-in done: `Collection is on again for you. Nothing that was deleted
@@ -154,7 +154,9 @@ policy sentence this unit adds.
   - tool transient result: `The change did not take effect. Nothing was
     recorded. The person can use /privacyout or /privacydelete directly.`
   All idempotent, all working unaddressed in groups, all recognized via the
-  reported invoked-command translation.
+  reported invoked-command translation. Amended 2026-09-04 (unit 58): the
+  opt-out line promises what the flag does and names the commands that still
+  work.
 - **The legal documents move with the unit, enumerated, 2026-08-23.** The
   policy: the rights section gains the in-chat sentence (naming the group
   reach while direct chats are off); the automated-decision sentence gains

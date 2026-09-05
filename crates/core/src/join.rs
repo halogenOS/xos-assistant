@@ -494,7 +494,13 @@ mod tests {
     #[test]
     fn the_null_list_names_every_personal_column_and_no_key() {
         let clause = null_personal_columns();
-        for column in [COLUMN_NAME, COLUMN_HANDLE, COLUMN_ORIGIN, COLUMN_JOINED_AT] {
+        assert_eq!(
+            PERSONAL_COLUMNS.len(),
+            4,
+            "the public policy counts the four things a deletion removes from a join \
+             record, so a fifth column moves the policy too"
+        );
+        for column in PERSONAL_COLUMNS {
             assert!(
                 clause.contains(&format!("{column} = NULL")),
                 "the erasure passes empty {column}"

@@ -306,11 +306,11 @@ whole conversation, so the span measures disuse and not the age of one message; 
 reasoning is in section 4. Deletion on request never waits for it.
 Deletion on request is one operation with three steps (decisions 0011, 0012): the person's
 message text, platform message number, send time, reply reference, handle and revision
-reference are emptied in every conversation; their direct conversations are removed whole,
-mappings included, and section 2 records the switch; their identity rows are deleted.
-Widened 2026-09-03 (unit 58): the first step empties the six columns the erasure pass
-nulls. Block structure is untouched, so nothing is orphaned. An emptied message projects
-a fixed marker in its own voice and never a word of the person's prose (decision 0027).
+reference are emptied in every conversation (widened 2026-09-03, unit 58); their direct
+conversations are removed whole, mappings included, and section 2 records the switch; their
+identity rows are deleted. Block structure is untouched, so nothing is orphaned. An
+emptied message projects a fixed marker in its own voice and never a word of the person's
+prose (decision 0027).
 Deletion waits for an open model stream on the affected conversation, confirms the
 settlement by re-reading stored state, and fails loudly without deleting anything past a
 bounded wait (decision 0028).
@@ -477,7 +477,7 @@ open beside it.
 
 **R1, unbounded history.** Separation of personal data from the ledger (0003, 0006) plus
 deletion that empties the message text, the platform message number, the send time, the
-reply reference, the handle and the revision reference and removes direct conversations
+reply reference, the handle and the revision reference, and removes direct conversations
 whole (0011, 0012) where the switch section 2 records is on, so the person,
 not the calendar, decides what disappears. The notice states the absence of a timer
 plainly instead of hiding it behind a vague "as long as necessary". Storage never leaves
@@ -501,9 +501,10 @@ is honored: the processor stores nothing, so a disclosure leaves no record at th
 once the answer is returned, though a model provider behind it can keep the request under
 the terms of the chosen model; no profile is built from any of it; erasure on request
 reaches everything of the requesting person's own by mechanism, within the month and in
-practice within days; a request about somebody else's message is answered by a person on
-the same rights; and an objection is honored the same way today and by machine once the
-self-service unit ships (which it did on 2026-08-23; section 5 records the shipped
+practice within days; a request about somebody else's message reaches a person, who
+weighs it against the writer's rights, decides, and tells the requester the outcome (stated
+2026-09-04, unit 58); and an objection is honored the same way today and by machine once
+the self-service unit ships (which it did on 2026-08-23; section 5 records the shipped
 path). The residual is minimised, not resolved, and it is named as such.
 
 **R3, provider exposure.** The mitigation is contractual and territorial, not technical: an
@@ -855,7 +856,7 @@ same legitimate interest as the rest — running an assistant in our own communi
 which includes keeping them within their own pinned rules. It reads no message the
 helpful mode did not already read and stores nothing beyond the existing report record.
 It does add one element to what a request carries to the provider: so the model can name
-the message it assesses, each user message in the projection now opens with that
+the message it assesses, each user message in the projection now carries that
 message's platform identifier — an opaque per-message reference, travelling beside the
 public handle already transmitted (the transmitted-identifier line above), carried only
 inside the request, retained by the processor under the zero-retention terms, and nulled
