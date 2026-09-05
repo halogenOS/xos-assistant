@@ -1,9 +1,10 @@
-# Privacy Policy — the halogenOS Group Assistant
+# Privacy policy: the halogenOS Group Assistant
 
-We run the halogenOS Group Assistant in halogenOS chat groups. This notice is given under
-Articles 13 and 14 GDPR.
+The halogenOS Group Assistant reads messages in halogenOS chat groups and answers questions there. This policy tells you what we keep about you, why we keep it, who receives it, and how long we keep it. We give this notice under Articles 13 and 14 GDPR.
 
-**Controller**
+## 1. Who is responsible, and how to reach us
+
+Simão Gomes Viana runs the assistant and is its controller under the GDPR. You can reach the controller at this address:
 
 Simão Gomes Viana\
 c/o IP-Management #10911\
@@ -11,226 +12,85 @@ Ludwig-Erhard-Str. 18\
 20459 Hamburg\
 Germany
 
-Data protection enquiries: [privacy@halogenos.org](mailto:privacy@halogenos.org)
+You can write to [privacy@halogenos.org](mailto:privacy@halogenos.org) about your data.
 
-**Processing**
+## 2. What the assistant does in a group
 
-**Messages**
+The assistant answers questions in the groups it belongs to. It reads every message with text that anyone posts in a group. That includes the messages that never address the assistant. It does not read the posts section 4 names, nor the new messages of anyone who opted out under section 7. A conversation is what we keep of a group's messages, and the assistant reads it for context around a question. We keep your username, the @name you post under, when you have one. We also keep your account ID, the number the chat platform gives your account. We use them to attribute messages to accounts and to address you in an answer. They also let us act on abuse, and they make deletion possible at all. We use your account ID to limit how much the assistant answers you. For your messages and for both of those identifiers, the legal basis is Article 6(1)(f) GDPR. That is our legitimate interest in running an assistant in our own community groups.
 
-We store the text of each message in a group the assistant belongs to, including the
-caption under a picture or a file, the group's pinned rules, which can name a person, and
-the assistant's lookups with their results — which include the words it sends to a web
-search when a question is not about the project. We do not store the media itself or
-posts made anonymously for the group, except a pinned rules text. We do not serve direct
-chats: a direct message is rejected and not stored.
+The assistant also judges messages against the group's pinned rules. When a message clearly breaks them, it reports that message to the group's moderation bot, a separate program the group's administrators run. The administrators decide what happens: the assistant does not moderate, and it cannot warn, remove or ban anybody. If a joining account's display name is itself an advertisement, it reports that announcement before the account has posted anything. The language model that writes the answers makes that judgment, and it can misfire and report a message that broke no rule. The report goes out as a public reply, so you see it.
 
-When you edit a message, the edited message is stored as a further version beside the
-first, and the earlier wording stays. Nothing is rewritten: the assistant reads the later
-version as what you now mean, and both versions are removed together when that message is
-deleted — by your own deletion request, or by the group's administrators deleting it
-through the moderation bot. An edit that only removes a caption stores nothing new, and
-the wording already stored stays until it is deleted.
+We show no advertising, and we run no analytics, tracking or profiling. We do not sell, rent or pass on what you write for marketing. Neither we nor our processor trains a language model on it. We make no automated decision about you within the meaning of Article 22 GDPR.
 
-We do not look for sensitive content and cannot recognise it: whatever a message carries,
-we store and send on like any other text. We delete a stored message that concerns you on
-request, whether you wrote it or not, your own through the route below and somebody else's
-after a person reviews it. The assistant also reads group messages that do not address it,
-to offer help when it can answer a question — on the same basis and under the same limits
-as everything else here.
+## 3. What we keep about you
 
-The assistant may put an emoji reaction on a message; the emoji it chose is stored with
-that message's record. It is what the assistant does instead of writing a reply nobody
-needed, it changes nothing about you or your standing in the group, and it cannot see the
-reactions anybody else puts on anything.
+When you post in a group the assistant belongs to, we keep the text of each message. That includes the caption on a picture or a file. We also keep the group's pinned rules, and those rules can name a person. When the assistant looks something up, we keep what it looked up and what it found. A question outside halogenOS can lead to a web search, and we keep the words it sends there. Section 5 lists who receives what we keep.
 
-_Purpose:_ answering questions in the groups, reading the conversation for
-context, limiting how much the assistant answers per person and per chat, and reporting a
-message that breaks the group's pinned rules to the group's moderation bot, on the
-assistant's own assessment. Answering a question that is not about the project can
-include a web search, described under Recipients below.
-_Legal basis:_ Article 6(1)(f) GDPR, our legitimate interest in running an assistant in our
-own community groups. You can object at any time, see below.
+With each message we keep its number on the chat platform, when you sent it and when it reached us. We also keep which message it replied to, or that it replied to the assistant, and whether you were an administrator then. A deletion request removes your username and your account ID, except the ID an opt-out keeps under section 7. We do not keep the display name on your messages. When the group announces that you joined, we keep the name that announcement showed once, and a deletion request removes it. We take your username, your account ID and your administrator standing from the chat platform. We take the rules from the group, and we take nothing about you from anywhere else.
 
-**Message author**
+If you edit a message, we keep the edited version beside the earlier wording when the edit changes the text. Your deletion request and an administrator's deletion command each reach both versions.
 
-We store your username and the numeric account identifier your chat platform assigns you,
-in tables of their own so that a deletion request can remove them. We do not store your
-display name as identity data, and no message carries it. When the group announces that
-you joined, we store the name that announcement showed, once, as the content of that
-announcement — the same way we store what a message says — and a deletion request removes
-it with everything else. We store beside each message the platform's send time and the
-time it reached us, which message it replied to, whether it was addressed to the
-assistant, whether you were an administrator then, and whether an answer was due or a
-limit refused one. We take the identity data and your administrator standing from the chat
-platform, and the rules from the group. We take nothing about you from anywhere else.
+## 4. What we do not keep
 
-_Purpose:_ attributing messages, addressing you in an answer, letting the operator act on
-abuse, and making deletion possible at all.
-_Legal basis:_ Article 6(1)(f) GDPR.
+We do not keep the pictures or files themselves. We do not keep a post made anonymously for the group or a message a channel forwards into it, except the group's rules text. The assistant is not available in private messages: we refuse a direct message and keep nothing from it. We do not look for sensitive content, and we cannot recognise it. Whatever a message carries, we keep and pass it on like any other text, and section 5 names who receives it.
 
-**Language model**
+## 5. Who else receives your data
 
-We send the conversation to a language model through a processor, and each request carries:
+When the assistant answers you, it sends the conversation to a language model, and a processor passes it along. Each request carries our instructions to the model, and the group's title and rules as the assistant recorded them. It carries each message with its writer's username when they have one, and the summary a long conversation continues from. It also carries the join announcements with the name and username each showed, what the assistant looked up, and its earlier answers. A member message or a join announcement that travels in a request travels with its own message number on the chat platform. Your account ID never reaches the model, and neither do the times, reply links and standing we keep beside a message. When the assistant looks a username up, the request also says whether that person was an administrator. The purpose and the legal basis are the same ones section 2 gives.
 
-- the text of the messages in that conversation
-- the public username of each writer, so the assistant can address you by your handle
-- the maintainers' instructions and the group's pinned rules
-- the group's stored join announcements, each with the name it showed
-- what the assistant looked up, and its own earlier answers in that conversation
-- whether someone is an administrator of the group, when the assistant looks that up: if a
-  member claims administrator standing, the assistant checks the handle against what this
-  conversation recorded and the answer goes to the model, so that a claim in a message
-  cannot pass for the fact. It answers only about a handle the group showed here, only in
-  a group, and it says nothing else about the person
+| Recipient | What happens there | Basis |
+|-----------|--------------------|-------|
+| Requesty Ltd, London, United Kingdom | Requesty passes your conversation to a language model and returns the answer. Its processing sits in the EU: what it keeps, it keeps in Frankfurt. It stores no message and no answer and trains on neither, and it keeps billing records that carry no content. | Processor, Article 28 GDPR |
+| Sub-processors engaged by Requesty | Requesty uses sub-processors, including Amazon Web Services, which runs the infrastructure in Frankfurt. The model providers it routes to form a category of recipients. Requesty's promise to store no message does not bind a model provider. Whether one keeps a request or trains on it follows the model's terms. | Sub-processors, Articles 28(2) and (4) GDPR |
+| A web search provider (a United Kingdom company) | When a question is not about halogenOS, the assistant searches the web. The provider receives the search query, words drawn from the conversation. It receives no account ID, no username and no other part of the conversation. We refuse any query that carries an @name, so no @name reaches the provider. | Processor, Article 28 GDPR |
+| The chat platform | The chat platform delivers and keeps the same messages under its own privacy policy, and it does not act for us. | Independent controller |
+| The group's moderation bot and its administrators | When the assistant reports a message or a join announcement, it replies to it with the bot's report command. The bot passes the report to the administrators, who decide what happens. The report names that message or announcement by its number and carries nothing else we keep about you. | Article 6(1)(f) GDPR, the same legitimate interest, and they act as separate controllers |
+| The other people in the group | The other people in the group see your messages. | Your own act of posting |
 
-We send the whole stored conversation every time, because an answer that cannot see the
-thread misreads it. We keep your account identifier here.
+We keep messages on a server in Germany. Even so, three transfers and one contingency take data outside the EU/EEA.
 
-_Purpose and legal basis:_ as under Messages. The sending is how an answer gets written.
+- Our processor is a United Kingdom company, and it stores and serves in Frankfurt. Our search provider is a United Kingdom company, and it receives the query there. The European Commission's adequacy decision covers both, so no further safeguard is needed.
+- The model answering your messages runs in the EU. If a model outside the EEA ever served a request, the standard contractual clauses, Article 46(2)(c) GDPR, would apply. You can write to privacy@halogenos.org for a copy of them.
+- The chat platform sits outside the EU/EEA, and it receives every message and answer as its own controller.
 
-**Excluded uses**
+## 6. How long we keep it
 
-We show no advertising and run no analytics, tracking or profiling. We do not sell, rent or
-pass on what you write for marketing, and neither we nor our processor train a language
-model on it. We make no automated decision about you within the meaning of Article 22 GDPR.
-The assistant does not moderate: it cannot warn, remove or ban anybody. It does read the
-group's messages and judge them against the group's pinned rules, and when a message
-clearly breaks them it reports that message to the group's moderation bot — the group's
-administrators decide what happens, and the assistant itself takes no action. It reads the
-group's join announcements the same way, and where a joining account's displayed name is
-itself an advertisement it reports that announcement, before the account has posted
-anything. Filing the report is the whole of what it does
-there too: it removes nobody, replies to nobody, and the administrators decide.
-The same language model that writes the answers makes that judgment, so it can
-misfire and report a message that broke no rule; the report goes out as a public reply,
-so you see it. We store the reported message's identifier with the report and empty it
-when the reported person is deleted.
-Answers are model-written and can be wrong.
+We keep a conversation while it is in use, and delete it whole once nothing has been added for 90 days. That means no message, no answer, and nothing the assistant recorded. Any message refreshes the whole conversation, so a group that is still talking keeps its history for as long as it talks. When a conversation grows long, the assistant continues from a summary of its older part. The summary belongs to the conversation that continues, so it goes when that conversation goes. We delete the older part 90 days after anything was last added to it. Everything we hold inside a conversation goes with it. Your username and account ID go once the last thing naming you has gone, except the ID an opt-out keeps under section 7. A deletion request never waits for that date: we act on it when it arrives.
 
-**Recipients and processors**
+Deleting a message in your app does not remove our copy. Neither your leaving a group nor the assistant leaving it deletes anything, so asking us is the route. When an administrator replies to a message with the moderation bot's deletion command, we delete our copy of that message with every version of it. No other deletion of a member's message in the app reaches us, so asking us remains the way to remove one. If the service stops for good, we delete everything with it.
 
-| Recipient | Role | Basis |
-|-----------|------|-------|
-| Requesty Ltd, London, United Kingdom | Passes the conversation to a language model and returns the answer. Requests enter through its European endpoint, and what it stores it stores in Frankfurt. Zero data retention is configured: no message and no answer reaches storage or training. It keeps billing telemetry without content: token counts, the model identifier, a timestamp. | Processor, Article 28 GDPR |
-| Sub-processors engaged by Requesty | Two layers. Amazon Web Services in Frankfurt runs the infrastructure, with Requesty answerable to us for it. The model providers it routes to — a category, not a name: which provider serves a request follows the model chosen, and this policy does not track that choice — answer to Requesty, which is responsible for the choice and the written terms but not for a provider's own breach. Zero data retention binds Requesty and not a model provider: whether a provider keeps a request or trains on it follows the model's terms. | Sub-processors, Article 28(2) and (4) GDPR |
-| Serper, United Kingdom | Runs the web search. It receives the search query the assistant writes — words drawn from the conversation — and answers with results. It receives no account identifier, no username and no other part of the conversation. A query written with a handle in it — an at sign followed by a name — is refused before anything is sent, so no query in that form reaches the search provider. Serper's terms are governed by the law of the United Kingdom, and its privacy policy states that where personal data is processed in the service, the customer is controller and Serper is processor. | Processor, Article 28 GDPR |
-| Your chat platform | Delivers and stores the same messages as part of its own service, under its own privacy policy. It does not act for us. | Independent controller |
-| The other people in the group | See your messages as they always have | Your own act of posting |
+## 7. How to stop or delete, and what stays afterward
 
-We store messages on a server in Germany. Data leaves the EU/EEA in four places:
+You can stop collection or have your data deleted from inside the group.
 
-- Our processor is a UK company, though it stores and serves in Frankfurt. The European
-  Commission has decided the United Kingdom offers adequate protection, so no further
-  safeguard is needed.
-- Our search provider is a UK company and receives the search query there. The same
-  adequacy decision for the United Kingdom covers it, so no further safeguard is
-  needed.
-- A model deployment outside the EEA would receive the request there, under the standard
-  contractual clauses in the processor agreement (Article 46(2)(c) GDPR); the configured
-  model is served in the EU. Write to the address above for a copy.
-- Your chat platform is outside the EU/EEA and receives every message and answer as it
-  delivers them, as its own controller.
+- The command /privacyout stops us collecting and answering your messages from that moment.
+- The command /privacydelete, confirmed with /confirmdelete within five minutes, removes what we keep about you, as this section lists.
+- The command /unblockprivacy turns collection back on.
 
-**Retention and deletion**
+Ordinary words work too: if you tell the assistant to stop collecting or to delete, it honours that the same way. The commands act on the sending account immediately, on your own confirmed instruction.
 
-We keep the messages of a conversation while that conversation is in use. A conversation
-nobody has written in for 90 days is then deleted whole. Any message refreshes the whole
-conversation, so a group that is still talking keeps its
-history for as long as it goes on talking, and what expires is what nobody has touched in
-three months. Everything stored inside a conversation goes with it: the messages, what the
-assistant looked up in it, the reactions and reports recorded there, and the rules text it
-was serving under. Your identity data goes too, once nothing kept anywhere else names you
-any more. The assistant also starts a fresh conversation at times — when a thread grows too
-long to send in full it writes a summary of the older part and carries on from that — and
-the conversation it left behind is deleted 90 days later under the same rule, while the
-fresh one holds the summary and everything since. Asking us to delete never waits for that
-date: a request is acted on when it arrives. Until a conversation expires we keep
-identity data and circumstances as long as the message; the pinned rules while the
-assistant serves the group, each replaced by the next; answer counters until they fall
-out of their window; a report with its message reference emptied when the reported person is
-deleted; a reaction record for exactly as long as the message it sits on, its message
-reference emptied on the same deletion; and the assistant's lookups with no limit of their
-own. Deleting a message in your chat app does not
-reach us, and neither your leaving a group nor the assistant leaving it deletes anything:
-ask, and it goes. One exception: when the group's administrators delete a message through
-the moderation bot's reply command, that message is removed from our store as well. Only
-that reply form reaches us: the moderation bot's bulk purges, its direct removals, and any
-deletion made without that reply stay under the rule above, and asking remains the way to
-clear those from the store. If the service stops for good, we delete the store with it.
+For everything else, or whenever you prefer a person, write to [privacy@halogenos.org](mailto:privacy@halogenos.org). Tell us your username and the group in that message. Because a username is visible to everyone, we may ask you to show that the request comes from that account. We ask for nothing more than that. We answer within one month, we charge nothing, and a person answers your email.
 
-We state the converse plainly: asking us to delete removes nothing from the group's chat.
-Your messages stay where you posted them, under your chat
-platform's own rules, and we cannot take them down — the assistant can only delete
-messages it sent itself, and only within the 48 hours the platform allows. That one
-capability runs on the same reply command: a group administrator replying `/del` to one of
-the assistant's own messages makes it take that message back off the chat and stop
-speaking from it. Where the platform refuses the removal — the message is older than 48
-hours, or somebody deleted it first — the text stays in the chat while the assistant has
-already dropped it from what it reads.
+A deletion request removes the text of every message you wrote. It removes the send time, the reply link and the message number on the chat platform. It removes your username and your account ID, except the ID an opt-out keeps. It also removes the join announcement we recorded for you, with the name and username it showed. A report we filed about you no longer points at your message. You can ask us to delete a message that concerns you but that you did not write. A person weighs your request against the writer's rights, decides, and tells you the outcome. An empty gap stays where each message was.
 
-We delete on request the text of every message you wrote, its send time and reply reference,
-your identity data, and the join announcement we recorded for you, with the name and handle
-it showed. What remains in a group is an empty placeholder holding a position in the
-conversation.
+Asking us to delete removes nothing from the group. Your messages stay where you posted them, under the chat platform's own rules. We cannot reach into the group and take them down. The assistant can take back only the messages it sent itself, and only within the 48 hours the platform allows. We keep the emoji the assistant put on your message, beside that message. A deletion request removes that record's link to your message. A reaction the assistant already put on one of your messages stays visible in the group, and we cannot take it back.
 
-One thing we do not take back, and we say so rather than let you find out: a reaction the
-assistant already put on one of your messages stays visible in the chat. The record of it
-is emptied like everything else. The reaction itself is a fact about the assistant, on a
-message the group and the platform hold as their own, and it names nobody.
+The assistant's own answers stay, and one of them can carry your username and repeat what you asked. On the records of your messages, an internal number, the time each reached us, and your administrator standing stay. Once your username and account ID are gone, that number names nobody, though it still ties those messages together. Our processor has nothing to delete, because it keeps no message. A model provider behind it may keep a request under its own terms, beyond our reach.
 
-Some things stay. The assistant's own answers stay, and one can carry your handle and repeat
-what you asked. On your message rows the store's internal number, the arrival time and your
-administrator standing stay; once your identity data is gone that number names nobody,
-though it still ties those messages together. Our processor has nothing to delete, since it
-keeps no message, and a model provider behind it may keep a request under its own terms,
-beyond our reach. We do not reach lookup records — including a web search's query — the
-pinned rules text, or the copy of your message's identifier on somebody else's reply where
-it matches nothing of yours, and a query or a rules text can quote your words or name you.
-Everything named in this paragraph is deleted anyway when the conversation holding it
-expires, so what a request leaves behind has an end date of its own. If you opted out, we
-keep your account identifier with the opt-out mark on purpose, because forgetting it would
-mean collecting your messages again. Opt back in and ask for deletion once more, and that
-mark goes too.
+A deletion request does not touch what the assistant looked up, including a web search's words, or the group's rules text. Either one can quote your words or name you. All of that is deleted anyway when the conversation holding it expires. If you opted out, we keep your account ID with a note of it: forgetting it would mean collecting your messages again. If you opt back in and later ask for deletion once more, that note goes too.
 
-**Your rights**
+## 8. Your other rights, complaints, and changes
 
-You can ask for confirmation and access (Article 15), rectification (Article 16), erasure
-(Article 17) and restriction (Article 18). Portability under Article 20 does not apply: it
-covers data processed on consent or for a contract, and everything here rests on legitimate
-interest.
+You can ask for confirmation and access under Article 15 GDPR. You can ask for rectification under Article 16, erasure under Article 17, and restriction under Article 18. Portability under Article 20 does not apply here. It covers data processed on consent or for a contract, and everything here rests on legitimate interest.
 
-You can also delete and object in the group. `/privacyout` stops us collecting and answering
-your messages from that moment; `/privacydelete`, confirmed with `/confirmdelete` within
-five minutes, removes your stored data; `/unblockprivacy` turns collection back on. They act on the sending
-account immediately, by machine, because you asked and confirmed. Plain words work too: tell
-the assistant to stop collecting or to delete, and it honors that the same way.
+You can object at any time to any processing described here. Your reasons only need to come from your own situation. We then stop, unless we can show compelling legitimate reasons that override your interests, rights and freedoms. The same holds when we need the data for legal claims. In practice we do not weigh anything at all. The command /privacyout stops collection from that moment, and a deletion request removes what section 7 lists. Neither of them asks you for a justification.
 
-Write to [privacy@halogenos.org](mailto:privacy@halogenos.org) for anything else, or if you
-prefer a person, with your username and the group. A handle is visible to everyone, so we
-may ask you to show the request comes from that account, and nothing more. We answer within
-one month and charge nothing. A person answers email; the commands are the one place a
-machine acts, and only on your own confirmed instruction.
-
-**Objection**
-
-You can object at any time to any processing described here, for reasons that come from your
-own situation, by email or with the commands above. We then stop unless we can show
-compelling legitimate reasons that override your interests, rights and freedoms, or we need
-the data for legal claims. In practice we weigh nothing: `/privacyout` stops collection from
-that moment, deletion removes what came before, and neither asks for a justification.
-
-**Complaint**
-
-You can complain to a supervisory authority, in particular where you live, where you work,
-or where the alleged infringement took place. The authority competent for us is:
+You can complain to a supervisory authority, in particular where you live, where you work, or where the matter happened. The authority competent for us is:
 
 Bayerisches Landesamt für Datenschutzaufsicht (BayLDA)\
 Promenade 18, 91522 Ansbach\
 [https://www.lda.bayern.de](https://www.lda.bayern.de)
 
-**Changes**
+We update this policy as the assistant changes. This page always carries the current version, and the /privacy command makes the assistant point you to it.
 
-We update this policy as the assistant changes. The current version is always at this
-address, and the assistant answers `/privacy` with it.
-
-Last updated: 2 September 2026
+Last updated: 3 September 2026

@@ -69,11 +69,10 @@ count as it actually stands:
   language model writing the answers is the case the guidelines describe.
 - *Criterion 4, data of a highly personal nature.* Met for direct chats between one person
   and the assistant, which the guidelines reach by way of communications whose
-  confidentiality a person may expect. Recorded 2026-08-23: direct chats are switched off
-  entirely by configuration in the deployment, so the criterion is met by a capability
-  that is not in use. Arguable and not claimed for public group posts, because a message
-  typed into an open community group is not a communication anyone can expect to be
-  confidential.
+  confidentiality a person may expect. Recorded 2026-08-23 and stated in section 2: the
+  switch is off in this deployment, so the criterion is met by a capability that is not in
+  use. Arguable and not claimed for public group posts, because a message typed into an
+  open community group is not a communication anyone can expect to be confidential.
 - *Criterion 7, data concerning vulnerable data subjects.* Arguable. The groups are open
   and the platform applies no age check, so children are among the people concerned and
   the guidelines name children expressly. Not claimed as settled, because the imbalance
@@ -110,6 +109,12 @@ whether they address it or not, and people who write to it directly. Membership 
 so the set is not enumerable in advance and includes people who never interact with the
 assistant at all. Children are not excluded from the community groups by any mechanism the
 project controls, which raises the standard the notice and the deletion path have to meet.
+
+Noted 2026-09-03 (unit 58): direct chats are switched off by configuration in this
+deployment, so a direct message is refused before anything is written and nobody enters
+scope by that route today. With the switch on, the assistant stores a direct conversation
+the way it stores a group's and removes it whole on erasure. Everywhere else this
+assessment describes a direct chat, it describes the switch in its on state.
 
 **Out of scope.** The chat platform's own processing, which the platform runs as its own
 controller, and anything the project does outside the assistant.
@@ -210,8 +215,8 @@ fails closed and withdraws (decision 0052).
    the sender's external identity, never a resolved internal identifier (decision 0006).
 2. The core resolves the person to an internal identifier, refreshing the display fields,
    and appends the message as a block whose content row holds the text.
-3. Addressing is decided at the write: a direct message, a mention, or a reply to the
-   assistant opens an answer debt (decision 0021). Everything else is stored and left
+3. Addressing is decided at the write: a direct message where the switch section 2 records
+   is on, a mention, or a reply to the assistant opens an answer debt (decision 0021). Everything else is stored and left
    unanswered.
 4. If a debt is open and the counters allow it, the conversation is projected into a
    request: the system prompt, the group's context notes in the system voice, and the
@@ -300,9 +305,11 @@ with the blocks and the identity rows nothing else still holds. Any entry refres
 whole conversation, so the span measures disuse and not the age of one message; the
 reasoning is in section 4. Deletion on request never waits for it.
 Deletion on request is one operation with three steps (decisions 0011, 0012): the person's
-message text, send time and reply reference are emptied in every conversation; their
-direct conversations are removed whole, mappings included; their identity rows are
-deleted. Block structure is untouched, so nothing is orphaned. An emptied message projects
+message text, platform message number, send time, reply reference, handle and revision
+reference are emptied in every conversation; their direct conversations are removed whole,
+mappings included, and section 2 records the switch; their identity rows are deleted.
+Widened 2026-09-03 (unit 58): the first step empties the six columns the erasure pass
+nulls. Block structure is untouched, so nothing is orphaned. An emptied message projects
 a fixed marker in its own voice and never a word of the person's prose (decision 0027).
 Deletion waits for an open model stream on the affected conversation, confirms the
 settlement by re-reading stored state, and fails loudly without deleting anything past a
@@ -461,7 +468,7 @@ open beside it.
 | R7 | The model writes something wrong or harmful about a member, in the group | Medium | Occasional |
 | R8 | The store is compromised and a full community history is taken at once | High | Rare |
 | R9 | The assistant appears in a group whose members never expected it | Medium | Rare |
-| R10 | A direct chat, more personal than a group post, is stored the same way | Medium | Occasional |
+| R10 | A direct chat, more personal than a group post, is stored the same way when the switch section 2 records is on | Medium | Occasional |
 | R11 | The assistant's answering capacity is exhausted by one flooder, or used to amplify one | Low | Occasional |
 | R12 | A member's own words, rewritten by the model into a search query, reach a further third party and are stored in a record erasure does not reach (added 2026-08-29, with the web search) | Medium | Whenever a question is not about the project |
 | R13 | A member's administrator standing, until now read only by the assistant's own machinery, is stated to the model provider whenever the model looks a handle up (added 2026-08-29, with the standing lookup) | Low | Whenever someone claims authority or is asked about |
@@ -469,11 +476,13 @@ open beside it.
 ## 7. Mitigations, mapped to what ships
 
 **R1, unbounded history.** Separation of personal data from the ledger (0003, 0006) plus
-deletion that empties the prose, the send time and the reply reference and removes direct
-conversations whole (0011, 0012), so the person, not the calendar, decides what
-disappears. The notice states the absence of a timer plainly instead of hiding it behind a
-vague "as long as necessary". Storage never leaves the project's own server; there is no
-search interface, no export, no analysis over the history.
+deletion that empties the message text, the platform message number, the send time, the
+reply reference, the handle and the revision reference and removes direct conversations
+whole (0011, 0012) where the switch section 2 records is on, so the person,
+not the calendar, decides what disappears. The notice states the absence of a timer
+plainly instead of hiding it behind a vague "as long as necessary". Storage never leaves
+the project's own server; there is no search interface, no export, no analysis over the
+history.
 
 **R2, special categories.** Re-scoped and re-rated 2026-08-23, when the operator settled
 that the groups are readable by anyone on the platform without joining or approval. What a
@@ -557,6 +566,7 @@ the groups it does serve.
 **R10, direct chats.** Deletion removes a direct conversation whole, mappings included,
 because a two-party chat that lost its human is metadata that still identifies the person
 (0011, 0012). Direct chats are never used to answer in a group: conversations do not cross.
+This row rates the capability in the on state section 2 records the switch for.
 
 **R11, capacity abuse.** Two counters, per person across all chats and per chat, limit
 answering and never storage; an over-limit message draws silence, so the assistant's voice
@@ -606,7 +616,7 @@ standing, both of which the group publishes itself. That is stated, not closed.
 | R7 | Low | No sanction capability, bounded volume, stated plainly to readers. Extended 2026-08-23 to the model-produced report relay: a misfire is public, administrator-judged and carries no consequence from the assistant. Extended 2026-08-24 to the autonomous assessment: a false positive is now the model's own misjudgment rather than a misread request, bounded the same way — public, administrator-judged, no consequence from the assistant, each message reported at most once — and by the configured reasoning level the judgment runs at. Section 13 carries the assessment. |
 | R8 | Low | Storage protection at rest was the one control this assessment could not call shipped. Confirmed 2026-08-24: the deployment holds the store and the operator-provided credentials on an encrypted volume, so the rating stands at low rather than conditionally. |
 | R9 | Low | Fail-closed authorization, healed on every later contact. |
-| R10 | Low | Whole-conversation removal on deletion. |
+| R10 | Low | Whole-conversation removal on deletion, of a capability section 2 records as switched off in this deployment. |
 | R11 | Low | Counters bound answering; silence over refusal notices. |
 | R12 | Low to medium | Added 2026-08-29. What crosses is a query and nothing else, to a processor in an adequacy-covered country, under a per-person bound and a length bound, with deliberate person references refused before they are sent. The residual is what stays behind: the query is stored where erasure does not reach, and a query can carry a member's own words without naming anyone. It falls to low when decision 0045's framework seam closes. |
 | R13 | Low | Added 2026-08-29. One sentence per lookup, stating a fact the group's own member list states, about a handle the conversation already showed, in groups only, unreachable for an erased person. The residual is the same one R12 carries: the tool record sits where erasure does not reach, holding a handle and a standing the group publishes itself. It falls no lower while decision 0045's framework seam is open. |
