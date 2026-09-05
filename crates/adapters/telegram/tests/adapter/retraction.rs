@@ -1,4 +1,4 @@
-//! The retraction over the wire (unit T4, AC1's wire half and AC6): an
+//! The retraction over the wire (unit T4, criteria 4, 5 and 10): an
 //! administrator replies to one of the assistant's own messages with the
 //! moderation bot's deletion command, and the adapter takes every message of
 //! that recorded delivery back off the chat — through the plural deletion
@@ -11,13 +11,16 @@
 
 use std::sync::Arc;
 
-use assistant_core::delivery::{DELIVERED_KIND, Delivered};
+use agent_ledger::agency::{LeafKind, Streaming};
+use assistant_core::delivery::{DELIVERED_KIND, Delivered, RETRACTION_KIND, Retraction};
+use assistant_core::kind::{ChatMessage, LimitedBy};
 use serde_json::{Value, json};
+use tokio::sync::broadcast::error::TryRecvError;
 
 use crate::server::{BotApiServer, Recorded};
 use crate::support::{
-    self, TempStateFile, authorize_group, await_conversations, await_receipts, date_of,
-    first_answer_to, message_id_of, private_update, recording_sleep, spawn_adapter,
+    self, TempStateFile, authorize_group, await_conversations, await_ledger, await_receipts,
+    date_of, first_answer_to, message_id_of, private_update, recording_sleep, spawn_adapter,
     start_assistant,
 };
 
@@ -58,7 +61,7 @@ fn deleted_ids(request: &Recorded) -> Vec<i64> {
         .collect()
 }
 
-/// AC1's wire half, the one-message case: the administrator's reply
+/// Criterion 4, the one-message case: the administrator's reply
 /// retracts the answer through ONE plural-deletion request carrying the one
 /// id — never the single-message method, whose refusal for an id it cannot
 /// find would make the commonest case a logged failure.
@@ -105,7 +108,7 @@ async fn an_admins_reply_retracts_her_answer_through_one_plural_request() {
     );
 }
 
-/// AC1's wire half, the chunked case: an answer the platform took as two
+/// Criterion 4, the chunked case: an answer the platform took as two
 /// messages is retracted whole from a reply to either of them, in one
 /// request naming both — taking back only the replied-to chunk would leave
 /// the group reading the remainder of a retracted answer.
@@ -142,7 +145,7 @@ async fn a_chunked_answer_is_retracted_whole_from_a_reply_to_its_second_chunk() 
     );
 }
 
-/// AC1's wire half, past the platform's own range: a delivery of a hundred
+/// Criterion 5, past the platform's own range: a delivery of a hundred
 /// and one messages goes out as successive requests of at most a hundred
 /// identifiers, and no larger list is ever assembled.
 ///
@@ -204,7 +207,7 @@ async fn a_delivery_past_the_platforms_range_goes_out_in_batches_of_a_hundred() 
     );
 }
 
-/// AC6: a deletion the platform refuses — the 48-hour window, or a message
+/// Criterion 10: a deletion the platform refuses — the 48-hour window, or a message
 /// somebody else already deleted — is logged and dropped. The retraction
 /// stays on the ledger, the answer is still out of the assistant's own
 /// reading, and the update batch carries on with the next message.
@@ -212,6 +215,7 @@ async fn a_delivery_past_the_platforms_range_goes_out_in_batches_of_a_hundred() 
 async fn a_refused_deletion_leaves_the_retraction_standing_and_the_batch_running() {
     let chat = -703;
     let fixture = start_assistant().await;
+    fixture.hold_closing_turns();
     authorize_group(&fixture.assistant, chat).await;
     let server = BotApiServer::start().await;
     server.set_chat_info(chat, "The kernel room", None);
@@ -229,23 +233,59 @@ async fn a_refused_deletion_leaves_the_retraction_standing_and_the_batch_running
         .await
         .last()
         .expect("the group conversation exists");
-    await_receipts(&fixture.store, group, 1).await;
-
+    let receipts = await_receipts(&fixture.store, group, 1).await;
+    let retracted_answer = receipts[0]
+        .answer_block
+        .expect("the receipt names its answer");
+    // A delivered answer can still have unfinished closing notes. The hold
+    // prevents their completion until the retraction interrupts the turn.
+    await_ledger(&fixture.store, group, "the held closing notes", |blocks| {
+        blocks
+            .iter()
+            .any(|block| block.block_type == Streaming::KINDS[0])
+    })
+    .await;
+    let mut events = fixture.bus.subscribe();
     server.push_update(del_reply_to_bot(3, chat, 5, 2));
-    server.await_recorded("deleteMessages", 1).await;
+    let deletions = server.await_recorded("deleteMessages", 1).await;
+    assert_eq!(deletions.len(), 1);
+    assert_eq!(deletions[0].body["chat_id"], json!(chat));
+    assert_eq!(
+        deleted_ids(&deletions[0]),
+        vec![2],
+        "the whole delivery is requested"
+    );
+    let mut interrupted = false;
+    loop {
+        match events.try_recv() {
+            Ok(agent_ledger::CoreEvent::InterruptRequested { conversation_id })
+                if conversation_id == group =>
+            {
+                interrupted = true;
+            }
+            Ok(_) => {}
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Lagged(count)) => {
+                panic!("interrupt evidence lost: event history lagged by {count} events");
+            }
+            Err(TryRecvError::Closed) => {
+                panic!("interrupt evidence unavailable: event history closed");
+            }
+        }
+    }
+    assert!(
+        interrupted,
+        "the held source turn was interrupted for the fork"
+    );
 
-    // The next update is processed normally: the refusal was dropped, not
-    // raised, so nothing behind it is wedged. The answer opens with the
-    // introduction again, and that is the fork being honest instead of a
-    // defect: the message that introduced her IS the message an
-    // administrator took back, so this group has not been introduced to
-    // since.
+    // The successor has no introduction left, and the following update owes
+    // its own answer. Command retention is checked on its stored row below.
     server.push_update(support::mention_update(4, chat, 7, "still there?"));
     let sends = server.await_recorded("sendMessage", 3).await;
     assert_eq!(
         sends[2].body["text"],
         json!(first_answer_to(&format!(
-            "/del\n\n@{} still there?",
+            "@{} still there?",
             support::BOT_USERNAME
         ))),
         "the update behind the refused deletion is answered as usual"
@@ -261,12 +301,37 @@ async fn a_refused_deletion_leaves_the_retraction_standing_and_the_batch_running
         .list_blocks(forked)
         .await
         .expect("the ledger reads");
-    assert!(
-        blocks
-            .iter()
-            .any(|block| block.block_type == assistant_core::delivery::RETRACTION_KIND),
-        "the recorded ask rides forward whatever the platform did with it"
+    let retractions: Vec<_> = blocks
+        .iter()
+        .filter(|block| block.block_type == RETRACTION_KIND)
+        .map(Retraction::parse)
+        .collect();
+    assert_eq!(
+        retractions.len(),
+        1,
+        "refusal leaves the retraction standing"
     );
+    assert_eq!(retractions[0].delivery.as_deref(), Some("2"));
+    assert!(
+        blocks.iter().all(|block| block.id != retracted_answer),
+        "the serving fork excludes the retracted answer"
+    );
+    let command_origin = message_id_of(3).to_string();
+    let commands: Vec<_> = blocks
+        .iter()
+        .filter(|block| block.block_type == ChatMessage::KINDS[0])
+        .map(ChatMessage::parse)
+        .filter(|message| message.origin.as_deref() == Some(command_origin.as_str()))
+        .collect();
+    assert_eq!(
+        commands.len(),
+        1,
+        "the serving successor retains the command row"
+    );
+    assert_eq!(commands[0].text.as_deref(), Some("/del"));
+    assert_eq!(commands[0].limited, Some(LimitedBy::Command));
+    assert_eq!(commands[0].answer_due, Some(false));
+    assert_eq!(sends[2].body["chat_id"], json!(chat));
 }
 
 /// The conversation one chat maps to right now, read raw — the fact the fork

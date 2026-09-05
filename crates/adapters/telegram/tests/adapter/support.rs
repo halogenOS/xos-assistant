@@ -7,7 +7,7 @@
 //! metadata worker's title-derivation request deterministically.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -178,6 +178,7 @@ struct ScriptedChat {
     /// the core's typing cue begins at that call's start, so a held turn
     /// shows the cue while its message provably has not reached the wire.
     turn_hold: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    closing_hold: Arc<AtomicBool>,
     /// The error text a scripted failure streams; see
     /// [`Fixture::word_failures_as`].
     failure_text: Arc<Mutex<String>>,
@@ -229,6 +230,7 @@ impl ProviderModule for ScriptedChat {
         let seen = Arc::clone(&self.seen);
         let tool_script = self.tool_script.clone();
         let turn_hold = Arc::clone(&self.turn_hold);
+        let closing_hold = Arc::clone(&self.closing_hold);
         let failure_text = Arc::clone(&self.failure_text);
         let title_requests = Arc::clone(&self.title_requests);
         tokio::spawn(async move {
@@ -385,6 +387,12 @@ impl ProviderModule for ScriptedChat {
                 let answer = answer_to(&without_envelope(&ask));
                 if send_results_this_turn(&messages) > 0 {
                     stream_text(&response_tx, answer);
+                    if closing_hold.load(Ordering::SeqCst) {
+                        // A held closing round ends only when its request
+                        // channel is interrupted or closed.
+                        let _ = requests.recv().await;
+                        break;
+                    }
                     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
                         usage: agent_ledger::providers::Usage::default(),
                         stop_reason: StopReason::EndTurn,
@@ -624,6 +632,7 @@ pub struct Fixture {
     /// The scripted provider's turn hold, unset by default; see
     /// [`Fixture::hold_turns`].
     turn_hold: Arc<Mutex<Option<Arc<tokio::sync::Notify>>>>,
+    closing_hold: Arc<AtomicBool>,
     /// The error text a scripted failure streams; see
     /// [`Fixture::word_failures_as`].
     failure_text: Arc<Mutex<String>>,
@@ -634,6 +643,12 @@ pub struct Fixture {
 }
 
 impl Fixture {
+    /// Hold closing notes after delivery until interruption or channel closure.
+    /// The ledger then exposes unfinished output while the answer is retractable.
+    pub fn hold_closing_turns(&self) {
+        self.closing_hold.store(true, Ordering::SeqCst);
+    }
+
     /// Hold every upcoming chat turn until the returned handle's
     /// `notify_one` releases it, one release per held turn. What the
     /// composing pins need: while a turn is held, its answer provably has
@@ -753,6 +768,7 @@ async fn assemble(
     let failures = Arc::new(AtomicUsize::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
     let turn_hold = Arc::new(Mutex::new(None));
+    let closing_hold = Arc::new(AtomicBool::new(false));
     let failure_text = Arc::new(Mutex::new("scripted stream failure".to_owned()));
     let title_requests = Arc::new(AtomicUsize::new(0));
     let mut providers = ProviderRegistry::new();
@@ -761,6 +777,7 @@ async fn assemble(
         seen: Arc::clone(&seen),
         tool_script,
         turn_hold: Arc::clone(&turn_hold),
+        closing_hold: Arc::clone(&closing_hold),
         failure_text: Arc::clone(&failure_text),
         title_requests: Arc::clone(&title_requests),
     }));
@@ -803,6 +820,7 @@ async fn assemble(
         failures,
         seen,
         turn_hold,
+        closing_hold,
         failure_text,
         title_requests,
     }
@@ -1367,29 +1385,52 @@ pub async fn await_receipts(store: &Store, conversation_id: i64, count: usize) -
     }
 }
 
-/// Await one conversation's settled turn by its exact block-type shape —
-/// every stored type in the consumer view ([`consumer_view`]) matches
-/// `shape` in order — and return that view.
-pub async fn await_shape(store: &Store, conversation: i64, shape: &[&str]) -> Vec<Block> {
-    let expected: Vec<String> = shape.iter().map(|s| (*s).to_owned()).collect();
+/// Await stored content satisfying `accept`, naming the missing observation
+/// if the existing ledger deadline expires.
+pub async fn await_ledger(
+    store: &Store,
+    conversation: i64,
+    what: &str,
+    accept: impl Fn(&[Block]) -> bool,
+) -> Vec<Block> {
     let deadline = std::time::Instant::now() + DEADLINE;
     loop {
-        let blocks = consumer_view(
-            &store
-                .list_blocks(conversation)
-                .await
-                .expect("the ledger reads"),
-        );
-        let types: Vec<&str> = blocks.iter().map(|b| b.block_type.as_str()).collect();
-        if types == expected.iter().map(String::as_str).collect::<Vec<_>>() {
+        let blocks = store
+            .list_blocks(conversation)
+            .await
+            .expect("the ledger reads");
+        if accept(&blocks) {
             return blocks;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "timed out awaiting the ledger shape {expected:?}; have {types:?}"
+            "timed out awaiting {what}; have {:?}",
+            blocks
+                .iter()
+                .map(|b| b.block_type.as_str())
+                .collect::<Vec<_>>()
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+/// Await an exact consumer-view shape. Matching final text observes its
+/// commit, not the runtime's terminal event.
+pub async fn await_shape(store: &Store, conversation: i64, shape: &[&str]) -> Vec<Block> {
+    consumer_view(
+        &await_ledger(
+            store,
+            conversation,
+            &format!("the ledger shape {shape:?}"),
+            |blocks| {
+                consumer_view(blocks)
+                    .iter()
+                    .map(|b| b.block_type.as_str())
+                    .eq(shape.iter().copied())
+            },
+        )
+        .await,
+    )
 }
 
 /// Await the recorded chat-message blocks of one conversation reaching the

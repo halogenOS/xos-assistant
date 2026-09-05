@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 // `LeafKind` carries the `KINDS` constant this file reads off `SystemPrompt`,
 // so the trait has to be in scope for the type to answer it.
-use agent_ledger::agency::{LeafKind, SystemPrompt};
+use agent_ledger::agency::{LeafKind, Streaming, SystemPrompt, Text};
 use agent_ledger::{CoreEvent, EventBus, Role, Store};
 use assistant_core::schema::store_config;
 use assistant_core::{Assistant, ChannelKind, CoreError};
@@ -128,20 +128,9 @@ async fn a_message_disagreeing_with_the_mapped_channel_kind_is_refused() {
     }
 }
 
-/// A channel whose conversation recorded an older system prompt starts a new
-/// conversation, so an edited prompt reaches a group already being served.
-///
-/// The shape a deployment actually meets: the assistant serves a group, the
-/// operator edits the prose, the process restarts on the same store. Before
-/// this, the conversation kept the wording it was created with and the edit
-/// reached only groups that appeared afterwards — the deployment changed and
-/// the assistant did not.
-///
-/// Asserted through the ledger rather than the mapping table, because what
-/// matters is where the next message lands: a different conversation under the
-/// new prompt, and the group still admitted. A retirement that also lost the
-/// operator's invitation would read as a group the assistant was never added
-/// to, and it would withdraw from it.
+/// A prompt edit moves a served group to a conversation under the current
+/// prompt. Its invitation must survive the restart and retirement, so the
+/// next message records without requiring another invitation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_edited_prompt_moves_a_served_group_to_a_new_conversation() {
     let db = support::TempDb::new("stale-prompt");
@@ -205,18 +194,10 @@ async fn an_edited_prompt_moves_a_served_group_to_a_new_conversation() {
     );
 }
 
-/// A mapped conversation whose prompt is not its FIRST row is re-forked,
-/// wording unchanged and model unchanged: the position alone is the reason.
-///
-/// That shape is what every deployed database carries, written by the fork
-/// this walk used to run — history first, the current prompt appended behind
-/// it. A ledger in it can be neither compacted nor dispatched, so the walk
-/// repairs it before anything is served: the channel takes a successor whose
-/// head is the prompt, holding the same history through the same shared
-/// blocks.
-///
-/// The shape is built in SQL by the helper below, because no door builds it
-/// any more.
+/// A misplaced prompt requires a successor even when its wording and model
+/// match. The successor must open with the current prompt and share the
+/// source history in order. SQL constructs the invalid source because the
+/// store refuses to append a prompt behind history.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_prompt_that_is_not_the_first_row_re_forks_the_channel() {
     let db = support::TempDb::new("misplaced-prompt");
@@ -230,12 +211,9 @@ async fn a_prompt_that_is_not_the_first_row_re_forks_the_channel() {
     )
     .await
     .conversation_id;
-    support::await_ledger(&store, source, "the answered turn", |blocks| {
-        blocks
-            .iter()
-            .any(|block| block.role == Some(Role::Assistant))
-    })
-    .await;
+    // The source needs the completed notes, not an assistant-voiced stream.
+    // This observes stored content; shutdown handles the runtime's termination.
+    support::await_ledger(&store, source, "the completed notes", has_completed_notes).await;
     first.shutdown().await;
 
     let held = misplace_the_prompt(&store, source).await;
@@ -301,16 +279,50 @@ async fn a_prompt_that_is_not_the_first_row_re_forks_the_channel() {
     );
 }
 
-/// Rewrite one conversation into the shape the old prompt fork left behind:
-/// the prompt row detached from the front and the current wording appended
-/// at the END. Answers the ledger it leaves, newest last.
-///
-/// The wording is the CURRENT one, so nothing but the position is stale and
-/// the walk has one reason to act on. The appended block joins the ledger as
-/// system-voiced prose — the header, junction and text rows a prompt is made
-/// of — and is then stamped with the prompt's kind, which is the state a
-/// database written before the head rule is in; the rule stands on the
-/// junction insert, which is exactly what such a database never met.
+fn has_completed_notes(blocks: &[agent_ledger::Block]) -> bool {
+    blocks.iter().any(|block| {
+        block.role == Some(Role::Assistant)
+            && block.block_type == Text::KINDS[0]
+            && support::block_text(block, "content") == support::answer_to("hello there")
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_notes_observation_rejects_an_unfinished_assistant_block() {
+    let hold = support::TurnHold::new();
+    let fixture = support::start_assistant(Some(Arc::clone(&hold))).await;
+    let room = support::authorized_group(&fixture.assistant, "room-held-notes").await;
+    let source = support::ingest_recorded(
+        &fixture.assistant,
+        support::inbound(&room, ChannelKind::Group, "member-1", "hello there"),
+    )
+    .await
+    .conversation_id;
+    hold.started().await;
+    let unfinished = support::await_ledger(&fixture.store, source, "the held notes", |blocks| {
+        blocks.iter().any(|block| {
+            block.role == Some(Role::Assistant) && block.block_type == Streaming::KINDS[0]
+        })
+    })
+    .await;
+    assert!(
+        !has_completed_notes(&unfinished),
+        "assistant role alone accepts held output; completed notes must reject it"
+    );
+    hold.release();
+    support::await_ledger(
+        &fixture.store,
+        source,
+        "the completed notes",
+        has_completed_notes,
+    )
+    .await;
+    fixture.shutdown().await;
+}
+
+/// Put the current prompt last, leaving its position as the only mismatch.
+/// The kind is changed after insertion to bypass the junction's prompt-first
+/// check. Returns the resulting block ids in ledger order.
 async fn misplace_the_prompt(store: &Store, conversation_id: i64) -> Vec<i64> {
     let prompt_row = store
         .list_blocks(conversation_id)
