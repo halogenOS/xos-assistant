@@ -1,7 +1,7 @@
 //! AC8's documentation checks read the report teaching's absence from the
 //! prompt (unit 15, decisions 0046 and 0091), the 0046 closure, the 0044
 //! amendment, the 0045
-//! narrowing, the unit-5 no-write amendment, and the four privacy drafts'
+//! narrowing, the unit-5 no-write amendment, and the three privacy drafts'
 //! dated updates — joined by the username-projection unit's AC4 pins (the
 //! prompt's mention line, the DPIA's dated note and the three decision
 //! records that close 0056's implementation debt), the minimization
@@ -10,13 +10,13 @@
 //! pins: the prompt's tool teaching with its verbatim relay, the six
 //! decision records, the erasure decision's idempotency refinement, the
 //! no-write amendment's second clause, every fixed line verbatim, and the
-//! four policy edits with the two assessment notes — and the
+//! policy edits with the record's and the assessment's notes — and the
 //! first-interaction-disclosure unit's AC4 pins: the prompt's honest-answer
 //! teaching, the operator's disclosure copy verbatim, the AI Act compliance
 //! record's role conclusion, obligations map, marking position and notes,
 //! the DPIA's dated role correction, and the unit's four decision records
-//! — and the deletion-mirror unit's AC5 pins: the policy's
-//! administrator-deletion sentence with its reply-route scope, the DPIA's
+//! — and the deletion-mirror unit's AC5 checks: the policy's
+//! administrator-deletion sentence, the DPIA's
 //! mirror paragraph with the in-flight-turn window, the operator
 //! reference's piggyback section with its reply-only and bare-token
 //! bounds, and the unit's five decision records — and the
@@ -36,15 +36,14 @@
 //! prose that routes a claimed authority to the tool and bounds what an
 //! override reaches — and the published policy's single-date pin: a year
 //! stands in its footer and nowhere else in it — and the policy voice
-//! rewrite's five pins, on the route for deleting a message somebody else
-//! wrote about you, which a person decides, on the stated basis of the
-//! sending to the model, on what the policy states about the law itself
-//! — the Article 6(1)(f) basis, the two limits Article 21(1) puts on an
-//! objection, and the search promise held to what the query check refuses
-//! — on the answering limit, the arrival time and the processor's billing
+//! rewrite's five checks, on the route for deleting a message somebody else
+//! wrote about you, which a person decides, on the sending of the
+//! conversation to the model, on what the policy states about the law itself
+//! — the Article 6(1)(f) basis and the two limits Article 21(1) puts on an
+//! objection — on the answering limit and the processor's billing
 //! records, and on the retention trigger with the wind-down commitment the
 //! record of processing states under the retention table it ends every span
-//! of — and that unit's four further pins, on the username and the reply
+//! of — and that unit's four further checks, on the username
 //! the policy qualifies to the width of the mechanism, on the platform
 //! number the record carries under a key of its own as a category and as a
 //! span, on the same number among what a deletion request removes, and on
@@ -342,7 +341,7 @@ fn the_minimization_decision_ships_its_record_and_dated_doc_updates() {
     let policy = repo_file("docs/privacy/bot-assistant-privacy-policy.md");
     let policy_flat = flattened(&policy);
     assert!(
-        policy_flat.contains("We do not keep the display name on your messages."),
+        policy_flat.contains("We do not keep the display name your messages were posted under."),
         "section 3, what we keep about you, states the identity decision"
     );
     assert!(
@@ -561,77 +560,61 @@ fn the_fixed_lines_match_the_unit_document() {
     }
 }
 
+/// The self-service sentences of the published policy: the in-chat route,
+/// the deletion command with its confirmation window, the promise that every
+/// objection is honoured, the note the opt-out leaves on the account
+/// identifier with its exit, when that identifier goes and what an opt-out
+/// holds back, and the command that points a member at the current version.
+/// Beside them the record of processing and the impact assessment carry their
+/// dated notes on the same mechanism.
 #[test]
-fn the_policy_edits_and_the_two_assessment_notes_ship() {
+fn the_policy_edits_and_the_record_and_assessment_notes_ship() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
-        policy.contains("You can stop collection or have your data deleted from inside the group."),
-        "the rights section carries the in-chat sentence"
+        policy.contains("You can stop collection or have your data deleted from inside a Group."),
+        "the deletion section carries the in-chat sentence"
     );
     assert!(
         policy.contains(
-            "/privacydelete, confirmed with /confirmdelete within five minutes, \
-             removes what we keep about you, as this section lists"
+            "The command /privacydelete, confirmed with /confirmdelete within five minutes, \
+             removes what the table in section 3 marks as removed."
         ),
-        "the deletion command carries its confirmation window and states that it removes \
-         what this section lists"
+        "the deletion command carries its confirmation window"
     );
     assert!(
-        policy.contains(
-            "The commands act on the sending account immediately, on your own \
-             confirmed instruction"
-        ),
-        "the rights section states that the commands act at once on the account that sent \
-         them, on that account's own confirmed instruction"
+        policy.contains("In practice we grant every objection."),
+        "the objection section states that every objection is granted in practice"
     );
     assert!(
-        policy.contains("In practice we do not weigh anything at all.")
-            && policy.contains("The command /privacyout stops collection from that moment"),
-        "the objection sentences record the in-place honoring"
-    );
-    assert!(
-        policy.contains("we keep your account ID with a note of it"),
-        "the deletion section names the surviving stub"
+        policy.contains("the ID stays with a note of the opt-out"),
+        "the table's account-ID row names the surviving note"
     );
     assert!(
         policy.contains("forgetting it would mean collecting your messages again"),
-        "the stub is named as what remembering the objection costs"
+        "the note is named as what remembering the objection costs"
     );
     assert!(
         policy.contains(
-            "If you opt back in and later ask for deletion once more, that note goes too."
+            "If you opt back in and later ask for deletion once more, the note goes too."
         ),
-        "the stub's own exit is stated"
+        "the note's own exit is stated"
     );
-    // The stub is an exception to three promises the policy makes about the
-    // identifier, so each of them carries the exception where a member reads
-    // it: section 3's, section 6's, and section 7's own enumeration of what a
-    // deletion request reaches.
+    // The retention section states when the account identifier goes and how
+    // long a standing opt-out holds both of them back; what the note contains
+    // is stated in the table row above and nowhere else.
     assert!(
-        policy.contains(
-            "A deletion request removes your username and your account ID, except the ID \
-             an opt-out keeps under section 7."
-        ),
-        "section 3's deletion sentence carries the opt-out exception"
-    );
-    assert!(
-        policy.contains(
-            "Your username and account ID go once the last thing naming you has gone, \
-             except the ID an opt-out keeps under section 7."
-        ),
-        "section 6's retention sentence carries the same exception"
-    );
-    assert!(
-        policy.contains(
-            "It removes your username and your account ID, except the ID an opt-out keeps."
-        ),
-        "section 7's enumeration of what a deletion request reaches carries the same \
-         exception"
+        policy.contains(&flattened(
+            "Your username and your account ID go once the last thing naming you has \
+             gone. While an opt-out stands, both stay until you ask for deletion, and \
+             the table above says what that leaves."
+        )),
+        "the retention section states when the account identifier goes and that a standing \
+         opt-out keeps both until a deletion request"
     );
     assert!(
         policy.contains(
             "This page always carries the current version, and the /privacy command makes \
-             the assistant point you to it."
+             the Assistant point you to it."
         ),
         "the policy states the command that points a member at the current version"
     );
@@ -663,8 +646,11 @@ fn the_policy_edits_and_the_two_assessment_notes_ship() {
 /// Three promises held to the width of the mechanism behind them. The
 /// opt-out flag does not reach backward, so a question asked before it can
 /// still draw its one answer, and the policy promises only what the flag
-/// does. Erasure leaves a fixed marker in the message's place and not an
-/// empty gap. And a request about somebody else's message reaches a person
+/// does, down to the join announcement it keeps out and the privacy commands
+/// that still reach us and are still kept. Erasure leaves an
+/// internal number and a marker in the message's place and not an empty gap,
+/// and it takes the four details of a join announcement with it. And a
+/// request about somebody else's message reaches a person
 /// who weighs it, decides and answers, which all four documents state in
 /// their own wording, the record and the two assessments each with a dated
 /// marker of their own and the policy without one.
@@ -674,31 +660,41 @@ fn the_opt_out_width_the_erasure_marker_and_the_third_party_route_are_stated() {
     assert!(
         policy.contains(&flattened(
             "The command /privacyout stops us collecting your messages from that moment, \
-             and answering any you send after it. Your privacy commands still work."
+             and answering any you send after it. We also keep no announcement that you \
+             joined while the opt-out stands."
         )),
         "the opt-out promise is as wide as the flag, and no wider"
     );
     assert!(
         policy.contains(&flattened(
-            "Once you have opted out, only your privacy commands reach us, the ones in \
-             this section and /privacy. We drop the rest of your messages unread."
+            "After you opt out, the only messages of yours we keep are the privacy \
+             commands in this section and /privacy. Everything else is discarded on \
+             arrival."
         )),
-        "the carve-out names every command the ingestion exempts, /privacy among them"
+        "the carve-out names every command the ingestion exempts and keeps, /privacy among \
+         them"
     );
     assert!(
         policy.contains(&flattened(
-            "Ordinary words work too until you opt out. The commands are the sure way."
+            "You can also ask the Assistant in plain words to stop collecting. The \
+             commands are the sure way."
         )),
         "the plain-words route claims no more certainty than a model turn has"
     );
     assert!(
         policy.contains(&flattened(
-            "A fixed marker saying the message was erased stays where each of your \
-             messages was, and your part of the join announcement is removed. An \
-             announcement that also named other people stays without you."
+            "An internal number we keep beside the message and a marker saying it was \
+             erased stay in its place."
         )),
-        "the policy states the marker erasure leaves behind, and that a shared join \
-         announcement survives without the erased person"
+        "the policy states the marker erasure leaves behind"
+    );
+    assert!(
+        policy.contains(&flattened(
+            "We remove those four details from the record kept for you. The record's \
+             internal number stays, as it does on a message."
+        )),
+        "the policy states what erasure removes from a join announcement and the internal \
+         number it leaves"
     );
     assert!(
         policy.contains(&flattened(
@@ -737,14 +733,12 @@ fn the_opt_out_width_the_erasure_marker_and_the_third_party_route_are_stated() {
     );
 }
 
+/// The two assessments the report feature changed carry their dated update,
+/// read wrap-independently, and the record of processing carries its own and
+/// names who receives a report: three drafts, the record read once.
 #[test]
-fn the_four_privacy_drafts_carry_their_dated_report_updates() {
+fn the_three_privacy_drafts_carry_their_dated_report_updates() {
     for (draft, marker) in [
-        (
-            "docs/privacy/bot-assistant-privacy-policy.md",
-            "it reports that message to the group's moderation bot, a separate program \
-             the group's administrators run. The administrators decide what happens",
-        ),
         (
             "docs/privacy/dpia.md",
             "## 12. Addendum, 2026-08-23: the report and the wiki fetch",
@@ -753,10 +747,6 @@ fn the_four_privacy_drafts_carry_their_dated_report_updates() {
             "docs/privacy/lia.md",
             "Amended 2026-08-23: the report feature lets a member ask",
         ),
-        (
-            "docs/privacy/records-of-processing.md",
-            "Report record (added 2026-08-23)",
-        ),
     ] {
         let content = repo_file(draft);
         assert!(
@@ -764,7 +754,11 @@ fn the_four_privacy_drafts_carry_their_dated_report_updates() {
             "{draft} carries its dated update: expected {marker:?}"
         );
     }
-    let records = repo_file("docs/privacy/records-of-processing.md");
+    let records = flattened(&repo_file("docs/privacy/records-of-processing.md"));
+    assert!(
+        records.contains(&flattened("Report record (added 2026-08-23)")),
+        "the record of processing carries its dated update"
+    );
     assert!(
         records.contains("The group's administrators, via the group's moderation bot"),
         "the recipients table names the report event's recipients"
@@ -904,16 +898,15 @@ fn the_deletion_mirror_ships_its_three_document_updates() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
         policy.contains(
-            "When an administrator replies to a message with the moderation bot's \
-             deletion command, we delete our copy of that message with every version of it."
+            "When a Group administrator deletes a message with the Group's deletion \
+             command, we delete our copy of it with every version."
         ),
         "the policy's deletion section carries the administrator-deletion sentence"
     );
     assert!(
-        policy.contains("No other deletion of a member's message in the app reaches us"),
-        "the policy scopes that deletion to the reply route it rides, and scopes the \
-         converse to a member's message: a reply deletion aimed at one of the assistant's \
-         own messages does reach us, as the retraction"
+        policy.contains("The platform passes us no other deletion of a member's message."),
+        "the policy scopes the converse to a member's message: a deletion aimed at one of \
+         the Assistant's own messages does reach us, as the retraction"
     );
 
     let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
@@ -1002,10 +995,10 @@ fn the_deletion_mirrors_decisions_are_recorded_with_dates_and_rejected_alternati
 fn the_retraction_ships_its_four_document_updates() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     // The converse of the deletion sentence, and the one bound on what the
-    // assistant can take back from the group.
+    // Assistant can take back from a Group.
     for statement in [
-        "Asking us to delete removes nothing from the group.",
-        "The assistant can take back only the messages it sent itself, and only within \
+        "Asking us to delete removes nothing from the Group.",
+        "The Assistant can take back only the messages it sent itself, and only within \
          the 48 hours the platform allows",
     ] {
         assert!(
@@ -1165,22 +1158,16 @@ fn the_helpful_mode_unit_ships_its_compliance_note_and_policy_sentence() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
         policy.contains(
-            "It reads every message with text that anyone posts in a group. That includes \
-             the messages that never address the assistant. It does not read the posts \
-             section 4 names, nor the new messages of anyone who opted out under \
-             section 7. It still reads the privacy commands section 7 names, and answers \
-             them."
+            "It receives every message with text posted there, including the messages \
+             that never address it."
         ),
-        "the policy's processing description names the helpful reading, scoped to text and \
-         to everyone who posts, with both classes the code drops stated as exceptions — \
-         the opt-out one scoped to NEW messages, because the flag is read on the write \
-         path and what was stored before the flag stands keeps projecting until it is \
-         deleted or expires"
+        "the policy's processing description names the helpful reception, scoped to text \
+         and to every message posted"
     );
     assert!(
         policy.contains(
-            "For your messages and for both of those identifiers, the legal basis is \
-             Article 6(1)(f) GDPR."
+            "For all of the data in the table below the legal basis is Article 6(1)(f) GDPR, our \
+             legitimate interest in running an assistant in our own community Groups."
         ),
         "the sentence keeps the processing under the stated basis"
     );
@@ -1219,19 +1206,33 @@ fn the_helpful_mode_units_decisions_are_recorded_with_dates_and_rejected_alterna
 fn the_autonomous_moderation_unit_ships_its_policy_dpia_and_compliance_updates() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
-        policy.contains("The assistant also judges messages against the group's pinned rules."),
-        "the policy's moderation sentence is the assistant's own assessment"
+        policy.contains(
+            "The Assistant checks the messages and the join announcements in a Group \
+             against the Group's rules."
+        ),
+        "the policy's moderation sentence is the Assistant's own check"
     );
     assert!(
         policy.contains(
-            "The administrators decide what happens: the assistant does not moderate, \
-             and it cannot warn, remove or ban anybody."
+            "The Group's administrators decide what happens next. The Assistant itself \
+             cannot warn, remove or ban anybody."
         ),
         "the policy keeps the human decision and the no-action bound"
     );
     assert!(
-        policy.contains("it can misfire and report a message that broke no rule"),
-        "the policy names the false positive honestly"
+        policy.contains(&flattened(
+            "When it finds a clear violation, it reports that message or announcement \
+             with a public reply in the Group."
+        )),
+        "the policy states what the check produces: one public reply in the Group"
+    );
+    assert!(
+        policy.contains(&flattened(
+            "The language model that writes the answers performs the check, and it can \
+             misfire and report a message that broke no rule."
+        )),
+        "the policy names what performs the check, the model that writes the answers, and \
+         names the false positive honestly"
     );
     assert!(
         !policy.contains("when a member replies to a message and asks for one"),
@@ -1347,51 +1348,31 @@ fn the_autonomous_moderation_units_decisions_are_recorded() {
 
 // ─── The web search unit's pins (AC8 and AC9, 2026-08-29) ────────────────
 
-/// AC8, four of the five sites: the published policy, the impact
+/// AC8 at four of its five sites: the published policy, the impact
 /// assessment, the legitimate-interest re-weigh and decision 0045's
-/// amendment — the record of processing is pinned by the test below it. The
+/// amendment — the record of processing is read by the test below it. The
 /// three internal documents carry a dated note; the published policy carries
 /// none, because a member reads what the assistant does and the footer
-/// carries the date. The policy's own claims are checked as the public
-/// document they are: the closed recipient table names the search
-/// provider, the transfer count becomes four, and the sourcing sentence
-/// names the search.
+/// carries the date. Two claims of the policy are read here, as the public
+/// document they are: the transfer to the processor with the adequacy
+/// decision that covers it, and the sentence placing the processor's
+/// processing in the EU.
 #[test]
-fn the_web_search_ships_its_five_privacy_edits() {
+fn the_policy_names_its_adequacy_basis() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
-        policy.contains("| A web search provider (a United Kingdom company) |"),
-        "the closed recipient table names the search provider by its category"
-    );
-    assert!(
-        policy.contains("three transfers and one contingency take data outside the EU/EEA"),
-        "the transfer sentence counts the search transfer"
-    );
-    assert!(
         policy.contains(&flattened(
-            "Our search provider is a United Kingdom company, and it receives the query there."
-        )) && policy.contains("adequacy decision"),
-        "the search transfer names its basis"
-    );
-    assert!(
-        policy.contains(&flattened(
-            "Our processor is a United Kingdom company, and it stores and serves in Frankfurt."
+            "Handing your data to a United Kingdom company is a transfer outside the EU \
+             and the EEA. The European Commission's adequacy decision for the United \
+             Kingdom covers it, and no further safeguard is needed."
         )),
-        "the processor transfer resolves against the row placing its processing in the EU"
+        "the processor transfer names itself as a transfer and the basis that covers it"
     );
     assert!(
-        policy.contains(
-            "A question outside halogenOS can lead to a web search, and we keep the \
-             words it sends there"
-        ),
-        "the processing description names what the search sends"
-    );
-    assert!(
-        policy.contains(
-            "A deletion request does not touch what the assistant looked up, including \
-             a web search's words"
-        ),
-        "the deletion section names the query among what erasure does not reach"
+        policy.contains(&flattened(
+            "Its processing sits in the EU: what it keeps, it keeps in Frankfurt."
+        )),
+        "the recipient paragraph places the processor's processing in the EU"
     );
     // Nothing here reads the policy's "Last updated" line:
     // `the_policy_footer_dates_the_newest_edit` reads it and states the
@@ -1644,7 +1625,8 @@ fn the_rules_acknowledgment_units_docs_teach_the_generated_line_with_its_fallbac
 /// processing gains its category and its erasure row and corrects the two
 /// boundary sentences that said no display name exists to send; the policy
 /// states where the one stored display name comes from, that a request
-/// carries the join announcements, and that deletion removes them; the two
+/// carries a join announcement, and that a deletion request removes the four
+/// details kept of it; the two
 /// assessments carry their dated identity amendments; and no shipped
 /// document still claims a display name is never stored or never sent.
 #[test]
@@ -1674,14 +1656,14 @@ fn the_join_notice_unit_ships_its_full_privacy_inventory() {
 
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     for marker in [
-        "We do not keep the display name on your messages.",
-        "we keep, once, the name that announcement showed for you, your username when \
-         you have one, its number and when it was sent. A deletion request removes those \
-         four things from the record we keep of that announcement for you.",
-        "It also carries the join announcements with the name and username each showed",
-        "the join announcement we recorded for you",
+        "We do not keep the display name your messages were posted under.",
+        "| The Group's announcement that you joined, one record per account: the name it \
+         showed, your username when you have one, the announcement's message number and \
+         its send time | The Group | We remove those four details from the record kept \
+         for you.",
+        "with a join announcement, the name and username it showed, the announcement's \
+         message number and its send time",
         "before the account has posted anything",
-        "the assistant does not moderate, and it cannot warn, remove or ban anybody",
     ] {
         assert!(
             policy.contains(&flattened(marker)),
@@ -1864,22 +1846,14 @@ fn the_standing_lookup_ships_its_four_privacy_edits() {
 
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     for marker in [
-        "Each request carries our instructions to the model, and the group's title and \
-         rules as the assistant recorded them.",
-        "It carries each message with its writer's username when they have one, and the \
-         summary a long conversation continues from.",
-        "A member message that travels in a request travels with its own message number \
-         on the chat platform while we hold its words.",
-        "Once erased, it travels as a marker with no number.",
-        "A join announcement that travels in a request travels with its number and the \
-         time it was sent.",
-        "The time you sent a message travels with it while we hold its words.",
-        "It also carries the join announcements with the name and username each showed, \
-         what the assistant looked up, and its earlier answers.",
-        "Your account ID never reaches the model, and neither do the time it reached us, \
-         the reply links and the standing we keep beside a message.",
-        "When the assistant looks a username up, the request also says whether that \
-         person was an administrator.",
+        "- the Group's title and its rules - the messages, with the username of each \
+         writer who has one - the Assistant's earlier answers",
+        "with each message, its number on the chat platform and the time you sent it",
+        "A message we have already erased is sent only as a marker with no number.",
+        "**What is never sent:** - your account ID - the time a message reached us - the \
+         standing we keep beside your message",
+        "When the Assistant checks whether a username belongs to an administrator, the \
+         request also says whether that person was one.",
     ] {
         assert!(
             policy.contains(&flattened(marker)),
@@ -2014,7 +1988,7 @@ fn the_her_reply_quotes_decisions_are_recorded_with_dates_and_rejected_alternati
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
         policy.contains(&flattened(
-            "Deleting a message in your app does not by itself remove our copy"
+            "Deleting a message on the chat platform does not by itself remove our copy"
         )),
         "the retention statement the new rows must not contradict still stands"
     );
@@ -2278,17 +2252,16 @@ fn the_privacy_documents_carry_the_reaction_record_and_its_erasure() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
         policy.contains(&flattened(
-            "We keep the emoji the assistant put on your message, beside that message. \
-             A deletion request removes that record's link to your message."
+            "| The emoji the Assistant put on one of your messages, kept beside it | The \
+             Assistant itself | We remove the record's link to your message."
         )),
         "the policy states the record the residual rests on, and what erasure reaches in it"
     );
     assert!(
         policy.contains(&flattened(
-            "A reaction the assistant already put on one of your messages stays visible in \
-             the group"
+            "The reaction itself stays visible in the Group, and we cannot take it back."
         )),
-        "the deletion paragraph names the residual to the people concerned"
+        "the table's row names the residual to the people concerned"
     );
 
     let dpia = flattened(&repo_file("docs/privacy/dpia.md"));
@@ -2478,16 +2451,14 @@ fn the_editing_unit_ships_its_five_document_changes() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
         policy.contains(&flattened(
-            "If you edit a message and it still has text, we keep the edited version \
-             beside the earlier wording when the edit changes the text."
+            "The text of every message you post, the caption on a picture or file \
+             included, and every version of an edited message"
         )),
-        "the policy states what an edit now does"
+        "the policy states that an edit is kept as a further version"
     );
     assert!(
-        policy.contains(&flattened(
-            "Your deletion request and an administrator's deletion command each reach \
-             both versions."
-        )),
+        policy.contains(&flattened("We remove the text of every version."))
+            && policy.contains(&flattened("we delete our copy of it with every version.")),
         "the policy states that both deletion routes reach every version of an edited message"
     );
     assert!(
@@ -2650,31 +2621,28 @@ fn the_retention_span_ships_its_four_document_updates() {
     );
     assert!(
         policy.contains(&flattened(
-            "Any message refreshes the whole conversation, so a group that is still \
-             talking keeps its history"
+            "A message refreshes only the conversation it lands in."
         )),
-        "the policy states what freshness means, which is what keeps a living group whole"
+        "the policy states which conversation a message refreshes"
     );
     assert!(
         policy.contains(&flattened(
-            "When a conversation grows long, the assistant continues from a summary of \
-             its older part. The summary belongs to the conversation that continues, so \
-             it goes when that conversation goes. We delete the older part 90 days after \
-             anything was last added to it."
+            "When a conversation grows long, the Assistant continues from a summary of \
+             its older part. We delete that older part 90 days after anything was last \
+             added to it. The summary is part of the conversation that continues, so it \
+             goes when that conversation goes."
         )),
-        "the policy states the span over a compacted conversation, whose older part \
-         stops being refreshed while the group keeps talking"
+        "the policy states the older part's own 90 days and the span over a compacted \
+         conversation"
     );
     assert!(
         policy.contains(&flattened(
-            "A deletion request never waits for that date: we act on it when it arrives."
+            "A deletion request never waits for the 90 days: we act on it when it arrives."
         )),
         "the policy states that a deletion request does not wait for the schedule"
     );
     assert!(
-        policy.contains(&flattened(
-            "All of that is deleted anyway when the conversation holding it expires"
-        )),
+        policy.contains(&flattened("They go when their conversation goes.")),
         "the policy gives the residuals a request leaves behind an end date of their own"
     );
 
@@ -2810,9 +2778,8 @@ fn the_privacy_documents_drop_the_expiry_free_claim_and_promise_no_stored_files(
         }
     }
     assert!(
-        flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md")).contains(&flattened(
-            "We do not keep the pictures or files themselves"
-        )),
+        flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"))
+            .contains(&flattened("We keep no pictures or files, only text.")),
         "and the policy still says plainly that media is not stored"
     );
 }
@@ -2820,10 +2787,10 @@ fn the_privacy_documents_drop_the_expiry_free_claim_and_promise_no_stored_files(
 // ─── The policy's voice rewrite (unit 58, 2026-09-02) ────────────────────
 
 /// Two promises a voice rewrite of the policy dropped once, and which no
-/// other pin in this file reads: the route open to a person named in a
+/// other assertion in this file reads: the route open to a person named in a
 /// stored message somebody else wrote, which a person decides against the
-/// writer's rights and no code path, and the purpose and legal basis of the
-/// sending to the language model. Both are claims a member and an
+/// writer's rights and no code path, and the sending of the conversation to
+/// the language model. Both are claims a member and an
 /// authority read as the controller's word, so they are read here sentence
 /// by sentence.
 #[test]
@@ -2831,7 +2798,6 @@ fn the_policy_states_the_route_for_a_message_you_did_not_write() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     for promise in [
         "You can ask us to delete a message that concerns you but that you did not write.",
-        "A deletion request removes the text of every message you wrote.",
         "A person weighs your request against the writer's rights, decides, and tells you \
          the outcome.",
     ] {
@@ -2842,121 +2808,118 @@ fn the_policy_states_the_route_for_a_message_you_did_not_write() {
     }
 }
 
-/// Section 5 tells a member that the message's own number on the chat
-/// platform rides in every request, and the two operations the record keeps
-/// apart both null that number, erasure on request and an administrator's
-/// deletion through the mirror, on the stored row. Section 7's list of what
-/// a deletion request removes
-/// owes the reader the same number. The list and the sentence beside it are
-/// read together, because the number that stays on an erased record is a
-/// different one: a reader who saw only the stay-list would take the
-/// transmitted number for something a request never reaches. The sentence
-/// about the join announcement is read here too: the same internal number
-/// stays on that record, and a reader told only about messages would take
-/// the join record for one a deletion empties whole.
+/// The message's own number on the chat platform rides in every request, and
+/// the two operations the record keeps apart both null that number, erasure
+/// on request and an administrator's deletion through the mirror, on the
+/// stored row. The table owes the reader that number among what a deletion
+/// request removes. Its rows are read together with the ones that state what
+/// stays, because the number that stays on an erased record is a different
+/// one: a reader who saw only the stay-rows would take the transmitted
+/// number for something a request never reaches.
 #[test]
 fn the_policy_lists_the_message_number_among_what_a_deletion_removes() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     for promise in [
-        "It removes the send time, the reply link and the message number on the chat \
-         platform.",
-        "On the records of your messages, an internal number, the time each reached us, \
-         and your standing in the group stay.",
-        "The same internal number stays on the record of your join announcement.",
+        "| The number your message carries on the chat platform, the message it replied \
+         to, and whether it replied to the Assistant | The chat platform | We remove the \
+         number and the message it replied to. The record still shows whether the message \
+         replied to the Assistant.",
+        "| Your standing in the Group when you sent it: member, moderator or administrator \
+         | The chat platform | It stays on the record.",
     ] {
         assert!(
             policy.contains(&flattened(promise)),
-            "the deletion section carries: {promise}"
+            "the table carries: {promise}"
         );
     }
 }
 
-/// Two of section 4's exclusions, each read here because no other assertion
-/// in this file reads them. The adapter refuses a post made on behalf of a
-/// chat and a broadcast channel's forward, both because the platform hides
-/// the real author (decision 0016), so the policy names the channel forward
-/// beside the anonymous post. Direct chats are a capability the deployment
-/// switches off by configuration, which the impact assessment records, so
-/// the policy states that the assistant is not available there and states no
-/// design fact about what it could do.
+/// One exclusion, read here because no other assertion in this file reads it.
+/// Direct chats are a capability the deployment switches off by
+/// configuration, which the impact assessment records, so the policy states
+/// that the Assistant is not available there and states no design fact about
+/// what it could do.
 #[test]
-fn the_policy_names_the_channel_forward_and_the_unavailability_in_private() {
+fn the_policy_states_the_unavailability_in_private() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
-    for promise in [
-        "We do not keep a post made anonymously for the group or a message a channel \
-         forwards into it, except the group's rules text.",
-        "The assistant is not available in private messages: we refuse a direct message \
-         and keep nothing from it.",
-    ] {
-        assert!(
-            policy.contains(&flattened(promise)),
-            "section 4 carries: {promise}"
-        );
-    }
+    assert!(
+        policy.contains(&flattened(
+            "The Assistant is not available in private messages. We refuse a direct \
+             message and keep nothing from it."
+        )),
+        "the policy states that the Assistant is unavailable in a direct chat"
+    );
 }
 
+/// Three statements Articles 13 and 14 GDPR owe a member, each read here and
+/// nowhere else: the two times kept beside a message, when it was sent and
+/// when it reached us, with the send time removed on request and the arrival
+/// time staying; the two posts the adapter refuses because the platform hides
+/// their real author, an anonymous post for a Group and a channel's forward
+/// into it (decision 0016); and that a privacy command acts at once on the
+/// account that sent it, on that account's own confirmed instruction.
 #[test]
-fn the_policy_states_the_purpose_and_basis_of_the_sending_to_the_model() {
+fn the_policy_states_the_two_times_the_hidden_author_exclusions_and_the_command_immediacy() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     for promise in [
-        "The purpose and the legal basis are the same ones section 2 gives.",
-        "When the assistant answers you, it sends the conversation to a language model, \
-         and a processor passes it along.",
-    ] {
-        assert!(
-            policy.contains(&flattened(promise)),
-            "the language-model section carries: {promise}"
-        );
-    }
-}
-
-/// The four claims the policy states about the law itself: the basis every
-/// other section refers back to, the two limits on an objection that the
-/// right carries in Article 21(1), the two routes that honour an objection
-/// without asking a member why, and the search promise held to what the
-/// query check actually refuses. The last one is a bound, not a wording: a
-/// bare word that happens to equal somebody's handle passes the check by
-/// design, so a promise that no username at all reaches the provider would
-/// be a claim the code contradicts.
-#[test]
-fn the_policy_states_the_basis_the_objection_limits_and_the_scoped_search_promise() {
-    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
-    for promise in [
-        "the legal basis is Article 6(1)(f) GDPR",
-        "That is our legitimate interest in running an assistant in our own community \
-         groups.",
-        "We then stop, unless we can show compelling legitimate reasons that override \
-         your interests, rights and freedoms.",
-        "The same holds when we need the data for legal claims.",
-        "The command /privacyout stops collection from that moment, and a deletion \
-         request removes what section 7 lists.",
-        "Neither of them asks you for a justification.",
-        "We refuse any query that carries an @name, so no @name reaches the provider.",
+        "| When you sent the message, and when it reached us | The chat platform, and the \
+         Assistant itself for the arrival | We remove the time you sent it. The time it \
+         reached us stays on the record.",
+        "We keep no post made anonymously for a Group and no message forwarded into it \
+         from a channel, except the Group's rules text.",
+        "The commands act on the sending account immediately, on your own confirmed \
+         instruction",
     ] {
         assert!(
             policy.contains(&flattened(promise)),
             "the policy carries: {promise}"
         );
     }
+}
+
+#[test]
+fn the_policy_states_the_sending_to_the_model() {
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     assert!(
-        !policy.contains("no username reaches the provider"),
-        "the search promise stays inside what the query check refuses"
+        policy.contains(&flattened(
+            "When the Assistant answers you, it sends the conversation to a language \
+             model, and our processor passes it along."
+        )),
+        "the recipients section states the sending to the model"
     );
 }
 
-/// Three facts the mechanism states and the policy owes its reader: the
-/// answering limit as a purpose the account identifier serves, Article
-/// 13(1)(c); the arrival time beside the send time among what is kept,
-/// which section 7 already names as a residual; and the billing records the
-/// processor keeps beside its zero retention, which a bare "it retains
-/// nothing" would overstate.
+/// The four claims the policy states about the law itself: the basis the
+/// processing rests on, the two limits on an objection that the right
+/// carries in Article 21(1), and the two routes that honour an objection
+/// without asking a member why.
 #[test]
-fn the_policy_states_the_answer_limit_the_two_times_and_the_billing_records() {
+fn the_policy_states_the_basis_and_the_objection_limits() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     for promise in [
-        "We use your account ID to limit how much the assistant answers you.",
-        "With each message we keep its number on the chat platform, when you sent it and \
-         when it reached us.",
+        "the legal basis is Article 6(1)(f) GDPR",
+        "We then stop, unless we can show compelling legitimate reasons that override \
+         your interests, rights and freedoms.",
+        "The same holds when we need the data for legal claims.",
+        "You object with the /privacyout command or by writing to us, and neither asks you \
+         for a justification.",
+    ] {
+        assert!(
+            policy.contains(&flattened(promise)),
+            "the policy carries: {promise}"
+        );
+    }
+}
+
+/// Two facts the mechanism states and the policy owes its reader: the
+/// answering limit as a purpose the account identifier serves, Article
+/// 13(1)(c); and the billing records the processor keeps beside its zero
+/// retention, which a bare "it retains nothing" would overstate.
+#[test]
+fn the_policy_states_the_answer_limit_and_the_billing_records() {
+    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
+    for promise in [
+        "to limit how much the Assistant answers you",
         "It stores no message and no answer and trains on neither, and it keeps billing \
          records that carry no content.",
     ] {
@@ -2982,7 +2945,7 @@ fn the_policy_states_the_answer_limit_the_two_times_and_the_billing_records() {
 fn the_policy_states_the_whole_retention_trigger_and_the_wind_down() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
     for promise in [
-        "That means no message, no answer, and nothing the assistant recorded.",
+        "That means no message, no answer, and nothing the Assistant recorded.",
         "If the service stops for good, we delete everything with it.",
     ] {
         assert!(
@@ -3022,36 +2985,6 @@ fn the_policy_footer_dates_the_newest_edit() {
         policy.contains("Last updated: 5 September 2026"),
         "the footer carries the date of the newest edit to the policy, 5 September 2026"
     );
-}
-
-/// Section 3 tells a member that section 5 lists who receives what we keep,
-/// so a recipient section 2 already describes and section 5's table omits
-/// makes that sentence false. The report reaches the group's moderation bot
-/// and through it the administrators, which the record of processing carries
-/// as R5, so the table carries the same recipient. What the report carries
-/// is read here too, because the filed line is fixed text naming the
-/// moderation handle and nothing else: no reason, no prose and no name from
-/// the store. The record it reports is named by its own platform number,
-/// which the report block stores as its target origin and the erasure pass
-/// nulls, so that number is data the recipient row owes its reader. A row
-/// claiming nothing at all about the person leaves it out.
-#[test]
-fn the_policys_recipient_table_names_the_moderation_bot_and_the_administrators() {
-    let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
-    for promise in [
-        "Section 5 lists who receives what we keep.",
-        "| The group's moderation bot and its administrators | When the assistant reports \
-         a message or a join announcement, it replies to it with the bot's report \
-         command.",
-        "The bot passes the report to the administrators, who decide what happens.",
-        "The report names that message or announcement by its number and carries nothing \
-         else we keep about you.",
-    ] {
-        assert!(
-            policy.contains(&flattened(promise)),
-            "the policy carries: {promise}"
-        );
-    }
 }
 
 /// The places where the record of processing stated something the code or
@@ -3116,27 +3049,20 @@ fn the_record_of_processing_states_what_the_code_and_the_other_documents_state()
     }
 }
 
-/// Two policy sentences held to the width of the mechanism behind them, and
-/// neither read anywhere else in this file. A sender the platform gives no
-/// handle for, or one the store refuses, projects bare and has no username
-/// stored, so section 2 carries section 5's own qualification. And a reply
-/// to one of the assistant's own messages stores the FACT of the reply and
-/// never the message: the reply-target column is NULL for that case by its
-/// own contract, and the addressing column carries the truth instead, so a
-/// flat "which message it replied to" is one case too wide.
+/// The username row held to the width of the mechanism behind it, read
+/// nowhere else in this file. A sender the platform gives no handle for, or
+/// one the store refuses, projects bare and has no username stored, so the
+/// row carries that qualification.
 #[test]
-fn the_policy_qualifies_the_username_and_the_reply_it_keeps() {
+fn the_policy_qualifies_the_username_it_keeps() {
     let policy = flattened(&repo_file("docs/privacy/bot-assistant-privacy-policy.md"));
-    for promise in [
-        "We keep your username, the @name you post under, when you have one.",
-        "We also keep which message it replied to, or that it replied to the assistant, \
-         and whether you were a member, a moderator or an administrator then.",
-    ] {
-        assert!(
-            policy.contains(&flattened(promise)),
-            "the policy carries: {promise}"
-        );
-    }
+    assert!(
+        policy.contains(&flattened(
+            "| Your username, the @name you post under, when you have one | The chat \
+             platform | We remove it."
+        )),
+        "the table qualifies the username it keeps"
+    );
 }
 
 /// The message's own platform number is a category of personal data, and
