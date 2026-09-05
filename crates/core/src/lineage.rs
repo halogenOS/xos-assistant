@@ -54,7 +54,11 @@ pub(crate) fn own_opening(blocks: &[Block]) -> Option<ThreadOpening> {
         .nth(1)
         .map(|block| block.id)?;
     Some(ThreadOpening {
-        ancestor: AncestorReference::parse(opening).conversation_id,
+        // A reference naming no conversation is a row the store did not
+        // produce, and there is no ancestor to scope against: the thread
+        // reads as one that continues nothing, which is the same answer a
+        // never-compacted conversation gives.
+        ancestor: AncestorReference::parse(opening).conversation_id?,
         opening_ends,
     })
 }

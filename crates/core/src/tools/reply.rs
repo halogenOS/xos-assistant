@@ -18,11 +18,11 @@
 use std::sync::Arc;
 
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
-use agent_ledger::{CoreEvent, ToolContext, ToolHandler, ToolOutcome};
+use agent_ledger::{Block, CoreEvent, ToolContext, ToolHandler, ToolOutcome};
 use serde_json::json;
 use tokio::sync::RwLock;
 
-use crate::filing::FilingDoor;
+use crate::composing::SendStops;
 use crate::message::Authority;
 use crate::tools::sending::{self, Sender};
 
@@ -36,17 +36,24 @@ pub const REQUIRED_AUTHORITY: Authority = sending::REQUIRED_AUTHORITY;
 
 /// The threaded sending tool: member authority, two validated parameters,
 /// every conversation. Constructed by the assembly unconditionally — the
-/// erasure fence and the shared filing door injected here, at registration,
-/// so the tool never reaches into the assembly.
+/// erasure fence and the composing cue's stop channel injected here, at
+/// registration, so the tool never reaches into the assembly.
 pub(crate) struct ReplyMessage {
     sender: Sender,
 }
 
 impl ReplyMessage {
-    pub(crate) fn new(fence: Arc<RwLock<()>>, door: FilingDoor) -> Self {
+    pub(crate) fn new(fence: Arc<RwLock<()>>, stops: SendStops) -> Self {
         Self {
-            sender: Sender::new(fence, door),
+            sender: Sender::new(fence, stops),
         }
+    }
+
+    /// The caps this tool's admission asks behind the authority bar, read
+    /// once over the ledger the admission pass loaded. The reading itself
+    /// is the pair's, so both tools decline on the same count.
+    fn declined_by_the_caps(&self, conversation_id: i64, ledger: &[Block]) -> Option<String> {
+        self.sender.declined_by_the_caps(conversation_id, ledger)
     }
 }
 
@@ -84,20 +91,26 @@ impl ToolHandler<CoreEvent> for ReplyMessage {
     crate::tools::admission::admits_at_required_authority!(
         NAME,
         REQUIRED_AUTHORITY,
-        sending::cap_decline
+        declined_by_the_caps
     );
+
+    /// The sends run IN ORDER (unit 55, 2026-09-02): the framework parks a
+    /// ready call of this tool while an earlier in-order call of the same
+    /// conversation is unresolved, so the messages reach the group in the
+    /// order the model issued them and a pending send never has a sibling
+    /// in flight. It is also what makes the caps' count exact — the ledger
+    /// the admission pass loaded holds every earlier send — and what
+    /// leaves this tool with no filing lock of its own.
+    fn runs_in_order(&self) -> bool {
+        true
+    }
 
     fn execute<'a>(
         &'a self,
         input: &'a str,
         ctx: ToolContext<'a, CoreEvent>,
     ) -> BoxFuture<'a, ToolOutcome> {
-        Box::pin(async move {
-            match sending::named_reply(input) {
-                Ok(named) => self.sender.file(&ctx, &named).await,
-                Err(refusal) => ToolOutcome::Error(refusal.to_owned()),
-            }
-        })
+        Box::pin(async move { self.sender.answer(&ctx, sending::named_reply(input)).await })
     }
 }
 
@@ -112,7 +125,7 @@ mod tests {
     #[test]
     fn the_definition_teaches_the_target_and_takes_both_parameters() {
         let definition =
-            ReplyMessage::new(Arc::new(RwLock::new(())), crate::filing::door()).definition();
+            ReplyMessage::new(Arc::new(RwLock::new(())), crate::composing::stops()).definition();
         assert_eq!(definition.name, NAME);
         assert_eq!(definition.name, "reply_message");
         for instruction in [

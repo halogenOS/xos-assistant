@@ -29,29 +29,35 @@ const REFUSED: &str = "the platform refused the request";
 /// What one conversation's sends came to, in ledger order: the result or
 /// the error paired with each sending call, as the model reads it.
 ///
-/// Paired through the provider's own echo, the way the framework pairs a
-/// call with its resolution — never by position, which a turn with a
-/// lookup beside its send would get wrong.
+/// Paired by the call's own BLOCK id, the way the framework pairs a call
+/// with its resolution — never by position, which a turn with a lookup
+/// beside its send would get wrong, and never by the provider's echo,
+/// which two calls of one round can share.
 async fn send_outcomes(store: &Store, conversation_id: i64) -> Vec<String> {
     let blocks = store
         .list_blocks(conversation_id)
         .await
         .expect("the ledger reads");
-    let echoes: Vec<String> = blocks
+    let sending: Vec<i64> = blocks
         .iter()
         .filter(|block| block.block_type == "tool_call" && names_a_sending_tool(block))
-        .filter_map(|block| match BlockKind::from_block(block) {
-            BlockKind::ToolCall(call) => Some(call.tool_call_id),
-            _ => None,
-        })
+        .map(|block| block.id)
         .collect();
     blocks
         .iter()
         .filter_map(|block| match BlockKind::from_block(block) {
-            BlockKind::ToolResult(result) if echoes.contains(&result.tool_call_id) => {
+            BlockKind::ToolResult(result)
+                if result
+                    .call_block_id
+                    .is_some_and(|call| sending.contains(&call)) =>
+            {
                 Some(result.content)
             }
-            BlockKind::ToolError(failure) if echoes.contains(&failure.tool_call_id) => {
+            BlockKind::ToolError(failure)
+                if failure
+                    .call_block_id
+                    .is_some_and(|call| sending.contains(&call)) =>
+            {
                 Some(failure.error)
             }
             _ => None,

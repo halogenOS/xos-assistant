@@ -172,19 +172,20 @@
 //!
 //! A filed report block delivers as its stored fixed line, marked
 //! [`ReplyKind::Report`] and threaded onto the reported message's origin —
-//! independent of the answer: a silent turn's report still goes out,
-//! since the empty-answer check below touches only [`ReplyKind::Answer`]
-//! blocks — and on BOTH stream events: with the answer on the turn's
-//! completion, where ledger order puts it before the answer text, and on
-//! the turn's failure, where it is the whole of what that wake sends, so a
+//! independent of anything the model sent: a turn that filed no message of
+//! its own still delivers its report, because the report block is its own
+//! deliverable and no reading of the model's sends touches it — and on
+//! BOTH stream events: with the turn's own messages on its completion,
+//! where ledger order puts each block where it was filed, and on the
+//! turn's failure, where it is the whole of what that wake sends, so a
 //! turn that dies after filing still files. The failure wake runs the same
-//! stored-state read as a completion, so a dead turn's already-finalized
-//! narration delivers beside its report instead of waiting for the
+//! stored-state read as a completion, so a dead turn's already-filed
+//! messages deliver beside its report instead of waiting for the
 //! conversation's next wake. That read stays the full one and is never
 //! narrowed to reports, because the cursor is one high-water mark per
-//! conversation: a read narrowed to reports would either pass the
-//! committed narration for good or repeat the report on the next wake,
-//! and the contract refuses re-delivered reports above all. The accepted
+//! conversation: a read narrowed to reports would either pass those
+//! messages for good or repeat the report on the next wake, and the
+//! contract refuses re-delivered reports above all. The accepted
 //! losses are recorded plainly: a report undelivered
 //! when the process dies is LOST — the restart seeding stands, and
 //! re-delivering reports from history would ping every group admin

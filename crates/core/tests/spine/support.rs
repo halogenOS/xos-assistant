@@ -12,8 +12,8 @@ use agent_ledger::providers::{
     ProviderRx, ProviderTx, ReasoningLevel,
 };
 use agent_ledger::{
-    Block, CoreEvent, EventBus, LlmError, ProviderModule, ProviderRegistry, ProviderRequest,
-    ProviderResponse, StopReason, Store, StoreError, StreamEvent,
+    Block, BlockKind, CoreEvent, EventBus, FromBlock, LlmError, ProviderModule, ProviderRegistry,
+    ProviderRequest, ProviderResponse, StopReason, Store, StoreError, StreamEvent,
 };
 use assistant_core::schema::store_config;
 use assistant_core::tools::ToolSet;
@@ -2354,7 +2354,7 @@ pub async fn await_ledger(
 /// all while saying nothing new.
 ///
 /// Filtered NARROWLY, by pairing: a call of a sending tool, the outgoing
-/// block, and the resolution carrying that call's own provider echo. Every
+/// block, and the resolution naming that call's own block. Every
 /// other tool's call and result stay in the view, because a lookup, a
 /// report and a reaction are things the turn DID and the suites pin them
 /// there.
@@ -2364,11 +2364,7 @@ pub async fn await_ledger(
 /// raw ledger on purpose.
 #[must_use]
 pub fn consumer_view(blocks: &[Block]) -> Vec<Block> {
-    let sending: Vec<String> = blocks
-        .iter()
-        .filter(|block| block.block_type == "tool_call" && names_a_sending_tool(block))
-        .filter_map(|block| optional_field(block, "tool_call_id"))
-        .collect();
+    let sending = sending_calls(blocks);
     blocks
         .iter()
         .filter(|block| {
@@ -2389,12 +2385,27 @@ fn names_a_sending_tool(block: &Block) -> bool {
     })
 }
 
-/// Whether one block is the resolution of one of the given calls — paired
-/// by the provider's own echo, which is what the framework itself pairs a
-/// call and its answer by.
-fn settles_a_send(block: &Block, sending: &[String]) -> bool {
-    matches!(block.block_type.as_str(), "tool_result" | "tool_error")
-        && optional_field(block, "tool_call_id").is_some_and(|echo| sending.contains(&echo))
+/// Every sending call one ledger holds, by BLOCK id — the identity the
+/// framework pairs a call and its answer by, since a provider's echo can
+/// repeat across two calls of one round.
+fn sending_calls(blocks: &[Block]) -> Vec<i64> {
+    blocks
+        .iter()
+        .filter(|block| block.block_type == "tool_call" && names_a_sending_tool(block))
+        .map(|block| block.id)
+        .collect()
+}
+
+/// Whether one block is the resolution of one of the given calls — read
+/// through the framework's own kinds, which carry the call block each
+/// resolution names.
+fn settles_a_send(block: &Block, sending: &[i64]) -> bool {
+    match BlockKind::from_block(block) {
+        BlockKind::ToolResult(result) => result.call_block_id,
+        BlockKind::ToolError(error) => error.call_block_id,
+        _ => None,
+    }
+    .is_some_and(|call| sending.contains(&call))
 }
 
 /// One text field of a loaded block, absent where the row holds none —
@@ -2678,15 +2689,11 @@ pub async fn sent_texts(store: &Store, conversation_id: i64) -> Vec<String> {
 /// of the turn's acts, and a case counting what the model's calls came to
 /// is counting the acts.
 ///
-/// Paired by the provider's own echo, the way the framework pairs a call
+/// Paired by the call's own block id, the way the framework pairs a call
 /// with its answer.
 #[must_use]
 pub fn tool_outcomes(blocks: &[Block]) -> Vec<String> {
-    let sending: Vec<String> = blocks
-        .iter()
-        .filter(|block| block.block_type == "tool_call" && names_a_sending_tool(block))
-        .filter_map(|block| optional_field(block, "tool_call_id"))
-        .collect();
+    let sending = sending_calls(blocks);
     blocks
         .iter()
         .filter(|block| !settles_a_send(block, &sending))

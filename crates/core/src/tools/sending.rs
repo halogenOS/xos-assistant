@@ -35,14 +35,16 @@
 //! pending, never the ones that failed, because a failed send posted
 //! nothing and burns no allowance.
 //!
-//! The count runs inside the ADMISSION answer, over the ledger the runner's
-//! admission pass already loaded, which is why it is spelled here and not
-//! as a framework window: the bound is shared across two tool names and
-//! read per conversation, and the framework's per-tool window holds one
-//! allowance per name. A spent tier declines with
-//! [`Admission::Refuse`](agent_ledger::Admission::Refuse), which the
-//! framework records as a refusal — a standing no, a run of which ends the
-//! turn — so the model stops and resumes on a later one.
+//! The count runs ONCE, inside the ADMISSION answer, over the ledger the
+//! runner's admission pass already loaded — which is why it is spelled here
+//! and not as a framework window: the bound is shared across two tool names
+//! and read per conversation, and the framework's per-tool window holds one
+//! allowance per name. There is no second check behind it and no filing
+//! lock beside it: the two tools run in order, so that ledger holds every
+//! earlier send of the conversation and the count is exact. A spent tier
+//! declines with [`Admission::Refuse`](agent_ledger::Admission::Refuse),
+//! which the framework records as a refusal — a standing no, a run of which
+//! ends the turn — so the model stops and resumes on a later one.
 //!
 //! # The reply target
 //!
@@ -69,7 +71,7 @@ use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-use crate::filing::FilingDoor;
+use crate::composing::SendStops;
 use crate::kind::AssistantKind;
 use crate::message::Authority;
 use crate::outgoing::{self, OutgoingMessage};
@@ -208,10 +210,7 @@ pub fn spent_tier(ledger: &[Block], now: DateTime<Utc>) -> Option<(Tier, DateTim
     let counted: Vec<DateTime<Utc>> = outgoing::filed_sends(ledger)
         .into_iter()
         .filter(|send| outgoing::send_state(ledger, send.call_block) != outgoing::SendState::Failed)
-        .map(|send| {
-            DateTime::parse_from_rfc3339(&send.created_at)
-                .map_or(now, |stamped| stamped.with_timezone(&Utc))
-        })
+        .map(|send| counted_at(&send.created_at, now))
         .collect();
     for tier in CAPS {
         let span = TimeDelta::seconds(tier.seconds);
@@ -230,6 +229,29 @@ pub fn spent_tier(ledger: &[Block], now: DateTime<Utc>) -> Option<(Tier, DateTim
         return Some((tier, oldest + span));
     }
     None
+}
+
+/// When one filed send counts, from its block header's stored stamp.
+///
+/// The store writes that column itself, in RFC 3339 with milliseconds and
+/// an offset, so an unreadable value is a row the store did not produce.
+/// It is counted at `now` — the limiting direction, since an unreadable
+/// clock must never widen an allowance — and SAID rather than swallowed:
+/// a silent fallback here would let a broken stamp quietly shift what the
+/// caps admit, with nothing anywhere naming why.
+fn counted_at(created_at: &str, now: DateTime<Utc>) -> DateTime<Utc> {
+    match DateTime::parse_from_rfc3339(created_at) {
+        Ok(stamped) => stamped.with_timezone(&Utc),
+        Err(error) => {
+            tracing::warn!(
+                created_at,
+                %error,
+                "a filed send carries no readable stamp; it counts against the caps as if \
+                 it were sent now"
+            );
+            now
+        }
+    }
 }
 
 /// The caps as the admission hook asks them: the decline sentence, or
@@ -350,31 +372,83 @@ pub fn ledger_holds(ledger: &[Block], id: &str) -> bool {
 }
 
 /// The shared body of both sending tools: the ledger read, the idempotence
-/// check, the target validation and the one append.
+/// check, the target validation, the one append — and the composing cue's
+/// stop for every call that ends without filing anything.
 ///
-/// The two holds are taken in the order the filing door's own module states
-/// and every holder of both obeys — the erasure fence shared, then the
-/// door. The fence is why a send cannot thread onto an origin the
-/// person-wide erasure just nulled, which takes it exclusively; the door
-/// orders this filing against the deletion mirror's nulls and against a
-/// sibling call of the same round, which the runner executes in a parallel
-/// task.
+/// One hold and no second one (unit 55, 2026-09-02). The erasure fence is
+/// held shared across the validation and the append, which is why a send
+/// cannot thread onto an origin the person-wide erasure just nulled. NO
+/// filing lock stands beside it: the two tools run IN ORDER — the
+/// framework parks a ready call of either while an earlier one of the
+/// conversation is unresolved — so a sibling call of the same round cannot
+/// be filing while this one scans, and the order is the one mechanism that
+/// says so.
 pub struct Sender {
     /// The erasure fence, held shared across the validation and the append.
     /// Taken as the bare shared lock, not as the assembly's own alias for
     /// it — a leaf tool names nothing in the module that registers it.
     fence: Arc<RwLock<()>>,
-    /// The shared filing door: one scan-then-append at a time, across every
-    /// writer that files against a message origin.
-    door: FilingDoor,
+    /// Where the composing cue is told this send is done. A call refused
+    /// before anything was filed lit the cue at its start and files no
+    /// block, so no delivery report will ever end it: the tool says so
+    /// itself, on the same channel the receipt door uses.
+    stops: SendStops,
 }
 
 impl Sender {
-    /// The sender both tools are constructed with, holding the two locks
-    /// the assembly injects at registration.
+    /// The sender both tools are constructed with, holding the erasure
+    /// fence and the cue's stop channel the assembly injects at
+    /// registration.
     #[must_use]
-    pub fn new(fence: Arc<RwLock<()>>, door: FilingDoor) -> Self {
-        Self { fence, door }
+    pub fn new(fence: Arc<RwLock<()>>, stops: SendStops) -> Self {
+        Self { fence, stops }
+    }
+
+    /// The caps as each tool's admission hook asks them, with the cue's
+    /// stop where they refuse: a call declined before its body ran filed
+    /// nothing, so the indicator its start lit is ended here.
+    ///
+    /// The count itself is [`cap_decline`]'s, read once over the ledger the
+    /// admission pass already loaded. Nothing else is asked and nothing is
+    /// re-read: the calls run in order, so that ledger holds every earlier
+    /// send of the conversation and the count is exact.
+    #[must_use]
+    pub fn declined_by_the_caps(&self, conversation_id: i64, ledger: &[Block]) -> Option<String> {
+        let declined = cap_decline(ledger);
+        if declined.is_some() {
+            self.stop_the_cue(conversation_id);
+        }
+        declined
+    }
+
+    /// One tool call's whole answer: the read input, or the refusal the
+    /// parameters answered with.
+    ///
+    /// Every path that ends WITHOUT a filed block stops the composing cue
+    /// here — a refused parameter, an unknown target, a spent transient
+    /// read — because the cue lit when the call started and only a filed
+    /// send reaches a delivery report that would end it. One place, so no
+    /// refusal can be added that leaves the chat typing.
+    pub async fn answer(
+        &self,
+        ctx: &ToolContext<'_, CoreEvent>,
+        named: Result<NamedSend, &'static str>,
+    ) -> ToolOutcome {
+        let outcome = match named {
+            Ok(named) => self.file(ctx, &named).await,
+            Err(refusal) => ToolOutcome::Error(refusal.to_owned()),
+        };
+        if matches!(outcome, ToolOutcome::Error(_)) {
+            self.stop_the_cue(ctx.agency.conversation_id);
+        }
+        outcome
+    }
+
+    /// Tell every composing edge this conversation's send is over. A
+    /// conversation no edge is watching answers an error, which is nothing
+    /// to act on: the cue is live-only.
+    pub(crate) fn stop_the_cue(&self, conversation_id: i64) {
+        let _ = self.stops.send(conversation_id);
     }
 
     /// File one send, or answer the refusal the model reads.
@@ -382,9 +456,8 @@ impl Sender {
     /// `Ok` is always [`ToolOutcome::Pending`]: the call is settled by the
     /// delivery receipt, whether this run appended the block or found the
     /// block a previous run of the same call appended.
-    pub async fn file(&self, ctx: &ToolContext<'_, CoreEvent>, named: &NamedSend) -> ToolOutcome {
+    async fn file(&self, ctx: &ToolContext<'_, CoreEvent>, named: &NamedSend) -> ToolOutcome {
         let _no_erasure_mid_filing = self.fence.read().await;
-        let _one_filing_at_a_time = self.door.lock().await;
         match self.append(ctx, named).await {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -445,7 +518,9 @@ impl Sender {
 #[cfg(test)]
 mod tests {
     use agent_ledger::store::ToolCallInsert;
-    use agent_ledger::{AgencyCtx, EventBus, Role, ToolHandler};
+    use agent_ledger::{
+        AgencyCtx, CallOrigin, EventBus, Role, ToolHandler, ToolRegistry, ToolRunner,
+    };
     use serde_json::json;
 
     use super::*;
@@ -478,10 +553,10 @@ mod tests {
         }
     }
 
-    /// One recorded resolution of the given echo.
-    fn resolved(id: i64, kind: &str, echo: &str) -> Block {
+    /// One recorded resolution naming the call block it answers.
+    fn resolved(id: i64, kind: &str, call_block: i64) -> Block {
         let mut fields = serde_json::Map::new();
-        fields.insert("tool_call_id".into(), json!(echo));
+        fields.insert("source_block_id".into(), json!(call_block));
         Block {
             id,
             role: None,
@@ -583,14 +658,14 @@ mod tests {
             "five pending sends spend the minute"
         );
 
-        ledger.push(resolved(900, "tool_error", "echo-0"));
+        ledger.push(resolved(900, "tool_error", 100));
         assert_eq!(
             spent_tier(&ledger, now),
             None,
             "the failed send posted nothing, so it burns no slot"
         );
 
-        ledger.push(resolved(901, "tool_result", "echo-1"));
+        ledger.push(resolved(901, "tool_result", 102));
         assert_eq!(
             spent_tier(&ledger, now),
             None,
@@ -866,7 +941,7 @@ mod tests {
             store,
             bus: Arc::new(EventBus::new()),
         };
-        let tool = SendMessage::new(Arc::new(RwLock::new(())), crate::filing::door());
+        let tool = SendMessage::new(Arc::new(RwLock::new(())), crate::composing::stops());
 
         let first = tool
             .execute(
@@ -923,6 +998,187 @@ mod tests {
                 .await
                 .expect("the ledger reads"),
         )
+    }
+
+    /// The caps through the FRAMEWORK'S RUNNER against a real store (AC11):
+    /// five calls of the registered tool inside one minute each file their
+    /// message, and the sixth is refused with the recorded sentence and
+    /// files nothing.
+    ///
+    /// Driven end to end on purpose — registry, runner, admission, body,
+    /// ledger — because the count is answered inside the admission hook and
+    /// nothing but the runner asks that hook. Each send is settled as
+    /// delivered before the next call, which is what the platform's receipt
+    /// does and what the in-order rule waits for.
+    #[tokio::test]
+    async fn the_sixth_send_in_one_minute_is_refused_through_the_runner() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation_id = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let mut registry = ToolRegistry::<CoreEvent>::new();
+        registry.register(
+            crate::tools::send::NAME,
+            SendMessage::new(Arc::new(RwLock::new(())), crate::composing::stops()),
+        );
+        let runner = ToolRunner::<AssistantKind, CoreEvent>::new(Arc::new(registry));
+        let agency = AgencyCtx {
+            conversation_id,
+            store,
+            bus: Arc::new(EventBus::new()),
+        };
+
+        let mut calls = Vec::new();
+        for index in 0..6 {
+            let call = runner
+                .insert_call(
+                    &agency,
+                    false,
+                    format!("echo-{index}"),
+                    crate::tools::send::NAME.into(),
+                    json!({ PARAMETER_TEXT: format!("message {index}") }).to_string(),
+                    CallOrigin::default(),
+                )
+                .await
+                .expect("the call block appends");
+            runner.run_wakeup(&agency, false, call).await;
+            calls.push(call);
+            // The receipt the platform would report, so the next in-order
+            // call is not parked behind this one — and so the send counts
+            // as one that reached the chat.
+            if index < 5 {
+                agency
+                    .store
+                    .resolve_tool_call(
+                        conversation_id,
+                        call,
+                        agent_ledger::ToolCallResult::Success {
+                            content: "sent".into(),
+                        },
+                    )
+                    .await
+                    .expect("the settlement writes");
+            }
+        }
+
+        let filed = filed_of(&agency.store, conversation_id).await;
+        assert_eq!(
+            filed.len(),
+            5,
+            "the minute admits five messages and the sixth files none"
+        );
+        assert_eq!(
+            filed.iter().map(|send| send.call_block).collect::<Vec<_>>(),
+            calls[..5],
+            "the five filed messages are the five admitted calls"
+        );
+
+        let refusals: Vec<String> = agency
+            .store
+            .list_blocks(conversation_id)
+            .await
+            .expect("the ledger reads")
+            .iter()
+            .filter_map(|block| match agent_ledger::BlockKind::from_block(block) {
+                agent_ledger::BlockKind::ToolError(failure)
+                    if failure.call_block_id == Some(calls[5]) =>
+                {
+                    Some(failure.error)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(refusals.len(), 1, "the sixth call is answered exactly once");
+        assert!(
+            refusals[0].starts_with(
+                "declined: this conversation has sent its 5 messages for the last minute, and \
+                 this one was not sent. The allowance reopens at "
+            ) && refusals[0].ends_with("Send nothing more this turn; continue on a later one."),
+            "the refusal is the recorded sentence: {}",
+            refusals[0]
+        );
+    }
+
+    /// A call refused before anything is filed stops the composing cue
+    /// (AC12): the cue lit when the call started and no delivery will ever
+    /// report on a send that was never filed, so the tool says the send is
+    /// done itself — on the caps' refusal, and on every refusal its body
+    /// answers.
+    #[tokio::test]
+    async fn a_refusal_before_filing_stops_the_cue() {
+        let store =
+            Store::in_memory_with(crate::schema::store_config()).expect("an in-memory store opens");
+        let conversation_id = store
+            .create_conversation("p".into(), "m".into(), "M".into(), "v".into())
+            .await
+            .expect("a conversation row");
+        let stops = crate::composing::stops();
+        let mut stopped = stops.subscribe();
+        let sender = Sender::new(Arc::new(RwLock::new(())), stops);
+        let now = Utc::now();
+
+        assert_eq!(
+            sender.declined_by_the_caps(conversation_id, &pending_sends(5, 5, now)),
+            cap_decline(&pending_sends(5, 5, now)),
+            "the spent tier declines with the caps' own sentence"
+        );
+        assert_eq!(
+            stopped.try_recv().expect("the spent tier stops the cue"),
+            conversation_id
+        );
+
+        assert_eq!(
+            sender.declined_by_the_caps(conversation_id, &[]),
+            None,
+            "an unspent conversation is admitted"
+        );
+        assert!(
+            stopped.try_recv().is_err(),
+            "an admitted call stops nothing: its send is still coming"
+        );
+
+        let agency = AgencyCtx {
+            conversation_id,
+            store,
+            bus: Arc::new(EventBus::new()),
+        };
+        let call = agency
+            .store
+            .insert_tool_call_block(
+                conversation_id,
+                Role::Assistant,
+                ToolCallInsert {
+                    tool_call_id: "echo-refused".into(),
+                    name: crate::tools::send::NAME.into(),
+                    input: "{}".into(),
+                    interactive: false,
+                },
+                None,
+            )
+            .await
+            .expect("the call block appends");
+        let ctx = ToolContext {
+            agency: &agency,
+            tool_call_id: "echo-refused",
+            block_id: call,
+        };
+        assert!(
+            matches!(
+                sender.answer(&ctx, named_send("{}")).await,
+                ToolOutcome::Error(refusal) if refusal == NEEDS_TEXT_ERROR
+            ),
+            "a call with no text is refused"
+        );
+        assert_eq!(
+            stopped.try_recv().expect("the refused call stops the cue"),
+            conversation_id
+        );
+        assert!(
+            filed_of(&agency.store, conversation_id).await.is_empty(),
+            "a refused call files nothing"
+        );
     }
 
     /// The stored text of one filed send, read back off the store.

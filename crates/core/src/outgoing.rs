@@ -37,6 +37,7 @@
 //! names this block, and the framework resolves the span against this
 //! column.
 
+use agent_ledger::agency::CallOutcome;
 use agent_ledger::store::{StoreError, StoreTx, domain_run};
 use agent_ledger::{
     Agency, Block, BlockKind, Column, ColumnType, ContentDescriptor, FromBlock, LeafKind,
@@ -176,36 +177,30 @@ pub(crate) enum SendState {
 
 /// What became of the send one call block filed, read over a loaded ledger.
 ///
-/// The call's own provider echo is what a resolution is matched by — the
-/// framework's own call-to-result predicate reads exactly that pairing — so
-/// the reading here is: find the call block by its id, take its echo, and
-/// look for the result or the error carrying it. A call the ledger no
-/// longer holds reads [`SendState::Pending`]: the send was filed and
-/// nothing in this ledger says it settled, which is the counting direction
-/// the caps want and the sweeping direction the startup pass wants.
+/// A call is paired with its outcome by the call's own BLOCK id, and that
+/// pairing lives in the framework: this asks [`ToolCall::outcome_in`] and
+/// reads its answer as the send's state. The app keeps no walk of its own
+/// and compares no provider echo — an echo can repeat across two calls of
+/// one round, and a second implementation of the pairing would answer
+/// differently the first time either side changed.
+///
+/// A call the ledger no longer holds reads [`SendState::Pending`]: the send
+/// was filed and nothing in this ledger says it settled, which is the
+/// counting direction the caps want and the sweeping direction the startup
+/// pass wants.
 pub(crate) fn send_state(ledger: &[Block], call_block: i64) -> SendState {
-    let echo = ledger
+    let call = ledger
         .iter()
         .find(|block| block.id == call_block)
         .and_then(|block| match BlockKind::from_block(block) {
-            BlockKind::ToolCall(call) => Some(call.tool_call_id),
+            BlockKind::ToolCall(call) => Some(call),
             _ => None,
         });
-    let Some(echo) = echo else {
-        return SendState::Pending;
-    };
-    for block in ledger {
-        match BlockKind::from_block(block) {
-            BlockKind::ToolResult(result) if result.tool_call_id == echo => {
-                return SendState::Delivered;
-            }
-            BlockKind::ToolError(failure) if failure.tool_call_id == echo => {
-                return SendState::Failed;
-            }
-            _ => {}
-        }
+    match call.and_then(|call| call.outcome_in(ledger)) {
+        Some(CallOutcome::Result(_)) => SendState::Delivered,
+        Some(CallOutcome::Error(_)) => SendState::Failed,
+        None => SendState::Pending,
     }
-    SendState::Pending
 }
 
 /// One filed send of a loaded ledger: the block itself and the call it
@@ -476,11 +471,11 @@ mod tests {
         }
     }
 
-    /// One recorded resolution of the given echo, on the arm the kind
-    /// names.
-    fn resolution(id: i64, kind: &str, echo: &str) -> Block {
+    /// One recorded resolution naming the call BLOCK it answers, on the arm
+    /// the kind names — the pairing the framework writes and reads.
+    fn resolution(id: i64, kind: &str, call_block: i64) -> Block {
         let mut fields = serde_json::Map::new();
-        fields.insert("tool_call_id".into(), json!(echo));
+        fields.insert("source_block_id".into(), json!(call_block));
         fields.insert(
             if kind == "tool_result" {
                 "content"
@@ -545,12 +540,17 @@ mod tests {
     /// read: an unanswered call is pending, a result is a delivery, an
     /// error is a failure — and a call the ledger does not hold reads
     /// pending, the counting and sweeping direction both want.
+    ///
+    /// The two calls carry ONE provider echo (AC19): a repeated echo is a
+    /// shape a provider may emit, and each call still reads only the
+    /// resolution naming its own block, because the pairing is the
+    /// framework's block-id one and no echo is compared anywhere.
     #[test]
     fn the_send_state_reads_the_calls_own_resolution() {
         let mut ledger = vec![
-            call_block(10, "echo-a"),
+            call_block(10, "one-echo"),
             outgoing_block(11, OutgoingMessage::stored_fields("one", None, 10)),
-            call_block(12, "echo-b"),
+            call_block(12, "one-echo"),
             outgoing_block(13, OutgoingMessage::stored_fields("two", None, 12)),
         ];
         assert_eq!(send_state(&ledger, 10), SendState::Pending);
@@ -561,9 +561,15 @@ mod tests {
             "a call this ledger does not hold reads as unsettled"
         );
 
-        ledger.push(resolution(14, "tool_result", "echo-a"));
-        ledger.push(resolution(15, "tool_error", "echo-b"));
+        ledger.push(resolution(14, "tool_result", 10));
         assert_eq!(send_state(&ledger, 10), SendState::Delivered);
+        assert_eq!(
+            send_state(&ledger, 12),
+            SendState::Pending,
+            "the sibling shares the echo and is settled by none of it"
+        );
+
+        ledger.push(resolution(15, "tool_error", 12));
         assert_eq!(send_state(&ledger, 12), SendState::Failed);
     }
 

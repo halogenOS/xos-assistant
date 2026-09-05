@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 use agent_ledger::providers::{BoxFuture, ToolDefinition};
 use agent_ledger::store::TemporaryFork;
 use agent_ledger::{
-    Block, CoreEvent, ProviderModule, Store, ToolContext, ToolHandler, ToolOutcome,
+    Block, BlockKind, CoreEvent, FromBlock, ProviderModule, Store, ToolContext, ToolHandler,
+    ToolOutcome,
 };
 use assistant_core::schema::store_config;
 use assistant_core::tools::{ToolSet, no_reply_needed, report, work_is_done};
@@ -320,22 +321,25 @@ struct LateSibling;
 /// The line the sibling answers with, once it has seen the park.
 const SIBLING_RESULT: &str = "the sibling ran after the park";
 
-/// Whether the park call's own resolution is stored and stamped. The call
-/// block naming the park tool carries the id the provider issued it under,
-/// and the resolution answering THAT id is the only row this reads: the
-/// stamp alone would name any turn-ending outcome in the conversation.
+/// Whether the park call's own resolution is stored and stamped. The
+/// resolution answering the park call's own BLOCK id is the only row this
+/// reads — the framework's pairing, since a provider's echo can repeat —
+/// and the stamp alone would name any turn-ending outcome in the
+/// conversation.
 fn park_is_resolved(blocks: &[Block]) -> bool {
     blocks
         .iter()
         .filter(|block| {
             block.block_type == "tool_call" && field(block, "name") == no_reply_needed::NAME
         })
-        .map(|call| field(call, "tool_call_id"))
-        .filter(|call_id| !call_id.is_empty())
-        .any(|call_id| {
-            blocks
-                .iter()
-                .any(|block| stamped(block) && field(block, "tool_call_id") == call_id)
+        .any(|call| {
+            blocks.iter().any(|block| {
+                stamped(block)
+                    && matches!(
+                        BlockKind::from_block(block),
+                        BlockKind::ToolResult(result) if result.call_block_id == Some(call.id)
+                    )
+            })
         })
 }
 

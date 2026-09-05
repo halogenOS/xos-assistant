@@ -24,15 +24,19 @@
 //!
 //! # The stops
 //!
-//! Three carriers, each for a different ending:
+//! The cue stops when the send is DONE, whichever way it ended (the
+//! operator, 2026-09-02: "it should stop typing when the send is done,
+//! regardless of its success"). Two carriers say so, and one backstop
+//! catches what neither did:
 //!
-//! - the adapter stops the chat's own indicator the moment it takes a
-//!   message to send, which is the ordinary end: the message IS the visible
-//!   end of the composing it announced;
-//! - a send that FAILED stops the signal here, through the failure channel
-//!   the receipt door writes to ([`SendStops`]). Nothing reached the chat,
-//!   so nothing will end the indicator on the adapter's side, and the model
-//!   may well spend several more rounds before the turn ends;
+//! - the receipt door raises the stop on [`SendStops`] for every ending of
+//!   a filed send alike — delivered, failed, cut short partway — because it
+//!   is the one place every ending passes through. The adapter stopping the
+//!   chat's own indicator ahead of the platform call is the adapter's
+//!   bookkeeping and carries nothing here;
+//! - a call REFUSED before anything was filed — a spent tier, an unknown
+//!   target, missing text — raises the same stop from the tool itself: it
+//!   lit the cue at its start and no delivery will ever report on it;
 //! - the stream's terminal — its done, its error, or its close — stops it
 //!   as it always did, and the lifetime sweeper below stays the backstop.
 //!
@@ -73,8 +77,10 @@ use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{ChannelKey, ComposingState, ComposingUpdate};
 
-/// Where the receipt door tells the composing edges that a send FAILED, by
-/// the conversation it failed in (unit 55, 2026-09-02).
+/// Where the receipt door and the sending tools tell the composing edges
+/// that a send is DONE, by the conversation it was sent in (unit 55,
+/// 2026-09-02) — delivered, failed, cut short, or refused before it filed
+/// anything.
 ///
 /// A channel of its own and not an event on the framework's bus: the bus
 /// carries the runtime's own vocabulary, and a consumer's fact about a
@@ -84,7 +90,7 @@ use crate::message::{ChannelKey, ComposingState, ComposingUpdate};
 /// lifetime sweeper.
 pub(crate) type SendStops = broadcast::Sender<i64>;
 
-/// How many failed sends the stop channel holds for a slow edge. Small on
+/// How many finished sends the stop channel holds for a slow edge. Small on
 /// purpose: an edge that fell this far behind is one whose signals the
 /// lifetime sweeper will end anyway, and a deep buffer would only delay a
 /// cue nobody is watching.
@@ -135,7 +141,7 @@ pub(crate) fn spawn_edge(
     stops: &SendStops,
 ) -> mpsc::UnboundedReceiver<ComposingUpdate> {
     let mut events = ctx.bus().subscribe();
-    let mut failed_sends = stops.subscribe();
+    let mut finished_sends = stops.subscribe();
     let (updates, receiver) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         // The channels currently composing, by conversation: the key is
@@ -157,16 +163,16 @@ pub(crate) fn spawn_edge(
                     stop_expired(&mut open, &updates);
                     continue;
                 }
-                // A send that failed: nothing reached the chat, so no
-                // adapter will end the indicator this cue lit. The channel
-                // is lossy like every other carrier here, and its loss is
-                // caught by the deadline above.
-                failed = failed_sends.recv() => {
-                    match failed {
+                // A send that is done, whichever way it ended: the cue its
+                // start lit ends here. The channel is lossy like every
+                // other carrier here, and its loss is caught by the
+                // deadline above.
+                finished = finished_sends.recv() => {
+                    match finished {
                         Ok(conversation_id) => stop_one(&mut open, &updates, conversation_id),
                         Err(RecvError::Lagged(missed)) => tracing::warn!(
                             missed,
-                            "the composing edge missed failed sends; their signals expire on \
+                            "the composing edge missed finished sends; their signals expire on \
                              the edge's own clock"
                         ),
                         // The assembly outlives its edges, so a closed
@@ -582,21 +588,18 @@ mod tests {
         assert_eq!(third.channel, marker_key);
     }
 
-    /// AC12's second stop: a send that FAILED ends the cue, through the
-    /// channel the receipt door writes to.
+    /// AC12's second stop: a send that is DONE ends the cue, through the
+    /// channel the receipt door and the refusing tool both write to.
     ///
-    /// It is the carrier that has to exist. The adapter stops the chat's
-    /// own indicator when it takes a message to send, so a message that
-    /// reached the platform ends the cue there; a send that reached nobody
-    /// ends nothing on that side, and the model may spend several more
-    /// rounds before the turn's terminal arrives. Another conversation's
-    /// failure stops nothing here — the stop is keyed on the conversation
-    /// that failed.
+    /// One carrier for every ending — delivered, failed, cut short, refused
+    /// before filing — because the cue stops when the send is done whatever
+    /// came of it. Another conversation's send stops nothing here: the stop
+    /// is keyed on the conversation it was sent in.
     #[tokio::test]
-    async fn a_failed_send_stops_the_cue() {
+    async fn a_finished_send_stops_the_cue() {
         let store = Store::in_memory_with(store_config()).expect("an in-memory store opens");
         let ctx = quiet_ctx(store.clone());
-        let (conversation, key) = mapped_conversation(&store, "quiet", "dm-failed-send").await;
+        let (conversation, key) = mapped_conversation(&store, "quiet", "dm-finished-send").await;
         let (other, _) = mapped_conversation(&store, "quiet", "dm-other-send").await;
         let stops = stops();
         let mut updates = spawn_edge(ctx.clone(), "quiet".into(), &stops);
@@ -606,17 +609,18 @@ mod tests {
         assert_eq!(begun.channel, key);
         assert_eq!(begun.state, ComposingState::Composing);
 
-        // Somebody else's failure first: it must not end this signal.
+        // Somebody else's finished send first: it must not end this
+        // signal.
         stops.send(other).expect("the edge is listening");
         stops.send(conversation).expect("the edge is listening");
 
         let stopped = tokio::time::timeout(std::time::Duration::from_secs(10), updates.recv())
             .await
-            .expect("the failed send's stop arrives before the deadline")
+            .expect("the finished send's stop arrives before the deadline")
             .expect("the edge outlives the test");
         assert_eq!(
             stopped.channel, key,
-            "another conversation's failed send stops nothing here"
+            "another conversation's finished send stops nothing here"
         );
         assert_eq!(stopped.state, ComposingState::Stopped);
         assert!(

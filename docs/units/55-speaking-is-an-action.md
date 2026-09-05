@@ -167,25 +167,47 @@ access, and receipts do not exist before 2026-08-30, so an envelope built from t
 right for some answers and silently absent for others. The notice draws one honest line
 instead.
 
+**The order.** The two sending tools run in order: a call of either runs only after every
+earlier call of either in the same conversation has resolved, so the messages reach the
+group in the order the model issued them, and a pending send never has a sibling in flight.
+The framework carries the rule as a tool hook, `runs_in_order` (default false): its runner
+parks a ready call of an in-order tool while an earlier in-order call of the conversation is
+unresolved and re-emits it the way it re-emits a latched one, and parallel calls stay
+parallel for every other tool. The app's two sending tools answer the hook true. No filing
+lock exists beside it: the order is the one mechanism.
+
+**The pairing.** A call and its resolution are paired by the call's block id. The result and
+error rows already record `source_block_id` (the framework's schema states that a model's
+`tool_call_id` can repeat and the block id cannot); the framework's result and error kinds
+carry it, and the framework's own predicate (`ToolCall::resolved_in` and the outcome reading
+beside it) pairs by it. The app reads a send's state (delivered, failed, pending) through
+that framework reading and holds no pairing walk of its own.
+
 **The caps.** Per conversation, shared by both tools, three tiers: 5 sends per minute, 30
 per hour, 100 per day, counted over the conversation's outgoing blocks in the trailing span
 whose call completed with delivered ids or is still pending — a failed send posted nothing
 and burns no tier.
-The check runs in the tools' admission answer over the ledger the runner already loaded — the
-framework's single-tier per-name window cannot express a shared three-tier bound. A spent
+The check runs once, in the tools' admission answer over the ledger the runner already
+loaded — the framework's single-tier per-name window cannot express a shared three-tier
+bound — and because the calls run in order, that ledger holds every earlier send and the
+count is exact. A spent
 tier refuses with `Refusal::Refused` and a sentence naming the tier that is spent and when it
 reopens, so the model stops and resumes on a later turn; a run of five such refusals ends the
-turn by the framework's rule.
+turn by the framework's rule. The three numbers are constants of the code today and become
+configuration when the web UI arrives (decision below).
 
 **The typing cue.** The framework raises a stream status at `tool_use_start`, once per
 recorded call, carrying the tool's name — when the reader records the call's start, which
 is as early as the wire allows; on the shipped wires the arguments have already arrived by
 then, so the cue precedes the send by little, and that is the honest bound. `RUNNING_TOOLS`
 keeps its own meaning (execution began) and is untouched. The
-app lights the cue on that status for the two sending tools. The stop keeps its existing
-carriers: the adapter stops the chat's refresher ahead of the actual send, a failed
-resolution raises the stop cue through the receipt door, and the composing edge's lifetime
-sweeper stays the backstop. Text deltas no longer light it, because text is notes.
+app lights the cue on that status for the two sending tools. The cue stops when the send is
+done, whichever way it ended: the receipt door raises the stop for a delivered send, a failed
+send and a cut-short send alike, and a call refused before anything was filed (a spent tier,
+an unknown target, missing text) raises the same stop from the tool. The composing edge's
+lifetime sweeper stays the backstop. The adapter stopping its own refresher ahead of the
+platform call is the adapter's bookkeeping, not a carrier of the cue. Text deltas no longer
+light it, because text is notes.
 
 **The budget.** A counted debt is one whose turn DELIVERED at least one message — an
 outgoing block whose call completed with ids; the empty-answer clause is replaced, not
@@ -266,11 +288,14 @@ App:
     tools, counted over outgoing blocks that delivered or are pending — a failed send counts
     for nothing; the sixth send in a minute is refused
     `Refusal::Refused` with the recorded sentence naming the tier and its reopening; the
-    tiers are checked from the loaded ledger inside the admission answer. Tests cover each
-    tier's edge and the sentence.
-12. The typing cue lights on a sending tool's call-start status and stops on the adapter's
-    send or on a failed resolution's stop cue; a text delta no longer lights it. Tests cover
-    the light, both stops, and the text delta.
+    tiers are checked once, from the loaded ledger inside the admission answer, and no
+    second check or filing lock exists. Tests cover each tier's edge and the sentence, and
+    one test drives the registered tools through the framework's runner against a real
+    store: five calls in one minute file, the sixth is refused with the sentence.
+12. The typing cue lights on a sending tool's call-start status and stops when the send is
+    done: on a delivered, a failed and a cut-short send through the receipt door, and on a
+    refusal before filing; a text delta no longer lights it. Tests cover the light, each
+    stop, and the text delta.
 13. `COUNTED_DEBT_SQL` counts a debt when its turn holds an outgoing block that delivered,
     and not otherwise; the per-person and per-channel budgets read it. Tests cover a turn of
     notes only, a turn with a delivered send, and a turn whose only send failed.
@@ -284,7 +309,43 @@ App:
     --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`, and
     `cargo doc --workspace --no-deps` under `RUSTDOCFLAGS="-D warnings"`.
 
+Framework, the order and the pairing:
+
+17. `ToolHandler::runs_in_order` exists with default false. A ready call of an in-order tool
+    is parked while an earlier in-order call of the same conversation is unresolved and runs
+    once that call resolves, in call order; calls of every other tool stay parallel. A test
+    issues three in-order calls in one round with the first body held and asserts the second
+    body starts only after the first resolves and the third after the second; a test asserts
+    a parallel tool's call beside them is not held.
+18. The tool result and tool error kinds carry the call's block id, and `ToolCall::resolved_in`
+    and the outcome reading beside it pair by it, never by the provider echo. A test records
+    two calls carrying one echo and asserts each resolves only through its own result; a test
+    asserts a legacy resolution row carrying no call block id (if the schema admits one) is
+    handled as the framework decides and states, never by the echo.
+
+App, the order and the pairing:
+
+19. Both sending tools answer `runs_in_order` true; the app holds no filing lock and no
+    pairing walk of its own: `outgoing::send_state`'s echo comparison is gone and the send
+    state is read through the framework's outcome reading. A grep of the app for a
+    `tool_call_id` comparison returns nothing.
+
 ## Rejected alternatives
+
+- **A second cap check under a filing lock.** The review found the admission check alone
+  lets parallel sibling calls pass the cap together. Rejected as the fix: it answers one
+  question twice, and it leaves the messages' order to whichever body files first. The order
+  is the fix, and with it the admission check is exact.
+- **Ordering the sends inside the app by reading the ledger for unresolved earlier calls.**
+  Rejected: the runner already knows which call is ready and which are unresolved; a second
+  reading of the same fact in the consumer is the fact recorded twice.
+- **Deleting the failure stop and relying on the adapter's refresher stop.** Proposed by the
+  cold-alternatives seat. Rejected by the user's answer: the cue stops when the send is done
+  whichever way it ended, which makes the receipt door the one carrier for every outcome.
+- **The contract notice as a standing prompt sentence.** Proposed by the same seat. Rejected:
+  the decision on record is a recorded notice at the moment the tools joined an old
+  conversation's choice, and a standing sentence would tell a fresh conversation about a
+  history it does not have.
 
 - **Rendering old answers under their delivery id.** Rejected: the projection is per-block
   with no ledger access, and receipts begin on 2026-08-30, so the envelope would be present
@@ -330,6 +391,13 @@ might get confused and think that its messages never reached the group"
 30 per 1 hour, and 100 per day (for busy days). On ratelimit the model gets a clear error
 message and asks for a retry later. So it can resume responding on the next turn." — and,
 asked per group or bot-wide (msg 1705): "Per group chat"
+
+**2026-09-02, the order, the caps' home and the cue's stop (msg 1785):** "The message
+sending needs to be serialized anyway because the messages must be in the intended order in
+the group. · Q1: for now hardcoded, and configurable once the web ui hits. Record this · Q2:
+it should stop typing when the send is done, regardless of its success. · Q3: go, take the
+above into accounr" — Q1 was whether the caps stay constants or become configuration fields;
+Q2 was whether the failure-only stop channel goes; Q3 the fix round.
 
 **2026-09-01, the go (msg 1677):** "Alright then ensure through tests that the old db entries
 work on the new format properly and are the same as the new entries on projection. Then you

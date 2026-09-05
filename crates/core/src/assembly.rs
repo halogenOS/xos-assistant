@@ -256,15 +256,17 @@ pub struct OperatorConfig {
 /// the operator's stated economics: with prompt caching the marginal read
 /// is cheap at the community's traffic, so every group message reaches the
 /// model and the model decides whether to speak, staying silent by ending
-/// its turn with no text. A deployment that wants the quiet shape sets
-/// `addressed`.
+/// its turn without calling a sending tool. A deployment that wants the
+/// quiet shape sets `addressed`.
 /// The mode enters the machinery at exactly one place: the entry point's
 /// summons resolution ahead of the write-time stamp — everything past the
 /// stamp reads the stored summons fact and stays mode-free.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum AnsweringMode {
     /// Every group message summons a turn; the model decides whether to
-    /// speak and stays silent by ending its turn with no text.
+    /// speak and stays silent by ending its turn without sending anything:
+    /// its written text reaches nobody, so silence is a turn that files no
+    /// message.
     #[default]
     Helpful,
     /// A group message summons a turn only when it addresses the
@@ -472,11 +474,11 @@ pub struct Assistant {
     /// filing takes the fence shared too. The whole contract, and the lock
     /// order this path obeys, are on [`crate::filing`].
     filing_door: FilingDoor,
-    /// Where the receipt door tells every composing edge that a send failed
-    /// (unit 55, 2026-09-02): a message that never reached the chat leaves
-    /// no adapter to end the indicator the send's own start lit, so the
-    /// core says so instead. Its whole contract is on
-    /// [`composing::SendStops`].
+    /// Where the receipt door tells every composing edge that a send is
+    /// DONE (unit 55, 2026-09-02), whichever way it ended — delivered,
+    /// failed, or cut short partway. The sending tools hold the same
+    /// channel for the calls they refuse before filing anything. Its whole
+    /// contract is on [`composing::SendStops`].
     send_stops: composing::SendStops,
 }
 
@@ -492,6 +494,9 @@ struct AssembledTools {
     privacy_replies: Arc<ReplyWindow>,
     erasure_fence: ErasureFence,
     filing_door: FilingDoor,
+    /// The composing cue's stop channel, for the sending pair: a call
+    /// refused before it filed anything ends the cue its start lit.
+    send_stops: composing::SendStops,
 }
 
 /// Add the assembly's own tools to the embedder's set, in one place: each
@@ -544,6 +549,7 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
         privacy_replies,
         erasure_fence,
         filing_door,
+        send_stops,
     } = assembled;
     if let Some(handle) = moderation_handle
         && crate::teaching::moderation_taught(true, answering)
@@ -561,15 +567,12 @@ fn admit_assembled_tools(tools: &mut ToolSet, assembled: AssembledTools) {
         ));
     }
     tools.admit(StandingLookup::new(Arc::clone(&erasure_fence)));
-    tools.admit(MarkTool::new(
-        Arc::clone(&erasure_fence),
-        Arc::clone(&filing_door),
-    ));
+    tools.admit(MarkTool::new(Arc::clone(&erasure_fence), filing_door));
     tools.admit(SendMessage::new(
         Arc::clone(&erasure_fence),
-        Arc::clone(&filing_door),
+        send_stops.clone(),
     ));
-    tools.admit(ReplyMessage::new(Arc::clone(&erasure_fence), filing_door));
+    tools.admit(ReplyMessage::new(Arc::clone(&erasure_fence), send_stops));
     tools.admit(PrivacyTool::new(
         pending_deletions,
         privacy_replies,
@@ -758,7 +761,10 @@ impl Assistant {
         ));
         check_and_record_wiring(&store, &providers, &binding).await?;
         let erasure_fence: ErasureFence = Arc::new(RwLock::new(()));
-        let filing_door = filing::door();
+        // The two shared handles the tools are registered with: the filing
+        // door, and the composing cue's one stop channel — the sending
+        // tools and the receipt door both say a send is over on it.
+        let (filing_door, send_stops) = (filing::door(), composing::stops());
         let privacy_replies = Arc::new(ReplyWindow::new(PRIVACY_REPLY_WINDOW, PRIVACY_REPLY_CAP));
         let pending_deletions = Arc::new(PendingDeletions::new());
         let mut tools = tools;
@@ -772,6 +778,7 @@ impl Assistant {
                 privacy_replies: Arc::clone(&privacy_replies),
                 erasure_fence: Arc::clone(&erasure_fence),
                 filing_door: Arc::clone(&filing_door),
+                send_stops: send_stops.clone(),
             },
         );
         admit_unconditional_tools(&mut tools, started_at);
@@ -851,7 +858,7 @@ impl Assistant {
             standing_read_pause: OnceLock::new(),
             choice_reconciled: Mutex::new(HashSet::new()),
             filing_door,
-            send_stops: composing::stops(),
+            send_stops,
         })
     }
 
@@ -1713,7 +1720,13 @@ impl Assistant {
     ///   replies to one of those ids.
     ///
     /// A send nobody asked for — a report's line, a deterministic item —
-    /// carries no call on its handle and settles nothing.
+    /// carries no call on its handle, settles nothing and stops no cue: no
+    /// tool call started, so nothing lit one.
+    ///
+    /// Every one of the three endings also stops the composing cue, on the
+    /// one channel every composing edge listens to: the send is done, and
+    /// the chat stops showing the assistant typing whether the platform
+    /// took the message or not.
     ///
     /// This answers nothing and never fails outward. A conversation that no
     /// longer exists — erasure can delete a direct conversation between the
@@ -1751,13 +1764,14 @@ impl Assistant {
                 error: outgoing::send_cut_short(origins, reason),
             },
         };
-        if matches!(outcome, SendOutcome::Failed { .. }) {
-            // The composing cue's second stop: this send's own start lit
-            // the indicator and no message reached the chat to end it, so
-            // the edges are told. A send with no listening edge answers an
-            // error, which is nothing to act on: the cue is live-only.
-            let _ = self.send_stops.send(delivery.conversation_id());
-        }
+        // The composing cue stops here, whichever way the send ended: this
+        // send's own start lit the indicator, and this door is the one
+        // place every ending passes through, so one carrier ends every one
+        // of them (the operator, 2026-09-02: "it should stop typing when
+        // the send is done, regardless of its success"). A send with no
+        // listening edge answers an error, which is nothing to act on: the
+        // cue is live-only.
+        let _ = self.send_stops.send(delivery.conversation_id());
         if let Err(error) = outgoing::settle(
             self.ctx.store(),
             delivery.conversation_id(),

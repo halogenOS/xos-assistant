@@ -590,18 +590,6 @@ fn without_envelope(text: &str) -> String {
     }
 }
 
-/// The old bracketed-mark strip, kept for the cases that still name it.
-#[allow(dead_code)]
-fn without_origin_marks(text: &str) -> String {
-    text.lines()
-        .map(|line| match line.find("] ") {
-            Some(end) if line.starts_with('[') => &line[end + 2..],
-            _ => line,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// One projected message's whole text, in either content mode.
 fn message_text(message: &Message) -> String {
     match &message.content {
