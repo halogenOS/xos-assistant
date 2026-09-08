@@ -248,9 +248,24 @@ pub const SENDING_CONTRACT: &str = "What you write is your own private notes. It
      are not messages still reach the group as they always did, because they are a tool's own \
      effect and not your text: a report you file, and an emoji reaction you place.";
 
+/// The reply rule after resuming or a long absence from the group. This is
+/// model instruction for both sending tools, not a restriction on history
+/// retrieval or on the report tool's assessment targets.
+pub const REPLY_RECENCY_TEACHING: &str = "When the conversation is freshly unlatched, or when \
+     the last message you successfully sent to the group is more than 12 hours old, do not \
+     answer member messages that are more than 10 member messages back from the newest one. \
+     Count only messages from group members. \
+     The 12 hours measures time since your last message actually sent to the group, not the \
+     age of the member message; private notes and failed sends do not reset it. This rule \
+     applies whether you answer with reply_message or send_message: sending an unthreaded \
+     answer is not an exception. The only exception is /report, under the existing reporting \
+     rules. Older history remains context, \
+     not a backlog to answer. If nothing within the allowed range needs an answer, send \
+     nothing.";
+
 /// The whole system prompt the assembly records: the embedder's prompt,
 /// then the name identity, then the speaking contract, then the answering
-/// teaching for the configured mode, then the react teaching and the
+/// teaching for the configured mode, then reply recency, react teaching and the
 /// closing prohibition — all of them unconditional — and then, each exactly
 /// when its own capability is there, the moderation teaching and the web
 /// search teaching. Public because the suites assert recorded prompts
@@ -268,8 +283,8 @@ pub fn composed_system_prompt(
     capabilities: Capabilities,
 ) -> String {
     let mut prompt = format!(
-        "{base}\n\n{identity}\n\n{SENDING_CONTRACT}\n\n{teaching}\n\n{REACT_TEACHING}\
-         \n\n{CLOSING_PROHIBITIONS}",
+        "{base}\n\n{identity}\n\n{SENDING_CONTRACT}\n\n{teaching}\n\n{REPLY_RECENCY_TEACHING}\
+         \n\n{REACT_TEACHING}\n\n{CLOSING_PROHIBITIONS}",
         identity = identity_section(name),
         teaching = answering_section(answering),
     );
@@ -1201,6 +1216,33 @@ mod tests {
                     prompt.contains(SENDING_CONTRACT),
                     "the contract composes in {mode:?} mode under {capabilities:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn every_composition_teaches_the_same_recency_rule_for_both_triggers() {
+        for mode in [AnsweringMode::Helpful, AnsweringMode::Addressed] {
+            for capabilities in every_capabilities() {
+                let prompt = composed_system_prompt("b", "n", mode, capabilities);
+                assert_eq!(prompt.matches(REPLY_RECENCY_TEACHING).count(), 1);
+                for instruction in [
+                    "When the conversation is freshly unlatched, or when the last message \
+                     you successfully sent to the group is more than 12 hours old",
+                    "do not answer member messages that are more than 10 member messages \
+                     back from the newest one",
+                    "Count only messages from group members",
+                    "not the age of the member message",
+                    "private notes and failed sends do not reset it",
+                    "whether you answer with reply_message or send_message",
+                    "The only exception is /report, under the existing reporting rules",
+                    "Older history remains context, not a backlog to answer",
+                ] {
+                    assert!(
+                        prompt.contains(instruction),
+                        "missing instruction: {instruction}"
+                    );
+                }
             }
         }
     }

@@ -57,8 +57,9 @@ impl ToolHandler<CoreEvent> for ReplyMessage {
             description: "Send one message to this group chat as a reply to a message you \
                  name. Your written text is private and reaches nobody; this tool and \
                  send_message are how the group hears from you. Name the message you are \
-                 answering by the msgid shown in its envelope; it can be any message this \
-                 conversation holds, of any age, one of your own included. An id this \
+                 answering by the msgid shown in its envelope; the conversation must hold \
+                 it, and it may be one of your own messages. Follow the reply recency rule \
+                 in your instructions when deciding which member messages to answer. An id this \
                  conversation does not hold is declined, and no message is posted without \
                  the reply. The result carries the id your message was posted under."
                 .into(),
@@ -103,8 +104,8 @@ mod tests {
     use super::*;
 
     /// The definition teaches the contract and the aiming rule: the written
-    /// text is private, the id comes from the envelope, any message this
-    /// conversation holds may be answered, and an unheld id is declined
+    /// text is private, the id comes from the envelope, the reply recency
+    /// rule governs member answers, and an unheld id is declined
     /// instead of quietly losing the thread.
     #[test]
     fn the_definition_teaches_the_target_and_takes_both_parameters() {
@@ -116,7 +117,8 @@ mod tests {
             "as a reply to a message you name",
             "Your written text is private and reaches nobody",
             "Name the message you are answering by the msgid shown in its envelope",
-            "any message this conversation holds, of any age, one of your own included",
+            "the conversation must hold it, and it may be one of your own messages",
+            "Follow the reply recency rule in your instructions",
             "An id this conversation does not hold is declined, and no message is posted \
              without the reply",
             "The result carries the id your message was posted under",
