@@ -112,6 +112,7 @@ async fn generated(
             model: ModelSelector::Specific(binding.model.clone()),
             tools: Vec::new(),
             reasoning: Some(reasoning),
+            response_schema: None,
         })
         .map_err(|_| GenerationFailure::RequestRefused)?;
     let collected = tokio::time::timeout(GENERATION_TIMEOUT, collect(&mut responses))

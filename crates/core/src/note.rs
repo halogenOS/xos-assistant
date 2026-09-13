@@ -220,9 +220,15 @@ impl ContextNote {
         let text = self.text.as_deref()?;
         Some(match self.topic? {
             NoteTopic::Title => format!("{TITLE_NOTE_LEAD}{text}"),
-            NoteTopic::Rules => format!("{RULES_NOTE_LEAD}{text}"),
+            NoteTopic::Rules => rules_line(text),
         })
     }
+}
+
+/// The line the rules project as, wherever they are stated to the model:
+/// under a note, and at the end of a compaction message.
+pub(crate) fn rules_line(text: &str) -> String {
+    format!("{RULES_NOTE_LEAD}{text}")
 }
 
 impl LeafKind for ContextNote {
@@ -334,6 +340,28 @@ pub(crate) async fn newest_text(
             .optional()?)
     })
     .await
+}
+
+/// The newest stored note text of one topic across a conversation's whole
+/// lineage, nearest first: the serving conversation's own newest note, or
+/// failing that the nearest ancestor's, and so on up the chain a compaction
+/// leaves behind ("looking for the rules needs to also look recursively").
+/// A note nowhere in the lineage answers `None`.
+///
+/// # Errors
+///
+/// [`CoreError`] if a read fails or the lineage's stored shape is refused.
+pub(crate) async fn newest_text_in_lineage(
+    store: &Store,
+    serving: i64,
+    topic: NoteTopic,
+) -> Result<Option<String>, crate::error::CoreError> {
+    for conversation in crate::lineage::serving_lineage(store, serving).await? {
+        if let Some(text) = newest_text(store, conversation, topic).await? {
+            return Ok(Some(text));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

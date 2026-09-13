@@ -81,24 +81,25 @@ use std::ops::ControlFlow;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use agent_ledger::agency::{AgencyCtx, AncestorReference, LeafKind, Status, Text, ratchet};
+use agent_ledger::agency::{AgencyCtx, AncestorReference, LeafKind, Status, ratchet};
 use agent_ledger::providers::ReasoningLevel;
 use agent_ledger::store::{
     CompactedThread, LedgerCut, ModelOverride, StoreError, StoreTx, TemporaryConversation,
     TemporaryFork, domain_run,
 };
-use agent_ledger::{Block, CoreEvent, EventBus, Role, RuntimeContext};
+use agent_ledger::{Block, CoreEvent, EventBus, RuntimeContext};
 use rusqlite::OptionalExtension;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::assembly::{ErasureFence, ModelBinding, ScriptedPause};
-use crate::compaction::{COMPACTION_INSTRUCTIONS, CONTEXT_SWEEP, ContextWatch};
+use crate::compaction::{COMPACTION_INSTRUCTIONS, CONTEXT_SWEEP, ContextWatch, compaction_schema};
 use crate::erasure;
 use crate::error::{CoreError, FatalExit};
 use crate::kind::AssistantKind;
 use crate::mapping;
 use crate::message::{ChannelKey, ChannelKind};
+use crate::note::{self, NoteTopic};
 use crate::streams;
 
 /// The framework's own table for a status row, and the column carrying its
@@ -668,6 +669,7 @@ impl Sessions {
                     // here and cannot forget it.
                     records: Vec::new(),
                     instructions: COMPACTION_INSTRUCTIONS.to_owned(),
+                    response_schema: Some(compaction_schema()),
                 },
             )
             .await?;
@@ -676,8 +678,34 @@ impl Sessions {
                 conversation_id: source,
             });
         };
+        let summary = self.with_active_rules(summary, source).await?;
         self.install_compacted_thread(source, cut, summary, channel, kind)
             .await
+    }
+
+    /// The compaction message as it is stored: the captured summary, and
+    /// under it the active rules where the lineage of `lineage_of` holds any
+    /// ("the compaction summary should include the rules"). The rules bytes
+    /// are the newest rules note's own, read nearest-first up the lineage,
+    /// never the model's retelling of them.
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Store`] if a read fails; [`CoreError::AncestorUnnamed`]
+    /// for a lineage whose stored shape is refused.
+    async fn with_active_rules(
+        &self,
+        summary: String,
+        lineage_of: i64,
+    ) -> Result<String, CoreError> {
+        Ok(
+            match note::newest_text_in_lineage(self.ctx.store(), lineage_of, NoteTopic::Rules)
+                .await?
+            {
+                Some(rules) => format!("{summary}\n\n{}", note::rules_line(&rules)),
+                None => summary,
+            },
+        )
     }
 
     /// Capture a temporary conversation's summary and retire the
@@ -806,6 +834,14 @@ impl Sessions {
         loop {
             match self.captured_turn(temporary).await? {
                 CapturedTurn::Wrote(summary) => return Ok(Some(summary)),
+                CapturedTurn::Malformed(reason) => {
+                    tracing::warn!(
+                        temporary = temporary.conversation_id,
+                        reason,
+                        "the compaction's turn answered outside the schema it was held to; the capture answers with no summary"
+                    );
+                    return Ok(None);
+                }
                 CapturedTurn::Silent if wakes.turn_ended() => {
                     tracing::warn!(
                         temporary = temporary.conversation_id,
@@ -829,7 +865,14 @@ impl Sessions {
             .store()
             .list_blocks(temporary.conversation_id)
             .await?;
-        Ok(summary_of(&blocks, temporary.instructions_block_id))
+        Ok(summary_of(temporary, &blocks).unwrap_or_else(|reason| {
+            tracing::warn!(
+                temporary = temporary.conversation_id,
+                reason,
+                "the compaction's turn answered outside the schema it was held to at the bound; the capture answers with no summary"
+            );
+            None
+        }))
     }
 
     /// What the temporary conversation's ledger says about its turn right
@@ -859,9 +902,10 @@ impl Sessions {
             .store()
             .list_blocks(temporary.conversation_id)
             .await?;
-        Ok(match summary_of(&blocks, temporary.instructions_block_id) {
-            Some(summary) => CapturedTurn::Wrote(summary),
-            None => CapturedTurn::Silent,
+        Ok(match summary_of(temporary, &blocks) {
+            Ok(Some(summary)) => CapturedTurn::Wrote(summary),
+            Ok(None) => CapturedTurn::Silent,
+            Err(reason) => CapturedTurn::Malformed(reason),
         })
     }
 
@@ -1489,11 +1533,12 @@ impl Sessions {
                 TemporaryFork {
                     records: Vec::new(),
                     instructions: COMPACTION_INSTRUCTIONS.to_owned(),
+                    response_schema: Some(compaction_schema()),
                 },
             )
             .await?;
         match self.capture_and_retire(temporary).await? {
-            Some(summary) => Ok(Some(summary)),
+            Some(summary) => Ok(Some(self.with_active_rules(summary, successor).await?)),
             // Capture-first: nothing established has been touched yet, and
             // the clones built so far go with the failure at the caller.
             None => Err(CoreError::CompactionUnsummarized {
@@ -1811,23 +1856,22 @@ pub(crate) struct StrippedHop {
     pub stripped: Vec<i64>,
 }
 
-/// The captured summary in one temporary conversation's ledger: the newest
-/// non-empty assistant-voiced text past the instructions block, or `None`
-/// when the turn wrote no prose.
-///
-/// Past the instructions block, because everything before it is the
-/// inherited history the turn was asked ABOUT, including the source's own
-/// earlier answers.
-fn summary_of(blocks: &[Block], instructions_block_id: i64) -> Option<String> {
-    blocks
-        .iter()
-        .rev()
-        .take_while(|block| block.id != instructions_block_id)
-        .filter(|block| {
-            block.role == Some(Role::Assistant) && Text::KINDS.contains(&block.block_type.as_str())
-        })
-        .map(|block| Text::parse(block).content.trim().to_owned())
-        .find(|content| !content.is_empty())
+/// The captured summary in one temporary conversation's ledger: the answer
+/// the framework reads past the instructions block, deserialized as the
+/// object the schema asked for, and its summary field out of it. `Ok(None)`
+/// is a turn that wrote nothing. `Err` is a turn that wrote something other
+/// than the shape it was held to — the provider failing its contract, which
+/// fails the compaction ("failures just fail the compaction"), never a
+/// shape repaired here.
+fn summary_of(
+    temporary: TemporaryConversation,
+    blocks: &[Block],
+) -> Result<Option<String>, String> {
+    temporary
+        .answer::<serde_json::Value>(blocks)
+        .map_err(|error| format!("the answer is not JSON: {error}"))?
+        .map(|answer| crate::compaction::summary_in(&answer))
+        .transpose()
 }
 
 /// What one temporary conversation's ledger says about its turn.
@@ -1835,12 +1879,15 @@ enum CapturedTurn {
     /// The turn is not durably over: something is still streaming, or an
     /// outcome is awaiting the round it summons.
     Running,
-    /// The turn is durably over, and this is the prose it wrote.
+    /// The turn is durably over, and this is the summary it wrote.
     Wrote(String),
-    /// The turn is durably over and there is no prose past the instructions.
+    /// The turn is durably over and there is nothing past the instructions.
     /// Read alone this is also what a conversation whose turn never started
     /// looks like, which is why the capture needs [`CaptureWakes`] beside it.
     Silent,
+    /// The turn is durably over and what it wrote is not the shape it was
+    /// held to; the reason is what the log says.
+    Malformed(String),
 }
 
 /// The capture's subscription to the bus, and the one fact it carries across
@@ -2030,7 +2077,7 @@ mod tests {
     use agent_ledger::agency::SystemPrompt;
     use agent_ledger::event::stream_status;
     use agent_ledger::store::ToolCallInsert;
-    use agent_ledger::{ProviderRegistry, Store, ToolRegistry};
+    use agent_ledger::{ProviderRegistry, Role, Store, ToolRegistry};
 
     use super::*;
     use crate::schema::store_config;
@@ -2101,6 +2148,7 @@ mod tests {
                 TemporaryFork {
                     records: Vec::new(),
                     instructions: COMPACTION_INSTRUCTIONS.to_owned(),
+                    response_schema: Some(compaction_schema()),
                 },
             )
             .await
@@ -2123,10 +2171,20 @@ mod tests {
         .expect("the anchor writes");
     }
 
-    /// Assistant prose in the temporary conversation's turn — anchored on
-    /// the instructions block, which is what the runtime anchors a summoned
-    /// turn's products on.
-    async fn answer(store: &Store, temporary: TemporaryConversation, content: &str) -> i64 {
+    /// The turn's answer in the temporary conversation — the object the
+    /// schema asks for, carrying `summary` — anchored on the instructions
+    /// block, which is what the runtime anchors a summoned turn's products on.
+    async fn answer(store: &Store, temporary: TemporaryConversation, summary: &str) -> i64 {
+        answer_raw(
+            store,
+            temporary,
+            &serde_json::json!({ "summary": summary }).to_string(),
+        )
+        .await
+    }
+
+    /// Assistant text in the temporary conversation's turn, exactly as given.
+    async fn answer_raw(store: &Store, temporary: TemporaryConversation, content: &str) -> i64 {
         let block = store
             .insert_final_text_block(
                 temporary.conversation_id,
@@ -2135,9 +2193,39 @@ mod tests {
                 None,
             )
             .await
-            .expect("the prose stores");
+            .expect("the text stores");
         anchor_on(store, block, temporary.instructions_block_id).await;
         block
+    }
+
+    /// The capture reads the object the schema asked for and nothing else:
+    /// prose, another object, or an empty summary is the provider failing
+    /// the schema, and it ends the capture with no summary at once — no
+    /// waiting out the bound, no repaired shape.
+    #[tokio::test]
+    async fn an_answer_outside_the_schema_ends_the_capture_with_no_summary() {
+        for wrong in [
+            "plain prose instead of the object",
+            "{\"other\": 1}",
+            "{\"summary\": \"  \"}",
+        ] {
+            let (sessions, store, bus, _context) = quiet_sessions();
+            let temporary = forked_temporary(&store).await;
+            answer_raw(&store, temporary, wrong).await;
+            let capture = tokio::spawn({
+                let sessions = Arc::clone(&sessions);
+                async move {
+                    sessions
+                        .capture_summary(
+                            temporary,
+                            tokio::time::Instant::now() + Duration::from_secs(30),
+                        )
+                        .await
+                }
+            });
+            wake(&bus, temporary.conversation_id);
+            assert_eq!(concluded(capture).await, None, "{wrong} is no summary");
+        }
     }
 
     /// A tool call and an error outcome answering it, under the same turn.

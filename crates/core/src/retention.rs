@@ -625,6 +625,7 @@ mod tests {
                 TemporaryFork {
                     records: Vec::new(),
                     instructions: "summarize what is above".into(),
+                    response_schema: None,
                 },
             )
             .await

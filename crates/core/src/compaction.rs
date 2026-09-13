@@ -68,6 +68,7 @@ use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use serde_json::{Value, json};
 use tokio::time::Instant;
 
 use crate::streams::StreamObserver;
@@ -78,6 +79,11 @@ use crate::streams::StreamObserver;
 /// conversation, mentioning important things, conversational topics etc —
 /// and byte-pinned by the test below, so a later edit is a deliberate act
 /// with the pin moved in the same change.
+///
+/// The answer is the JSON object [`compaction_schema`] describes, and the
+/// provider holds the model to that shape; the instructions say so once so
+/// the model knows what the field is for, and the prose rules apply to the
+/// field's value.
 ///
 /// It is model-facing harness text, never a line anyone in the chat reads:
 /// the temporary conversation it is appended to is retired the moment its
@@ -94,9 +100,40 @@ open or unfinished. Mention the conversational topics that came up, in the \
 order they came up, so a reader can tell what this conversation has already \
 been about.
 
-Write plain prose for the assistant that continues this conversation. Do not \
-greet anyone, do not address anyone, do not describe what you are about to \
-do, and do not offer to help. Write the summary and nothing else.";
+Answer with a JSON object whose one field, summary, holds that summary as \
+plain prose for the assistant that continues this conversation. Do not greet \
+anyone, do not address anyone, do not describe what you are about to do, and \
+do not offer to help. Put the summary in that field and nothing else.";
+
+/// The field of the answer object that holds the summary.
+const SUMMARY_FIELD: &str = "summary";
+
+/// The shape the compaction's answer must take: one object, one required
+/// string field, nothing else. The provider enforces it; this is the
+/// document it is handed.
+pub(crate) fn compaction_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": { SUMMARY_FIELD: { "type": "string" } },
+        "required": [SUMMARY_FIELD],
+        "additionalProperties": false,
+    })
+}
+
+/// The summary out of the answer object, trimmed, or the reason the answer
+/// is not one: a field missing or of another type is the provider failing
+/// the schema it was handed, and an empty summary is no summary.
+pub(crate) fn summary_in(answer: &Value) -> Result<String, String> {
+    let summary = answer
+        .get(SUMMARY_FIELD)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("the answer carries no {SUMMARY_FIELD} string: {answer}"))?
+        .trim();
+    if summary.is_empty() {
+        return Err(format!("the {SUMMARY_FIELD} is empty"));
+    }
+    Ok(summary.to_owned())
+}
 
 /// The headroom arm's floor: once the context window has no more than this
 /// many tokens left, the conversation is compacted. The design's own
@@ -530,10 +567,44 @@ mod tests {
              order they came up, so a reader can tell what this conversation has already \
              been about.\n\
              \n\
-             Write plain prose for the assistant that continues this conversation. Do not \
-             greet anyone, do not address anyone, do not describe what you are about to \
-             do, and do not offer to help. Write the summary and nothing else."
+             Answer with a JSON object whose one field, summary, holds that summary as \
+             plain prose for the assistant that continues this conversation. Do not greet \
+             anyone, do not address anyone, do not describe what you are about to do, and \
+             do not offer to help. Put the summary in that field and nothing else."
         );
+    }
+
+    /// The schema, byte for byte: one object, one required string, nothing
+    /// else — the provider enforces this document and no other.
+    #[test]
+    fn the_compaction_schema_is_pinned_verbatim() {
+        assert_eq!(
+            compaction_schema(),
+            json!({
+                "type": "object",
+                "properties": { "summary": { "type": "string" } },
+                "required": ["summary"],
+                "additionalProperties": false,
+            })
+        );
+    }
+
+    /// The reader takes the one field trimmed and refuses everything that is
+    /// not a non-empty summary string, naming why.
+    #[test]
+    fn the_summary_is_read_out_of_the_answer_or_refused() {
+        assert_eq!(
+            summary_in(&json!({ "summary": "  the digest  " })).as_deref(),
+            Ok("the digest")
+        );
+        for wrong in [
+            json!({}),
+            json!({ "summary": 2 }),
+            json!("prose"),
+            json!({ "summary": "  " }),
+        ] {
+            assert!(summary_in(&wrong).is_err(), "{wrong} is not a summary");
+        }
     }
 
     /// The stated numbers, pinned: the design's own headroom, and the four

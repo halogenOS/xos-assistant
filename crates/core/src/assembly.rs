@@ -1831,7 +1831,11 @@ impl Assistant {
                 // contact is a pin or a title change gains the current tools
                 // the same way an ingested message grants them.
                 self.reconcile_tool_choice(conversation_id).await?;
-                let newest = note::newest_text(self.ctx.store(), conversation_id, topic).await?;
+                // Read across the lineage: a compacted successor holds the
+                // rules its ancestor read, and the group did not change
+                // anything by the assistant moving to a new thread.
+                let newest =
+                    note::newest_text_in_lineage(self.ctx.store(), conversation_id, topic).await?;
                 if let Some(pause) = self.seams.note_read.get() {
                     pause().await;
                 }

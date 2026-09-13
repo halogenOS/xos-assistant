@@ -486,6 +486,7 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                 let ProviderRequest::Stream {
                     messages,
                     reasoning,
+                    response_schema,
                     ..
                 } = request
                 else {
@@ -513,7 +514,7 @@ pub fn scripted_provider(hold: Option<Arc<TurnHold>>) -> (Box<dyn ProviderModule
                     turns.fetch_add(1, Ordering::SeqCst);
                     seen.lock().unwrap().push(messages);
                     reasonings.lock().unwrap().push(reasoning);
-                    answer_compaction(&response_tx);
+                    answer_compaction(&response_tx, response_schema.as_ref());
                     continue;
                 }
                 // The rules acknowledgment is a one-shot generation and
@@ -939,12 +940,23 @@ pub fn is_compaction_turn(messages: &[Message]) -> bool {
 /// Stream the scripted summary and end the turn — what every scripted
 /// provider answers a compaction's turn with, written once so the two of
 /// them cannot answer it differently.
-fn answer_compaction(response_tx: &mpsc::UnboundedSender<ProviderResponse>) {
+///
+/// Answered the way a real provider answers: held to the request's schema
+/// when it carries one, so the answer is the object the core reads its
+/// summary out of; as prose when it carries none. A compaction dispatched
+/// without its schema therefore captures nothing, and the suite fails on
+/// it instead of tolerating the missing request field.
+fn answer_compaction(
+    response_tx: &mpsc::UnboundedSender<ProviderResponse>,
+    response_schema: Option<&serde_json::Value>,
+) {
+    let text = match response_schema {
+        Some(_) => serde_json::json!({ "summary": SCRIPTED_SUMMARY }).to_string(),
+        None => SCRIPTED_SUMMARY.into(),
+    };
     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));
     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextBlockStart));
-    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta {
-        text: SCRIPTED_SUMMARY.into(),
-    }));
+    let _ = response_tx.send(ProviderResponse::Event(StreamEvent::TextDelta { text }));
     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::MessageEnd {
         usage: agent_ledger::providers::Usage::default(),
         stop_reason: StopReason::EndTurn,
@@ -987,7 +999,12 @@ pub fn tool_scripted_provider(
             let hold = hold.clone();
             tokio::spawn(async move {
                 while let Some(request) = requests.recv().await {
-                    let ProviderRequest::Stream { messages, .. } = request else {
+                    let ProviderRequest::Stream {
+                        messages,
+                        response_schema,
+                        ..
+                    } = request
+                    else {
                         continue;
                     };
                     if messages.iter().any(|m| carries(m, TITLE_INSTRUCTION_MARK)) {
@@ -1010,7 +1027,7 @@ pub fn tool_scripted_provider(
                                     .send(ProviderResponse::Event(StreamEvent::Connected));
                                 let _ = response_tx.send(ProviderResponse::Error(failure));
                             }
-                            None => answer_compaction(&response_tx),
+                            None => answer_compaction(&response_tx, response_schema.as_ref()),
                         }
                         continue;
                     }

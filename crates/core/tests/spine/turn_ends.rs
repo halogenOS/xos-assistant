@@ -278,6 +278,7 @@ async fn both_tools_ride_the_choice_and_the_summary_fork_names_neither() {
             TemporaryFork {
                 records: Vec::new(),
                 instructions: "Summarize the conversation above.".into(),
+                response_schema: None,
             },
         )
         .await
