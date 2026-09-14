@@ -543,27 +543,43 @@ async fn a_moderators_compact_summarizes_the_first_half_and_carries_the_second()
     assert_eq!(reply.text, CLOSING_ANSWER);
 }
 
-/// The compaction summary includes the rules, and the rules lookup reads
-/// recursively through the compacted lineage: a rules note the cut leaves
-/// in the summarized half is still stated under the summary, in the note's
-/// own bytes, and re-pinning the same rules on the compacted thread — which
-/// inherited no note — announces nothing, because the thread's ancestor
-/// already read them.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_compaction_carries_the_active_rules_and_the_thread_does_not_re_announce_them() {
-    use assistant_core::note::RULES_NOTE_LEAD;
-    use assistant_core::{DeliveryItem, ObserveOutcome};
-
-    let (fixture, mut replies) = reset_fixture().await;
-    let (key, source, _) = flooded_group(&fixture, &mut replies, "compact-rules-room").await;
-    let pin = || Observation {
+/// One rules pin on a group, as the observation surface receives it.
+fn rules_pin(key: &ChannelKey) -> Observation {
+    Observation {
         channel: key.clone(),
         channel_kind: ChannelKind::Group,
         fact: ObservedFact::PinnedAnnouncement("Rules:\n1. Be kind.".into()),
-    };
+    }
+}
+
+/// Whether a thread's own ledger carries a rules note.
+async fn holds_rules_note(store: &Store, conversation: i64) -> bool {
+    store
+        .list_blocks(conversation)
+        .await
+        .expect("the ledger reads")
+        .iter()
+        .any(|block| {
+            block.block_type == CONTEXT_NOTE_KIND && block.fields["topic"] == json!("rules")
+        })
+}
+
+/// A flooded group whose rules were pinned and acknowledged once, then
+/// compacted after `later_fillers` more chat rows — enough of them and the
+/// cut leaves the rules note in the summarized half; none and the note
+/// rides across verbatim. Answers the channel, the source and the thread.
+async fn compacted_with_rules(
+    fixture: &support::Fixture,
+    replies: &mut Replies,
+    id: &str,
+    later_fillers: usize,
+) -> (ChannelKey, i64, i64) {
+    use assistant_core::DeliveryItem;
+
+    let (key, source, _) = flooded_group(fixture, replies, id).await;
     let announced = fixture
         .assistant
-        .observe(pin())
+        .observe(rules_pin(&key))
         .await
         .expect("the rules pin is judged");
     assert!(
@@ -573,19 +589,16 @@ async fn a_compaction_carries_the_active_rules_and_the_thread_does_not_re_announ
         ),
         "rules the assistant has not read before are acknowledged: {announced:?}"
     );
-    // Enough chatter after the pin that the cut leaves the note in the
-    // summarized half, so the thread inherits no rules note of its own.
-    for index in 0..(2 * FILLER_ROWS + 2) {
+    for index in 0..later_fillers {
         support::ingest_recorded(
             &fixture.assistant,
             with_origin(
                 inbound_unaddressed(&key, ChannelKind::Group, "43", "chatter"),
-                &format!("later-filler-{index}"),
+                &format!("{id}-later-filler-{index}"),
             ),
         )
         .await;
     }
-
     let (answer, _) = invoke(
         &fixture.assistant,
         command_message(
@@ -593,7 +606,7 @@ async fn a_compaction_carries_the_active_rules_and_the_thread_does_not_re_announ
             "5",
             Authority::Moderator,
             COMPACT_COMMAND,
-            "compact-rules-1",
+            &format!("{id}-compact"),
         ),
     )
     .await;
@@ -601,34 +614,195 @@ async fn a_compaction_carries_the_active_rules_and_the_thread_does_not_re_announ
     let thread = mapped_conversation(&fixture.store, &key)
         .await
         .expect("the channel is mapped");
-    assert_ne!(thread, source);
-    let blocks = fixture
-        .store
-        .list_blocks(thread)
-        .await
-        .expect("the ledger reads");
-    assert!(
-        !blocks
-            .iter()
-            .any(|block| block.block_type == CONTEXT_NOTE_KIND
-                && block.fields["topic"] == json!("rules")),
-        "the fixture leaves the rules note in the summarized half, so the thread inherits none"
-    );
+    assert_ne!(thread, source, "the channel points at the compacted thread");
+    (key, source, thread)
+}
+
+/// The compaction message with the rules under it, as the thread's third
+/// block, in the note's own bytes.
+async fn assert_message_carries_rules(store: &Store, thread: i64) {
+    use assistant_core::note::RULES_NOTE_LEAD;
+
+    let blocks = store.list_blocks(thread).await.expect("the ledger reads");
     assert_eq!(
         support::block_text(&blocks[2], "content"),
         format!("{SCRIPTED_SUMMARY}\n\n{RULES_NOTE_LEAD}1. Be kind."),
-        "the compaction message is the summary with the active rules under it, in the note's own bytes"
+        "the compaction message is the summary with the active rules under it"
     );
+}
+
+/// The compaction summary includes the rules, and the rules lookup reads
+/// recursively through the compacted lineage: a rules note the cut leaves
+/// in the summarized half is still stated under the summary, in the note's
+/// own bytes, and re-pinning the same rules on the compacted thread — which
+/// inherited no note — announces nothing, because the thread's ancestor
+/// already read them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_compaction_carries_the_active_rules_and_the_thread_does_not_re_announce_them() {
+    use assistant_core::ObserveOutcome;
+
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, _, thread) = compacted_with_rules(
+        &fixture,
+        &mut replies,
+        "compact-rules-room",
+        2 * FILLER_ROWS + 2,
+    )
+    .await;
+    assert!(
+        !holds_rules_note(&fixture.store, thread).await,
+        "the fixture leaves the rules note in the summarized half, so the thread inherits none"
+    );
+    assert_message_carries_rules(&fixture.store, thread).await;
 
     let unchanged = fixture
         .assistant
-        .observe(pin())
+        .observe(rules_pin(&key))
         .await
         .expect("the re-observed pin is judged");
     assert_eq!(
         unchanged,
         ObserveOutcome::Observed { deliver: None },
         "the thread finds the rules in its ancestor and announces nothing"
+    );
+}
+
+/// The same with the note past the cut: the thread inherits the note
+/// itself, the message still carries the rules, and the lookup's first
+/// hop — the thread's own ledger — answers before any ancestor is read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rules_note_past_the_cut_rides_across_and_still_heads_the_summary() {
+    use assistant_core::ObserveOutcome;
+
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, _, thread) =
+        compacted_with_rules(&fixture, &mut replies, "compact-rules-tail", 0).await;
+    assert!(
+        holds_rules_note(&fixture.store, thread).await,
+        "with no chatter after the pin the note sits in the second half and rides across"
+    );
+    assert_message_carries_rules(&fixture.store, thread).await;
+    assert_eq!(
+        fixture
+            .assistant
+            .observe(rules_pin(&key))
+            .await
+            .expect("the re-observed pin is judged"),
+        ObserveOutcome::Observed { deliver: None },
+        "the inherited note answers the comparison"
+    );
+}
+
+/// Recursive means recursive: a thread compacted a second time has the
+/// rules note two hops back, and both the summary and the comparison still
+/// find it there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_compaction_finds_the_rules_two_hops_back() {
+    use assistant_core::ObserveOutcome;
+
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, source, first) = compacted_with_rules(
+        &fixture,
+        &mut replies,
+        "compact-rules-twice",
+        2 * FILLER_ROWS + 2,
+    )
+    .await;
+    for index in 0..(2 * FILLER_ROWS + 2) {
+        support::ingest_recorded(
+            &fixture.assistant,
+            with_origin(
+                inbound_unaddressed(&key, ChannelKind::Group, "43", "chatter"),
+                &format!("twice-filler-{index}"),
+            ),
+        )
+        .await;
+    }
+    let (answer, _) = invoke(
+        &fixture.assistant,
+        command_message(
+            &key,
+            "5",
+            Authority::Moderator,
+            COMPACT_COMMAND,
+            "compact-twice",
+        ),
+    )
+    .await;
+    assert_eq!(answer.as_deref(), Some(COMPACT_DONE));
+    let second = mapped_conversation(&fixture.store, &key)
+        .await
+        .expect("the channel is mapped");
+    assert!(
+        second != first && second != source,
+        "a third conversation serves the channel"
+    );
+    let blocks = fixture
+        .store
+        .list_blocks(second)
+        .await
+        .expect("the ledger reads");
+    assert_eq!(
+        blocks[1].fields["ancestor_conversation_id"],
+        json!(first),
+        "the second thread names the first as its ancestor, which names the source"
+    );
+    assert!(
+        !holds_rules_note(&fixture.store, second).await
+            && !holds_rules_note(&fixture.store, first).await,
+        "neither thread holds the note; only the source does"
+    );
+    assert_message_carries_rules(&fixture.store, second).await;
+    assert_eq!(
+        fixture
+            .assistant
+            .observe(rules_pin(&key))
+            .await
+            .expect("the re-observed pin is judged"),
+        ObserveOutcome::Observed { deliver: None },
+        "two hops back is still found"
+    );
+}
+
+/// The lookup reads what is there. Once retention has retired the ancestor
+/// holding the note, the thread has no rules note in reach: the summary it
+/// opened with still states them to the model, and the next pin of the same
+/// rules is new to the thread — acknowledged once, and recorded as the
+/// thread's own note (decision 0201's stated consequence).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_retired_ancestor_takes_its_note_out_of_reach_and_the_next_pin_is_new() {
+    use assistant_core::DeliveryItem;
+
+    let (fixture, mut replies) = reset_fixture().await;
+    let (key, source, thread) = compacted_with_rules(
+        &fixture,
+        &mut replies,
+        "compact-rules-retired",
+        2 * FILLER_ROWS + 2,
+    )
+    .await;
+    assert_message_carries_rules(&fixture.store, thread).await;
+    fixture
+        .store
+        .delete_conversation(source)
+        .await
+        .expect("the ancestor retires");
+
+    let announced = fixture
+        .assistant
+        .observe(rules_pin(&key))
+        .await
+        .expect("the pin is judged");
+    assert!(
+        matches!(
+            support::observed_item(&announced),
+            Some(DeliveryItem::Acknowledgment(_))
+        ),
+        "with the ancestor gone the rules are new to the thread: {announced:?}"
+    );
+    assert!(
+        holds_rules_note(&fixture.store, thread).await,
+        "and the thread now holds a note of its own"
     );
 }
 

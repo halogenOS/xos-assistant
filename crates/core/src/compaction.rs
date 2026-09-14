@@ -100,39 +100,141 @@ open or unfinished. Mention the conversational topics that came up, in the \
 order they came up, so a reader can tell what this conversation has already \
 been about.
 
-Answer with a JSON object whose one field, summary, holds that summary as \
-plain prose for the assistant that continues this conversation. Do not greet \
-anyone, do not address anyone, do not describe what you are about to do, and \
-do not offer to help. Put the summary in that field and nothing else.";
+Answer with a JSON object holding one list per part of that summary: topics, \
+in the order they came up; questions_answered, each with the question and the \
+answer it got; decisions; facts; corrections; open_items. Leave a list empty \
+when the conversation holds nothing for it. Write each item as plain prose \
+for the assistant that continues this conversation. Do not greet anyone, do \
+not address anyone, do not describe what you are about to do, and do not \
+offer to help.";
 
-/// The field of the answer object that holds the summary.
-const SUMMARY_FIELD: &str = "summary";
+/// The answer object's fields, one per logical unit of the summary, in the
+/// order they render. Each is a list; the model fills what the first half
+/// holds and leaves the rest empty.
+const TOPICS: &str = "topics";
+const QUESTIONS_ANSWERED: &str = "questions_answered";
+const DECISIONS: &str = "decisions";
+const FACTS: &str = "facts";
+const CORRECTIONS: &str = "corrections";
+const OPEN_ITEMS: &str = "open_items";
 
-/// The shape the compaction's answer must take: one object, one required
-/// string field, nothing else. The provider enforces it; this is the
-/// document it is handed.
+/// The two fields of one asked-and-answered item.
+const QUESTION: &str = "question";
+const ANSWER: &str = "answer";
+
+/// The list fields whose items are plain strings, each with the heading
+/// its section renders under. The asked-and-answered list is the one
+/// field of another shape and renders on its own.
+const STRING_LISTS: [(&str, &str); 5] = [
+    (TOPICS, "Topics, in the order they came up:"),
+    (DECISIONS, "Decisions and conclusions reached:"),
+    (
+        FACTS,
+        "Facts established about people, versions, settings and links:",
+    ),
+    (CORRECTIONS, "Corrections made:"),
+    (OPEN_ITEMS, "Left open or unfinished:"),
+];
+
+/// The heading the asked-and-answered section renders under.
+const QUESTIONS_HEADING: &str = "Asked and answered:";
+
+/// The shape the compaction's answer must take: one object with one list
+/// per logical unit of the summary, every field present, nothing else. The
+/// provider enforces it; this is the document it is handed.
 pub(crate) fn compaction_schema() -> Value {
+    let strings = json!({ "type": "array", "items": { "type": "string" } });
     json!({
         "type": "object",
-        "properties": { SUMMARY_FIELD: { "type": "string" } },
-        "required": [SUMMARY_FIELD],
+        "properties": {
+            TOPICS: strings,
+            QUESTIONS_ANSWERED: {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        QUESTION: { "type": "string" },
+                        ANSWER: { "type": "string" },
+                    },
+                    "required": [QUESTION, ANSWER],
+                    "additionalProperties": false,
+                },
+            },
+            DECISIONS: strings,
+            FACTS: strings,
+            CORRECTIONS: strings,
+            OPEN_ITEMS: strings,
+        },
+        "required": [TOPICS, QUESTIONS_ANSWERED, DECISIONS, FACTS, CORRECTIONS, OPEN_ITEMS],
         "additionalProperties": false,
     })
 }
 
-/// The summary out of the answer object, trimmed, or the reason the answer
-/// is not one: a field missing or of another type is the provider failing
-/// the schema it was handed, and an empty summary is no summary.
+/// The compaction message rendered out of the answer object: each unit
+/// under its heading as a list, units the model left empty omitted, or the
+/// reason the answer is not one. A field missing or of another type is the
+/// provider failing the schema it was handed; an answer whose every unit is
+/// empty is no summary.
+///
+/// The rendering is harness text the model reads at the head of the
+/// compacted thread, never a line anyone in the chat sees.
 pub(crate) fn summary_in(answer: &Value) -> Result<String, String> {
-    let summary = answer
-        .get(SUMMARY_FIELD)
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("the answer carries no {SUMMARY_FIELD} string: {answer}"))?
-        .trim();
-    if summary.is_empty() {
-        return Err(format!("the {SUMMARY_FIELD} is empty"));
+    let mut sections = Vec::new();
+    for (field, heading) in STRING_LISTS {
+        let items: Vec<&str> = list(answer, field)?
+            .iter()
+            .map(|item| item.as_str().map(str::trim))
+            .collect::<Option<_>>()
+            .ok_or_else(|| format!("{field} holds something other than strings: {answer}"))?;
+        let lines: Vec<String> = items
+            .into_iter()
+            .filter(|item| !item.is_empty())
+            .map(|item| format!("- {item}"))
+            .collect();
+        if field == DECISIONS {
+            // The asked-and-answered section sits between the topics and
+            // the decisions, in the instructions' own order.
+            if let Some(rendered) = questions_section(answer)? {
+                sections.push(rendered);
+            }
+        }
+        if !lines.is_empty() {
+            sections.push(format!("{heading}\n{}", lines.join("\n")));
+        }
     }
-    Ok(summary.to_owned())
+    if sections.is_empty() {
+        return Err(format!("every unit of the summary is empty: {answer}"));
+    }
+    Ok(sections.join("\n\n"))
+}
+
+/// The asked-and-answered section, or `None` when the list is empty.
+fn questions_section(answer: &Value) -> Result<Option<String>, String> {
+    let mut lines = Vec::new();
+    for item in list(answer, QUESTIONS_ANSWERED)? {
+        let field = |name: &str| {
+            item.get(name)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .ok_or_else(|| {
+                    format!("an item of {QUESTIONS_ANSWERED} carries no {name} string: {answer}")
+                })
+        };
+        let (question, asked) = (field(QUESTION)?, field(ANSWER)?);
+        if question.is_empty() && asked.is_empty() {
+            continue;
+        }
+        lines.push(format!("- Q: {question}\n  A: {asked}"));
+    }
+    Ok((!lines.is_empty()).then(|| format!("{QUESTIONS_HEADING}\n{}", lines.join("\n"))))
+}
+
+/// One list field of the answer, or the reason it is not one.
+fn list<'a>(answer: &'a Value, field: &str) -> Result<&'a Vec<Value>, String> {
+    answer
+        .get(field)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("the answer carries no {field} list: {answer}"))
 }
 
 /// The headroom arm's floor: once the context window has no more than this
@@ -567,41 +669,135 @@ mod tests {
              order they came up, so a reader can tell what this conversation has already \
              been about.\n\
              \n\
-             Answer with a JSON object whose one field, summary, holds that summary as \
-             plain prose for the assistant that continues this conversation. Do not greet \
-             anyone, do not address anyone, do not describe what you are about to do, and \
-             do not offer to help. Put the summary in that field and nothing else."
+             Answer with a JSON object holding one list per part of that summary: topics, \
+             in the order they came up; questions_answered, each with the question and the \
+             answer it got; decisions; facts; corrections; open_items. Leave a list empty \
+             when the conversation holds nothing for it. Write each item as plain prose \
+             for the assistant that continues this conversation. Do not greet anyone, do \
+             not address anyone, do not describe what you are about to do, and do not \
+             offer to help."
         );
     }
 
-    /// The schema, byte for byte: one object, one required string, nothing
-    /// else — the provider enforces this document and no other.
+    /// The schema, byte for byte: one object, six required lists, the
+    /// asked-and-answered items two required strings, nothing else anywhere.
+    /// The provider enforces this document and no other.
     #[test]
-    fn the_compaction_schema_is_pinned_verbatim() {
+    fn the_compaction_schema_is_the_stated_one() {
+        let strings = json!({ "type": "array", "items": { "type": "string" } });
         assert_eq!(
             compaction_schema(),
             json!({
                 "type": "object",
-                "properties": { "summary": { "type": "string" } },
-                "required": ["summary"],
+                "properties": {
+                    "topics": strings,
+                    "questions_answered": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "question": { "type": "string" },
+                                "answer": { "type": "string" },
+                            },
+                            "required": ["question", "answer"],
+                            "additionalProperties": false,
+                        },
+                    },
+                    "decisions": strings,
+                    "facts": strings,
+                    "corrections": strings,
+                    "open_items": strings,
+                },
+                "required": ["topics", "questions_answered", "decisions", "facts", "corrections", "open_items"],
                 "additionalProperties": false,
             })
         );
     }
 
-    /// The reader takes the one field trimmed and refuses everything that is
-    /// not a non-empty summary string, naming why.
+    /// A full answer renders every unit under its heading, in the
+    /// instructions' order, items trimmed.
     #[test]
-    fn the_summary_is_read_out_of_the_answer_or_refused() {
+    fn a_full_answer_renders_every_unit_in_order() {
+        let answer = json!({
+            "topics": [" the release ", "a setting"],
+            "questions_answered": [{ "question": "which build? ", "answer": " the March one" }],
+            "decisions": ["ship it"],
+            "facts": ["the version is 16.2"],
+            "corrections": ["the link was wrong"],
+            "open_items": ["the changelog"],
+        });
         assert_eq!(
-            summary_in(&json!({ "summary": "  the digest  " })).as_deref(),
-            Ok("the digest")
+            summary_in(&answer).as_deref(),
+            Ok(
+                "Topics, in the order they came up:\n- the release\n- a setting\n\n\
+                Asked and answered:\n- Q: which build?\n  A: the March one\n\n\
+                Decisions and conclusions reached:\n- ship it\n\n\
+                Facts established about people, versions, settings and links:\n- the version is 16.2\n\n\
+                Corrections made:\n- the link was wrong\n\n\
+                Left open or unfinished:\n- the changelog"
+            )
         );
+    }
+
+    /// A unit the model left empty renders no heading, and so does one
+    /// holding only blank items; an answer with nothing in any unit is no
+    /// summary at all.
+    #[test]
+    fn empty_units_are_omitted_and_an_empty_answer_is_refused() {
+        let sparse = json!({
+            "topics": ["one topic"],
+            "questions_answered": [{ "question": "", "answer": " " }],
+            "decisions": [],
+            "facts": ["  "],
+            "corrections": [],
+            "open_items": ["still open"],
+        });
+        assert_eq!(
+            summary_in(&sparse).as_deref(),
+            Ok(
+                "Topics, in the order they came up:\n- one topic\n\nLeft open or unfinished:\n- still open"
+            )
+        );
+        let empty = json!({
+            "topics": [],
+            "questions_answered": [],
+            "decisions": [],
+            "facts": [],
+            "corrections": [],
+            "open_items": [],
+        });
+        assert!(summary_in(&empty).is_err());
+    }
+
+    /// Anything that is not the object the schema describes is refused,
+    /// naming why: a missing list, a list of the wrong element type, an
+    /// asked-and-answered item missing a field, or no object at all.
+    #[test]
+    fn an_answer_outside_the_schema_is_refused() {
+        let good = json!({
+            "topics": ["t"],
+            "questions_answered": [],
+            "decisions": [],
+            "facts": [],
+            "corrections": [],
+            "open_items": [],
+        });
+        assert!(summary_in(&good).is_ok());
+        let mut missing = good.clone();
+        missing.as_object_mut().unwrap().remove("facts");
+        let mut wrong_items = good.clone();
+        wrong_items["decisions"] = json!([1]);
+        let mut half_item = good.clone();
+        half_item["questions_answered"] = json!([{ "question": "q" }]);
+        let mut prose = good.clone();
+        prose["topics"] = json!("prose");
         for wrong in [
-            json!({}),
-            json!({ "summary": 2 }),
+            missing,
+            wrong_items,
+            half_item,
+            prose,
             json!("prose"),
-            json!({ "summary": "  " }),
+            json!({}),
         ] {
             assert!(summary_in(&wrong).is_err(), "{wrong} is not a summary");
         }

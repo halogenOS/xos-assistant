@@ -927,9 +927,23 @@ pub fn is_acknowledgment_request(messages: &[Message]) -> bool {
 /// the turn.
 pub const COMPACTION_MARK: &str = "You are compacting the conversation above";
 
-/// What the scripted providers answer a compaction's turn with — the
-/// summary a compacted thread then carries as its compaction message.
-pub const SCRIPTED_SUMMARY: &str = "The scripted summary of the first half.";
+/// What a compacted thread carries as its compaction message under the
+/// scripted providers: the core's rendering of [`scripted_summary_object`].
+pub const SCRIPTED_SUMMARY: &str = "Topics, in the order they came up:\n- the first half\n\n\
+                                    Decisions and conclusions reached:\n- the scripted decision";
+
+/// The object the scripted providers answer a compaction's turn with, in
+/// the shape the core's schema asks for: two units filled, four left empty.
+fn scripted_summary_object() -> serde_json::Value {
+    serde_json::json!({
+        "topics": ["the first half"],
+        "questions_answered": [],
+        "decisions": ["the scripted decision"],
+        "facts": [],
+        "corrections": [],
+        "open_items": [],
+    })
+}
 
 /// Whether this request is a compaction's own turn: its harness message
 /// carries the instructions' opening clause.
@@ -951,7 +965,7 @@ fn answer_compaction(
     response_schema: Option<&serde_json::Value>,
 ) {
     let text = match response_schema {
-        Some(_) => serde_json::json!({ "summary": SCRIPTED_SUMMARY }).to_string(),
+        Some(_) => scripted_summary_object().to_string(),
         None => SCRIPTED_SUMMARY.into(),
     };
     let _ = response_tx.send(ProviderResponse::Event(StreamEvent::Connected));

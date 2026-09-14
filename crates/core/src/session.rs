@@ -2172,15 +2172,29 @@ mod tests {
     }
 
     /// The turn's answer in the temporary conversation — the object the
-    /// schema asks for, carrying `summary` — anchored on the instructions
-    /// block, which is what the runtime anchors a summoned turn's products on.
-    async fn answer(store: &Store, temporary: TemporaryConversation, summary: &str) -> i64 {
-        answer_raw(
-            store,
-            temporary,
-            &serde_json::json!({ "summary": summary }).to_string(),
-        )
-        .await
+    /// schema asks for, carrying one decision and nothing else — anchored
+    /// on the instructions block, which is what the runtime anchors a
+    /// summoned turn's products on.
+    async fn answer(store: &Store, temporary: TemporaryConversation, decision: &str) -> i64 {
+        answer_raw(store, temporary, &answer_object(decision).to_string()).await
+    }
+
+    /// The answer object carrying one decision.
+    fn answer_object(decision: &str) -> serde_json::Value {
+        serde_json::json!({
+            "topics": [],
+            "questions_answered": [],
+            "decisions": [decision],
+            "facts": [],
+            "corrections": [],
+            "open_items": [],
+        })
+    }
+
+    /// What the capture answers for the object [`answer`] writes: the
+    /// compaction module's own rendering of it.
+    fn rendered(decision: &str) -> String {
+        crate::compaction::summary_in(&answer_object(decision)).expect("one decision renders")
     }
 
     /// Assistant text in the temporary conversation's turn, exactly as given.
@@ -2207,7 +2221,7 @@ mod tests {
         for wrong in [
             "plain prose instead of the object",
             "{\"other\": 1}",
-            "{\"summary\": \"  \"}",
+            "{\"topics\":[],\"questions_answered\":[],\"decisions\":[\" \"],\"facts\":[],\"corrections\":[],\"open_items\":[]}",
         ] {
             let (sessions, store, bus, _context) = quiet_sessions();
             let temporary = forked_temporary(&store).await;
@@ -2450,7 +2464,7 @@ mod tests {
         wake(&bus, temporary.conversation_id);
         assert_eq!(
             concluded(capture).await,
-            Some("the whole summary".to_owned()),
+            Some(rendered("the whole summary")),
             "the capture answers with what the turn wrote after its tool round"
         );
     }
@@ -2510,7 +2524,7 @@ mod tests {
         wake(&bus, temporary.conversation_id);
         assert_eq!(
             concluded(capture).await,
-            Some("the whole summary".to_owned()),
+            Some(rendered("the whole summary")),
             "a capture that lagged still answers on the next change"
         );
     }
@@ -2532,7 +2546,7 @@ mod tests {
         .expect("a durable summary ends the capture at once, not at the bound")
         .expect("the capture and the retirement both succeed");
 
-        assert_eq!(captured, Some("the whole summary".to_owned()));
+        assert_eq!(captured, Some(rendered("the whole summary")));
         assert!(
             store
                 .find_conversation(temporary.conversation_id)
@@ -2577,7 +2591,7 @@ mod tests {
         wake(&bus, temporary.conversation_id);
         assert_eq!(
             concluded(capture).await,
-            Some("the whole summary".to_owned()),
+            Some(rendered("the whole summary")),
             "the capture that waited out the empty ledger answers what the turn wrote"
         );
     }
@@ -2707,7 +2721,7 @@ mod tests {
 
         assert_eq!(
             captured,
-            Some("what the turn managed to write".to_owned()),
+            Some(rendered("what the turn managed to write")),
             "the ledger's prose at the bound is the answer"
         );
 
@@ -2811,7 +2825,7 @@ mod tests {
             .await
             .expect("a committed summary survives an observation left open")
             .expect("the capture read the committed prose");
-        assert_eq!(summary, "the whole summary");
+        assert_eq!(summary, rendered("the whole summary"));
 
         assert!(
             interrupted.await.expect("the interrupt was answered"),

@@ -17,10 +17,16 @@ it, and reads the answer back as JSON.
 
 ## Decision
 
-The temporary fork carries the schema of one object with one required string field,
-`summary`, and nothing else. The instructions say what the field is for; the provider
-enforces the shape. The capture reads the object the framework hands back and takes the
-field trimmed. An answer that is not that object, or whose summary is empty, is the
+The temporary fork carries the schema of one object with one list per logical unit of
+the summary, the units being the instructions' own: the topics in the order they came up,
+the questions asked with the answers they got, the decisions and conclusions reached, the
+facts established about people, versions, settings and links, the corrections made, and
+what was left open or unfinished. Every list is present and the model leaves a list empty
+when the first half holds nothing for it; nothing else is allowed in the object. The
+instructions say what the lists are for; the provider enforces the shape. The capture reads
+the object the framework hands back and renders it as the compaction message: each unit
+that holds anything under its own heading as a list, in that order, items trimmed, empty
+units omitted. An answer that is not that object, or whose every unit is empty, is the
 provider failing the contract it was handed, and it fails the compaction the way every
 other failure does: the capture ends at once with no summary, nothing is swapped, nothing
 is deleted, and the next trigger re-derives the whole compaction. No shape is repaired,
