@@ -764,6 +764,67 @@ async fn a_second_compaction_finds_the_rules_two_hops_back() {
     );
 }
 
+/// A title is not a rule: a compaction carries no title across, so a title
+/// note the cut leaves in the summarized half is one the serving thread
+/// records again on the next observation of the same title — the lineage
+/// reading is the rules' alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_title_left_in_the_summarized_half_is_recorded_again_by_the_thread() {
+    let (fixture, mut replies) = reset_fixture().await;
+    // The flooded fixture observes two titles before its chatter, so both
+    // title notes sit in the summarized half after the cut.
+    let (key, _, thread) = compacted_with_rules(
+        &fixture,
+        &mut replies,
+        "compact-title-room",
+        2 * FILLER_ROWS + 2,
+    )
+    .await;
+    let title_notes = |blocks: &[Block]| {
+        blocks
+            .iter()
+            .filter(|block| {
+                block.block_type == CONTEXT_NOTE_KIND && block.fields["topic"] == json!("title")
+            })
+            .count()
+    };
+    let before = fixture
+        .store
+        .list_blocks(thread)
+        .await
+        .expect("the ledger reads");
+    assert_eq!(
+        title_notes(&before),
+        0,
+        "the thread inherited no title note"
+    );
+
+    let outcome = fixture
+        .assistant
+        .observe(Observation {
+            channel: key.clone(),
+            channel_kind: ChannelKind::Group,
+            fact: ObservedFact::Title("The newest title".into()),
+        })
+        .await
+        .expect("the title is observed");
+    assert_eq!(
+        outcome,
+        assistant_core::ObserveOutcome::Observed { deliver: None },
+        "a title never delivers anything"
+    );
+    let after = fixture
+        .store
+        .list_blocks(thread)
+        .await
+        .expect("the ledger reads");
+    assert_eq!(
+        title_notes(&after),
+        1,
+        "the unchanged title is new to the thread, whose ancestor's note does not reach it"
+    );
+}
+
 /// The lookup reads what is there. Once retention has retired the ancestor
 /// holding the note, the thread has no rules note in reach: the summary it
 /// opened with still states them to the model, and the next pin of the same

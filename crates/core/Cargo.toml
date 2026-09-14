@@ -29,6 +29,10 @@ reqwest = { version = "0.13", features = ["json"] }
 # re-exporting the crate; the direct dependency stays on the framework's major
 # version so the two name one type.
 rusqlite = "0.40"
+# The compaction's answer object derives its decoding, unknown fields refused
+# at the derive; the framework and the adapter already depend on this version.
+# Recorded in docs/dependency-review.md before this manifest named it.
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "sync"] }

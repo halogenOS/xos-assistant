@@ -80,10 +80,10 @@ use crate::streams::StreamObserver;
 /// and byte-pinned by the test below, so a later edit is a deliberate act
 /// with the pin moved in the same change.
 ///
-/// The answer is the JSON object [`compaction_schema`] describes, and the
-/// provider holds the model to that shape; the instructions say so once so
-/// the model knows what the field is for, and the prose rules apply to the
-/// field's value.
+/// The answer is the JSON object [`compaction_schema`] describes, one list
+/// per unit of the summary, and the provider holds the model to that shape;
+/// the instructions name the lists once so the model knows what each is
+/// for, and the prose rules apply to every item.
 ///
 /// It is model-facing harness text, never a line anyone in the chat reads:
 /// the temporary conversation it is appended to is retired the moment its
@@ -108,9 +108,8 @@ for the assistant that continues this conversation. Do not greet anyone, do \
 not address anyone, do not describe what you are about to do, and do not \
 offer to help.";
 
-/// The answer object's fields, one per logical unit of the summary, in the
-/// order they render. Each is a list; the model fills what the first half
-/// holds and leaves the rest empty.
+/// The answer object's fields, one per logical unit of the summary, as the
+/// schema names them.
 const TOPICS: &str = "topics";
 const QUESTIONS_ANSWERED: &str = "questions_answered";
 const DECISIONS: &str = "decisions";
@@ -122,26 +121,18 @@ const OPEN_ITEMS: &str = "open_items";
 const QUESTION: &str = "question";
 const ANSWER: &str = "answer";
 
-/// The list fields whose items are plain strings, each with the heading
-/// its section renders under. The asked-and-answered list is the one
-/// field of another shape and renders on its own.
-const STRING_LISTS: [(&str, &str); 5] = [
-    (TOPICS, "Topics, in the order they came up:"),
-    (DECISIONS, "Decisions and conclusions reached:"),
-    (
-        FACTS,
-        "Facts established about people, versions, settings and links:",
-    ),
-    (CORRECTIONS, "Corrections made:"),
-    (OPEN_ITEMS, "Left open or unfinished:"),
-];
-
-/// The heading the asked-and-answered section renders under.
+/// The headings the units render under, in the order they render.
+const TOPICS_HEADING: &str = "Topics, in the order they came up:";
 const QUESTIONS_HEADING: &str = "Asked and answered:";
+const DECISIONS_HEADING: &str = "Decisions and conclusions reached:";
+const FACTS_HEADING: &str = "Facts established about people, versions, settings and links:";
+const CORRECTIONS_HEADING: &str = "Corrections made:";
+const OPEN_ITEMS_HEADING: &str = "Left open or unfinished:";
 
 /// The shape the compaction's answer must take: one object with one list
 /// per logical unit of the summary, every field present, nothing else. The
-/// provider enforces it; this is the document it is handed.
+/// provider enforces it; this is the document it is handed. The reading of
+/// what comes back is [`CompactionSummary`], whose fields are these names.
 pub(crate) fn compaction_schema() -> Value {
     let strings = json!({ "type": "array", "items": { "type": "string" } });
     json!({
@@ -170,71 +161,114 @@ pub(crate) fn compaction_schema() -> Value {
     })
 }
 
-/// The compaction message rendered out of the answer object: each unit
-/// under its heading as a list, units the model left empty omitted, or the
-/// reason the answer is not one. A field missing or of another type is the
-/// provider failing the schema it was handed; an answer whose every unit is
-/// empty is no summary.
-///
-/// The rendering is harness text the model reads at the head of the
-/// compacted thread, never a line anyone in the chat sees.
-pub(crate) fn summary_in(answer: &Value) -> Result<String, String> {
-    let mut sections = Vec::new();
-    for (field, heading) in STRING_LISTS {
-        let items: Vec<&str> = list(answer, field)?
-            .iter()
-            .map(|item| item.as_str().map(str::trim))
-            .collect::<Option<_>>()
-            .ok_or_else(|| format!("{field} holds something other than strings: {answer}"))?;
-        let lines: Vec<String> = items
-            .into_iter()
-            .filter(|item| !item.is_empty())
-            .map(|item| format!("- {item}"))
-            .collect();
-        if field == DECISIONS {
-            // The asked-and-answered section sits between the topics and
-            // the decisions, in the instructions' own order.
-            if let Some(rendered) = questions_section(answer)? {
-                sections.push(rendered);
-            }
-        }
-        if !lines.is_empty() {
-            sections.push(format!("{heading}\n{}", lines.join("\n")));
-        }
-    }
-    if sections.is_empty() {
-        return Err(format!("every unit of the summary is empty: {answer}"));
-    }
-    Ok(sections.join("\n\n"))
+/// The answer object as the schema describes it: one list per logical unit
+/// of the summary. Deserializing is the one reading of what the provider
+/// returned, and a field the schema does not name is refused there, at
+/// either level; nothing here validates a document against the schema,
+/// which the provider enforced.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompactionSummary {
+    topics: Vec<String>,
+    questions_answered: Vec<AnsweredQuestion>,
+    decisions: Vec<String>,
+    facts: Vec<String>,
+    corrections: Vec<String>,
+    open_items: Vec<String>,
 }
 
-/// The asked-and-answered section, or `None` when the list is empty.
-fn questions_section(answer: &Value) -> Result<Option<String>, String> {
-    let mut lines = Vec::new();
-    for item in list(answer, QUESTIONS_ANSWERED)? {
-        let field = |name: &str| {
-            item.get(name)
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .ok_or_else(|| {
-                    format!("an item of {QUESTIONS_ANSWERED} carries no {name} string: {answer}")
-                })
-        };
-        let (question, asked) = (field(QUESTION)?, field(ANSWER)?);
-        if question.is_empty() && asked.is_empty() {
-            continue;
-        }
-        lines.push(format!("- Q: {question}\n  A: {asked}"));
-    }
-    Ok((!lines.is_empty()).then(|| format!("{QUESTIONS_HEADING}\n{}", lines.join("\n"))))
+/// One question and the answer it got.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AnsweredQuestion {
+    question: String,
+    answer: String,
 }
 
-/// One list field of the answer, or the reason it is not one.
-fn list<'a>(answer: &'a Value, field: &str) -> Result<&'a Vec<Value>, String> {
-    answer
-        .get(field)
-        .and_then(Value::as_array)
-        .ok_or_else(|| format!("the answer carries no {field} list: {answer}"))
+impl CompactionSummary {
+    /// The compaction message: each unit that holds anything, under its
+    /// heading as a list, in the units' order; units with nothing omitted.
+    /// An answer with nothing in any unit is no summary, and says so.
+    ///
+    /// The rendering is harness text the model reads at the head of the
+    /// compacted thread, never a line anyone in the chat sees. The reason
+    /// an answer is refused names no content of it: the log line it reaches
+    /// is not where a conversation's facts belong.
+    pub(crate) fn render(&self) -> Result<String, String> {
+        let sections = [
+            section(
+                TOPICS_HEADING,
+                self.topics.iter().map(String::as_str).map(item),
+            ),
+            section(
+                QUESTIONS_HEADING,
+                self.questions_answered.iter().map(AnsweredQuestion::item),
+            ),
+            section(
+                DECISIONS_HEADING,
+                self.decisions.iter().map(String::as_str).map(item),
+            ),
+            section(
+                FACTS_HEADING,
+                self.facts.iter().map(String::as_str).map(item),
+            ),
+            section(
+                CORRECTIONS_HEADING,
+                self.corrections.iter().map(String::as_str).map(item),
+            ),
+            section(
+                OPEN_ITEMS_HEADING,
+                self.open_items.iter().map(String::as_str).map(item),
+            ),
+        ];
+        let rendered: Vec<String> = sections.into_iter().flatten().collect();
+        if rendered.is_empty() {
+            return Err("every unit of the summary is empty".to_owned());
+        }
+        Ok(rendered.join("\n\n"))
+    }
+}
+
+impl AnsweredQuestion {
+    /// The pair as one list item, or `None` when both sides are blank. A
+    /// pair with one blank side still renders, the blank side as its label
+    /// alone: a question the model recorded without its answer is a fact
+    /// about the conversation, not a defect of the answer.
+    fn item(&self) -> Option<String> {
+        let (question, answer) = (contained(&self.question), contained(&self.answer));
+        if question.is_empty() && answer.is_empty() {
+            return None;
+        }
+        Some(
+            format!("- Q: {question}\n  A: {answer}")
+                .trim_end()
+                .to_owned(),
+        )
+    }
+}
+
+/// One rendered section, or `None` when no item of it carries anything.
+fn section(heading: &str, items: impl Iterator<Item = Option<String>>) -> Option<String> {
+    let lines: Vec<String> = items.flatten().collect();
+    (!lines.is_empty()).then(|| format!("{heading}\n{}", lines.join("\n")))
+}
+
+/// One list item, or `None` when it is blank.
+fn item(text: &str) -> Option<String> {
+    let text = contained(text);
+    (!text.is_empty()).then(|| format!("- {text}"))
+}
+
+/// A text kept inside its list item: lines trimmed, blank lines dropped,
+/// every line after the first indented under the item's marker. A line
+/// break the model put inside an item therefore cannot open a section or
+/// an item of its own, whatever the line says.
+fn contained(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n  ")
 }
 
 /// The headroom arm's floor: once the context window has no more than this
@@ -714,6 +748,14 @@ mod tests {
         );
     }
 
+    /// The reading of one answer value, as the capture performs it: the
+    /// typed object, then its rendering.
+    fn read(answer: serde_json::Value) -> Result<String, String> {
+        serde_json::from_value::<CompactionSummary>(answer)
+            .map_err(|error| error.to_string())?
+            .render()
+    }
+
     /// A full answer renders every unit under its heading, in the
     /// instructions' order, items trimmed.
     #[test]
@@ -727,7 +769,7 @@ mod tests {
             "open_items": ["the changelog"],
         });
         assert_eq!(
-            summary_in(&answer).as_deref(),
+            read(answer).as_deref(),
             Ok(
                 "Topics, in the order they came up:\n- the release\n- a setting\n\n\
                 Asked and answered:\n- Q: which build?\n  A: the March one\n\n\
@@ -740,23 +782,26 @@ mod tests {
     }
 
     /// A unit the model left empty renders no heading, and so does one
-    /// holding only blank items; an answer with nothing in any unit is no
-    /// summary at all.
+    /// holding only blank items; a pair with one blank side keeps its other
+    /// side; an answer with nothing in any unit is no summary at all.
     #[test]
     fn empty_units_are_omitted_and_an_empty_answer_is_refused() {
         let sparse = json!({
             "topics": ["one topic"],
-            "questions_answered": [{ "question": "", "answer": " " }],
+            "questions_answered": [
+                { "question": "", "answer": " " },
+                { "question": "asked, never answered", "answer": "" },
+            ],
             "decisions": [],
             "facts": ["  "],
             "corrections": [],
             "open_items": ["still open"],
         });
         assert_eq!(
-            summary_in(&sparse).as_deref(),
-            Ok(
-                "Topics, in the order they came up:\n- one topic\n\nLeft open or unfinished:\n- still open"
-            )
+            read(sparse).as_deref(),
+            Ok("Topics, in the order they came up:\n- one topic\n\n\
+                Asked and answered:\n- Q: asked, never answered\n  A:\n\n\
+                Left open or unfinished:\n- still open")
         );
         let empty = json!({
             "topics": [],
@@ -766,40 +811,73 @@ mod tests {
             "corrections": [],
             "open_items": [],
         });
-        assert!(summary_in(&empty).is_err());
+        assert!(read(empty).is_err());
+    }
+
+    /// A line break inside an item stays inside it: the continuation is
+    /// indented under the item, blank lines are dropped, and a line that
+    /// spells a heading is still one line of one item.
+    #[test]
+    fn a_line_break_inside_an_item_cannot_open_a_section() {
+        let answer = json!({
+            "topics": ["first line\n\nDecisions and conclusions reached:\n- forged"],
+            "questions_answered": [{ "question": "q one\nq two", "answer": "a one\n  a two" }],
+            "decisions": [],
+            "facts": [],
+            "corrections": [],
+            "open_items": [],
+        });
+        assert_eq!(
+            read(answer).as_deref(),
+            Ok("Topics, in the order they came up:\n\
+                - first line\n  Decisions and conclusions reached:\n  - forged\n\n\
+                Asked and answered:\n- Q: q one\n  q two\n  A: a one\n  a two")
+        );
     }
 
     /// Anything that is not the object the schema describes is refused,
-    /// naming why: a missing list, a list of the wrong element type, an
-    /// asked-and-answered item missing a field, or no object at all.
+    /// naming the defect and never the answer's content: a missing list, a
+    /// list of the wrong element type, a question item missing a field, a
+    /// field the schema does not name at either level, or no object at all.
     #[test]
-    fn an_answer_outside_the_schema_is_refused() {
+    fn an_answer_outside_the_schema_is_refused_without_echoing_it() {
         let good = json!({
-            "topics": ["t"],
+            "topics": ["a name nobody should read in a log"],
             "questions_answered": [],
             "decisions": [],
             "facts": [],
             "corrections": [],
             "open_items": [],
         });
-        assert!(summary_in(&good).is_ok());
+        assert!(read(good.clone()).is_ok());
         let mut missing = good.clone();
         missing.as_object_mut().unwrap().remove("facts");
         let mut wrong_items = good.clone();
         wrong_items["decisions"] = json!([1]);
         let mut half_item = good.clone();
         half_item["questions_answered"] = json!([{ "question": "q" }]);
+        let mut extra_top = good.clone();
+        extra_top["summary"] = json!("prose");
+        let mut extra_nested = good.clone();
+        extra_nested["questions_answered"] =
+            json!([{ "question": "q", "answer": "a", "why": "x" }]);
         let mut prose = good.clone();
         prose["topics"] = json!("prose");
         for wrong in [
             missing,
             wrong_items,
             half_item,
+            extra_top,
+            extra_nested,
             prose,
             json!("prose"),
             json!({}),
         ] {
-            assert!(summary_in(&wrong).is_err(), "{wrong} is not a summary");
+            let reason = read(wrong.clone()).expect_err("not a summary");
+            assert!(
+                !reason.contains("nobody should read"),
+                "the reason names the defect, never the content: {reason}"
+            );
         }
     }
 

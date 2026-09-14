@@ -171,3 +171,12 @@ platform's permitted alphabet, read from the operating system's randomness throu
 `/dev/urandom` with the standard library alone. A random-number crate was considered
 and not added: the alphabet is 64 characters, so a byte's low six bits index it
 without bias, and there is nothing else to get right.
+
+## 2026-09-14 — the compaction's answer object
+
+Current version from the registry index through `cargo search`, advisories as recorded for
+the adapter's entry above, both on the day of this entry.
+
+| Crate | Version | Latest at check | Advisories | Why it is here |
+|---|---|---|---|---|
+| serde | 1.0.229 | 1.0.229 | none | The compaction's answer object derives its decoding with unknown fields refused, which is the one reading of what the provider returned; the framework and the adapter already depend on this exact version, so nothing new enters the tree. |

@@ -1831,11 +1831,7 @@ impl Assistant {
                 // contact is a pin or a title change gains the current tools
                 // the same way an ingested message grants them.
                 self.reconcile_tool_choice(conversation_id).await?;
-                // Read across the lineage: a compacted successor holds the
-                // rules its ancestor read, and the group did not change
-                // anything by the assistant moving to a new thread.
-                let newest =
-                    note::newest_text_in_lineage(self.ctx.store(), conversation_id, topic).await?;
+                let newest = self.newest_note_text(conversation_id, topic).await?;
                 if let Some(pause) = self.seams.note_read.get() {
                     pause().await;
                 }
@@ -1890,6 +1886,26 @@ impl Assistant {
                 Ok(ObserveOutcome::Observed { deliver })
             }
         }
+    }
+
+    /// The newest note the on-delta comparison reads, by topic. The rules
+    /// are read across the lineage: a compacted successor holds the rules
+    /// its ancestor read, restated at the head of its own summary, and the
+    /// group did not change anything by the assistant moving to a new
+    /// thread. A title is read in this conversation alone: a compaction
+    /// carries no title across, so a title note left in the summarized half
+    /// is one the serving thread must record again.
+    async fn newest_note_text(
+        &self,
+        conversation_id: i64,
+        topic: NoteTopic,
+    ) -> Result<Option<String>, CoreError> {
+        Ok(match topic {
+            NoteTopic::Rules => {
+                note::newest_text_in_lineage(self.ctx.store(), conversation_id, topic).await?
+            }
+            NoteTopic::Title => note::newest_text(self.ctx.store(), conversation_id, topic).await?,
+        })
     }
 
     /// Record what one send put in the chat (unit 38, 2026-08-30): the

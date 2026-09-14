@@ -93,7 +93,9 @@ use tokio::sync::Mutex;
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::assembly::{ErasureFence, ModelBinding, ScriptedPause};
-use crate::compaction::{COMPACTION_INSTRUCTIONS, CONTEXT_SWEEP, ContextWatch, compaction_schema};
+use crate::compaction::{
+    COMPACTION_INSTRUCTIONS, CONTEXT_SWEEP, CompactionSummary, ContextWatch, compaction_schema,
+};
 use crate::erasure;
 use crate::error::{CoreError, FatalExit};
 use crate::kind::AssistantKind;
@@ -658,36 +660,27 @@ impl Sessions {
             return Ok(CompactOutcome::AlreadyCompact);
         };
         let temporary = store
-            .fork_temporary(
-                source,
-                cut.first_half_ends,
-                TemporaryFork {
-                    // The design's "dont provide any tools" is the fork
-                    // door's own word now: the framework records the empty
-                    // tool choice into the temporary conversation ahead of
-                    // the instructions, so this consumer supplies nothing
-                    // here and cannot forget it.
-                    records: Vec::new(),
-                    instructions: COMPACTION_INSTRUCTIONS.to_owned(),
-                    response_schema: Some(compaction_schema()),
-                },
-            )
+            .fork_temporary(source, cut.first_half_ends, compaction_fork())
             .await?;
         let Some(summary) = self.capture_and_retire(temporary).await? else {
             return Err(CoreError::CompactionUnsummarized {
                 conversation_id: source,
             });
         };
-        let summary = self.with_active_rules(summary, source).await?;
         self.install_compacted_thread(source, cut, summary, channel, kind)
             .await
     }
 
-    /// The compaction message as it is stored: the captured summary, and
-    /// under it the active rules where the lineage of `lineage_of` holds any
-    /// ("the compaction summary should include the rules"). The rules bytes
-    /// are the newest rules note's own, read nearest-first up the lineage,
-    /// never the model's retelling of them.
+    /// The compaction message as it is stored: the rendered summary, and
+    /// under it the active rules where the lineage of `lineage_of` holds
+    /// any. The rules bytes are the newest rules note's own, read
+    /// nearest-first up the lineage, never the model's retelling of them.
+    ///
+    /// Called under the holds a swap takes, on the lineage as it stands at
+    /// the swap: a rules note pinned while the summary was being written
+    /// sits past the cut and rides across, and the message states the same
+    /// rules the thread inherits, not the ones that stood when the capture
+    /// began.
     ///
     /// # Errors
     ///
@@ -771,13 +764,16 @@ impl Sessions {
     /// 2026-09-01), which is two stored facts and needs both. The framework
     /// answers the first — the turn is durably over: nothing streaming, and
     /// no tool outcome awaiting the round it summons. The ledger answers the
-    /// second — prose is there. Neither alone is the answer: the predicate
-    /// reads true over a conversation whose turn has not started, because a
-    /// forked history is all durable, and prose is there at every MESSAGE
-    /// end, while a tool-use stop's lifecycles arrive after one and the turn
-    /// carries on.
+    /// second — the answer object is there, read as [`summary_of`] reads it.
+    /// Neither alone is the answer: the predicate reads true over a
+    /// conversation whose turn has not started, because a forked history is
+    /// all durable, and text is there at every MESSAGE end, while a
+    /// tool-use stop's lifecycles arrive after one and the turn carries on.
+    /// An answer that is there but is not the object the turn was held to
+    /// ends the capture at once with no summary (unit 63): it is the
+    /// provider failing its contract, and waiting would not change it.
     ///
-    /// A turn that ends having written NO prose is over too, and saying so
+    /// A turn that ends having written NO answer is over too, and saying so
     /// takes a THIRD fact: that a stream terminal for this conversation has
     /// been seen since the unlatch, which is [`CaptureWakes`]'s. Without it
     /// the two stored facts cannot tell "the turn ran and wrote nothing" from
@@ -791,7 +787,7 @@ impl Sessions {
     ///
     /// This does not make a stream event the answer. The terminal decides
     /// nothing by itself — over a tool-use stop the predicate is false, and
-    /// over a turn with prose the ledger answers — and a terminal a lagged
+    /// over a turn with an answer the ledger answers — and a terminal a lagged
     /// subscription drops costs only the bound, which is the wait the capture
     /// would have spent anyway.
     ///
@@ -804,16 +800,18 @@ impl Sessions {
     /// `deadline` is the outer bound. On its expiry the turn is interrupted
     /// and that interrupt's own settle is awaited before anything else
     /// happens, so a turn nothing ended is STOPPED instead of left writing
-    /// into a conversation the caller is about to retire; whatever prose the
-    /// ledger holds by then is the answer.
+    /// into a conversation the caller is about to retire; the ledger is then
+    /// read once more the same way, and a complete answer object is the
+    /// summary while anything else is none.
     ///
     /// What counts as the answer is the newest assistant-voiced text past
     /// the instructions block — past it, because everything before it is the
     /// inherited history the turn was asked ABOUT, including the source's
-    /// own earlier answers.
+    /// own earlier answers — read as the answer object.
     ///
-    /// `None` is a turn that produced no prose: it failed, it was silent, or
-    /// it never ran. The caller changes nothing on that answer.
+    /// `None` is a turn that produced no summary: it failed, it was silent,
+    /// it answered outside its shape, or it never ran. The caller changes
+    /// nothing on that answer.
     ///
     /// # Errors
     ///
@@ -966,7 +964,9 @@ impl Sessions {
         // The second half is copied from the ledger AS IT STANDS NOW, not as
         // it stood when the cut was derived: everything a member said while
         // the summary was being written sits past the cut and rides across
-        // verbatim with the rest of it.
+        // verbatim with the rest of it. The rules are read at the same
+        // moment, for the same reason.
+        let summary = self.with_active_rules(summary, source).await?;
         let successor = store
             .open_compacted_thread(
                 source,
@@ -1342,6 +1342,9 @@ impl Sessions {
             else {
                 return Ok(None);
             };
+            // A hop below the serving thread is history nothing writes to;
+            // its rules are read here, and read once.
+            let summary = self.with_active_rules(summary, hop.conversation).await?;
             let clone = store
                 .open_compacted_thread(
                     hop.conversation,
@@ -1414,7 +1417,12 @@ impl Sessions {
         self.settle(serving).await?;
         // The serving clone: the new reference and the new digest in place of
         // the old pair, everything past them shared, and the erased person's
-        // own blocks detached from the copy.
+        // own blocks detached from the copy. The serving thread is live, so
+        // its rules are read here, under the holds, as the compaction reads
+        // its own.
+        let serving_digest = self
+            .with_active_rules(rebuilt.serving_digest, serving)
+            .await?;
         let serving_clone = store
             .open_compacted_thread(
                 serving,
@@ -1422,7 +1430,7 @@ impl Sessions {
                 CompactedThread {
                     ancestor_conversation_id: rebuilt.ancestor_clone,
                     system_prompt: Some(self.system_prompt.clone()),
-                    compaction_message: rebuilt.serving_digest,
+                    compaction_message: serving_digest,
                     model: self.current_model(),
                 },
             )
@@ -1527,18 +1535,10 @@ impl Sessions {
             return Ok(None);
         };
         let temporary = store
-            .fork_temporary(
-                ancestor_clone,
-                span_ends,
-                TemporaryFork {
-                    records: Vec::new(),
-                    instructions: COMPACTION_INSTRUCTIONS.to_owned(),
-                    response_schema: Some(compaction_schema()),
-                },
-            )
+            .fork_temporary(ancestor_clone, span_ends, compaction_fork())
             .await?;
         match self.capture_and_retire(temporary).await? {
-            Some(summary) => Ok(Some(self.with_active_rules(summary, successor).await?)),
+            Some(summary) => Ok(Some(summary)),
             // Capture-first: nothing established has been touched yet, and
             // the clones built so far go with the failure at the caller.
             None => Err(CoreError::CompactionUnsummarized {
@@ -1856,21 +1856,35 @@ pub(crate) struct StrippedHop {
     pub stripped: Vec<i64>,
 }
 
+/// The temporary conversation every compaction summons its turn in, built
+/// the same way at both doors — the ordinary compaction and the erasure
+/// scrub's regenerated digest — so one policy reaches both: no records of
+/// the consumer's own, the instructions, and the answer's schema. The empty
+/// tool choice is the fork door's own word.
+fn compaction_fork() -> TemporaryFork {
+    TemporaryFork {
+        records: Vec::new(),
+        instructions: COMPACTION_INSTRUCTIONS.to_owned(),
+        response_schema: Some(compaction_schema()),
+    }
+}
+
 /// The captured summary in one temporary conversation's ledger: the answer
 /// the framework reads past the instructions block, deserialized as the
-/// object the schema asked for, and its summary field out of it. `Ok(None)`
-/// is a turn that wrote nothing. `Err` is a turn that wrote something other
-/// than the shape it was held to — the provider failing its contract, which
-/// fails the compaction ("failures just fail the compaction"), never a
-/// shape repaired here.
+/// object the schema asked for and rendered into the compaction message.
+/// `Ok(None)` is a turn that wrote nothing. `Err` is a turn that wrote
+/// something other than the shape it was held to, or a shape with nothing
+/// in it — the provider failing its contract, which fails the compaction
+/// like any other failure, never a shape repaired here. The reason names
+/// the defect and no content of the answer.
 fn summary_of(
     temporary: TemporaryConversation,
     blocks: &[Block],
 ) -> Result<Option<String>, String> {
     temporary
-        .answer::<serde_json::Value>(blocks)
-        .map_err(|error| format!("the answer is not JSON: {error}"))?
-        .map(|answer| crate::compaction::summary_in(&answer))
+        .answer::<CompactionSummary>(blocks)
+        .map_err(|error| format!("the answer is not the summary object: {error}"))?
+        .map(|summary| summary.render())
         .transpose()
 }
 
@@ -2194,7 +2208,10 @@ mod tests {
     /// What the capture answers for the object [`answer`] writes: the
     /// compaction module's own rendering of it.
     fn rendered(decision: &str) -> String {
-        crate::compaction::summary_in(&answer_object(decision)).expect("one decision renders")
+        serde_json::from_value::<CompactionSummary>(answer_object(decision))
+            .expect("the object is the summary")
+            .render()
+            .expect("one decision renders")
     }
 
     /// Assistant text in the temporary conversation's turn, exactly as given.

@@ -345,8 +345,8 @@ pub(crate) async fn newest_text(
 /// The newest stored note text of one topic across a conversation's whole
 /// lineage, nearest first: the serving conversation's own newest note, or
 /// failing that the nearest ancestor's, and so on up the chain a compaction
-/// leaves behind ("looking for the rules needs to also look recursively").
-/// A note nowhere in the lineage answers `None`.
+/// leaves behind — the recursive lookup decision 0201 records. A note
+/// nowhere in the lineage answers `None`.
 ///
 /// # Errors
 ///
